@@ -31,6 +31,10 @@ import btools.server.ServiceContext;
  * heading = angle (optional to give a route a start direction)
  * profile:xxx = parameter in profile (optional)
  * straight = idx1,idx2,.. (optional, minimum one value, index of a direct routing point in the waypoint list)
+ * minLength = meters (optional, filter segments with minimum length)
+ * maxLength = meters (optional, filter segments with maximum length)
+ * minGradient = percent (optional, filter segments with minimum absolute gradient)
+ * maxGradient = percent (optional, filter segments with maximum absolute gradient)
  * <p>
  * Example URLs:
  * {@code http://localhost:17777/brouter?lonlats=8.799297,49.565883|8.811764,49.563606&nogos=&profile=trekking&alternativeidx=0&format=gpx}
@@ -82,6 +86,16 @@ public class ServerHandler extends RequestHandler {
     if (exportWaypointsStr != null && Integer.parseInt(exportWaypointsStr) != 0) {
       track.exportCorrectedWaypoints = true;
     }
+
+    // apply segment filter parameters if present
+    String minLengthStr = params.get("minLength");
+    String maxLengthStr = params.get("maxLength");
+    String minGradientStr = params.get("minGradient");
+    String maxGradientStr = params.get("maxGradient");
+    if (minLengthStr != null) track.segmentFilterMinLength = Integer.parseInt(minLengthStr);
+    if (maxLengthStr != null) track.segmentFilterMaxLength = Integer.parseInt(maxLengthStr);
+    if (minGradientStr != null) track.segmentFilterMinGradient = Float.parseFloat(minGradientStr);
+    if (maxGradientStr != null) track.segmentFilterMaxGradient = Float.parseFloat(maxGradientStr);
 
     if (format == null || "gpx".equals(format)) {
       result = new FormatGpx(rc).format(track);

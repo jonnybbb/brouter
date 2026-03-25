@@ -27,7 +27,7 @@ public final class OsmTrack {
   final public static String versionDate = "12072025";
 
   // csv-header-line
-  private static final String MESSAGES_HEADER = "Longitude\tLatitude\tElevation\tDistance\tCostPerKm\tElevCost\tTurnCost\tNodeCost\tInitialCost\tWayTags\tNodeTags\tTime\tEnergy";
+  private static final String MESSAGES_HEADER = "Longitude\tLatitude\tElevation\tDistance\tCostPerKm\tElevCost\tTurnCost\tNodeCost\tInitialCost\tWayTags\tNodeTags\tTime\tEnergy\tGradient";
 
   public MatchedWaypoint endPoint;
   public long[] nogoChecksums;
@@ -63,6 +63,12 @@ public final class OsmTrack {
   protected List<MatchedWaypoint> matchedWaypoints;
   public boolean exportWaypoints = false;
   public boolean exportCorrectedWaypoints = false;
+
+  // segment filter parameters (-1 means no filter)
+  public int segmentFilterMinLength = -1;
+  public int segmentFilterMaxLength = -1;
+  public float segmentFilterMinGradient = -1;
+  public float segmentFilterMaxGradient = -1;
 
   public void addNode(OsmPathElement node) {
     nodes.add(0, node);
@@ -186,6 +192,70 @@ public final class OsmTrack {
       res.add(current.toMessage());
     }
     return res;
+  }
+
+  /**
+   * Get aggregated messages as MessageData objects (for filtering/querying).
+   */
+  public List<MessageData> aggregateMessageData() {
+    List<MessageData> res = new ArrayList<>();
+    MessageData current = null;
+    for (OsmPathElement n : nodes) {
+      if (n.message != null && n.message.wayKeyValues != null) {
+        MessageData md = n.message.copy();
+        if (current != null) {
+          if (current.nodeKeyValues != null || !current.wayKeyValues.equals(md.wayKeyValues)) {
+            res.add(current);
+          } else {
+            md.add(current);
+          }
+        }
+        current = md;
+      }
+    }
+    if (current != null) {
+      res.add(current);
+    }
+    return res;
+  }
+
+  /**
+   * Filter aggregated segments by length and gradient criteria.
+   *
+   * @param minLength   minimum segment length in meters (-1 to ignore)
+   * @param maxLength   maximum segment length in meters (-1 to ignore)
+   * @param minGradient minimum gradient in percent (-1 to ignore)
+   * @param maxGradient maximum gradient in percent (-1 to ignore)
+   * @return filtered list of segment message strings
+   */
+  public List<String> filterSegments(int minLength, int maxLength, float minGradient, float maxGradient) {
+    List<String> res = new ArrayList<>();
+    for (MessageData md : aggregateMessageData()) {
+      if (minLength >= 0 && md.linkdist < minLength) continue;
+      if (maxLength >= 0 && md.linkdist > maxLength) continue;
+      float absGradient = Math.abs(md.gradient);
+      if (minGradient >= 0 && absGradient < minGradient) continue;
+      if (maxGradient >= 0 && absGradient > maxGradient) continue;
+      res.add(md.toMessage());
+    }
+    return res;
+  }
+
+  /**
+   * Returns aggregated messages, optionally filtered by segment filter parameters.
+   */
+  public List<String> getFilteredMessages() {
+    if (segmentFilterMinLength >= 0 || segmentFilterMaxLength >= 0
+      || segmentFilterMinGradient >= 0 || segmentFilterMaxGradient >= 0) {
+      return filterSegments(segmentFilterMinLength, segmentFilterMaxLength,
+        segmentFilterMinGradient, segmentFilterMaxGradient);
+    }
+    return aggregateMessages();
+  }
+
+  public boolean hasSegmentFilter() {
+    return segmentFilterMinLength >= 0 || segmentFilterMaxLength >= 0
+      || segmentFilterMinGradient >= 0 || segmentFilterMaxGradient >= 0;
   }
 
   public List<String> aggregateSpeedProfile() {
