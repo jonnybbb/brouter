@@ -1,6 +1,7 @@
 package btools.server;
 
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Assert;
 import org.junit.BeforeClass;
@@ -247,5 +248,128 @@ public class RouteServerTest {
     httpConnection.connect();
 
     Assert.assertEquals(HttpURLConnection.HTTP_NOT_FOUND, httpConnection.getResponseCode());
+  }
+
+  @Test
+  public void geojsonMessagesContainGradientColumn() throws IOException, URISyntaxException {
+    URL requestUrl = new URI(baseUrl + "brouter?lonlats=8.723037,50.000491%7C8.712737,50.002899&nogos=&profile=trekking&alternativeidx=0&format=geojson").toURL();
+    HttpURLConnection httpConnection = (HttpURLConnection) requestUrl.openConnection();
+    httpConnection.connect();
+
+    Assert.assertEquals(HttpURLConnection.HTTP_OK, httpConnection.getResponseCode());
+
+    InputStream inputStream = httpConnection.getInputStream();
+    JSONObject geoJson = new JSONObject(new String(inputStream.readAllBytes(), StandardCharsets.UTF_8));
+
+    // Check that the messages header includes "Gradient"
+    Object header = geoJson.query("/features/0/properties/messages/0");
+    Assert.assertNotNull("messages header should exist", header);
+    String headerStr = header.toString();
+    Assert.assertTrue("messages header should contain Gradient", headerStr.contains("Gradient"));
+
+    // Check that message rows have 14 columns (the last being Gradient)
+    org.json.JSONArray messages = geoJson.getJSONArray("features")
+      .getJSONObject(0).getJSONObject("properties").getJSONArray("messages");
+    Assert.assertTrue("should have header + at least one data row", messages.length() >= 2);
+    // Header row
+    org.json.JSONArray headerRow = messages.getJSONArray(0);
+    Assert.assertEquals("header should have 14 columns", 14, headerRow.length());
+    Assert.assertEquals("Gradient", headerRow.getString(13));
+    // Data row
+    org.json.JSONArray dataRow = messages.getJSONArray(1);
+    Assert.assertEquals("data row should have 14 columns", 14, dataRow.length());
+  }
+
+  @Test
+  public void csvFormatContainsGradientColumn() throws IOException, URISyntaxException {
+    URL requestUrl = new URI(baseUrl + "brouter?lonlats=8.723037,50.000491%7C8.712737,50.002899&nogos=&profile=trekking&alternativeidx=0&format=csv").toURL();
+    HttpURLConnection httpConnection = (HttpURLConnection) requestUrl.openConnection();
+    httpConnection.connect();
+
+    Assert.assertEquals(HttpURLConnection.HTTP_OK, httpConnection.getResponseCode());
+
+    String csv = new String(httpConnection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    String[] lines = csv.split("\n");
+    Assert.assertTrue("CSV should have header + data lines", lines.length >= 2);
+
+    // Check header
+    String header = lines[0];
+    Assert.assertTrue("CSV header should contain Gradient", header.contains("Gradient"));
+    String[] headerCols = header.split("\t");
+    Assert.assertEquals("header should have 14 columns", 14, headerCols.length);
+    Assert.assertEquals("Gradient", headerCols[13]);
+
+    // Check data row has 14 columns
+    String[] dataCols = lines[1].split("\t");
+    Assert.assertEquals("data row should have 14 columns", 14, dataCols.length);
+  }
+
+  @Test
+  public void segmentFilterMinLength() throws IOException, URISyntaxException {
+    // Request without filter
+    URL unfilteredUrl = new URI(baseUrl + "brouter?lonlats=8.723037,50.000491%7C8.712737,50.002899&nogos=&profile=trekking&alternativeidx=0&format=geojson").toURL();
+    HttpURLConnection conn1 = (HttpURLConnection) unfilteredUrl.openConnection();
+    conn1.connect();
+    JSONObject unfiltered = new JSONObject(new String(conn1.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+    int unfilteredCount = unfiltered.getJSONArray("features")
+      .getJSONObject(0).getJSONObject("properties").getJSONArray("messages").length();
+
+    // Request with minLength filter (only segments >= 500m)
+    URL filteredUrl = new URI(baseUrl + "brouter?lonlats=8.723037,50.000491%7C8.712737,50.002899&nogos=&profile=trekking&alternativeidx=0&format=geojson&minLength=500").toURL();
+    HttpURLConnection conn2 = (HttpURLConnection) filteredUrl.openConnection();
+    conn2.connect();
+    Assert.assertEquals(HttpURLConnection.HTTP_OK, conn2.getResponseCode());
+
+    JSONObject filtered = new JSONObject(new String(conn2.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+    int filteredCount = filtered.getJSONArray("features")
+      .getJSONObject(0).getJSONObject("properties").getJSONArray("messages").length();
+
+    // Filtered should have fewer or equal rows (header row is always present)
+    Assert.assertTrue("filtered messages count (" + filteredCount + ") should be <= unfiltered (" + unfilteredCount + ")",
+      filteredCount <= unfilteredCount);
+  }
+
+  @Test
+  public void segmentFilterMinGradient() throws IOException, URISyntaxException {
+    // Request with high gradient filter (only segments with |gradient| >= 20%)
+    URL requestUrl = new URI(baseUrl + "brouter?lonlats=8.723037,50.000491%7C8.712737,50.002899&nogos=&profile=trekking&alternativeidx=0&format=geojson&minGradient=20").toURL();
+    HttpURLConnection httpConnection = (HttpURLConnection) requestUrl.openConnection();
+    httpConnection.connect();
+
+    Assert.assertEquals(HttpURLConnection.HTTP_OK, httpConnection.getResponseCode());
+
+    JSONObject geoJson = new JSONObject(new String(httpConnection.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+    int msgCount = geoJson.getJSONArray("features")
+      .getJSONObject(0).getJSONObject("properties").getJSONArray("messages").length();
+
+    // Dreieich is flat, so very few (if any) segments should have >= 20% gradient
+    // At minimum, there's still the header row (1)
+    Assert.assertTrue("steep gradient filter should significantly reduce results", msgCount <= 3);
+  }
+
+  @Test
+  public void segmentFilterCombinedLengthAndGradient() throws IOException, URISyntaxException {
+    // Combined filter: long segments with significant gradient
+    URL requestUrl = new URI(baseUrl + "brouter?lonlats=8.723037,50.000491%7C8.712737,50.002899&nogos=&profile=trekking&alternativeidx=0&format=csv&minLength=200&minGradient=1").toURL();
+    HttpURLConnection httpConnection = (HttpURLConnection) requestUrl.openConnection();
+    httpConnection.connect();
+
+    Assert.assertEquals(HttpURLConnection.HTTP_OK, httpConnection.getResponseCode());
+
+    String csv = new String(httpConnection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    String[] lines = csv.split("\n");
+    // Header always present
+    Assert.assertTrue("should have at least header line", lines.length >= 1);
+    Assert.assertTrue("header should contain Gradient", lines[0].contains("Gradient"));
+
+    // Verify all returned data rows meet the filter criteria
+    for (int i = 1; i < lines.length; i++) {
+      String[] cols = lines[i].split("\t");
+      int dist = Integer.parseInt(cols[3]);
+      int gradientTenths = Integer.parseInt(cols[13]);
+      Assert.assertTrue("filtered segment distance should be >= 200m, got " + dist, dist >= 200);
+      Assert.assertTrue("filtered segment |gradient| should be >= 1% (10 tenths), got " + gradientTenths,
+        Math.abs(gradientTenths) >= 10);
+    }
   }
 }
