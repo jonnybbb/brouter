@@ -24,7 +24,7 @@ public class FormatCsv extends Formatter {
 
   public void writeMessages(BufferedWriter bw, OsmTrack t) throws Exception {
     dumpLine(bw, MESSAGES_HEADER);
-    for (String m : t.aggregateMessages()) {
+    for (String m : t.getFilteredMessages()) {
       dumpLine(bw, m);
     }
     if (bw != null)

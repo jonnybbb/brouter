@@ -299,6 +299,13 @@ abstract class OsmPath implements OsmLinkHolder {
         }
       }
 
+      // compute gradient (slope percent) for this section
+      if (message != null) {
+        message.deltaH += delta_h;
+        if (message.linkdist > 0) {
+          message.gradient = (float) (message.deltaH / message.linkdist * 100.);
+        }
+      }
 
       double elevation = ele2 == Short.MIN_VALUE ? 100. : ele2 / 4.;
 

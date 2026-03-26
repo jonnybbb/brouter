@@ -17,6 +17,8 @@ final class MessageData implements Cloneable {
   int priorityclassifier;
   int classifiermask;
   float turnangle;
+  float gradient; // slope in percent (rise/run * 100)
+  double deltaH; // elevation change in meters for this section
   String wayKeyValues;
   String nodeKeyValues;
 
@@ -41,6 +43,7 @@ final class MessageData implements Cloneable {
     }
 
     int iCost = (int) (costfactor * 1000 + 0.5f);
+    int iGradient = (int) (gradient * 10 + (gradient >= 0 ? 0.5f : -0.5f));
     return (lon - 180000000) + "\t"
       + (lat - 90000000) + "\t"
       + ele / 4 + "\t"
@@ -53,11 +56,18 @@ final class MessageData implements Cloneable {
       + "\t" + wayKeyValues
       + "\t" + (nodeKeyValues == null ? "" : nodeKeyValues)
       + "\t" + ((int) time)
-      + "\t" + ((int) energy);
+      + "\t" + ((int) energy)
+      + "\t" + iGradient;
   }
 
   void add(MessageData d) {
-    linkdist += d.linkdist;
+    // recompute gradient as weighted average by distance
+    deltaH += d.deltaH;
+    int totalDist = linkdist + d.linkdist;
+    if (totalDist > 0) {
+      gradient = (float) (deltaH / totalDist * 100.);
+    }
+    linkdist = totalDist;
     linkelevationcost += d.linkelevationcost;
     linkturncost += d.linkturncost;
     linknodecost += d.linknodecost;
