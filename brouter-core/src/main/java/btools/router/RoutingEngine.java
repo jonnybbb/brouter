@@ -772,17 +772,46 @@ public class RoutingEngine extends Thread {
     // Match all candidates at once — profile-aware via segment decoding
     nodesCache.matchWaypointsToNodes(allCandidates, maxSnapDist, islandNodePairs);
 
-    // Pick the best candidate for each waypoint or remove it
+    // Pick the best candidate for each waypoint or remove it.
+    // Use direction-aware scoring: prefer roads perpendicular to the travel
+    // direction (the route naturally crosses them) over parallel roads
+    // (which often require a detour to reach).
     int minWaypoints = 3;
     int remaining = intermediateCount;
 
     for (int i = intermediateCount; i >= 1; i--) {
       List<MatchedWaypoint> group = candidateGroups.get(i - 1);
 
+      // Travel bearing: direction from previous to next waypoint
+      OsmNodeNamed prev = waypoints.get(i - 1);
+      OsmNodeNamed next = waypoints.get(i + 1);
+      double travelBearing = CheapAngleMeter.getDirection(prev.ilon, prev.ilat, next.ilon, next.ilat);
+
       MatchedWaypoint best = null;
+      double bestScore = Double.MAX_VALUE;
       for (MatchedWaypoint mwp : group) {
-        if (mwp.crosspoint != null && (best == null || mwp.radius < best.radius)) {
+        if (mwp.crosspoint == null) continue;
+
+        double snapDist = mwp.radius;
+
+        // Road bearing at snap point
+        double roadBearing = CheapAngleMeter.getDirection(
+          mwp.node1.ilon, mwp.node1.ilat, mwp.node2.ilon, mwp.node2.ilat);
+
+        // Angle between road and travel direction (0-90°, road is bidirectional)
+        double angleDiff = CheapAngleMeter.getDifferenceFromDirection(roadBearing, travelBearing);
+        if (angleDiff > 90) angleDiff = 180 - angleDiff;
+
+        // parallelFactor: 1.0 for parallel, 0.0 for perpendicular
+        double parallelFactor = 1.0 - angleDiff / 90.0;
+
+        // Penalize parallel roads: effective snap distance increases up to 50%.
+        // This favors roads the route would naturally cross without detour.
+        double score = snapDist * (1.0 + 0.5 * parallelFactor * parallelFactor);
+
+        if (score < bestScore) {
           best = mwp;
+          bestScore = score;
         }
       }
 
@@ -821,11 +850,13 @@ public class RoutingEngine extends Thread {
       if (wptIdx <= 0 || wptIdx >= nodes.size() - 1) continue;
 
       int overlapCount = 0;
+      int proximityThreshold = 30; // meters — catch near-overlaps (dual carriageways, parallel roads)
       int maxSteps = Math.min(wptIdx, nodes.size() - 1 - wptIdx);
       for (int step = 1; step <= maxSteps; step++) {
         OsmPathElement before = nodes.get(wptIdx - step);
         OsmPathElement after = nodes.get(wptIdx + step);
-        if (before.getIdFromPos() == after.getIdFromPos()) {
+        if (before.getIdFromPos() == after.getIdFromPos()
+            || before.calcDistance(after) <= proximityThreshold) {
           overlapCount = step;
         } else {
           break;
@@ -2000,10 +2031,7 @@ public class RoutingEngine extends Thread {
 
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
       removeBackAndForthSegments(totaltrack, matchedWaypoints);
-      // Use a larger maxLoopDistance for roundtrip mode since intermediate
-      // waypoints are synthetic and detours around them are never intentional.
-      // Also pass waypoint positions so the ratio threshold can be relaxed nearby.
-      removeMicroDetours(totaltrack, 500, matchedWaypoints);
+      removeMicroDetours(totaltrack, 1500, matchedWaypoints);
     }
 
     recalcTrack(totaltrack);
