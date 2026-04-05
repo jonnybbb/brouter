@@ -199,6 +199,28 @@ public class LoopQualityTest {
         fw.write(formatCombinedGeoJson(results));
       }
       System.out.println("GeoJSON export: " + geojsonFile.getAbsolutePath());
+
+      // Per-region HTML files with full geometry and variant comparison
+      for (LoopTestRegion region : LoopTestRegion.values()) {
+        List<LoopQualityTest.LoopQualityResult> regionResults = new ArrayList<>();
+        for (LoopQualityTest.LoopQualityResult r : results) {
+          if (r.region == region) regionResults.add(r);
+        }
+        if (regionResults.isEmpty()) continue;
+
+        // Per-region GeoJSON with full geometry
+        File regionGeoJson = new File(buildDir, "routes-" + region.name().toLowerCase() + ".geojson");
+        try (FileWriter fw = new FileWriter(regionGeoJson)) {
+          fw.write(formatCombinedGeoJson(regionResults));
+        }
+
+        // Per-region HTML with Leaflet map
+        File regionHtml = new File(buildDir, region.name().toLowerCase() + ".html");
+        try (FileWriter fw = new FileWriter(regionHtml)) {
+          fw.write(LoopQualityReportGenerator.generateRegionHtml(region, regionResults));
+        }
+        System.out.println("Region report: " + regionHtml.getAbsolutePath());
+      }
     } catch (IOException e) {
       System.err.println("Failed to write loop quality report: " + e.getMessage());
     }
@@ -214,6 +236,41 @@ public class LoopQualityTest {
     return coords;
   }
 
+  private static String variantColor(String variant) {
+    return "isochrone".equals(variant) ? "#e67300" : "#0066cc"; // orange vs blue
+  }
+
+  static String formatFeatureGeoJson(LoopQualityResult r) {
+    StringBuilder sb = new StringBuilder(4096);
+    sb.append("    {\n      \"type\": \"Feature\",\n");
+    sb.append("      \"properties\": {\n");
+    sb.append(String.format(Locale.US, "        \"name\": \"%s [%s]\",\n", r.label, r.variant));
+    sb.append(String.format(Locale.US, "        \"variant\": \"%s\",\n", r.variant));
+    sb.append(String.format(Locale.US, "        \"region\": \"%s\",\n", r.region.name()));
+    sb.append(String.format(Locale.US, "        \"profile\": \"%s\",\n", r.profileName));
+    sb.append(String.format(Locale.US, "        \"requestedDistance\": %d,\n", r.distanceMeters));
+    sb.append(String.format(Locale.US, "        \"direction\": %.0f,\n", r.direction));
+    if (r.metrics != null) {
+      sb.append(String.format(Locale.US, "        \"actualDistance\": %d,\n", r.metrics.getActualDistanceMeters()));
+      sb.append(String.format(Locale.US, "        \"distanceRatio\": %.2f,\n", r.metrics.getDistanceRatio()));
+      sb.append(String.format(Locale.US, "        \"roadReusePercent\": %.1f,\n", r.metrics.getRoadReusePercent()));
+      sb.append(String.format(Locale.US, "        \"directionDelta\": %.1f,\n", r.metrics.getDirectionDeltaDegrees()));
+      sb.append(String.format(Locale.US, "        \"passed\": %s,\n", r.passed()));
+    }
+    sb.append(String.format("        \"stroke\": \"%s\",\n", variantColor(r.variant)));
+    sb.append("        \"stroke-width\": 2,\n");
+    sb.append("        \"stroke-opacity\": 0.8\n");
+    sb.append("      },\n");
+    sb.append("      \"geometry\": {\n        \"type\": \"LineString\",\n        \"coordinates\": [\n");
+    for (int i = 0; i < r.coordinates.length; i++) {
+      sb.append(String.format(Locale.US, "          [%.6f, %.6f]", r.coordinates[i][0], r.coordinates[i][1]));
+      if (i < r.coordinates.length - 1) sb.append(",");
+      sb.append("\n");
+    }
+    sb.append("        ]\n      }\n    }");
+    return sb.toString();
+  }
+
   private static String formatCombinedGeoJson(List<LoopQualityResult> results) {
     StringBuilder sb = new StringBuilder(1024 * 1024);
     sb.append("{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n");
@@ -222,56 +279,29 @@ public class LoopQualityTest {
       if (r.coordinates == null || r.coordinates.length == 0) continue;
       if (!first) sb.append(",\n");
       first = false;
-      sb.append("    {\n      \"type\": \"Feature\",\n");
-      sb.append("      \"properties\": {\n");
-      sb.append(String.format(Locale.US, "        \"name\": \"%s\",\n", r.label));
-      sb.append(String.format(Locale.US, "        \"region\": \"%s\",\n", r.region.name()));
-      sb.append(String.format(Locale.US, "        \"profile\": \"%s\",\n", r.profileName));
-      sb.append(String.format(Locale.US, "        \"requestedDistance\": %d,\n", r.distanceMeters));
-      sb.append(String.format(Locale.US, "        \"direction\": %.0f,\n", r.direction));
-      if (r.metrics != null) {
-        sb.append(String.format(Locale.US, "        \"actualDistance\": %d,\n", r.metrics.getActualDistanceMeters()));
-        sb.append(String.format(Locale.US, "        \"distanceRatio\": %.2f,\n", r.metrics.getDistanceRatio()));
-        sb.append(String.format(Locale.US, "        \"roadReusePercent\": %.1f,\n", r.metrics.getRoadReusePercent()));
-        sb.append(String.format(Locale.US, "        \"directionDelta\": %.1f,\n", r.metrics.getDirectionDeltaDegrees()));
-        sb.append(String.format(Locale.US, "        \"passed\": %s,\n", r.passed()));
-      }
-      // Color: green=pass, red=fail
-      String color = r.passed() ? "#28a745" : "#dc3545";
-      sb.append(String.format("        \"stroke\": \"%s\",\n", color));
-      sb.append("        \"stroke-width\": 2,\n");
-      sb.append(String.format("        \"stroke-opacity\": %s\n", r.passed() ? "0.7" : "0.9"));
-      sb.append("      },\n");
-      sb.append("      \"geometry\": {\n        \"type\": \"LineString\",\n        \"coordinates\": [\n");
-      for (int i = 0; i < r.coordinates.length; i++) {
-        sb.append(String.format(Locale.US, "          [%.6f, %.6f]", r.coordinates[i][0], r.coordinates[i][1]));
-        if (i < r.coordinates.length - 1) sb.append(",");
-        sb.append("\n");
-      }
-      sb.append("        ]\n      }\n    }");
+      sb.append(formatFeatureGeoJson(r));
     }
     sb.append("\n  ]\n}\n");
     return sb.toString();
   }
 
-  private void writeGoldenBaseline(OsmTrack track, LoopQualityMetrics metrics) {
+  private void writeGoldenBaseline(LoopQualityResult result) {
+    if (result.metrics == null) return;
     try {
       File goldenDir = new File(projectDir, "brouter-core/src/test/resources/test-data/golden");
       goldenDir.mkdirs();
 
-      // Write metric snapshot JSON
       File metricsFile = new File(goldenDir, testLabel + "_metrics.json");
       if (!metricsFile.exists()) {
         try (FileWriter fw = new FileWriter(metricsFile)) {
-          fw.write(formatMetricsJson(metrics));
+          fw.write(formatMetricsJson(result.metrics));
         }
       }
 
-      // Write track GeoJSON
       File geojsonFile = new File(goldenDir, testLabel + "_track.geojson");
-      if (!geojsonFile.exists()) {
+      if (!geojsonFile.exists() && result.coordinates != null) {
         try (FileWriter fw = new FileWriter(geojsonFile)) {
-          fw.write(formatTrackGeoJson(track, metrics));
+          fw.write(formatFeatureGeoJson(result));
         }
       }
     } catch (IOException e) {
@@ -293,34 +323,6 @@ public class LoopQualityTest {
       metrics.getDirectionDeltaDegrees(),
       metrics.getActualDistanceMeters(),
       metrics.getRequestedDistanceMeters());
-  }
-
-  private String formatTrackGeoJson(OsmTrack track, LoopQualityMetrics metrics) {
-    StringBuilder sb = new StringBuilder(4096);
-    sb.append("{\n");
-    sb.append("  \"type\": \"Feature\",\n");
-    sb.append("  \"properties\": {\n");
-    sb.append(String.format(Locale.US, "    \"roadReusePercent\": %.2f,\n", metrics.getRoadReusePercent()));
-    sb.append(String.format(Locale.US, "    \"distanceRatio\": %.4f,\n", metrics.getDistanceRatio()));
-    sb.append(String.format(Locale.US, "    \"directionDeltaDegrees\": %.2f,\n", metrics.getDirectionDeltaDegrees()));
-    sb.append(String.format(Locale.US, "    \"actualDistanceMeters\": %d,\n", metrics.getActualDistanceMeters()));
-    sb.append(String.format(Locale.US, "    \"requestedDistanceMeters\": %d\n", metrics.getRequestedDistanceMeters()));
-    sb.append("  },\n");
-    sb.append("  \"geometry\": {\n");
-    sb.append("    \"type\": \"LineString\",\n");
-    sb.append("    \"coordinates\": [\n");
-    for (int i = 0; i < track.nodes.size(); i++) {
-      OsmPathElement n = track.nodes.get(i);
-      double lon = (n.getILon() - 180000000) / 1000000.0;
-      double lat = (n.getILat() - 90000000) / 1000000.0;
-      sb.append(String.format(Locale.US, "      [%.6f, %.6f]", lon, lat));
-      if (i < track.nodes.size() - 1) sb.append(",");
-      sb.append("\n");
-    }
-    sb.append("    ]\n");
-    sb.append("  }\n");
-    sb.append("}\n");
-    return sb.toString();
   }
 
   private File segmentDir() {
