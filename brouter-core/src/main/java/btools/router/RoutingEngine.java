@@ -933,17 +933,15 @@ public class RoutingEngine extends Thread {
    */
   private boolean isNearGeneratedWaypoint(List<OsmPathElement> nodes, int matchIdx, int currentIdx,
                                           List<MatchedWaypoint> waypoints, int proximityMeters) {
-    // Use the midpoint of the loop as the reference position
+    // Check both endpoints and midpoint of the loop for proximity to waypoints
     int midIdx = (matchIdx + currentIdx) / 2;
-    if (midIdx < 0 || midIdx >= nodes.size()) return false;
-    OsmPathElement midNode = nodes.get(midIdx);
-
-    for (MatchedWaypoint mwp : waypoints) {
-      if (mwp.name == null || !mwp.name.startsWith("rt")) continue;
-      if (mwp.crosspoint == null) continue;
-      int dist = midNode.calcDistance(mwp.crosspoint);
-      if (dist <= proximityMeters) {
-        return true;
+    for (int checkIdx : new int[]{matchIdx, midIdx, currentIdx}) {
+      if (checkIdx < 0 || checkIdx >= nodes.size()) continue;
+      OsmPathElement refNode = nodes.get(checkIdx);
+      for (MatchedWaypoint mwp : waypoints) {
+        if (mwp.name == null || !mwp.name.startsWith("rt")) continue;
+        if (mwp.crosspoint == null) continue;
+        if (refNode.calcDistance(mwp.crosspoint) <= proximityMeters) return true;
       }
     }
     return false;
@@ -1938,13 +1936,17 @@ public class RoutingEngine extends Thread {
 
       // In roundtrip mode, use accumulated previous legs as the refTrack
       // to discourage reusing roads from earlier legs of the loop.
-      OsmTrack effectiveRefTrack = refTracks[i];
+      // Always create a fresh OsmTrack to avoid mutating refTracks[i] via alias.
+      OsmTrack effectiveRefTrack;
       if (roundTripPreviousLegs != null && roundTripPreviousLegs.nodes != null
           && !roundTripPreviousLegs.nodes.isEmpty()) {
-        if (effectiveRefTrack == null) {
-          effectiveRefTrack = new OsmTrack();
+        effectiveRefTrack = new OsmTrack();
+        if (refTracks[i] != null) {
+          effectiveRefTrack.addNodes(refTracks[i]);
         }
         effectiveRefTrack.addNodes(roundTripPreviousLegs);
+      } else {
+        effectiveRefTrack = refTracks[i];
       }
 
       OsmTrack seg;
