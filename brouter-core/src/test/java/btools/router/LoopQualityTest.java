@@ -92,28 +92,23 @@ public class LoopQualityTest {
     File segFile = new File(segDir, region.segmentFile);
     Assume.assumeTrue("Segment file not found: " + segFile.getAbsolutePath() +
       " — run download-loop-test-segments.sh to fetch test data", segFile.exists());
-
     File profileFile = profileFile(profileName);
     Assume.assumeTrue("Profile not found: " + profileFile.getAbsolutePath(), profileFile.exists());
 
-    // Run the probe strategy (default)
+    // Run probe strategy (default)
     LoopQualityResult probeResult = runVariant("probe", false, segDir, profileFile);
-
-    // Also run the isochrone strategy for comparison (best-effort, no assertions)
+    // Run isochrone strategy for comparison (best-effort, no assertions)
     LoopQualityResult isoResult = runVariant("isochrone", true, segDir, profileFile);
 
-    // Record both variants
     synchronized (results) {
       if (probeResult != null) results.add(probeResult);
       if (isoResult != null) results.add(isoResult);
     }
 
-    // Write golden baseline from the probe result
     if (probeResult != null && probeResult.metrics != null) {
       writeGoldenBaseline(probeResult);
     }
 
-    // Assertions only on the probe strategy (the default)
     if (probeResult == null || probeResult.metrics == null) {
       Assume.assumeTrue("routing could not produce track for " + testLabel, false);
       return;
@@ -200,21 +195,24 @@ public class LoopQualityTest {
       }
       System.out.println("GeoJSON export: " + geojsonFile.getAbsolutePath());
 
-      // Per-region HTML files with full geometry and variant comparison
+      // Per-region HTML with full geometry and variant comparison
       for (LoopTestRegion region : LoopTestRegion.values()) {
-        List<LoopQualityTest.LoopQualityResult> regionResults = new ArrayList<>();
-        for (LoopQualityTest.LoopQualityResult r : results) {
+        List<LoopQualityResult> regionResults = new ArrayList<>();
+        for (LoopQualityResult r : results) {
           if (r.region == region) regionResults.add(r);
         }
         if (regionResults.isEmpty()) continue;
 
-        // Per-region GeoJSON with full geometry
         File regionGeoJson = new File(buildDir, "routes-" + region.name().toLowerCase() + ".geojson");
         try (FileWriter fw = new FileWriter(regionGeoJson)) {
           fw.write(formatCombinedGeoJson(regionResults));
         }
 
-        System.out.println("Region GeoJSON: " + regionGeoJson.getAbsolutePath());
+        File regionHtml = new File(buildDir, region.name().toLowerCase() + ".html");
+        try (FileWriter fw = new FileWriter(regionHtml)) {
+          fw.write(LoopQualityReportGenerator.generateRegionHtml(region, regionResults));
+        }
+        System.out.println("Region report: " + regionHtml.getAbsolutePath());
       }
     } catch (IOException e) {
       System.err.println("Failed to write loop quality report: " + e.getMessage());
@@ -232,38 +230,7 @@ public class LoopQualityTest {
   }
 
   private static String variantColor(String variant) {
-    return "isochrone".equals(variant) ? "#e67300" : "#0066cc"; // orange vs blue
-  }
-
-  static String formatFeatureGeoJson(LoopQualityResult r) {
-    StringBuilder sb = new StringBuilder(4096);
-    sb.append("    {\n      \"type\": \"Feature\",\n");
-    sb.append("      \"properties\": {\n");
-    sb.append(String.format(Locale.US, "        \"name\": \"%s [%s]\",\n", r.label, r.variant));
-    sb.append(String.format(Locale.US, "        \"variant\": \"%s\",\n", r.variant));
-    sb.append(String.format(Locale.US, "        \"region\": \"%s\",\n", r.region.name()));
-    sb.append(String.format(Locale.US, "        \"profile\": \"%s\",\n", r.profileName));
-    sb.append(String.format(Locale.US, "        \"requestedDistance\": %d,\n", r.distanceMeters));
-    sb.append(String.format(Locale.US, "        \"direction\": %.0f,\n", r.direction));
-    if (r.metrics != null) {
-      sb.append(String.format(Locale.US, "        \"actualDistance\": %d,\n", r.metrics.getActualDistanceMeters()));
-      sb.append(String.format(Locale.US, "        \"distanceRatio\": %.2f,\n", r.metrics.getDistanceRatio()));
-      sb.append(String.format(Locale.US, "        \"roadReusePercent\": %.1f,\n", r.metrics.getRoadReusePercent()));
-      sb.append(String.format(Locale.US, "        \"directionDelta\": %.1f,\n", r.metrics.getDirectionDeltaDegrees()));
-      sb.append(String.format(Locale.US, "        \"passed\": %s,\n", r.passed()));
-    }
-    sb.append(String.format("        \"stroke\": \"%s\",\n", variantColor(r.variant)));
-    sb.append("        \"stroke-width\": 2,\n");
-    sb.append("        \"stroke-opacity\": 0.8\n");
-    sb.append("      },\n");
-    sb.append("      \"geometry\": {\n        \"type\": \"LineString\",\n        \"coordinates\": [\n");
-    for (int i = 0; i < r.coordinates.length; i++) {
-      sb.append(String.format(Locale.US, "          [%.6f, %.6f]", r.coordinates[i][0], r.coordinates[i][1]));
-      if (i < r.coordinates.length - 1) sb.append(",");
-      sb.append("\n");
-    }
-    sb.append("        ]\n      }\n    }");
-    return sb.toString();
+    return "isochrone".equals(variant) ? "#e67300" : "#0066cc";
   }
 
   private static String formatCombinedGeoJson(List<LoopQualityResult> results) {
@@ -274,7 +241,31 @@ public class LoopQualityTest {
       if (r.coordinates == null || r.coordinates.length == 0) continue;
       if (!first) sb.append(",\n");
       first = false;
-      sb.append(formatFeatureGeoJson(r));
+      sb.append("    {\n      \"type\": \"Feature\",\n");
+      sb.append("      \"properties\": {\n");
+      sb.append(String.format(Locale.US, "        \"name\": \"%s [%s]\",\n", r.label, r.variant));
+      sb.append(String.format(Locale.US, "        \"variant\": \"%s\",\n", r.variant));
+      sb.append(String.format(Locale.US, "        \"region\": \"%s\",\n", r.region.name()));
+      sb.append(String.format(Locale.US, "        \"profile\": \"%s\",\n", r.profileName));
+      sb.append(String.format(Locale.US, "        \"requestedDistance\": %d,\n", r.distanceMeters));
+      sb.append(String.format(Locale.US, "        \"direction\": %.0f,\n", r.direction));
+      if (r.metrics != null) {
+        sb.append(String.format(Locale.US, "        \"actualDistance\": %d,\n", r.metrics.getActualDistanceMeters()));
+        sb.append(String.format(Locale.US, "        \"distanceRatio\": %.2f,\n", r.metrics.getDistanceRatio()));
+        sb.append(String.format(Locale.US, "        \"roadReusePercent\": %.1f,\n", r.metrics.getRoadReusePercent()));
+        sb.append(String.format(Locale.US, "        \"directionDelta\": %.1f,\n", r.metrics.getDirectionDeltaDegrees()));
+      }
+      sb.append(String.format("        \"stroke\": \"%s\",\n", variantColor(r.variant)));
+      sb.append("        \"stroke-width\": 2,\n");
+      sb.append("        \"stroke-opacity\": 0.8\n");
+      sb.append("      },\n");
+      sb.append("      \"geometry\": {\n        \"type\": \"LineString\",\n        \"coordinates\": [\n");
+      for (int i = 0; i < r.coordinates.length; i++) {
+        sb.append(String.format(Locale.US, "          [%.6f, %.6f]", r.coordinates[i][0], r.coordinates[i][1]));
+        if (i < r.coordinates.length - 1) sb.append(",");
+        sb.append("\n");
+      }
+      sb.append("        ]\n      }\n    }");
     }
     sb.append("\n  ]\n}\n");
     return sb.toString();
@@ -290,13 +281,6 @@ public class LoopQualityTest {
       if (!metricsFile.exists()) {
         try (FileWriter fw = new FileWriter(metricsFile)) {
           fw.write(formatMetricsJson(result.metrics));
-        }
-      }
-
-      File geojsonFile = new File(goldenDir, testLabel + "_track.geojson");
-      if (!geojsonFile.exists() && result.coordinates != null) {
-        try (FileWriter fw = new FileWriter(geojsonFile)) {
-          fw.write(formatFeatureGeoJson(result));
         }
       }
     } catch (IOException e) {
@@ -354,7 +338,7 @@ public class LoopQualityTest {
       this.metrics = metrics;
       this.error = error;
       this.coordinates = coordinates;
-      this.variant = variant;
+      this.variant = variant != null ? variant : "probe";
     }
 
     boolean passed() {
