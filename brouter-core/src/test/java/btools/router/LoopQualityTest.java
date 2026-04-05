@@ -1,6 +1,5 @@
 package btools.router;
 
-import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.Before;
@@ -13,14 +12,11 @@ import org.junit.runners.Parameterized;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -92,7 +88,6 @@ public class LoopQualityTest {
 
   @Test
   public void loopQuality() {
-    // Skip if segment data is not available
     File segDir = segmentDir();
     File segFile = new File(segDir, region.segmentFile);
     Assume.assumeTrue("Segment file not found: " + segFile.getAbsolutePath() +
@@ -101,75 +96,85 @@ public class LoopQualityTest {
     File profileFile = profileFile(profileName);
     Assume.assumeTrue("Profile not found: " + profileFile.getAbsolutePath(), profileFile.exists());
 
-    // Build waypoint list with single start point
-    List<OsmNodeNamed> wplist = new ArrayList<>();
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.name = "from";
-    start.ilon = region.ilon;
-    start.ilat = region.ilat;
-    wplist.add(start);
+    // Run the probe strategy (default)
+    LoopQualityResult probeResult = runVariant("probe", false, segDir, profileFile);
 
-    // Configure routing context
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = profileFile.getAbsolutePath();
-    rctx.startDirection = (int) direction;
-    rctx.roundTripDistance = searchRadius;
-    rctx.roundTripIsochrone = Boolean.getBoolean("looptest.isochrone");
+    // Also run the isochrone strategy for comparison (best-effort, no assertions)
+    LoopQualityResult isoResult = runVariant("isochrone", true, segDir, profileFile);
 
-    // Execute round-trip routing
-    String outPath = new File(outputDir.getRoot(), testLabel).getAbsolutePath();
-    RoutingEngine re = new RoutingEngine(
-      outPath, outPath, segDir, wplist, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.doRun(0);
+    // Record both variants
+    synchronized (results) {
+      if (probeResult != null) results.add(probeResult);
+      if (isoResult != null) results.add(isoResult);
+    }
 
-    String error = re.getErrorMessage();
-    OsmTrack track = re.getFoundTrack();
+    // Write golden baseline from the probe result
+    if (probeResult != null && probeResult.metrics != null) {
+      writeGoldenBaseline(probeResult);
+    }
 
-    if (error != null || track == null) {
-      synchronized (results) {
-        results.add(new LoopQualityResult(testLabel, region, targetDistanceMeters,
-          profileName, direction, null, error != null ? error : "no track produced", null));
-      }
-      Assume.assumeTrue("routing could not produce track for " + testLabel + ": " + error, false);
+    // Assertions only on the probe strategy (the default)
+    if (probeResult == null || probeResult.metrics == null) {
+      Assume.assumeTrue("routing could not produce track for " + testLabel, false);
       return;
     }
 
-    // Compute metrics
-    LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
-
-    // Extract coordinates for GeoJSON export
-    double[][] coords = extractCoordinates(track);
-
-    // Record result with coordinates
-    synchronized (results) {
-      results.add(new LoopQualityResult(testLabel, region, targetDistanceMeters,
-        profileName, direction, metrics, null, coords));
-    }
-
-    // Write golden baseline files
-    writeGoldenBaseline(track, metrics);
-
-    // Property-bound assertions
+    LoopQualityMetrics metrics = probeResult.metrics;
     assertTrue(
       String.format("%s: road reuse %.1f%% exceeds max %.1f%% for %s terrain",
         testLabel, metrics.getRoadReusePercent(), region.maxReusePercent, region.name()),
       metrics.getRoadReusePercent() <= region.maxReusePercent);
-
     assertTrue(
       String.format("%s: distance ratio %.2f below min %.2f",
         testLabel, metrics.getDistanceRatio(), region.minDistanceRatio),
       metrics.getDistanceRatio() >= region.minDistanceRatio);
-
     assertTrue(
       String.format("%s: distance ratio %.2f exceeds max %.2f",
         testLabel, metrics.getDistanceRatio(), region.maxDistanceRatio),
       metrics.getDistanceRatio() <= region.maxDistanceRatio);
-
     assertTrue(
       String.format("%s: direction delta %.1f° exceeds max %.1f°",
         testLabel, metrics.getDirectionDeltaDegrees(), region.maxDirectionDelta),
       metrics.getDirectionDeltaDegrees() <= region.maxDirectionDelta);
+  }
+
+  private LoopQualityResult runVariant(String variant, boolean useIsochrone, File segDir, File profileFile) {
+    try {
+      List<OsmNodeNamed> wplist = new ArrayList<>();
+      OsmNodeNamed start = new OsmNodeNamed();
+      start.name = "from";
+      start.ilon = region.ilon;
+      start.ilat = region.ilat;
+      wplist.add(start);
+
+      RoutingContext rctx = new RoutingContext();
+      rctx.localFunction = profileFile.getAbsolutePath();
+      rctx.startDirection = (int) direction;
+      rctx.roundTripDistance = searchRadius;
+      rctx.roundTripIsochrone = useIsochrone;
+
+      String outPath = new File(outputDir.getRoot(), testLabel + "_" + variant).getAbsolutePath();
+      RoutingEngine re = new RoutingEngine(
+        outPath, outPath, segDir, wplist, rctx,
+        RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+      re.doRun(0);
+
+      String error = re.getErrorMessage();
+      OsmTrack track = re.getFoundTrack();
+
+      if (error != null || track == null) {
+        return new LoopQualityResult(testLabel, region, targetDistanceMeters,
+          profileName, direction, null, error != null ? error : "no track", null, variant);
+      }
+
+      LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
+      double[][] coords = extractCoordinates(track);
+      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
+        profileName, direction, metrics, null, coords, variant);
+    } catch (Exception e) {
+      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
+        profileName, direction, null, e.getMessage(), null, variant);
+    }
   }
 
   @AfterClass
@@ -338,10 +343,12 @@ public class LoopQualityTest {
     final LoopQualityMetrics metrics; // null if routing failed
     final String error; // null if routing succeeded
     final double[][] coordinates; // [lon, lat] pairs; null if routing failed
+    final String variant; // "probe" or "isochrone"
 
     LoopQualityResult(String label, LoopTestRegion region, int distanceMeters,
                       String profileName, double direction,
-                      LoopQualityMetrics metrics, String error, double[][] coordinates) {
+                      LoopQualityMetrics metrics, String error, double[][] coordinates,
+                      String variant) {
       this.label = label;
       this.region = region;
       this.distanceMeters = distanceMeters;
@@ -350,6 +357,7 @@ public class LoopQualityTest {
       this.metrics = metrics;
       this.error = error;
       this.coordinates = coordinates;
+      this.variant = variant;
     }
 
     boolean passed() {
