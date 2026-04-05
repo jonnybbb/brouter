@@ -214,12 +214,7 @@ public class LoopQualityTest {
           fw.write(formatCombinedGeoJson(regionResults));
         }
 
-        // Per-region HTML with Leaflet map
-        File regionHtml = new File(buildDir, region.name().toLowerCase() + ".html");
-        try (FileWriter fw = new FileWriter(regionHtml)) {
-          fw.write(LoopQualityReportGenerator.generateRegionHtml(region, regionResults));
-        }
-        System.out.println("Region report: " + regionHtml.getAbsolutePath());
+        System.out.println("Region GeoJSON: " + regionGeoJson.getAbsolutePath());
       }
     } catch (IOException e) {
       System.err.println("Failed to write loop quality report: " + e.getMessage());
