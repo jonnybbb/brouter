@@ -37,7 +37,7 @@ public class RoutingEngine extends Thread {
   public final static int BROUTER_ENGINEMODE_GETINFO = 3;
   public final static int BROUTER_ENGINEMODE_ROUNDTRIP = 4;
 
-  private NodesCache nodesCache;
+  NodesCache nodesCache;
   private SortedHeap<OsmPath> openSet = new SortedHeap<>();
   private boolean finished = false;
 
@@ -48,7 +48,7 @@ public class RoutingEngine extends Thread {
 
   private int nodeLimit; // used for target island search
   private int MAXNODES_ISLAND_CHECK = 500;
-  private OsmNodePairSet islandNodePairs = new OsmNodePairSet(MAXNODES_ISLAND_CHECK);
+  OsmNodePairSet islandNodePairs = new OsmNodePairSet(MAXNODES_ISLAND_CHECK);
   private boolean useNodePoints = false; // use the start/end nodes  instead of crosspoint
 
   private int engineMode = 0;
@@ -83,8 +83,8 @@ public class RoutingEngine extends Thread {
 
   private OsmPathElement matchPath;
 
-  private long startTime;
-  private long maxRunningTime;
+  long startTime;
+  long maxRunningTime;
   public SearchBoundary boundary;
 
   public boolean quite = false;
@@ -499,62 +499,22 @@ public class RoutingEngine extends Thread {
         direction += directionAdd;
       }
 
-      if (routingContext.allowSamewayback) {
-        int[] pos = CheapRuler.destination(waypoints.get(0).ilon, waypoints.get(0).ilat, searchRadius, direction);
-        MatchedWaypoint wpt2 = new MatchedWaypoint();
-        wpt2.waypoint = new OsmNode(pos[0], pos[1]);
-        wpt2.name = "rt1_" + direction;
-
-        OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(pos[0], pos[1]));
-        onn.name = "rt1";
-        waypoints.add(onn);
-      } else {
-        List<OsmNodeNamed> userViaPoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
-        waypoints.subList(1, waypoints.size()).clear();
-
-        // scale waypoints with distance: ~1 extra point per 1.5km radius, clamped to [5,15]
-        int targetPoints = routingContext.roundTripPoints == null ?
-          Math.max(5, Math.min(15, (int) (searchRadius / 1500) + 3)) :
-          routingContext.roundTripPoints;
-
-        if (routingContext.roundTripIsochrone) {
-          // Probe finds viable directions; isochrone adds per-direction distances
-          double[] probeDirections = probeReachableDirections(waypoints.get(0), searchRadius);
-          double[][] frontier = runIsochroneExpansion(waypoints.get(0), searchRadius);
-          double[][] merged = mergeIsochroneWithProbe(frontier, probeDirections, searchRadius);
-          if (merged != null && merged.length >= 3) {
-            placeWaypointsFromIsochrone(waypoints, merged, searchRadius, direction, targetPoints);
-          } else if (probeDirections != null && probeDirections.length >= 3) {
-            logInfo("isochrone merge insufficient, falling back to probe directions");
-            placeWaypointsFromEnvelope(waypoints, probeDirections, searchRadius, direction, targetPoints);
-          } else {
-            logInfo("both isochrone and probe insufficient, falling back to circle");
-            buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
-          }
-        } else {
-          // Reachability probe strategy (default)
-          double[] viableDirections = probeReachableDirections(waypoints.get(0), searchRadius);
-          if (viableDirections != null && viableDirections.length >= 3) {
-            placeWaypointsFromEnvelope(waypoints, viableDirections, searchRadius, direction, targetPoints);
-          } else {
-            logInfo("reachability probe returned < 3 directions, falling back to circle");
-            buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
-          }
-        }
-
-        // Fine-tune waypoint positions: snap to actual roads, remove unreachable
-        validateAndAdjustWaypoints(waypoints, searchRadius);
-
-        if (!userViaPoints.isEmpty()) {
-          mergeUserWaypointsIntoLoop(waypoints, userViaPoints, direction, targetPoints);
-        }
+      // Resolve effective algorithm
+      RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
+      // Legacy compat: if roundTripIsochrone was set but roundTripAlgorithm wasn't explicitly changed
+      if (algo == RoundTripAlgorithm.AUTO && routingContext.roundTripIsochrone) {
+        algo = RoundTripAlgorithm.ISOCHRONE;
       }
+      if (algo == RoundTripAlgorithm.AUTO) {
+        algo = selectRoundTripAlgorithm(searchRadius);
+      }
+      logInfo("round trip algorithm: " + algo);
 
-      routingContext.waypointCatchingRange = 250;
-
-      roundTripSearchRadius = searchRadius;
-
-      doRouting(0);
+      if (algo == RoundTripAlgorithm.GREEDY) {
+        doGreedyRoundTrip(searchRadius, direction);
+      } else {
+        doWaypointBasedRoundTrip(searchRadius, direction, algo);
+      }
 
       // Check distance accuracy and warn if terrain prevents a compact loop
       if (foundTrack != null && foundTrack.distance > 0) {
@@ -582,6 +542,95 @@ public class RoutingEngine extends Thread {
       logException(e);
     }
 
+  }
+
+  static RoundTripAlgorithm selectRoundTripAlgorithm(double searchRadius) {
+    // Greedy excels at medium-long loops where geometry matters.
+    // searchRadius maps to total loop distance ~ 2*PI*radius.
+    // For short loops (< ~30km total, radius < 5km), existing strategies work well.
+    if (searchRadius >= 5000) return RoundTripAlgorithm.GREEDY;
+    return RoundTripAlgorithm.ISOCHRONE;
+  }
+
+  private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
+    if (routingContext.allowSamewayback) {
+      int[] pos = CheapRuler.destination(waypoints.get(0).ilon, waypoints.get(0).ilat, searchRadius, direction);
+      OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(pos[0], pos[1]));
+      onn.name = "rt1";
+      waypoints.add(onn);
+    } else {
+      List<OsmNodeNamed> userViaPoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
+      waypoints.subList(1, waypoints.size()).clear();
+
+      int targetPoints = routingContext.roundTripPoints == null ?
+        Math.max(5, Math.min(15, (int) (searchRadius / 1500) + 3)) :
+        routingContext.roundTripPoints;
+
+      if (algo == RoundTripAlgorithm.ISOCHRONE) {
+        double[] probeDirections = probeReachableDirections(waypoints.get(0), searchRadius);
+        double[][] frontier = runIsochroneExpansion(waypoints.get(0), searchRadius);
+        double[][] merged = mergeIsochroneWithProbe(frontier, probeDirections, searchRadius);
+        if (merged != null && merged.length >= 3) {
+          placeWaypointsFromIsochrone(waypoints, merged, searchRadius, direction, targetPoints);
+        } else if (probeDirections != null && probeDirections.length >= 3) {
+          logInfo("isochrone merge insufficient, falling back to probe directions");
+          placeWaypointsFromEnvelope(waypoints, probeDirections, searchRadius, direction, targetPoints);
+        } else {
+          logInfo("both isochrone and probe insufficient, falling back to circle");
+          buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
+        }
+      } else {
+        double[] viableDirections = probeReachableDirections(waypoints.get(0), searchRadius);
+        if (viableDirections != null && viableDirections.length >= 3) {
+          placeWaypointsFromEnvelope(waypoints, viableDirections, searchRadius, direction, targetPoints);
+        } else {
+          logInfo("reachability probe returned < 3 directions, falling back to circle");
+          buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
+        }
+      }
+
+      validateAndAdjustWaypoints(waypoints, searchRadius);
+
+      if (!userViaPoints.isEmpty()) {
+        mergeUserWaypointsIntoLoop(waypoints, userViaPoints, direction, targetPoints);
+      }
+    }
+
+    routingContext.waypointCatchingRange = 250;
+    roundTripSearchRadius = searchRadius;
+    doRouting(0);
+  }
+
+  void doGreedyRoundTrip(double searchRadius, double direction) {
+    // Initialize nodesCache — needed before the planner can match waypoints to the graph.
+    // Other strategies (probe, isochrone) initialize this as a side effect of their own
+    // resetCache calls, but the greedy path goes straight to the planner.
+    resetCache(false);
+
+    OsmNodeNamed start = waypoints.get(0);
+    double desiredDistance = 2 * Math.PI * searchRadius;
+    logInfo("greedy round trip: desired distance=" + (int) desiredDistance
+      + "m, searchRadius=" + (int) searchRadius + "m, direction=" + (int) direction);
+
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this);
+    RoundTripResult result = planner.plan(start, desiredDistance, direction);
+
+    if (result != null && result.getTrack() != null) {
+      foundTrack = result.getTrack();
+      for (String diag : result.getDiagnostics()) {
+        logInfo("greedy: " + diag);
+      }
+      if (!result.isWithinTolerance()) {
+        logInfo("greedy: fallback used — " + result.getFallbackReason());
+      }
+      logInfo("greedy: distance=" + result.getTotalDistanceMeters()
+        + "m, subRoutes=" + result.getSubRoutesChosen()
+        + ", attempts=" + result.getAttemptsUsed()
+        + ", reuse=" + String.format("%.1f%%", result.getReusedEdgeRatio() * 100));
+    } else {
+      logInfo("greedy round trip planner returned no result, falling back to waypoint strategy");
+      doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
+    }
   }
 
   /**
@@ -2747,7 +2796,7 @@ public class RoutingEngine extends Thread {
   }
 
   // geometric position matching finding the nearest routable way-section
-  private void matchWaypointsToNodes(List<MatchedWaypoint> unmatchedWaypoints) {
+  void matchWaypointsToNodes(List<MatchedWaypoint> unmatchedWaypoints) {
     resetCache(false);
     boolean useDynamicDistance = routingContext.useDynamicDistance;
     boolean bAddBeeline = routingContext.buildBeelineOnRange;
@@ -2946,7 +2995,7 @@ public class RoutingEngine extends Thread {
   }
 
 
-  private void resetCache(boolean detailed) {
+  void resetCache(boolean detailed) {
     if (hasInfo() && nodesCache != null) {
       logInfo("NodesCache status before reset=" + nodesCache.formatStatus());
     }
@@ -2956,7 +3005,7 @@ public class RoutingEngine extends Thread {
     islandNodePairs.clearTempPairs();
   }
 
-  private OsmPath getStartPath(OsmNode n1, OsmNode n2, MatchedWaypoint mwp, OsmNodeNamed endPos, boolean sameSegmentSearch) {
+  OsmPath getStartPath(OsmNode n1, OsmNode n2, MatchedWaypoint mwp, OsmNodeNamed endPos, boolean sameSegmentSearch) {
     if (endPos != null) {
       endPos.radius = 1.5;
     }
@@ -2970,7 +3019,7 @@ public class RoutingEngine extends Thread {
   }
 
 
-  private OsmPath getStartPath(OsmNode n1, OsmNode n2, OsmNodeNamed wp, OsmNodeNamed endPos, boolean sameSegmentSearch) {
+  OsmPath getStartPath(OsmNode n1, OsmNode n2, OsmNodeNamed wp, OsmNodeNamed endPos, boolean sameSegmentSearch) {
     try {
       routingContext.setWaypoint(wp, sameSegmentSearch ? endPos : null, false);
       OsmPath bestPath = null;
@@ -3010,7 +3059,7 @@ public class RoutingEngine extends Thread {
     }
   }
 
-  private OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp, OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc) {
+  OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp, OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc) {
     try {
       List<OsmNode> wpts2 = new ArrayList<>();
       if (startWp != null) wpts2.add(startWp.waypoint);
