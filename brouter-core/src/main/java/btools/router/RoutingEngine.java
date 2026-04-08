@@ -1621,7 +1621,12 @@ public class RoutingEngine extends Thread {
     double actualPerim = computeLoopPerimeterFactor(sortedDirections);
     double refPerim = computeReferencePerimeterFactor(targetPoints);
     double scale = refPerim / actualPerim;
-    // Clamp: never enlarge (>1.0), and keep at least 0.5 to avoid degenerate tiny loops
+    // Clamp to [0.5, 1.0]:
+    // - Never enlarge (>1.0): narrow arcs mean the road network is constrained in some
+    //   directions (e.g., coastal, valley). Enlarging would push waypoints beyond
+    //   reachable roads or segment data coverage, causing routing failures.
+    //   Shorter-than-target loops are acceptable; unreachable waypoints are not.
+    // - At least 0.5 to avoid degenerate tiny loops from extreme angular gaps.
     return Math.max(0.5, Math.min(1.0, scale));
   }
 
