@@ -898,7 +898,7 @@ public class RoutingEngineTest {
   public void filterRoundTripWaypointsRemovesFerrySegments() throws Exception {
     RoutingContext rctx = new RoutingContext();
     rctx.localFunction = profileFile().getAbsolutePath();
-    RoutingEngine re = new RoutingEngine(null, null, new java.io.File("."), new ArrayList<>(),
+    RoutingEngine re = new RoutingEngine(null, null, new File("."), new ArrayList<>(),
       rctx, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
     re.roundTripSearchRadius = 5000;
 

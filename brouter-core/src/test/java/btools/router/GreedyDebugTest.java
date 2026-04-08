@@ -1,8 +1,11 @@
 package btools.router;
 
-import org.junit.*;
-import java.io.*;
-import java.util.*;
+import org.junit.Assume;
+import org.junit.Test;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 public class GreedyDebugTest {
   @Test
@@ -12,8 +15,8 @@ public class GreedyDebugTest {
     Assume.assumeTrue("needs segments", segDir.exists());
 
     OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int)((8.720 + 180) * 1e6);
-    start.ilat = (int)((50.000 + 90) * 1e6);
+    start.ilon = (int) ((8.720 + 180) * 1e6);
+    start.ilat = (int) ((50.000 + 90) * 1e6);
     start.name = "from";
 
     RoutingContext rctx = new RoutingContext();
@@ -28,12 +31,9 @@ public class GreedyDebugTest {
     RoutingEngine re = new RoutingEngine(null, null, segDir, wplist, rctx,
       RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
 
-    // Call doGreedyRoundTrip directly to get the real exception
     try {
       rctx.useDynamicDistance = true;
       re.resetCache(false);
-      System.out.println("nodesCache created: " + (re.nodesCache != null));
-      System.out.println("nodesMap: " + (re.nodesCache != null ? re.nodesCache.nodesMap : "null"));
 
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(re);
       RoundTripResult result = planner.plan(start, 2 * Math.PI * 8000, 0);
