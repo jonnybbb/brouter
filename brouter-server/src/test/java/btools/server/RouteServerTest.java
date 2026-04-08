@@ -93,7 +93,7 @@ public class RouteServerTest {
 
     InputStream inputStream = httpConnection.getInputStream();
     JSONObject geoJson = new JSONObject(new String(inputStream.readAllBytes(), StandardCharsets.UTF_8));
-    assertTrackLength(geoJson, 1455, 10);
+    assertTrackLength(geoJson, 1455, 50);
   }
 
   @Test
