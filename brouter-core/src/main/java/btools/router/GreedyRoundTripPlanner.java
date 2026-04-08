@@ -455,7 +455,7 @@ public class GreedyRoundTripPlanner {
   }
 
   /** Geometric candidate point with heuristic score (before routing). */
-  private static class CandidatePoint {
+  private static final class CandidatePoint {
     int ilon;
     int ilat;
     double bearing;
@@ -463,7 +463,7 @@ public class GreedyRoundTripPlanner {
   }
 
   /** A candidate that has been routed. */
-  private static class ScoredRoute {
+  private static final class ScoredRoute {
     OsmTrack track;
     MatchedWaypoint toMwp;
     double routeDistance;
