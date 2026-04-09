@@ -273,7 +273,7 @@ public final class LoopQualityMetrics {
     // Create index array and sort by x, then y
     Integer[] idx = new Integer[n];
     for (int i = 0; i < n; i++) idx[i] = i;
-    Arrays.sort(idx, new Comparator<Integer>() {
+    Arrays.sort(idx, new Comparator<>() {
       @Override
       public int compare(Integer a, Integer b) {
         int cx = Double.compare(xs[a], xs[b]);
