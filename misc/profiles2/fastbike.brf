@@ -247,9 +247,9 @@ assign costfactor
   switch or highway=track or highway=road or highway=path highway=footway
    switch tracktype=grade1 switch isunpaved 3 1.2
    switch tracktype=grade2 switch isunpaved 10 3
-   switch tracktype=grade3 10.0
-   switch tracktype=grade4 20.0
-   switch tracktype=grade5 30.0
+   switch tracktype=grade3 100.0
+   switch tracktype=grade4 100.0
+   switch tracktype=grade5 100.0
    switch or bicycle=designated bicycle_road=yes 2.0
    switch ispaved 2.0 100.0
   10.0
