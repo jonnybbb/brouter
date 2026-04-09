@@ -299,6 +299,7 @@ public final class LoopQualityMetrics {
       hull[k++] = idx[i];
     }
     // k-1 is the hull size (last point == first point)
+    if (k < 4) return 0.0; // need at least 3 distinct hull vertices for non-zero area
 
     // Shoelace formula for area
     double area = 0;
