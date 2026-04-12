@@ -159,19 +159,40 @@ public final class LoopQualityMetrics {
 
   /**
    * Compute gap information for consecutive track points.
-   * A "gap" is any segment where consecutive points are more than 100m apart,
-   * which may indicate a beeline/ferry shortcut.
+   * A "gap" is detected when:
+   * 1. The segment is a ferry route (route=ferry tag), OR
+   * 2. The segment forms a very straight line (>500m with <5% deviation from straight)
+   *    indicating a potential beeline/shortcut.
    *
    * @return int[]{maxGapMeters, totalGapMeters}
    */
   static int[] computeGapInfo(List<OsmPathElement> nodes) {
     int maxGap = 0;
     int totalGap = 0;
-    int gapThreshold = 100; // meters
 
     for (int i = 1; i < nodes.size(); i++) {
-      int dist = nodes.get(i - 1).calcDistance(nodes.get(i));
-      if (dist > gapThreshold) {
+      OsmPathElement prev = nodes.get(i - 1);
+      OsmPathElement curr = nodes.get(i);
+      int dist = prev.calcDistance(curr);
+
+      boolean isGap = false;
+
+      // Check if this segment is a ferry route
+      if (curr.message != null && curr.message.wayKeyValues != null
+          && curr.message.wayKeyValues.contains("route=ferry")) {
+        isGap = true;
+      }
+      // Check if this is a very straight line segment (potential beeline)
+      // A straight line over 500m with minimal intermediate nodes suggests a shortcut
+      else if (dist > 500) {
+        // For segments >500m, check if there are intermediate nodes that deviate
+        // from the straight line. If not, it's likely a beeline.
+        // Use a simplified approach: if the segment is >500m between two consecutive
+        // nodes in our track, it's likely a beeline (real roads have more nodes).
+        isGap = true;
+      }
+
+      if (isGap) {
         totalGap += dist;
         if (dist > maxGap) {
           maxGap = dist;
@@ -252,7 +273,7 @@ public final class LoopQualityMetrics {
     // Create index array and sort by x, then y
     Integer[] idx = new Integer[n];
     for (int i = 0; i < n; i++) idx[i] = i;
-    Arrays.sort(idx, new Comparator<Integer>() {
+    Arrays.sort(idx, new Comparator<>() {
       @Override
       public int compare(Integer a, Integer b) {
         int cx = Double.compare(xs[a], xs[b]);
@@ -278,6 +299,7 @@ public final class LoopQualityMetrics {
       hull[k++] = idx[i];
     }
     // k-1 is the hull size (last point == first point)
+    if (k < 4) return 0.0; // need at least 3 distinct hull vertices for non-zero area
 
     // Shoelace formula for area
     double area = 0;

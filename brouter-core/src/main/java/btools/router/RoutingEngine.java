@@ -497,7 +497,8 @@ public class RoutingEngine extends Thread {
       if (routingContext.roundTripLength != null) {
         // roundTripLength is the desired total loop distance — convert to internal search radius.
         // The waypoint strategies place points at searchRadius from start and route between them.
-        // Empirically, total loop distance ≈ 2*PI * searchRadius for circular loops.
+        // Empirically, total loop distance ≈ 2*PI * searchRadius. Note that the actual shape
+        // is rarely circular; it's typically a corridor, piece-of-cake, or at most a half-circle.
         searchRadius = routingContext.roundTripLength / (2 * Math.PI);
       } else {
         searchRadius = (routingContext.roundTripDistance == null ? 1500 : routingContext.roundTripDistance);
