@@ -193,7 +193,10 @@ public class GreedyRoundTripPlanner {
         segments.add(accepted.track);
         totalDistance += accepted.routeDistance;
 
-        // Record previous waypoint position for next step's Silesian scoring
+        // Record previous waypoint position for next step's Silesian scoring.
+        // Save old values so we can restore on undo.
+        int savedPrevIlon = prevIlon;
+        int savedPrevIlat = prevIlat;
         prevIlon = currentIlon;
         prevIlat = currentIlat;
 
@@ -258,6 +261,8 @@ public class GreedyRoundTripPlanner {
               currentMwp = waypointStack.get(waypointStack.size() - 1);
               currentIlon = currentMwp.crosspoint.getILon();
               currentIlat = currentMwp.crosspoint.getILat();
+              prevIlon = savedPrevIlon;
+              prevIlat = savedPrevIlat;
               localRadius /= 2;
               continue;
             }
