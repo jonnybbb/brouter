@@ -89,7 +89,7 @@ Response body is the track in the requested `format`, containing the full loop p
 
 ```
 lonlats              START[|VIA|VIA...]   required
-profile              <name>               required (no .brf)
+profile              <name>               required (no .brf suffix)
 engineMode           4                    required
 roundTripLength      <meters>             preferred sizing (total loop)
 roundTripDistance    <meters>             alternative (search RADIUS; default 1500)
