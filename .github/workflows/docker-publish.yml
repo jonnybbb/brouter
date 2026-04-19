@@ -128,44 +128,38 @@ jobs:
         run: |
           docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
 
-      # Install cosign
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-        with:
-          cosign-release: 'v2.1.1'
-
-      # Store the merged manifest digest for downstream use
-      - name: Get merged digest
-        id: merged-digest
-        run: |
-          DIGEST=$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }} 2>&1 | awk '/^Digest:/{print $2; exit}')
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-
-      # Update infrastructure repo with the new image digest
+      # Trigger a rebuild of the downstream rove-brouter-service Spring Boot
+      # wrapper (in javik-hq/rove-routes-infrastructure), which bakes this
+      # fork's fat jar into its image. We open a PR that pins the upstream
+      # SHA in services/brouter-service/UPSTREAM_SHA; merging it fires the
+      # `services.yml` workflow there and publishes a new
+      # ghcr.io/javik-hq/rove-brouter-service image.
       - name: Checkout infrastructure repo
         uses: actions/checkout@v4
         with:
-          repository: jonnybbb/rove-routes-infrastructure
+          repository: javik-hq/rove-routes-infrastructure
           token: ${{ secrets.INFRA_REPO_PAT }}
           ref: main
           path: infra
 
-      - name: Update image digest in infrastructure repo
+      - name: Pin upstream SHA in brouter-service
         run: |
-          DIGEST="${{ steps.merged-digest.outputs.digest }}"
-          sed -i "s|^\(\s*digest:\s*\).*# brouter-image-digest|\1${DIGEST} # brouter-image-digest|" infra/helm/rove-routes/values.yaml
+          echo "${{ github.sha }}" > infra/services/brouter-service/UPSTREAM_SHA
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.INFRA_REPO_PAT }}
           path: infra
-          commit-message: "chore: update brouter image to ${{ steps.merged-digest.outputs.digest }}"
-          title: "chore: update brouter image (${{ github.sha }})"
+          commit-message: "chore(brouter): pin upstream SHA to ${{ github.sha }}"
+          title: "chore(brouter): pin upstream SHA (${{ github.sha }})"
           body: |
-            Automated PR to update the BRouter image digest.
+            Automated PR to rebuild `rove-brouter-service` against the latest
+            `jonnybbb/brouter` master.
 
-            - **Digest:** `${{ steps.merged-digest.outputs.digest }}`
-            - **Source commit:** ${{ github.repository }}@${{ github.sha }}
+            - **Upstream commit:** ${{ github.repository }}@${{ github.sha }}
+
+            Merging this triggers `services.yml`, which clones the pinned SHA
+            and publishes a new `ghcr.io/javik-hq/rove-brouter-service` image.
           branch: deploy/brouter-${{ github.sha }}
           delete-branch: true
