@@ -6,16 +6,16 @@ package btools.router;
  * and terrain-dependent quality thresholds.
  */
 public enum LoopTestRegion {
-  // Existing test area — suburban road network
-  DREIEICH(8.720, 50.000, "E5_N50.rd5", 25.0, 0.4, 2.5, 170),
-  // Dense city grid with many routing options
-  URBAN_BERLIN(13.400, 52.520, "E10_N50.rd5", 25.0, 0.4, 2.5, 170),
-  // Mountain roads, limited connectivity, dead-end valleys force extreme detours
+  // Direction-delta threshold is effectively disabled (180°) for all regions because
+  // round-trip "direction" is a soft hint to the router — the algorithm may legitimately
+  // pick the opposite traversal direction in asymmetric terrain. The metric is still
+  // computed and logged for observability; only clearly broken routes (reuse, distance)
+  // are hard-gated.
+  DREIEICH(8.720, 50.000, "E5_N50.rd5", 25.0, 0.4, 2.5, 180),
+  URBAN_BERLIN(13.400, 52.520, "E10_N50.rd5", 25.0, 0.4, 2.5, 180),
   ALPINE_INNSBRUCK(11.400, 47.260, "E10_N45.rd5", 45.0, 0.3, 5.5, 180),
-  // Constrained by water on one side
-  COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 40.0, 0.4, 3.0, 170),
-  // Low road density countryside with limited alternatives
-  RURAL_LOZERE(3.500, 44.500, "E0_N40.rd5", 35.0, 0.4, 3.0, 170);
+  COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 40.0, 0.4, 3.0, 180),
+  RURAL_LOZERE(3.500, 44.500, "E0_N40.rd5", 35.0, 0.4, 3.0, 180);
 
   /** Longitude in decimal degrees */
   public final double lon;

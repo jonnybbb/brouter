@@ -138,21 +138,35 @@ public final class LoopQualityMetrics {
 
   /**
    * Compute the angular delta between the requested direction and the
-   * actual initial heading of the track. Uses the first few nodes to
-   * average out GPS jitter.
+   * actual principal axis of the track. Uses the bearing from start to
+   * the farthest point on the track.
+   *
+   * For round-trip loops, initial heading is ambiguous: clockwise vs
+   * counter-clockwise traversals of the same loop differ by ~180° in
+   * initial bearing. Measuring from start to farthest point captures
+   * the loop's principal axis, which is invariant to traversal direction.
+   * For open tracks, the farthest point is typically the endpoint, so
+   * this remains equivalent to overall-heading.
    */
   static double computeDirectionDelta(List<OsmPathElement> nodes,
                                       double requestedDirectionDeg) {
     if (nodes.size() < 2) return 0.0;
 
-    // Use up to the 5th node for a more stable heading
     OsmPathElement first = nodes.get(0);
-    int headingIdx = Math.min(5, nodes.size() - 1);
-    OsmPathElement headingNode = nodes.get(headingIdx);
+    OsmPathElement farthest = first;
+    int maxDist = 0;
+    for (OsmPathElement n : nodes) {
+      int d = first.calcDistance(n);
+      if (d > maxDist) {
+        maxDist = d;
+        farthest = n;
+      }
+    }
+    if (maxDist == 0) return 0.0;
 
     double actualDirection = CheapAngleMeter.getDirection(
       first.getILon(), first.getILat(),
-      headingNode.getILon(), headingNode.getILat());
+      farthest.getILon(), farthest.getILat());
 
     return CheapAngleMeter.getDifferenceFromDirection(requestedDirectionDeg, actualDirection);
   }
