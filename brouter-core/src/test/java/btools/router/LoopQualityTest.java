@@ -32,7 +32,7 @@ import static org.junit.Assert.assertTrue;
 public class LoopQualityTest {
 
   // Profiles under test
-  private static final String[] PROFILES = {"fastbike", "gravel", "mtb-zossebart"};
+  private static final String[] PROFILES = {"fastbike", "gravel", "mtb"};
   // Target total loop distances in meters, and their corresponding search radii.
   // BRouter's roundTripDistance is a search RADIUS; actual loop length ≈ 2*pi*radius.
   // We use radius = targetDistance / (2*pi) ≈ targetDistance / 6.28.
@@ -330,6 +330,13 @@ public class LoopQualityTest {
   }
 
   private File profileFile(String name) {
+    // Use test-local profiles bundled with a lookups.dat version matching the
+    // published segment files (which may lag behind the main lookups.dat version).
+    File testProfileDir = new File(projectDir, "brouter-core/src/test/resources/test-data/profiles");
+    File testProfile = new File(testProfileDir, name + ".brf");
+    if (testProfile.exists()) {
+      return testProfile;
+    }
     return new File(projectDir, "misc/profiles2/" + name + ".brf");
   }
 
