@@ -1,0 +1,7 @@
+{
+  "roadReusePercent": 0.85,
+  "distanceRatio": 1.3672,
+  "directionDeltaDegrees": 48.57,
+  "actualDistanceMeters": 41016,
+  "requestedDistanceMeters": 30000
+}

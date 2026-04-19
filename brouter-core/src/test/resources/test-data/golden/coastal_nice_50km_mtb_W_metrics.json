@@ -1,0 +1,14 @@
+{
+  "roadReusePercent": 0.82,
+  "distanceRatio": 1.0328,
+  "directionDeltaDegrees": 71.20,
+  "actualDistanceMeters": 51639,
+  "requestedDistanceMeters": 50000,
+  "continuityScore": 0.9043,
+  "maxGapMeters": 272,
+  "totalGapMeters": 4942,
+  "compactnessScore": 0.2616,
+  "averageCostPerMeter": 3.6862,
+  "closureDistanceMeters": 1,
+  "compositeScore": 0.7943
+}
