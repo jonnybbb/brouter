@@ -108,6 +108,10 @@ public class LoopQualityTest {
       if (greedyResult != null) results.add(greedyResult);
     }
 
+    logVariantMetrics(probeResult);
+    logVariantMetrics(isoResult);
+    logVariantMetrics(greedyResult);
+
     if (probeResult != null && probeResult.metrics != null) {
       writeGoldenBaseline(probeResult);
     }
@@ -175,9 +179,27 @@ public class LoopQualityTest {
     }
   }
 
+  private void logVariantMetrics(LoopQualityResult r) {
+    if (r == null) return;
+    if (r.metrics == null) {
+      System.out.println(String.format(Locale.US, "%s [%s]: ERROR — %s",
+        r.label, r.variant, r.error != null ? r.error : "no track"));
+      return;
+    }
+    LoopQualityMetrics m = r.metrics;
+    System.out.println(String.format(Locale.US,
+      "%s [%s]: composite=%.2f distR=%.2f reuse=%.1f%% dirD=%.0f continuity=%.2f compactness=%.2f closure=%dm",
+      r.label, r.variant, m.compositeScore(), m.getDistanceRatio(),
+      m.getRoadReusePercent(), m.getDirectionDeltaDegrees(),
+      m.getContinuityScore(), m.getCompactnessScore(),
+      m.getClosureDistanceMeters()));
+  }
+
   @AfterClass
   public static void generateReport() {
     if (results.isEmpty()) return;
+
+    printSummary();
 
     try {
       File buildDir = new File("build/reports/loops");
@@ -220,6 +242,38 @@ public class LoopQualityTest {
     } catch (IOException e) {
       System.err.println("Failed to write loop quality report: " + e.getMessage());
     }
+  }
+
+  private static void printSummary() {
+    java.util.Map<String, int[]> byVariant = new java.util.LinkedHashMap<>();
+    for (LoopQualityResult r : results) {
+      int[] counts = byVariant.computeIfAbsent(r.variant, k -> new int[2]); // [ok, error]
+      if (r.metrics == null) counts[1]++; else counts[0]++;
+    }
+
+    System.out.println();
+    System.out.println("=== LoopQualityTest variant summary ===");
+    for (java.util.Map.Entry<String, int[]> e : byVariant.entrySet()) {
+      int ok = e.getValue()[0];
+      int err = e.getValue()[1];
+      System.out.println(String.format(Locale.US, "  %-10s  ok=%d  error=%d  (total=%d)",
+        e.getKey(), ok, err, ok + err));
+    }
+
+    // Errors by region/profile
+    java.util.Map<String, Integer> errorsByCell = new java.util.TreeMap<>();
+    for (LoopQualityResult r : results) {
+      if (r.metrics != null) continue;
+      String cell = r.region.name() + "/" + r.profileName;
+      errorsByCell.merge(cell, 1, Integer::sum);
+    }
+    if (!errorsByCell.isEmpty()) {
+      System.out.println("=== Errors by region/profile ===");
+      for (java.util.Map.Entry<String, Integer> e : errorsByCell.entrySet()) {
+        System.out.println(String.format(Locale.US, "  %-30s  %d", e.getKey(), e.getValue()));
+      }
+    }
+    System.out.println();
   }
 
   private static double[][] extractCoordinates(OsmTrack track) {

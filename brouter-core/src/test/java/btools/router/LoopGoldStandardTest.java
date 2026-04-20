@@ -33,7 +33,7 @@ import static org.junit.Assert.assertTrue;
  *   -Dloop.algorithms=probe,greedy              # probe + greedy (default)
  *   -Dloop.algorithms=probe,isochrone,greedy    # all three
  *   -Dloop.profiles=gravel                      # gravel only
- *   -Dloop.profiles=fastbike,gravel,mtb-zossebart  # all profiles
+ *   -Dloop.profiles=fastbike,gravel,mtb  # all profiles
  * </pre>
  * <p>
  * Requires downloaded segment data (see download-loop-test-segments.sh).
