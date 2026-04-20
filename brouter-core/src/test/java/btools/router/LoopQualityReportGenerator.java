@@ -71,7 +71,7 @@ final class LoopQualityReportGenerator {
     }
     sb.append("</select>\n");
     sb.append("<select id=\"fProfile\" onchange=\"applyFilters()\"><option value=\"\">All profiles</option>");
-    sb.append("<option>fastbike</option><option>gravel</option><option>mtb-zossebart</option>");
+    sb.append("<option>fastbike</option><option>gravel</option><option>mtb</option>");
     sb.append("</select>\n");
     sb.append("<select id=\"fDist\" onchange=\"applyFilters()\"><option value=\"\">All distances</option>");
     sb.append("<option>30</option><option>50</option><option>80</option><option>100</option>");
@@ -281,7 +281,7 @@ final class LoopQualityReportGenerator {
     // Filters
     sb.append("<div class=\"filters\">\n");
     sb.append("<select id=\"fProfile\" onchange=\"applyFilters()\"><option value=\"\">All profiles</option>");
-    sb.append("<option>fastbike</option><option>gravel</option><option>mtb-zossebart</option></select>\n");
+    sb.append("<option>fastbike</option><option>gravel</option><option>mtb</option></select>\n");
     sb.append("<select id=\"fDist\" onchange=\"applyFilters()\"><option value=\"\">All distances</option>");
     sb.append("<option>30</option><option>50</option><option>80</option><option>100</option></select>\n");
     sb.append("<select id=\"fVariant\" onchange=\"applyFilters()\"><option value=\"\">All variants</option>");
