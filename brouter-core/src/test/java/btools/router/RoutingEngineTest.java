@@ -240,6 +240,56 @@ public class RoutingEngineTest {
     Assert.assertTrue("track should have significant length", track.distance > 200);
   }
 
+  // No-beeline invariant: successful round-trip routes from any algorithm
+  // (waypoint, isochrone, samewayback) must not contain generated DIRECT
+  // waypoints or direct_segment messages, even with add_beeline enabled.
+  @Test
+  public void roundTripWaypointNoBeelineWithAddBeeline() {
+    assertRoundTripHasNoBeeline("rtWpNoBl", false, false);
+  }
+
+  @Test
+  public void roundTripIsochroneNoBeelineWithAddBeeline() {
+    assertRoundTripHasNoBeeline("rtIsoNoBl", true, false);
+  }
+
+  @Test
+  public void roundTripSamewaybackNoBeelineWithAddBeeline() {
+    assertRoundTripHasNoBeeline("rtSwbNoBl", false, true);
+  }
+
+  private void assertRoundTripHasNoBeeline(String trackname, boolean isochrone, boolean samewayback) {
+    RoutingContext rctx = new RoutingContext();
+    rctx.startDirection = 0;
+    rctx.roundTripDistance = 1000;
+    // Enable dynamic beeline insertion. With add_beeline=true the routing
+    // engine would normally splice WAYPOINT_TYPE_DIRECT segments when a
+    // waypoint can't be matched within the catching range — round-trip code
+    // must defeat this by snapping points to the road graph beforehand.
+    rctx.buildBeelineOnRange = true;
+    rctx.roundTripIsochrone = isochrone;
+    rctx.allowSamewayback = samewayback;
+
+    RoutingEngine re = calcRoundTrip(8.720, 50.000, trackname, rctx);
+
+    Assert.assertNull(trackname + " routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+    OsmTrack track = re.getFoundTrack();
+    Assert.assertNotNull(trackname + " should produce a track", track);
+
+    if (track.matchedWaypoints != null) {
+      for (MatchedWaypoint mwp : track.matchedWaypoints) {
+        Assert.assertNotEquals(trackname + ": no DIRECT waypoint allowed (" + mwp.name + ")",
+          MatchedWaypoint.WAYPOINT_TYPE_DIRECT, mwp.wpttype);
+      }
+    }
+    if (track.messageList != null) {
+      for (String msg : track.messageList) {
+        Assert.assertFalse(trackname + ": message must not contain direct_segment: " + msg,
+          msg != null && msg.contains("direct_segment="));
+      }
+    }
+  }
+
   // mergeUserWaypointsIntoLoop inserts user waypoints and removes redundant circle points
   @Test
   public void mergeUserWaypointsIntoLoop() {
@@ -305,6 +355,129 @@ public class RoutingEngineTest {
     Assert.assertEquals("viaWest", wps.get(1).name);
     Assert.assertEquals("viaEast", wps.get(2).name);
     Assert.assertEquals("to_rt", wps.get(3).name);
+  }
+
+  // User waypoints must never be silently dropped when targetPoints is small.
+  @Test
+  public void mergeUserWaypointsPreservesAllWhenOverTarget() {
+    double searchRadius = 5000;
+    int targetPoints = 3; // smaller than user waypoint count (5)
+
+    RoutingEngine re = createDummyEngine(searchRadius);
+    List<OsmNodeNamed> wps = buildStartWaypointList();
+    re.buildPointsFromCircle(wps, 0, searchRadius, targetPoints);
+
+    List<OsmNodeNamed> userWps = new ArrayList<>();
+    userWps.add(createNode("via1", START_ILON + 30000, START_ILAT + 30000));
+    userWps.add(createNode("via2", START_ILON + 30000, START_ILAT - 30000));
+    userWps.add(createNode("via3", START_ILON - 30000, START_ILAT - 30000));
+    userWps.add(createNode("via4", START_ILON - 30000, START_ILAT + 30000));
+    userWps.add(createNode("via5", START_ILON, START_ILAT + 30000));
+
+    re.mergeUserWaypointsIntoLoop(wps, userWps, 0, targetPoints);
+
+    int userPresent = 0;
+    for (OsmNodeNamed wp : wps) {
+      if (wp.name != null && wp.name.startsWith("via")) userPresent++;
+    }
+    Assert.assertEquals("all 5 user vias must survive merge", 5, userPresent);
+  }
+
+  // Bearing-order is deterministic regardless of input order.
+  @Test
+  public void mergeUserWaypointsBearingOrderIndependentOfInputOrder() {
+    double searchRadius = 5000;
+
+    RoutingEngine re = createDummyEngine(searchRadius);
+    List<OsmNodeNamed> wpsA = buildStartWaypointList();
+    OsmNodeNamed closingA = new OsmNodeNamed(wpsA.get(0));
+    closingA.name = "to_rt";
+    wpsA.add(closingA);
+
+    List<OsmNodeNamed> wpsB = buildStartWaypointList();
+    OsmNodeNamed closingB = new OsmNodeNamed(wpsB.get(0));
+    closingB.name = "to_rt";
+    wpsB.add(closingB);
+
+    OsmNodeNamed v1 = createNode("v1", START_ILON + 50000, START_ILAT + 50000);
+    OsmNodeNamed v2 = createNode("v2", START_ILON - 50000, START_ILAT + 50000);
+    OsmNodeNamed v3 = createNode("v3", START_ILON - 50000, START_ILAT - 50000);
+
+    List<OsmNodeNamed> orderedA = new ArrayList<>();
+    orderedA.add(v1); orderedA.add(v2); orderedA.add(v3);
+    List<OsmNodeNamed> orderedB = new ArrayList<>();
+    orderedB.add(v3); orderedB.add(v1); orderedB.add(v2);
+
+    re.mergeUserWaypointsIntoLoop(wpsA, orderedA, 0, 5);
+    re.mergeUserWaypointsIntoLoop(wpsB, orderedB, 0, 5);
+
+    Assert.assertEquals("loop sizes differ", wpsA.size(), wpsB.size());
+    for (int i = 0; i < wpsA.size(); i++) {
+      Assert.assertEquals("position " + i, wpsA.get(i).name, wpsB.get(i).name);
+    }
+  }
+
+  // Unsnappable user via must surface as a clear error, not be silently dropped.
+  @Test
+  public void unsnappableUserViaFailsClearly() {
+    RoutingContext rctx = new RoutingContext();
+    rctx.startDirection = 0;
+    rctx.roundTripDistance = 1000;
+
+    RoutingEngine re = calcRoundTripWithVias(8.720, 50.000, "rtUnsnap", rctx,
+      new double[][]{{9.5, 50.0}}); // far outside test data
+
+    Assert.assertNotNull("expected an error for unsnappable user via", re.getErrorMessage());
+    Assert.assertTrue("error must mention the user waypoint: " + re.getErrorMessage(),
+      re.getErrorMessage().contains("user waypoint"));
+  }
+
+  // GREEDY + user vias falls back to WAYPOINT and preserves the user vias.
+  @Test
+  public void greedyWithUserViaFallsBackAndPreservesVia() {
+    RoutingContext rctx = new RoutingContext();
+    rctx.startDirection = 0;
+    rctx.roundTripDistance = 1000;
+    rctx.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
+
+    RoutingEngine re = calcRoundTripWithVias(8.720, 50.000, "rtGreedyVia", rctx,
+      new double[][]{{8.722, 50.001}});
+
+    Assert.assertNull("greedy+via fallback failed: " + re.getErrorMessage(), re.getErrorMessage());
+    OsmTrack track = re.getFoundTrack();
+    Assert.assertNotNull("greedy+via should produce a track", track);
+    boolean foundVia = false;
+    if (track.matchedWaypoints != null) {
+      for (MatchedWaypoint mwp : track.matchedWaypoints) {
+        if ("via1".equals(mwp.name)) foundVia = true;
+        Assert.assertNotEquals("greedy+via fallback must not produce DIRECT (" + mwp.name + ")",
+          MatchedWaypoint.WAYPOINT_TYPE_DIRECT, mwp.wpttype);
+      }
+    }
+    Assert.assertTrue("user via1 must be present in matched waypoints", foundVia);
+  }
+
+  private RoutingEngine calcRoundTripWithVias(double lon, double lat, String trackname,
+                                              RoutingContext rctx, double[][] vias) {
+    String out = new File(outputDir.getRoot(), trackname).getAbsolutePath();
+    List<OsmNodeNamed> wplist = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = 180000000 + (int) (lon * 1000000 + 0.5);
+    start.ilat = 90000000 + (int) (lat * 1000000 + 0.5);
+    wplist.add(start);
+    for (int i = 0; i < vias.length; i++) {
+      OsmNodeNamed via = new OsmNodeNamed();
+      via.name = "via" + (i + 1);
+      via.ilon = 180000000 + (int) (vias[i][0] * 1000000 + 0.5);
+      via.ilat = 90000000 + (int) (vias[i][1] * 1000000 + 0.5);
+      wplist.add(via);
+    }
+    rctx.localFunction = profileFile().getAbsolutePath();
+    RoutingEngine re = new RoutingEngine(out, out, segmentDir(), wplist, rctx,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.doRun(0);
+    return re;
   }
 
   @Test
