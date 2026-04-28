@@ -522,7 +522,17 @@ public class RoutingEngine extends Thread {
       logInfo("round trip algorithm: " + algo);
 
       if (algo == RoundTripAlgorithm.GREEDY) {
-        doGreedyRoundTrip(searchRadius, direction);
+        if (!greedySupports(routingContext.allowSamewayback, waypoints.size())) {
+          // Greedy generates its own intermediate points and does not honor
+          // user vias / allowSamewayback. Both fallbacks share the no-beeline
+          // invariant via snapWaypointsToRoad + the post-match DIRECT check.
+          logInfo("greedy round trip does not support "
+            + (routingContext.allowSamewayback ? "allowSamewayback" : "user via points")
+            + ", falling back to waypoint algorithm");
+          doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
+        } else {
+          doGreedyRoundTrip(searchRadius, direction);
+        }
       } else {
         doWaypointBasedRoundTrip(searchRadius, direction, algo);
       }
@@ -563,12 +573,23 @@ public class RoutingEngine extends Thread {
     return RoundTripAlgorithm.ISOCHRONE;
   }
 
+  /**
+   * Whether greedy round-trip planning can be applied with the given inputs.
+   * Greedy currently generates its own intermediate waypoints from the start,
+   * so user-supplied via points and allowSamewayback are not honored.
+   */
+  static boolean greedySupports(boolean allowSamewayback, int waypointCount) {
+    return !allowSamewayback && waypointCount <= 1;
+  }
+
   private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
     if (routingContext.allowSamewayback) {
       int[] pos = CheapRuler.destination(waypoints.get(0).ilon, waypoints.get(0).ilat, searchRadius, direction);
       OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(pos[0], pos[1]));
       onn.name = "rt1";
       waypoints.add(onn);
+      // No-beeline invariant: snap the tip before final matchWaypointsToNodes.
+      snapWaypointToRoad(onn, Math.min(searchRadius * 0.3, 2000), "snapSamewaybackTip");
     } else {
       List<OsmNodeNamed> userViaPoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
       waypoints.subList(1, waypoints.size()).clear();
@@ -608,6 +629,17 @@ public class RoutingEngine extends Thread {
       snapStartToRoad(waypoints, searchRadius);
 
       if (!userViaPoints.isEmpty()) {
+        // No-beeline invariant: snap user vias before final matching. Forced
+        // user waypoints must never be silently dropped — fail clearly if any
+        // cannot be road-matched within the allowed range.
+        double userSnapDist = Math.min(searchRadius * 0.3, 2000);
+        List<Boolean> matched = snapWaypointsToRoad(userViaPoints, userSnapDist, "snapUserVia");
+        for (int i = 0; i < userViaPoints.size(); i++) {
+          if (!matched.get(i)) {
+            throw new IllegalArgumentException("user waypoint " + userViaPoints.get(i).name
+              + " has no road within " + (int) userSnapDist + "m");
+          }
+        }
         mergeUserWaypointsIntoLoop(waypoints, userViaPoints, direction, targetPoints);
       }
     }
@@ -841,25 +873,7 @@ public class RoutingEngine extends Thread {
   void snapStartToRoad(List<OsmNodeNamed> waypoints, double searchRadius) {
     if (waypoints.size() < 2) return;
     OsmNodeNamed start = waypoints.get(0);
-
-    resetCache(false);
-    MatchedWaypoint mwp = new MatchedWaypoint();
-    mwp.waypoint = new OsmNode(start.ilon, start.ilat);
-    mwp.name = "start_snap";
-    List<MatchedWaypoint> mwpList = new ArrayList<>();
-    mwpList.add(mwp);
-    try {
-      nodesCache.matchWaypointsToNodes(mwpList, Math.min(searchRadius * 0.3, 2000), islandNodePairs);
-    } catch (Exception e) {
-      return; // leave unsnapped if matching fails
-    }
-    if (mwp.crosspoint == null) return;
-
-    int snapDist = start.calcDistance(mwp.crosspoint);
-    if (snapDist > 0) {
-      logInfo("snapStartToRoad: moved start " + snapDist + "m to nearest road");
-      start.ilon = mwp.crosspoint.getILon();
-      start.ilat = mwp.crosspoint.getILat();
+    if (snapWaypointToRoad(start, Math.min(searchRadius * 0.3, 2000), "snapStartToRoad")) {
       // Also snap the closing waypoint (last in list) which mirrors the start
       OsmNodeNamed closing = waypoints.get(waypoints.size() - 1);
       if ("to".equals(closing.name)) {
@@ -867,6 +881,60 @@ public class RoutingEngine extends Thread {
         closing.ilat = start.ilat;
       }
     }
+  }
+
+  /**
+   * Snap a single waypoint to the nearest road within {@code maxSnapDist}.
+   * Returns true and rewrites the waypoint coordinates to the matched
+   * crosspoint when a match is found; returns false otherwise (waypoint left
+   * untouched). Used by round-trip code paths to ensure generated points are
+   * close enough to a road that final matchWaypointsToNodes (250m catching
+   * range) does not fall back to dynamic beeline insertion.
+   */
+  boolean snapWaypointToRoad(OsmNodeNamed wp, double maxSnapDist, String logTag) {
+    return snapWaypointsToRoad(Collections.singletonList(wp), maxSnapDist, logTag).get(0);
+  }
+
+  /**
+   * Batch variant of {@link #snapWaypointToRoad}. One nodesCache reset and one
+   * matchWaypointsToNodes call for the whole list — avoids reallocating the
+   * cache per waypoint when many points need snapping (e.g. user via points).
+   * Returns a parallel list of booleans indicating which waypoints matched.
+   */
+  List<Boolean> snapWaypointsToRoad(List<OsmNodeNamed> wps, double maxSnapDist, String logTag) {
+    resetCache(false);
+    List<MatchedWaypoint> mwpList = new ArrayList<>(wps.size());
+    for (OsmNodeNamed wp : wps) {
+      MatchedWaypoint mwp = new MatchedWaypoint();
+      mwp.waypoint = new OsmNode(wp.ilon, wp.ilat);
+      mwp.name = (wp.name == null ? "wp" : wp.name) + "_snap";
+      mwpList.add(mwp);
+    }
+    try {
+      nodesCache.matchWaypointsToNodes(mwpList, maxSnapDist, islandNodePairs);
+    } catch (Exception e) {
+      List<Boolean> all = new ArrayList<>(wps.size());
+      for (int i = 0; i < wps.size(); i++) all.add(false);
+      return all;
+    }
+    List<Boolean> matched = new ArrayList<>(wps.size());
+    for (int i = 0; i < wps.size(); i++) {
+      OsmNodeNamed wp = wps.get(i);
+      MatchedWaypoint mwp = mwpList.get(i);
+      if (mwp.crosspoint == null) {
+        matched.add(false);
+        continue;
+      }
+      int snapDist = wp.calcDistance(mwp.crosspoint);
+      if (snapDist > 0) {
+        logInfo(logTag + ": moved " + (wp.name == null ? "wp" : wp.name) + " "
+          + snapDist + "m to nearest road");
+        wp.ilon = mwp.crosspoint.getILon();
+        wp.ilat = mwp.crosspoint.getILat();
+      }
+      matched.add(true);
+    }
+    return matched;
   }
 
   /**
@@ -983,10 +1051,12 @@ public class RoutingEngine extends Thread {
 
       OsmNodeNamed wp = waypoints.get(i);
       if (best != null && best.radius <= maxSnapDist) {
-        if (wp.ilon != best.waypoint.ilon || wp.ilat != best.waypoint.ilat) {
+        // Use crosspoint, not waypoint: keeps the point within the 250m
+        // catching range used by final matchWaypointsToNodes (avoids beeline).
+        if (wp.ilon != best.crosspoint.getILon() || wp.ilat != best.crosspoint.getILat()) {
           logInfo("validateWaypoints: relocated " + wp.name + " snap=" + (int) best.radius + "m");
-          wp.ilon = best.waypoint.ilon;
-          wp.ilat = best.waypoint.ilat;
+          wp.ilon = best.crosspoint.getILon();
+          wp.ilat = best.crosspoint.getILat();
         }
       } else if (remaining > minWaypoints) {
         logInfo("validateWaypoints: removing unreachable " + wp.name
@@ -2168,6 +2238,16 @@ public class RoutingEngine extends Thread {
         }
         // Snap intermediate waypoints to nearest intersection to avoid mid-edge detour tails
         snapToIntersection(matchedWaypoints);
+        // No-beeline invariant: round-trip routes must not contain DIRECT
+        // segments. matchWaypointsToNodes flags DIRECT for points beyond
+        // catchingRange; fail rather than emit a beeline in a successful loop.
+        for (MatchedWaypoint mwp : matchedWaypoints) {
+          if (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT) {
+            throw new IllegalArgumentException(
+              "round-trip waypoint " + mwp.name + " could not be road-matched"
+                + " (would force beeline segment); aborting");
+          }
+        }
       }
 
       if (startSize < matchedWaypoints.size()) {
