@@ -11,6 +11,11 @@ quality is checked against real geography.
 | **Invariants** | bundled `dreieich.pbf` fixture, regenerated to rd5 by the map-creator test (always version-consistent with `misc/profiles2`) | **CI** (no downloads) | structural correctness that must hold for *every* loop |
 | **Quality (gated)** | downloaded v11 region tiles (`segments4`) | local / nightly, `-Dloop.tests=true` | distance-accuracy bands, road-reuse, shape, golden regressions across 5 real regions |
 
+Full gated validation on v11 (`LoopQualityTest`, 240 cases × 3 algorithms): **0 failures**
+(48 skipped where a direction/distance is infeasible). GREEDY is strong on real data
+(composite 0.78–0.90, closure ~1 m). The committed golden metric baselines are byte-identical
+under v11 routing — no regression.
+
 The fixture rd5 is tiny (Dreieich only), so distance-accuracy bands are unreliable
 there (the data runs out before a large requested loop can form). Scale-dependent
 metrics therefore live in the gated tier; the fixture tier asserts only
