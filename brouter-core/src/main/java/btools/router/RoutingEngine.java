@@ -509,6 +509,11 @@ public class RoutingEngine extends Thread {
         direction = getRandomDirectionFromData(waypoints.get(0), searchRadius);
         direction += directionAdd;
       }
+      // Normalize to a [0,360) compass bearing. getRandomDirectionFromData()+directionAdd
+      // can exceed 360 (e.g. 332+45=377), and a user-supplied startDirection may be out of
+      // range. Downstream consumers (sortDirectionsForLoop, getDifferenceFromDirection) and
+      // the diagnostic log line all assume a normalized bearing.
+      direction = ((direction % 360) + 360) % 360;
 
       // Resolve effective algorithm
       RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
