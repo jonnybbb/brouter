@@ -37,6 +37,12 @@ public class GreedyRoundTripPlanner {
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   // Max candidates to actually route if higher-ranked ones fail
   private static final int MAX_ROUTE_ATTEMPTS = 3;
+  // Weight applied to cost-per-meter when picking among routed candidates.
+  // Magnitude is similar to scorer.score() output; 0.5 keeps both signals relevant.
+  static final double COST_PER_METER_WEIGHT = 0.5;
+  // Multiplier applied to the air-distance return estimate when deciding
+  // whether to skip the return Dijkstra. > 1 means we skip less aggressively.
+  private static final double RETURN_SKIP_SAFETY = 1.5;
 
   private final RoutingEngine engine;
   private final CandidateScorer scorer;
@@ -79,8 +85,7 @@ public class GreedyRoundTripPlanner {
     List<MatchedWaypoint> waypointStack = new ArrayList<>();
     waypointStack.add(startMwp);
 
-    OsmTrack bestFallbackTrack = null;
-    double bestFallbackError = Double.MAX_VALUE;
+    Snapshot bestFallback = null;
 
     DirectionPreference dirPref = DirectionPreference.ANY;
     if (startDirection >= 0) {
@@ -96,6 +101,8 @@ public class GreedyRoundTripPlanner {
       double localRadius = subTarget;
       int currentIlon = currentMwp.crosspoint.getILon();
       int currentIlat = currentMwp.crosspoint.getILat();
+      // Segments only change across steps — any tentative append is undone on retry.
+      OsmTrack cachedRefTrack = segments.isEmpty() ? null : buildRefTrack(segments);
 
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         totalAttempts++;
@@ -131,16 +138,14 @@ public class GreedyRoundTripPlanner {
         // Rank by score (lowest = best)
         candidates.sort(Comparator.comparingDouble(c -> c.score));
 
-        // --- Phase 2: Route top candidates, pick best by cost-per-meter ---
+        // --- Phase 2: Route top candidates, pick best by combined routed score ---
+        // Heuristic score uses visitedEdgeRatio=0 since pre-routing can't know it.
+        // Re-score with actual route distance and visited ratio so reuse-heavy
+        // candidates lose to fresh ones at similar cost-per-meter.
         ScoredRoute accepted = null;
-        double bestCostPerMeter = Double.MAX_VALUE;
+        double bestRoutedScore = Double.MAX_VALUE;
         int routeAttempts = Math.min(MAX_ROUTE_ATTEMPTS, candidates.size());
-        OsmTrack cachedRefTrack = segments.isEmpty() ? null : buildRefTrack(segments);
-        MatchedWaypoint fromMwp = matchPoint(currentIlon, currentIlat, "greedy_from");
-        if (fromMwp == null) {
-          localRadius /= 2;
-          continue;
-        }
+        MatchedWaypoint fromMwp = currentMwp;
 
         for (int r = 0; r < routeAttempts; r++) {
           CandidatePoint cp = candidates.get(r);
@@ -160,21 +165,33 @@ public class GreedyRoundTripPlanner {
           double airDist = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
           if (subTrack.distance > airDist * 3.0) continue;
 
-          double costPerMeter = (double) subTrack.cost / subTrack.distance;
+          double actualVisitedRatio = computeTrackVisitedRatio(subTrack, visitedEdgeCounts);
+          double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
+          double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
+          double distFromPrevious = (prevIlon >= 0)
+            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * ROAD_INDIRECTNESS
+            : -1;
 
-          if (costPerMeter < bestCostPerMeter) {
-            bestCostPerMeter = costPerMeter;
+          double routedScorerScore = scorer.score(
+            subTrack.distance, subTarget,
+            totalDistance, estimatedReturn, desiredDistance,
+            cp.bearing, dirPref,
+            step, subRouteCount,
+            actualVisitedRatio,
+            airDistToStart, searchRadius,
+            distFromPrevious);
+
+          double costPerMeter = (double) subTrack.cost / subTrack.distance;
+          double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
+
+          if (routedScore < bestRoutedScore) {
+            bestRoutedScore = routedScore;
             accepted = new ScoredRoute();
             accepted.track = subTrack;
             accepted.toMwp = toMwp;
             accepted.routeDistance = subTrack.distance;
-            accepted.heuristicScore = cp.score;
+            accepted.visitedRatio = actualVisitedRatio;
           }
-        }
-
-        // Compute visited ratio only for the winning candidate
-        if (accepted != null) {
-          accepted.visitedRatio = computeTrackVisitedRatio(accepted.track, visitedEdgeCounts);
         }
 
         if (accepted == null) {
@@ -212,63 +229,63 @@ public class GreedyRoundTripPlanner {
         double airDistToStart = CheapRuler.distance(curIlon, curIlat, start.ilon, start.ilat);
         double minReturn = airDistToStart * ROAD_INDIRECTNESS;
 
-        // Skip return check if closure is mathematically impossible
-        if (totalDistance + minReturn < desiredDistance * (1 - tolerance)) {
+        // Skip the return check only when closure is clearly out of reach AND
+        // we still have multiple steps left. ROAD_INDIRECTNESS is a heuristic;
+        // constrained networks can force much longer returns, so apply a safety
+        // factor and never skip on the last two steps where closure matters.
+        boolean isLateStep = step >= subRouteCount - 1;
+        if (!isLateStep
+          && totalDistance + minReturn * RETURN_SKIP_SAFETY < desiredDistance * (1 - tolerance)) {
           candidateFound = true;
           break;
         }
 
-        // One Dijkstra: return path to start
-        MatchedWaypoint returnFrom = matchPoint(curIlon, curIlat, "greedy_return_from");
-        MatchedWaypoint returnTo = matchPoint(start.ilon, start.ilat, "greedy_return_to");
-        if (returnFrom != null && returnTo != null) {
-          OsmTrack returnTrack = timedFindTrack("greedy-return", returnFrom, returnTo,
-            buildRefTrack(segments));
-          if (returnTrack != null && returnTrack.distance > 0) {
-            double closedDistance = totalDistance + returnTrack.distance;
-            double error = Math.abs(closedDistance - desiredDistance) / desiredDistance;
+        // One Dijkstra: return path to start.
+        OsmTrack returnTrack = timedFindTrack("greedy-return", currentMwp, startMwp,
+          buildRefTrack(segments));
+        if (returnTrack != null && returnTrack.distance > 0) {
+          double closedDistance = totalDistance + returnTrack.distance;
+          double error = Math.abs(closedDistance - desiredDistance) / desiredDistance;
 
-            // Track best fallback
-            if (error < bestFallbackError) {
-              bestFallbackError = error;
-              bestFallbackTrack = mergeSegments(segments, returnTrack);
-            }
-
-            // Within tolerance → close the loop
-            if (error <= tolerance) {
-              addVisitedEdges(returnTrack, visitedEdgeCounts);
-              segments.add(returnTrack);
-              OsmTrack finalTrack = mergeSegments(segments, null);
-              populateResult(result, finalTrack, waypointStack, start, startMwp, segments);
-              result.setTotalDistanceMeters((int) closedDistance);
-              result.setWithinTolerance(true);
-              result.setSubRoutesChosen(step);
-              result.setAttemptsUsed(totalAttempts);
-              result.addDiagnostic("loop closed at step " + step
-                + ", total=" + (int) closedDistance + "m"
-                + ", error=" + String.format("%.1f%%", error * 100));
-              return result;
-            }
-
-            // Too long → undo sub-route, shrink radius, retry
-            if (closedDistance > desiredDistance * (1 + tolerance)) {
-              result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
-                + "m exceeds desired " + (int) desiredDistance + "m, halving radius");
-              segments.remove(segments.size() - 1);
-              totalDistance -= accepted.routeDistance;
-              removeVisitedEdges(accepted.track, visitedEdgeCounts);
-              waypointStack.remove(waypointStack.size() - 1);
-              currentMwp = waypointStack.get(waypointStack.size() - 1);
-              currentIlon = currentMwp.crosspoint.getILon();
-              currentIlat = currentMwp.crosspoint.getILat();
-              prevIlon = savedPrevIlon;
-              prevIlat = savedPrevIlat;
-              localRadius /= 2;
-              continue;
-            }
-
-            // Between (1-tol) and (1+tol) but not within tol? → too short, continue
+          // Snapshot now: later retries may mutate segments / waypointStack.
+          if (bestFallback == null || error < bestFallback.error) {
+            bestFallback = snapshotFallback(segments, returnTrack, waypointStack, error);
           }
+
+          // Within tolerance → close the loop
+          if (error <= tolerance) {
+            addVisitedEdges(returnTrack, visitedEdgeCounts);
+            segments.add(returnTrack);
+            OsmTrack finalTrack = mergeSegments(segments, null);
+            populateResult(result, finalTrack, waypointStack, start, startMwp, segments);
+            result.setTotalDistanceMeters((int) closedDistance);
+            result.setWithinTolerance(true);
+            result.setSubRoutesChosen(step);
+            result.setAttemptsUsed(totalAttempts);
+            result.addDiagnostic("loop closed at step " + step
+              + ", total=" + (int) closedDistance + "m"
+              + ", error=" + String.format("%.1f%%", error * 100));
+            return result;
+          }
+
+          // Too long → undo sub-route, shrink radius, retry
+          if (closedDistance > desiredDistance * (1 + tolerance)) {
+            result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
+              + "m exceeds desired " + (int) desiredDistance + "m, halving radius");
+            segments.remove(segments.size() - 1);
+            totalDistance -= accepted.routeDistance;
+            removeVisitedEdges(accepted.track, visitedEdgeCounts);
+            waypointStack.remove(waypointStack.size() - 1);
+            currentMwp = waypointStack.get(waypointStack.size() - 1);
+            currentIlon = currentMwp.crosspoint.getILon();
+            currentIlat = currentMwp.crosspoint.getILat();
+            prevIlon = savedPrevIlon;
+            prevIlat = savedPrevIlat;
+            localRadius /= 2;
+            continue;
+          }
+
+          // Between (1-tol) and (1+tol) but not within tol? → too short, continue
         }
 
         candidateFound = true;
@@ -281,37 +298,31 @@ public class GreedyRoundTripPlanner {
       }
     }
 
-    // Return best fallback
-    if (bestFallbackTrack != null) {
-      populateResult(result, bestFallbackTrack, waypointStack, start, startMwp, segments);
-      result.setTotalDistanceMeters(bestFallbackTrack.distance);
+    if (bestFallback != null) {
+      populateResult(result, bestFallback.track, bestFallback.waypointStack, start,
+        startMwp, bestFallback.legTracks);
+      result.setTotalDistanceMeters(bestFallback.track.distance);
       result.setWithinTolerance(false);
-      result.setFallbackReason("best error=" + String.format("%.1f%%", bestFallbackError * 100));
-      result.setSubRoutesChosen(segments.size());
+      result.setFallbackReason("best error=" + String.format("%.1f%%", bestFallback.error * 100));
+      result.setSubRoutesChosen(bestFallback.legTracks.size());
       result.setAttemptsUsed(totalAttempts);
       return result;
     }
 
     // Last resort: force-close
     if (!segments.isEmpty()) {
-      int curIlon = currentMwp.crosspoint.getILon();
-      int curIlat = currentMwp.crosspoint.getILat();
-      MatchedWaypoint returnFrom = matchPoint(curIlon, curIlat, "greedy_force_from");
-      MatchedWaypoint returnTo = matchPoint(start.ilon, start.ilat, "greedy_force_to");
-      if (returnFrom != null && returnTo != null) {
-        OsmTrack returnTrack = timedFindTrack("greedy-force-close",
-          returnFrom, returnTo, buildRefTrack(segments));
-        if (returnTrack != null && returnTrack.distance > 0) {
-          segments.add(returnTrack);
-          OsmTrack finalTrack = mergeSegments(segments, null);
-          populateResult(result, finalTrack, waypointStack, start, startMwp, segments);
-          result.setTotalDistanceMeters(finalTrack.distance);
-          result.setWithinTolerance(false);
-          result.setFallbackReason("forced closure");
-          result.setSubRoutesChosen(segments.size());
-          result.setAttemptsUsed(totalAttempts);
-          return result;
-        }
+      OsmTrack returnTrack = timedFindTrack("greedy-force-close",
+        currentMwp, startMwp, buildRefTrack(segments));
+      if (returnTrack != null && returnTrack.distance > 0) {
+        segments.add(returnTrack);
+        OsmTrack finalTrack = mergeSegments(segments, null);
+        populateResult(result, finalTrack, waypointStack, start, startMwp, segments);
+        result.setTotalDistanceMeters(finalTrack.distance);
+        result.setWithinTolerance(false);
+        result.setFallbackReason("forced closure");
+        result.setSubRoutesChosen(segments.size());
+        result.setAttemptsUsed(totalAttempts);
+        return result;
       }
     }
 
@@ -507,7 +518,7 @@ public class GreedyRoundTripPlanner {
    * so doRouting() skips re-matching and uses the exact same road segments.
    * The start and closing waypoints are re-matched from the original start MWP.
    */
-  private List<MatchedWaypoint> buildMatchedWaypoints(
+  List<MatchedWaypoint> buildMatchedWaypoints(
     List<MatchedWaypoint> stack, MatchedWaypoint startMwp) {
 
     List<MatchedWaypoint> mwps = new ArrayList<>();
@@ -530,18 +541,20 @@ public class GreedyRoundTripPlanner {
     return mwps;
   }
 
-  private MatchedWaypoint copyMatchedWaypoint(MatchedWaypoint src, String name) {
+  MatchedWaypoint copyMatchedWaypoint(MatchedWaypoint src, String name) {
     MatchedWaypoint copy = new MatchedWaypoint();
     copy.node1 = new OsmNode(src.node1.ilon, src.node1.ilat);
     copy.node2 = new OsmNode(src.node2.ilon, src.node2.ilat);
-    // Snap crosspoint to the nearest graph node (intersection) rather than
-    // keeping the mid-edge interpolation. Mid-edge crosspoints cause gaps
-    // between legs because routing reaches the nearest graph node, not the
-    // exact interpolated position. Same logic as snapToIntersection().
+    // Snap to a graph node — mid-edge crosspoints cause leg gaps because
+    // routing reaches the nearest node, not the interpolated position.
     OsmNode snapped = snapToNearest(src.crosspoint, copy.node1, copy.node2);
     copy.crosspoint = new OsmNode(snapped.ilon, snapped.ilat);
+    // waypoint == crosspoint keeps RoutingEngine#matchWaypointsToNodes from
+    // taking the dynamic beeline-insertion path (gated on snap > catchingRange).
     copy.waypoint = new OsmNode(snapped.ilon, snapped.ilat);
     copy.name = name;
+    // Round-trip no-beeline invariant: greedy points must never be DIRECT.
+    copy.wpttype = MatchedWaypoint.WAYPOINT_TYPE_SHAPING;
     return copy;
   }
 
@@ -566,6 +579,38 @@ public class GreedyRoundTripPlanner {
     return best;
   }
 
+  /**
+   * Combine the routed scorer score with cost-per-meter so candidate selection
+   * accounts for both route shape (visited reuse, distance, loop feasibility)
+   * and road quality (cost).
+   */
+  static double combinedRoutedScore(double scorerScore, double costPerMeter) {
+    return scorerScore + COST_PER_METER_WEIGHT * costPerMeter;
+  }
+
+  /**
+   * Capture an immutable view of the fallback candidate so later mutations of
+   * {@code segments} / {@code waypointStack} do not desync the track from the
+   * recorded waypoints and leg list.
+   */
+  private Snapshot snapshotFallback(List<OsmTrack> segments, OsmTrack returnTrack,
+                                    List<MatchedWaypoint> waypointStack, double error) {
+    Snapshot snap = new Snapshot();
+    snap.track = mergeSegments(segments, returnTrack);
+    snap.waypointStack = new ArrayList<>(waypointStack);
+    snap.legTracks = new ArrayList<>(segments);
+    snap.legTracks.add(returnTrack);
+    snap.error = error;
+    return snap;
+  }
+
+  private static final class Snapshot {
+    OsmTrack track;
+    List<MatchedWaypoint> waypointStack;
+    List<OsmTrack> legTracks;
+    double error;
+  }
+
   /** Geometric candidate point with heuristic score (before routing). */
   private static final class CandidatePoint {
     int ilon;
@@ -579,7 +624,6 @@ public class GreedyRoundTripPlanner {
     OsmTrack track;
     MatchedWaypoint toMwp;
     double routeDistance;
-    double heuristicScore;
     double visitedRatio;
   }
 }

@@ -9,6 +9,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+import btools.mapaccess.MatchedWaypoint;
+import btools.mapaccess.OsmNode;
+
 /**
  * Integration tests for the greedy sub-route round-trip planner.
  * Tests require segment data in brouter-core/src/test/resources/test-data/segments/
@@ -75,6 +78,114 @@ public class GreedyRoundTripPlannerTest {
     rctx.roundTripIsochrone = true;
     rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
     Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, rctx.roundTripAlgorithm);
+  }
+
+  @Test
+  public void greedyRejectsAllowSamewayback() {
+    // allowSamewayback semantics (out-and-back) are not implemented by greedy;
+    // dispatch must fall back to the waypoint-based algorithm.
+    Assert.assertFalse("greedy should not handle allowSamewayback",
+      RoutingEngine.greedySupports(true, 1));
+  }
+
+  @Test
+  public void greedyRejectsExtraUserViaPoints() {
+    // User-supplied via points are not honored by greedy today; must fall back.
+    Assert.assertFalse("greedy should not handle extra user via points",
+      RoutingEngine.greedySupports(false, 2));
+    Assert.assertFalse("greedy should not handle 3 user waypoints",
+      RoutingEngine.greedySupports(false, 3));
+  }
+
+  @Test
+  public void greedyAcceptsLoneStartWaypoint() {
+    Assert.assertTrue("greedy supports a single start waypoint",
+      RoutingEngine.greedySupports(false, 1));
+  }
+
+  @Test
+  public void combinedRoutedScorePrefersLowerVisitedRatio() {
+    // Two candidates with identical cost-per-meter; the one with lower
+    // scorer score (e.g. less edge reuse) should win.
+    CandidateScorer scorer = new CandidateScorer();
+    double subTarget = 2000;
+    double total = 0;
+    double desired = 10000;
+    double estimatedReturn = 8000;
+
+    double freshScore = scorer.score(
+      2000, subTarget, total, estimatedReturn, desired,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1);
+    double reusedScore = scorer.score(
+      2000, subTarget, total, estimatedReturn, desired,
+      90, DirectionPreference.ANY, 1, 5,
+      0.8, 5000, 5000, -1);
+
+    double freshCombined = GreedyRoundTripPlanner.combinedRoutedScore(freshScore, 1.2);
+    double reusedCombined = GreedyRoundTripPlanner.combinedRoutedScore(reusedScore, 1.2);
+
+    Assert.assertTrue("fresh candidate should beat reused at equal cost-per-meter",
+      freshCombined < reusedCombined);
+  }
+
+  @Test
+  public void combinedRoutedScoreFactorsInCostPerMeter() {
+    // With identical scorer score, lower cost/meter is preferred.
+    double scorerScore = 0.5;
+    double cheap = GreedyRoundTripPlanner.combinedRoutedScore(scorerScore, 1.0);
+    double expensive = GreedyRoundTripPlanner.combinedRoutedScore(scorerScore, 3.0);
+    Assert.assertTrue("cheaper route should score lower at equal scorer score",
+      cheap < expensive);
+  }
+
+  @Test
+  public void greedyMatchedWaypointsAreNeverBeeline() {
+    // Successful greedy plans must produce road-snapped (SHAPING) waypoints.
+    // A DIRECT entry would tell the routing engine to insert a beeline,
+    // which violates the round-trip invariant.
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+
+    MatchedWaypoint startMwp = makeMatchedWaypoint(1000, 1000, 900, 900, 1100, 1100);
+    // Even when the source MWP is marked DIRECT, copyMatchedWaypoint must
+    // reset it to SHAPING so beeline behavior cannot leak through.
+    startMwp.wpttype = MatchedWaypoint.WAYPOINT_TYPE_DIRECT;
+
+    MatchedWaypoint via1 = makeMatchedWaypoint(2000, 2000, 1900, 1900, 2100, 2100);
+    via1.wpttype = MatchedWaypoint.WAYPOINT_TYPE_DIRECT;
+    MatchedWaypoint via2 = makeMatchedWaypoint(3000, 3000, 2900, 2900, 3100, 3100);
+
+    List<MatchedWaypoint> stack = new ArrayList<>();
+    stack.add(startMwp);
+    stack.add(via1);
+    stack.add(via2);
+
+    List<MatchedWaypoint> matched = planner.buildMatchedWaypoints(stack, startMwp);
+
+    Assert.assertEquals("expected from + via1 + via2 + to", 4, matched.size());
+    for (MatchedWaypoint m : matched) {
+      Assert.assertNotEquals("greedy matched waypoint " + m.name + " must not be DIRECT",
+        MatchedWaypoint.WAYPOINT_TYPE_DIRECT, m.wpttype);
+      Assert.assertEquals("greedy matched waypoint " + m.name + " must be SHAPING",
+        MatchedWaypoint.WAYPOINT_TYPE_SHAPING, m.wpttype);
+      // waypoint == crosspoint is what disables RoutingEngine's dynamic beeline
+      // insertion (it triggers when distance(waypoint, crosspoint) > catchingRange).
+      Assert.assertEquals("waypoint and crosspoint must coincide for " + m.name,
+        m.crosspoint.ilon, m.waypoint.ilon);
+      Assert.assertEquals("waypoint and crosspoint must coincide for " + m.name,
+        m.crosspoint.ilat, m.waypoint.ilat);
+    }
+  }
+
+  private static MatchedWaypoint makeMatchedWaypoint(int crossLon, int crossLat,
+                                                     int n1Lon, int n1Lat,
+                                                     int n2Lon, int n2Lat) {
+    MatchedWaypoint mwp = new MatchedWaypoint();
+    mwp.crosspoint = new OsmNode(crossLon, crossLat);
+    mwp.waypoint = new OsmNode(crossLon, crossLat);
+    mwp.node1 = new OsmNode(n1Lon, n1Lat);
+    mwp.node2 = new OsmNode(n2Lon, n2Lat);
+    return mwp;
   }
 
   @Test
