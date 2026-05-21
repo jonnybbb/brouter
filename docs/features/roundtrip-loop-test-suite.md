@@ -48,6 +48,13 @@ produce a valid loop or fail cleanly — never report success for a non-loop:
 - **Failure ⇒ no track** — an infeasible request sets a clear error and returns no track.
 - **Determinism** — identical inputs produce a byte-identical node sequence.
 
+## Scenario coverage (CI tier — `RoundTripScenarioTest`)
+
+Each generation strategy and mode must still produce a valid loop (or fail cleanly):
+explicit **WAYPOINT** and **ISOCHRONE** strategies across all four cycling profiles, and
+**allowSamewayback** out-and-back (closes at a feasible config; fails cleanly when it cannot
+return). GREEDY is exercised in the gated tier where the network is large enough for it.
+
 ## Findings & fixes
 
 - **Silent degenerate "success" (FIXED).** At constrained radii some `(profile, direction)`
@@ -63,5 +70,13 @@ produce a valid loop or fail cleanly — never report success for a non-loop:
   conservative and leave all well-formed loops (and the existing `RoutingEngineTest`) green.
 - **Voice-hint sanity** holds across the whole matrix (no negative indices / out-of-range
   angles) — the earlier origin-chain fix verified by `RoundTripInvariantTest`.
+- **`allowSamewayback` non-closing at some directions (OPEN, documented).** The out-and-back
+  closes perfectly at e.g. dir 0/270 (gap ~1 m) but at dir 90 ends ~860 m from the origin —
+  the return leg does not complete. The closure guard now reports this as a clear failure
+  instead of returning a one-way stub as success; the underlying return-leg issue (in the
+  same-way-back routing path) is left for review as it touches core routing logic.
+- **Alpine long-loop continuity gaps (OPEN, gated tier).** `alpine_innsbruck` 100 km loops
+  show large continuity gaps (maxGap 5–6 km) — beelines across unroutable mountain terrain.
+  Within the lenient gated threshold today; flagged for the distance/continuity work.
 
 _Last updated: 2026-05-22._

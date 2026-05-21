@@ -59,4 +59,50 @@ final class RoundTripFixture {
   static OsmTrack route(String profile, int direction, int radius) {
     return engine(profile, direction, radius).getFoundTrack();
   }
+
+  /**
+   * Assert the structural invariants of a valid round-trip loop: non-degenerate,
+   * closes near origin, no beeline segments or BL hints, bounded road reuse, and
+   * sane voice-hint indices/angles. {@code maxReusePct} is relaxed for same-way-back
+   * loops which intentionally retrace roads.
+   */
+  static void assertValidLoop(OsmTrack track, String label, double maxReusePct) {
+    org.junit.Assert.assertNotNull(label + ": no track", track);
+    java.util.List<OsmPathElement> nodes = track.nodes;
+    org.junit.Assert.assertTrue(label + ": degenerate loop (" + nodes.size() + " nodes)",
+      nodes.size() >= 10);
+
+    int closing = nodes.get(0).calcDistance(nodes.get(nodes.size() - 1));
+    org.junit.Assert.assertTrue(label + ": loop does not close, gap " + closing + "m",
+      closing <= 100);
+
+    int total = 0, reused = 0, maxSeg = 0;
+    java.util.Set<Long> edges = new java.util.HashSet<>();
+    long prevId = nodes.get(0).getIdFromPos();
+    for (int i = 1; i < nodes.size(); i++) {
+      long id = nodes.get(i).getIdFromPos();
+      int d = nodes.get(i).calcDistance(nodes.get(i - 1));
+      total += d;
+      if (d > maxSeg) maxSeg = d;
+      long edge = Math.min(prevId, id) * 1_000_003L + Math.max(prevId, id);
+      if (!edges.add(edge)) reused += d;
+      prevId = id;
+    }
+    org.junit.Assert.assertTrue(label + ": beeline segment " + maxSeg + "m", maxSeg <= 1500);
+    double reusePct = total > 0 ? 100.0 * reused / total : 0;
+    org.junit.Assert.assertTrue(label + ": road reuse " + (int) reusePct + "% > " + (int) maxReusePct + "%",
+      reusePct <= maxReusePct);
+
+    if (track.voiceHints != null) {
+      for (VoiceHint h : track.voiceHints.list) {
+        org.junit.Assert.assertTrue(label + ": voice hint index " + h.indexInTrack + " out of range",
+          h.indexInTrack >= 0 && h.indexInTrack < nodes.size());
+        org.junit.Assert.assertNotEquals(label + ": unexpected beeline hint", VoiceHint.BL, h.cmd);
+        if (!h.isRoundabout()) {
+          org.junit.Assert.assertTrue(label + ": voice hint angle " + h.angle + " out of [-180,180]",
+            h.angle >= -180f && h.angle <= 180f);
+        }
+      }
+    }
+  }
 }
