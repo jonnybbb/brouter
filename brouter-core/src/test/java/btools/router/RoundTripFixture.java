@@ -2,7 +2,9 @@ package btools.router;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Shared setup for round-trip tests against the bundled Dreieich fixture
@@ -68,7 +70,7 @@ final class RoundTripFixture {
    */
   static void assertValidLoop(OsmTrack track, String label, double maxReusePct) {
     org.junit.Assert.assertNotNull(label + ": no track", track);
-    java.util.List<OsmPathElement> nodes = track.nodes;
+    List<OsmPathElement> nodes = track.nodes;
     org.junit.Assert.assertTrue(label + ": degenerate loop (" + nodes.size() + " nodes)",
       nodes.size() >= 10);
 
@@ -77,7 +79,7 @@ final class RoundTripFixture {
       closing <= 100);
 
     int total = 0, reused = 0, maxSeg = 0;
-    java.util.Set<Long> edges = new java.util.HashSet<>();
+    Set<Long> edges = new HashSet<>();
     long prevId = nodes.get(0).getIdFromPos();
     for (int i = 1; i < nodes.size(); i++) {
       long id = nodes.get(i).getIdFromPos();
