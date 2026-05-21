@@ -93,6 +93,13 @@ public class RoundTripScenarioTest {
     RoundTripFixture.assertValidLoop(t, "length6km", 30.0);
   }
 
+  /** An explicit roundTripPoints waypoint count must still yield a valid loop. */
+  @Test
+  public void roundTripPointsParameterValidLoop() {
+    OsmTrack t = routeOk("trekking", 90, 1500, rc -> rc.roundTripPoints = 8);
+    RoundTripFixture.assertValidLoop(t, "points8", 30.0);
+  }
+
   /** A round-trip through a user via point must keep the via and still be a valid loop. */
   @Test
   public void userViaPreservedInValidLoop() {
