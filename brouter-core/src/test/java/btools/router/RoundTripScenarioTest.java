@@ -3,6 +3,8 @@ package btools.router;
 import org.junit.Assert;
 import org.junit.Test;
 
+import btools.mapaccess.MatchedWaypoint;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -81,5 +83,51 @@ public class RoundTripScenarioTest {
     RoutingEngine re = engine("trekking", 90, 1000, rc -> rc.allowSamewayback = true);
     Assert.assertNotNull("expected a failure for a non-closing out-and-back", re.getErrorMessage());
     Assert.assertNull("error set but a track was still returned", re.getFoundTrack());
+  }
+
+  /** roundTripLength sets the total loop distance directly and must yield a valid loop. */
+  @Test
+  public void roundTripLengthParameterValidLoop() {
+    // 6 km total loop ~= 955 m radius; precedence over roundTripDistance.
+    OsmTrack t = routeOk("trekking", 90, 1000, rc -> rc.roundTripLength = 6000);
+    RoundTripFixture.assertValidLoop(t, "length6km", 30.0);
+  }
+
+  /** A round-trip through a user via point must keep the via and still be a valid loop. */
+  @Test
+  public void userViaPreservedInValidLoop() {
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = RoundTripFixture.START_ILON;
+    start.ilat = RoundTripFixture.START_ILAT;
+    wps.add(start);
+    OsmNodeNamed via = new OsmNodeNamed();      // known-good fixture road near the start
+    via.name = "via1";
+    via.ilon = 180000000 + (int) (8.722 * 1000000 + 0.5);
+    via.ilat = 90000000 + (int) (50.001 * 1000000 + 0.5);
+    wps.add(via);
+
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = RoundTripFixture.profileFile("trekking").getAbsolutePath();
+    rc.startDirection = 0;
+    rc.roundTripDistance = 1000;
+    rc.turnInstructionMode = 2;
+
+    RoutingEngine re = new RoutingEngine(null, null, RoundTripFixture.segmentDir(), wps, rc,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.quite = true;
+    re.doRun(0);
+
+    Assert.assertNull("user-via round-trip failed: " + re.getErrorMessage(), re.getErrorMessage());
+    OsmTrack track = re.getFoundTrack();
+    RoundTripFixture.assertValidLoop(track, "userVia", 30.0);
+
+    boolean foundVia = false;
+    Assert.assertNotNull("no matched waypoints", track.matchedWaypoints);
+    for (MatchedWaypoint mwp : track.matchedWaypoints) {
+      if ("via1".equals(mwp.name)) foundVia = true;
+    }
+    Assert.assertTrue("user via1 must be preserved in the loop", foundVia);
   }
 }
