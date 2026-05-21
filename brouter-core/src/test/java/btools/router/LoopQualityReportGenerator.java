@@ -190,14 +190,17 @@ final class LoopQualityReportGenerator {
     sb.append("  layers.push(layer);\n");
     sb.append("});\n\n");
 
-    // Initially show nothing — user selects via filters or clicks
-    sb.append("// Start with all routes hidden; filters reveal them\n");
+    // Map starts empty; user clicks a row/route to view one route at a time
+    sb.append("// Map starts empty; selecting a row shows a single route\n");
     sb.append("applyFilters();\n\n");
 
     sb.append("function focusRoute(idx) {\n");
+    sb.append("  // show only one route at a time — remove the previously displayed route\n");
+    sb.append("  if (selectedIdx >= 0 && selectedIdx !== idx && layers[selectedIdx]) layers[selectedIdx].remove();\n");
     sb.append("  highlightRow(idx);\n");
     sb.append("  var r = routes[idx];\n");
     sb.append("  if (layers[idx]) {\n");
+    sb.append("    layers[idx].addTo(map);\n");
     sb.append("    layers[idx].setStyle({weight: 5, opacity: 1.0});\n");
     sb.append("    map.fitBounds(layers[idx].getBounds().pad(0.1));\n");
     sb.append("    layers[idx].openPopup();\n");
@@ -216,13 +219,12 @@ final class LoopQualityReportGenerator {
     sb.append("}\n\n");
 
     sb.append("function applyFilters() {\n");
+    sb.append("  // filters only narrow the table list; the map keeps showing the single selected route\n");
     sb.append("  var fR = document.getElementById('fRegion').value;\n");
     sb.append("  var fP = document.getElementById('fProfile').value;\n");
     sb.append("  var fD = document.getElementById('fDist').value;\n");
     sb.append("  var fS = document.getElementById('fStatus').value;\n");
     sb.append("  var rows = document.querySelectorAll('#results tbody tr');\n");
-    sb.append("  var bounds = L.latLngBounds();\n");
-    sb.append("  var anyVisible = false;\n");
     sb.append("  rows.forEach(function(row) {\n");
     sb.append("    var show = true;\n");
     sb.append("    if (fR && row.dataset.region !== fR) show = false;\n");
@@ -230,13 +232,13 @@ final class LoopQualityReportGenerator {
     sb.append("    if (fD && row.dataset.dist !== fD) show = false;\n");
     sb.append("    if (fS && row.dataset.status !== fS) show = false;\n");
     sb.append("    row.style.display = show ? '' : 'none';\n");
-    sb.append("    var idx = parseInt(row.dataset.idx);\n");
-    sb.append("    if (layers[idx]) {\n");
-    sb.append("      if (show) { layers[idx].addTo(map); bounds.extend(layers[idx].getBounds()); anyVisible = true; }\n");
-    sb.append("      else { layers[idx].remove(); }\n");
+    sb.append("    // if the displayed route is filtered out, clear it from the map\n");
+    sb.append("    if (!show && parseInt(row.dataset.idx) === selectedIdx && layers[selectedIdx]) {\n");
+    sb.append("      layers[selectedIdx].remove();\n");
+    sb.append("      row.classList.remove('selected');\n");
+    sb.append("      selectedIdx = -1;\n");
     sb.append("    }\n");
     sb.append("  });\n");
-    sb.append("  if (anyVisible) map.fitBounds(bounds.pad(0.1));\n");
     sb.append("}\n");
 
     sb.append("</script>\n</body>\n</html>\n");
@@ -361,21 +363,20 @@ final class LoopQualityReportGenerator {
     sb.append("    layer.on('click',function(){highlightRow(i);});\n");
     sb.append("  }\n  layers.push(layer);\n});\n\n");
 
-    sb.append("function focusRoute(i){highlightRow(i);if(layers[i]){layers[i].setStyle({weight:5,opacity:1});map.fitBounds(layers[i].getBounds().pad(0.1));layers[i].openPopup();}}\n");
+    sb.append("function focusRoute(i){if(selectedIdx>=0&&selectedIdx!==i&&layers[selectedIdx])layers[selectedIdx].remove();highlightRow(i);if(layers[i]){layers[i].addTo(map);layers[i].setStyle({weight:5,opacity:1});map.fitBounds(layers[i].getBounds().pad(0.1));layers[i].openPopup();}}\n");
     sb.append("function highlightRow(i){if(selectedIdx>=0&&layers[selectedIdx])layers[selectedIdx].setStyle({weight:3,opacity:0.7});document.querySelectorAll('tr.selected').forEach(function(e){e.classList.remove('selected');});selectedIdx=i;var row=document.querySelector('tr[data-idx=\"'+i+'\"]');if(row){row.classList.add('selected');row.scrollIntoView({block:'nearest'});}}\n\n");
 
     sb.append("function applyFilters(){\n");
+    sb.append("  // filters only narrow the table list; the map keeps showing the single selected route\n");
     sb.append("  var fP=document.getElementById('fProfile').value,fD=document.getElementById('fDist').value,fV=document.getElementById('fVariant').value;\n");
-    sb.append("  var bounds=L.latLngBounds(),any=false;\n");
     sb.append("  document.querySelectorAll('#results tbody tr').forEach(function(row){\n");
     sb.append("    var show=true;\n");
     sb.append("    if(fP&&row.dataset.profile!==fP)show=false;\n");
     sb.append("    if(fD&&row.dataset.dist!==fD)show=false;\n");
     sb.append("    if(fV&&row.dataset.variant!==fV)show=false;\n");
     sb.append("    row.style.display=show?'':'none';\n");
-    sb.append("    var idx=parseInt(row.dataset.idx);\n");
-    sb.append("    if(layers[idx]){if(show){layers[idx].addTo(map);bounds.extend(layers[idx].getBounds());any=true;}else{layers[idx].remove();}}\n");
-    sb.append("  });\n  if(any)map.fitBounds(bounds.pad(0.1));\n}\n");
+    sb.append("    if(!show&&parseInt(row.dataset.idx)===selectedIdx&&layers[selectedIdx]){layers[selectedIdx].remove();row.classList.remove('selected');selectedIdx=-1;}\n");
+    sb.append("  });\n}\n");
     sb.append("applyFilters();\n");
 
     sb.append("</script>\n</body>\n</html>\n");
