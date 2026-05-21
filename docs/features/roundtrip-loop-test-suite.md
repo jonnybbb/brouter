@@ -16,6 +16,31 @@ there (the data runs out before a large requested loop can form). Scale-dependen
 metrics therefore live in the gated tier; the fixture tier asserts only
 terrain-independent structural properties.
 
+## Running the suite
+
+```bash
+# CI tier — always runs, no data needed (part of the normal build):
+./gradlew :brouter-core:test
+
+# Gated tier — opt-in, needs the v11 region tiles in ./segments4:
+#   E5_N50 E10_N50 E10_N45 E5_N40 E0_N40 (from brouter.de/brouter/segments4/)
+./gradlew :brouter-core:test --tests '*LoopQualityTest' -Dloop.tests=true --rerun-tasks
+./gradlew :brouter-core:test --tests '*LoopGoldStandardTest' -Dloop.tests=true \
+    -Dloop.algorithms=probe,isochrone,greedy --rerun-tasks
+```
+
+`--rerun-tasks` is required when toggling `-D` flags (Gradle does not treat system
+properties as task inputs, so a cached "skipped" result would otherwise be reused).
+
+## Coverage (CI tier)
+
+| Suite | Cases | Asserts |
+|-------|-------|---------|
+| `RoundTripInvariantTest` | 32 (4 profiles × 4 dir × 2 radii) | closure, no-beeline, reuse, non-degenerate, voice-hint sanity |
+| `RoundTripContractTest` | 96 (edge radii) | success ⇒ valid loop; failure ⇒ no track; determinism |
+| `RoundTripScenarioTest` | 6 | WAYPOINT / ISOCHRONE strategies, allowSamewayback, user via, roundTripLength |
+| `RoutingEngineTest` (round-trip) | (existing) | closure, micro-detour, beeline, waypoint filtering, greedy/via |
+
 ## Data versioning
 
 All routing data is **lookup v11**, matching the shipped `misc/profiles2`:
