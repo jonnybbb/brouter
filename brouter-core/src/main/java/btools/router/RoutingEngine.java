@@ -509,11 +509,10 @@ public class RoutingEngine extends Thread {
         direction = getRandomDirectionFromData(waypoints.get(0), searchRadius);
         direction += directionAdd;
       }
-      // Normalize to a [0,360) compass bearing. getRandomDirectionFromData()+directionAdd
+      // Normalize to a [0,360) compass bearing: getRandomDirectionFromData()+directionAdd
       // can exceed 360 (e.g. 332+45=377), and a user-supplied startDirection may be out of
-      // range. Downstream consumers (sortDirectionsForLoop, getDifferenceFromDirection) and
-      // the diagnostic log line all assume a normalized bearing.
-      direction = ((direction % 360) + 360) % 360;
+      // range, while downstream bearing comparisons assume a normalized value.
+      direction = CheapAngleMeter.normalize(direction);
 
       // Resolve effective algorithm
       RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
@@ -1214,7 +1213,6 @@ public class RoutingEngine extends Thread {
 
   // Hints closer together than this are treated as one maneuver for round-trip cleanup.
   private static final double ROUNDTRIP_VOICEHINT_MERGE_DIST = 25.0; // meters
-  private static final float ROUNDTRIP_VOICEHINT_STRAIGHT_ANGLE = 22.5f; // SIGNIFICANT_ANGLE
 
   /**
    * Collapse clusters of voice hints produced by synthetic round-trip geometry
@@ -1237,7 +1235,6 @@ public class RoutingEngine extends Thread {
         i++;
         continue;
       }
-      // Extend a run of closely spaced, mergeable hints.
       int j = i;
       float netAngle = (cur.angle == Float.MAX_VALUE) ? 0f : cur.angle;
       VoiceHint dominant = cur;
@@ -1250,8 +1247,8 @@ public class RoutingEngine extends Thread {
         j++;
       }
       if (j > i) {
-        if (Math.abs(netAngle) >= ROUNDTRIP_VOICEHINT_STRAIGHT_ANGLE) {
-          // keep the sharpest turn of the cluster, but carry the trailing distance
+        if (Math.abs(netAngle) >= VoiceHintProcessor.SIGNIFICANT_ANGLE) {
+          // keep the cluster's sharpest turn, carrying the trailing distance forward
           dominant.distanceToNext = in.get(j).distanceToNext;
           out.add(dominant);
         } else if (!out.isEmpty()) {
