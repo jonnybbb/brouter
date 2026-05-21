@@ -57,6 +57,12 @@ public class RoutingEngine extends Thread {
 
   private int ROUNDTRIP_DEFAULT_DIRECTIONADD = 45;
 
+  // A produced round-trip below either bound is a degenerate stub, not a loop.
+  private static final int MIN_ROUNDTRIP_LOOP_NODES = 6;
+  private static final int MIN_ROUNDTRIP_LOOP_METERS = 200;
+  // A loop whose start/end gap exceeds this never returned to the origin.
+  private static final int MAX_ROUNDTRIP_CLOSURE_METERS = 400;
+
   private int MAX_DYNAMIC_RANGE = 60000;
 
   protected OsmTrack foundTrack = new OsmTrack();
@@ -539,6 +545,36 @@ public class RoutingEngine extends Thread {
         }
       } else {
         doWaypointBasedRoundTrip(searchRadius, direction, algo);
+      }
+
+      // Contract: a round-trip must yield an actual loop. When intermediate waypoints
+      // cannot be placed on reachable roads (e.g. the requested direction has no roads
+      // within this radius), routing collapses to a 1-3 node stub. Report that as a
+      // failure rather than returning a non-loop as success.
+      if (foundTrack == null || foundTrack.nodes == null
+          || foundTrack.nodes.size() < MIN_ROUNDTRIP_LOOP_NODES
+          || foundTrack.distance < MIN_ROUNDTRIP_LOOP_METERS) {
+        int n = (foundTrack == null || foundTrack.nodes == null) ? 0 : foundTrack.nodes.size();
+        int d = foundTrack == null ? 0 : foundTrack.distance;
+        errorMessage = "round-trip could not form a loop for direction " + (int) direction
+          + " at radius " + (int) searchRadius + "m (only " + n + " nodes, " + d
+          + "m) — no reachable roads in that direction at this distance";
+        logInfo(errorMessage);
+        foundTrack = null;
+        return;
+      }
+
+      // A round-trip must return to its origin. If the road network forced the route
+      // to end far from the start (e.g. an over-constrained area), it is not a loop.
+      int closingGap = foundTrack.nodes.get(0).calcDistance(
+        foundTrack.nodes.get(foundTrack.nodes.size() - 1));
+      if (closingGap > MAX_ROUNDTRIP_CLOSURE_METERS) {
+        errorMessage = "round-trip did not return to origin (gap " + closingGap
+          + "m) for direction " + (int) direction + " at radius " + (int) searchRadius
+          + "m — the area is too constrained to close a loop at this distance";
+        logInfo(errorMessage);
+        foundTrack = null;
+        return;
       }
 
       // Check distance accuracy and warn if terrain prevents a compact loop

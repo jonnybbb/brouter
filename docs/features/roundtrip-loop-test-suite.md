@@ -38,12 +38,30 @@ every produced loop must satisfy (thresholds calibrated from observed behaviour,
   roundabouts) carries an in-range turn angle `[-180,180]`. *Regression guard for the
   origin-chain bug that produced negative indices / out-of-range seam angles.*
 
-## Findings
+## Contract (CI tier — `RoundTripContractTest`)
 
-- **Small-radius degeneration (open):** at r=500 m, some `(profile, direction)` combos
-  (`trekking@0`, `trekking@180`, `fastbike@180`) return a 2–3 node "track" with
-  `err=null` — i.e. *success reported for a non-loop*. The same directions yield proper
-  loops at r=1000/1500, so roads exist; the small-radius waypoints get fully filtered and
-  the engine degenerates silently. Tracked by `RoundTripContractTest`; see fix notes there.
+Across edge radii (small / medium / oversized), every round-trip request must either
+produce a valid loop or fail cleanly — never report success for a non-loop:
+
+- **Success ⇒ valid loop** — if no error, the track is non-degenerate (≥6 nodes, ≥200 m)
+  and closes (start/end gap ≤ 150 m).
+- **Failure ⇒ no track** — an infeasible request sets a clear error and returns no track.
+- **Determinism** — identical inputs produce a byte-identical node sequence.
+
+## Findings & fixes
+
+- **Silent degenerate "success" (FIXED).** At constrained radii some `(profile, direction)`
+  combos collapsed to a 1–3 node stub yet returned `err=null` (e.g. `trekking@0/180 r500`,
+  `fastbike@180 r500`, `mtb@270 r5000` → a *single* node). Root cause: when
+  `validateAndAdjustWaypoints` filtered out all intermediate waypoints (no reachable roads
+  in the requested direction), routing produced a trivial track reported as success.
+  Fix: `doRoundTrip` now rejects sub-loop output (`MIN_ROUNDTRIP_LOOP_NODES`/`_METERS`) with
+  a clear error and no track.
+- **Non-closing "loop" (FIXED).** `mtb@90 r5000` returned a 42-node track ending 884 m from
+  the origin — not a loop. Fix: `doRoundTrip` rejects output whose start/end gap exceeds
+  `MAX_ROUNDTRIP_CLOSURE_METERS` (400 m; real loops close within metres). Both guards are
+  conservative and leave all well-formed loops (and the existing `RoutingEngineTest`) green.
+- **Voice-hint sanity** holds across the whole matrix (no negative indices / out-of-range
+  angles) — the earlier origin-chain fix verified by `RoundTripInvariantTest`.
 
 _Last updated: 2026-05-22._
