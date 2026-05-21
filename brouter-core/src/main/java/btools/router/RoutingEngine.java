@@ -1200,6 +1200,81 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Relink each node's origin back-pointer to its predecessor in the (possibly
+   * edited) nodes list, so the origin chain length matches nodes.size(). Required
+   * after round-trip node removal because processVoiceHints() walks the origin
+   * chain rather than the list.
+   */
+  private static void rebuildOriginChain(OsmTrack track) {
+    List<OsmPathElement> nodes = track.nodes;
+    for (int i = 0; i < nodes.size(); i++) {
+      nodes.get(i).origin = (i == 0) ? null : nodes.get(i - 1);
+    }
+  }
+
+  // Hints closer together than this are treated as one maneuver for round-trip cleanup.
+  private static final double ROUNDTRIP_VOICEHINT_MERGE_DIST = 25.0; // meters
+  private static final float ROUNDTRIP_VOICEHINT_STRAIGHT_ANGLE = 22.5f; // SIGNIFICANT_ANGLE
+
+  /**
+   * Collapse clusters of voice hints produced by synthetic round-trip geometry
+   * (waypoint-snapping wiggles and curves reported as several turns). Within a run
+   * of hints spaced closer than {@link #ROUNDTRIP_VOICEHINT_MERGE_DIST}, if the net
+   * turn is near-straight the whole cluster is dropped; otherwise only the single
+   * dominant turn is kept. Roundabouts, beelines and the end marker are never merged,
+   * and the conservative distance threshold leaves genuine close turns intact.
+   * Round-trip only — does not affect normal point-to-point routes.
+   */
+  private void consolidateRoundTripVoiceHints(OsmTrack track) {
+    if (track.voiceHints == null || track.voiceHints.list.size() < 2) return;
+    List<VoiceHint> in = track.voiceHints.list;
+    List<VoiceHint> out = new ArrayList<>();
+    int i = 0;
+    while (i < in.size()) {
+      VoiceHint cur = in.get(i);
+      if (cur.cmd == VoiceHint.BL || cur.cmd == VoiceHint.END || cur.isRoundabout()) {
+        out.add(cur);
+        i++;
+        continue;
+      }
+      // Extend a run of closely spaced, mergeable hints.
+      int j = i;
+      float netAngle = (cur.angle == Float.MAX_VALUE) ? 0f : cur.angle;
+      VoiceHint dominant = cur;
+      while (j + 1 < in.size()) {
+        VoiceHint next = in.get(j + 1);
+        if (next.cmd == VoiceHint.BL || next.cmd == VoiceHint.END || next.isRoundabout()) break;
+        if (in.get(j).distanceToNext >= ROUNDTRIP_VOICEHINT_MERGE_DIST) break;
+        netAngle += (next.angle == Float.MAX_VALUE) ? 0f : next.angle;
+        if (Math.abs(next.angle) > Math.abs(dominant.angle)) dominant = next;
+        j++;
+      }
+      if (j > i) {
+        if (Math.abs(netAngle) >= ROUNDTRIP_VOICEHINT_STRAIGHT_ANGLE) {
+          // keep the sharpest turn of the cluster, but carry the trailing distance
+          dominant.distanceToNext = in.get(j).distanceToNext;
+          out.add(dominant);
+        } else if (!out.isEmpty()) {
+          // net-straight wiggle — drop the cluster, but preserve its distance so the
+          // previous instruction's "distance to next" still reaches the following hint.
+          double dropped = 0;
+          for (int k = i; k <= j; k++) dropped += in.get(k).distanceToNext;
+          out.get(out.size() - 1).distanceToNext += dropped;
+        }
+        i = j + 1;
+      } else {
+        out.add(cur);
+        i++;
+      }
+    }
+    if (out.size() != in.size()) {
+      logInfo("roundtrip voicehints: consolidated " + in.size() + " -> " + out.size());
+      track.voiceHints.list.clear();
+      track.voiceHints.list.addAll(out);
+    }
+  }
+
+  /**
    * Check if a loop (between matchIdx and currentIdx in the track) is near
    * a generated roundtrip waypoint (name starting with "rt").
    */
@@ -2402,6 +2477,13 @@ public class RoutingEngine extends Thread {
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
       removeBackAndForthSegments(totaltrack, matchedWaypoints);
       removeMicroDetours(totaltrack, 1500, matchedWaypoints);
+      // removeBackAndForthSegments/removeMicroDetours edit the nodes list in place but
+      // leave each node's origin back-pointer dangling through the removed nodes.
+      // processVoiceHints() walks the origin chain (not the list), so a chain longer
+      // than the list drives its node counter negative — producing voice hints with
+      // negative indexInTrack and stale, out-of-range turn angles at the loop seam.
+      // Relink origins to the surviving list order to restore the chain == list invariant.
+      rebuildOriginChain(totaltrack);
     }
 
     recalcTrack(totaltrack);
@@ -2409,6 +2491,9 @@ public class RoutingEngine extends Thread {
     matchedWaypoints.get(matchedWaypoints.size() - 1).indexInTrack = totaltrack.nodes.size() - 1;
     totaltrack.matchedWaypoints = matchedWaypoints;
     totaltrack.processVoiceHints(routingContext);
+    if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
+      consolidateRoundTripVoiceHints(totaltrack);
+    }
     totaltrack.prepareSpeedProfile(routingContext);
 
     totaltrack.showTime = routingContext.showTime;
