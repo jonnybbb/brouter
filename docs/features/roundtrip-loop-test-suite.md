@@ -88,6 +88,22 @@ explicit **WAYPOINT** and **ISOCHRONE** strategies across all four cycling profi
 **allowSamewayback** out-and-back (closes at a feasible config; fails cleanly when it cannot
 return). GREEDY is exercised in the gated tier where the network is large enough for it.
 
+## Design note: search radius = L / 2π (calibrated, don't raise it)
+
+`roundTripLength` (total loop distance L) maps to the waypoint-placement radius as `r = L/2π`.
+This is the *circle-circumference* relation (the loop traces ≈ 2πr), **not** `L/2` — that is the
+out-and-back relation and makes a closed loop overshoot. Measured on real v11 data for a 40 km
+target across urban Berlin, alpine Innsbruck, coastal Nice and rural Lozère, the distance ratio
+rises monotonically with the factor:
+
+| r / L | 0.16 (L/2π) | 0.20 | 0.25 | 0.33 | 0.50 (L/2) |
+|-------|-------------|------|------|------|------------|
+| avg distance ratio | **0.91** | 1.29 | 1.59 | 2.10 | 3.21 |
+| avg composite | **0.79** | 0.73 | 0.64 | 0.66 | 0.66 |
+
+So `L/2π` is the calibrated optimum (nearest 1.0, best composite, lowest gaps); a larger radius
+overshoots in every terrain type. Verified, not assumed.
+
 ## Findings & fixes
 
 - **Silent degenerate "success" (FIXED).** At constrained radii some `(profile, direction)`
