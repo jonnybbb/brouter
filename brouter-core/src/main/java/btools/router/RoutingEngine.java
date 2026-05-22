@@ -57,6 +57,9 @@ public class RoutingEngine extends Thread {
 
   private int ROUNDTRIP_DEFAULT_DIRECTIONADD = 45;
 
+  // A loop must enclose area: at least a triangle (start + 2 intermediate waypoints).
+  // A single intermediate point is only an out-and-back, not a loop.
+  private static final int MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS = 2;
   // A produced round-trip below either bound is a degenerate stub, not a loop.
   private static final int MIN_ROUNDTRIP_LOOP_NODES = 6;
   private static final int MIN_ROUNDTRIP_LOOP_METERS = 200;
@@ -547,6 +550,20 @@ public class RoutingEngine extends Thread {
         doWaypointBasedRoundTrip(searchRadius, direction, algo);
       }
 
+      // A loop needs at least a triangle (start + 2 intermediate waypoints). With a single
+      // intermediate the route is only an out-and-back, which closure/detour handling cannot
+      // turn into a loop. Same-way-back is the deliberate exception (it IS an out-and-back).
+      int intermediateWaypoints = (matchedWaypoints == null) ? 0 : matchedWaypoints.size() - 2;
+      if (!routingContext.allowSamewayback
+          && intermediateWaypoints < MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS) {
+        errorMessage = "round-trip could not place enough waypoints to form a loop (need "
+          + MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS + " intermediate, got " + Math.max(0, intermediateWaypoints)
+          + ") for direction " + (int) direction + " at radius " + (int) searchRadius + "m";
+        logInfo(errorMessage);
+        foundTrack = null;
+        return;
+      }
+
       // Contract: a round-trip must yield an actual loop. When intermediate waypoints
       // cannot be placed on reachable roads (e.g. the requested direction has no roads
       // within this radius), routing collapses to a 1-3 node stub. Report that as a
@@ -701,7 +718,10 @@ public class RoutingEngine extends Thread {
     GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this);
     RoundTripResult result = planner.plan(start, desiredDistance, direction);
 
-    if (result != null && result.getLoopWaypoints() != null && result.getLoopWaypoints().size() >= 3) {
+    // A real loop needs at least a triangle: start + 2 intermediate waypoints + closing
+    // start (>= 4 entries). A single intermediate is just an out-and-back, so fall back
+    // to the waypoint strategy (which targets more points) rather than accept it.
+    if (result != null && result.getLoopWaypoints() != null && result.getLoopWaypoints().size() >= 4) {
       for (String diag : result.getDiagnostics()) {
         logInfo("greedy: " + diag);
       }

@@ -108,26 +108,21 @@ public class RoutingEngineTest {
   }
 
   // Round-trip with large radius pushing waypoints outside road data area
-  // should still succeed (bad waypoints filtered, no beeline segments)
+  // Near the data edge the generated waypoints are filtered; if fewer than the loop
+  // minimum (2 intermediate) remain, the engine must fail cleanly rather than emit a
+  // degenerate single-waypoint out-and-back.
   @Test
-  public void roundTripFiltersDistantWaypoints() {
+  public void roundTripFailsCleanlyWhenDataEdgeFiltersWaypoints() {
     RoutingContext rctx = new RoutingContext();
     rctx.startDirection = 90; // east, dreieich data runs out quickly
     rctx.roundTripDistance = 5000;
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtEdge", rctx);
 
-    Assert.assertNull("round-trip near data edge failed: " + re.getErrorMessage(), re.getErrorMessage());
-    OsmTrack track = re.getFoundTrack();
-    Assert.assertNotNull("round-trip near data edge should produce a track", track);
-
-    // verify no beeline segments: check that all consecutive node pairs are
-    // reasonably close (no giant jumps that indicate a straight-line beeline)
-    for (int i = 1; i < track.nodes.size(); i++) {
-      int segDist = track.nodes.get(i).calcDistance(track.nodes.get(i - 1));
-      Assert.assertTrue("segment " + i + " too long (" + segDist + "m), likely a beeline",
-        segDist < 2000);
-    }
+    Assert.assertNotNull("expected a clean failure at the data edge", re.getErrorMessage());
+    Assert.assertTrue("error should explain the waypoint shortfall: " + re.getErrorMessage(),
+      re.getErrorMessage().contains("form a loop"));
+    Assert.assertNull("no track should be returned on failure", re.getFoundTrack());
   }
 
   // filterRoundTripWaypoints removes waypoints that snapped too far

@@ -73,6 +73,9 @@ every produced loop must satisfy (thresholds calibrated from observed behaviour,
 Across edge radii (small / medium / oversized), every round-trip request must either
 produce a valid loop or fail cleanly — never report success for a non-loop:
 
+- **A loop needs ≥2 intermediate waypoints** — at least a triangle (start + 2 vias). A single
+  intermediate is only an out-and-back, so the engine rejects it (samewayback excepted). The
+  generators target ≥3; 2 is the extreme fallback; 1 fails cleanly.
 - **Success ⇒ valid loop** — if no error, the track is non-degenerate (≥6 nodes, ≥200 m)
   and closes (start/end gap ≤ 150 m).
 - **Failure ⇒ no track** — an infeasible request sets a clear error and returns no track.
