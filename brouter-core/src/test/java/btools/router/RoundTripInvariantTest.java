@@ -1,15 +1,12 @@
 package btools.router;
 
-import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Structural invariants every generated round-trip loop must satisfy, exercised
@@ -17,22 +14,14 @@ import java.util.Set;
  * is always version-consistent with the profiles — no downloads required).
  * <p>
  * These are terrain-independent correctness properties (closure, no beelines,
- * connectivity, bounded reuse, valid voice hints). Distance-accuracy bands and
- * shape quality are scale-dependent and live in the gated, real-geography suite
- * ({@link LoopQualityTest}).
+ * bounded reuse, valid voice hints; see {@link RoundTripFixture#assertValidLoop}).
+ * Distance-accuracy bands and shape quality are scale-dependent and live in the
+ * gated, real-geography suite ({@link LoopQualityTest}).
  */
 @RunWith(Parameterized.class)
 public class RoundTripInvariantTest {
 
-  // Dreieich (matches the bundled fixture tile E5_N50)
-  private static final int START_ILON = 188720000; // 8.72E
-  private static final int START_ILAT = 140000000; // 50.0N
-
-  // Thresholds calibrated from observed fixture behaviour, set strict with margin.
-  private static final int CLOSURE_MAX_M = 100;       // loop must return to origin
-  private static final int MAX_SEGMENT_M = 1500;      // no straight-line beeline jumps
-  private static final double MAX_REUSE_PCT = 30.0;   // a loop, not an out-and-back
-  private static final int MIN_NODES = 10;            // non-degenerate
+  private static final double MAX_REUSE_PCT = 30.0; // a loop, not an out-and-back
 
   @Parameterized.Parameter(0)
   public String profile;
@@ -59,52 +48,6 @@ public class RoundTripInvariantTest {
   @Test
   public void loopInvariants() {
     OsmTrack track = RoundTripFixture.route(profile, direction, radius);
-    Assert.assertNotNull("no track produced for " + label(), track);
-    List<OsmPathElement> nodes = track.nodes;
-
-    Assert.assertTrue(label() + ": degenerate loop, only " + nodes.size() + " nodes",
-      nodes.size() >= MIN_NODES);
-
-    int closing = nodes.get(0).calcDistance(nodes.get(nodes.size() - 1));
-    Assert.assertTrue(label() + ": loop does not close, gap " + closing + "m",
-      closing <= CLOSURE_MAX_M);
-
-    int total = 0, reused = 0, maxSeg = 0;
-    Set<Long> seenEdges = new HashSet<>();
-    long prevId = nodes.get(0).getIdFromPos();
-    for (int i = 1; i < nodes.size(); i++) {
-      long id = nodes.get(i).getIdFromPos();
-      int d = nodes.get(i).calcDistance(nodes.get(i - 1));
-      total += d;
-      if (d > maxSeg) maxSeg = d;
-      long edge = Math.min(prevId, id) * 1_000_003L + Math.max(prevId, id);
-      if (!seenEdges.add(edge)) reused += d;
-      prevId = id;
-    }
-    Assert.assertTrue(label() + ": beeline segment of " + maxSeg + "m (>" + MAX_SEGMENT_M + ")",
-      maxSeg <= MAX_SEGMENT_M);
-
-    double reusePct = total > 0 ? 100.0 * reused / total : 0;
-    Assert.assertTrue(label() + ": road reuse " + (int) reusePct + "% exceeds " + (int) MAX_REUSE_PCT + "%",
-      reusePct <= MAX_REUSE_PCT);
-
-    // Voice-hint sanity (regression guard for the negative-index / out-of-range-angle bug):
-    // every hint must index into the track, carry no beeline command, and (unless it is a
-    // roundabout, where the value is cumulative rotation) hold an in-range turn angle.
-    if (track.voiceHints != null) {
-      for (VoiceHint h : track.voiceHints.list) {
-        Assert.assertTrue(label() + ": voice hint index " + h.indexInTrack + " out of [0," + nodes.size() + ")",
-          h.indexInTrack >= 0 && h.indexInTrack < nodes.size());
-        Assert.assertNotEquals(label() + ": unexpected beeline (BL) voice hint", VoiceHint.BL, h.cmd);
-        if (!h.isRoundabout()) {
-          Assert.assertTrue(label() + ": voice hint angle " + h.angle + " out of [-180,180]",
-            h.angle >= -180f && h.angle <= 180f);
-        }
-      }
-    }
-  }
-
-  private String label() {
-    return profile + "_dir" + direction + "_r" + radius;
+    RoundTripFixture.assertValidLoop(track, profile + "_dir" + direction + "_r" + radius, MAX_REUSE_PCT);
   }
 }

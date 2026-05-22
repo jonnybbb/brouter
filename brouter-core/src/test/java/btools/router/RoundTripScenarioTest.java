@@ -5,42 +5,18 @@ import org.junit.Test;
 
 import btools.mapaccess.MatchedWaypoint;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.function.Consumer;
 
 /**
  * Round-trip feature/scenario coverage on the Dreieich fixture: each generation
  * strategy and the same-way-back mode must still produce a valid loop (or fail
  * cleanly). Scenarios are held to the same structural invariants as
- * {@link RoundTripInvariantTest}.
+ * {@link RoundTripInvariantTest} via {@link RoundTripFixture#assertValidLoop}.
  */
 public class RoundTripScenarioTest {
 
-  private RoutingEngine engine(String profile, int direction, int radius, Consumer<RoutingContext> tweak) {
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.name = "from";
-    start.ilon = RoundTripFixture.START_ILON;
-    start.ilat = RoundTripFixture.START_ILAT;
-    wps.add(start);
-
-    RoutingContext rc = new RoutingContext();
-    rc.localFunction = RoundTripFixture.profileFile(profile).getAbsolutePath();
-    rc.startDirection = direction;
-    rc.roundTripDistance = radius;
-    rc.turnInstructionMode = 2;
-    tweak.accept(rc);
-
-    RoutingEngine re = new RoutingEngine(null, null, RoundTripFixture.segmentDir(), wps, rc,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(0);
-    return re;
-  }
-
   private OsmTrack routeOk(String profile, int direction, int radius, Consumer<RoutingContext> tweak) {
-    RoutingEngine re = engine(profile, direction, radius, tweak);
+    RoutingEngine re = RoundTripFixture.engine(profile, direction, radius, tweak);
     Assert.assertNull("routing failed: " + re.getErrorMessage(), re.getErrorMessage());
     return re.getFoundTrack();
   }
@@ -80,7 +56,7 @@ public class RoundTripScenarioTest {
    */
   @Test
   public void allowSamewaybackNonClosingFailsCleanly() {
-    RoutingEngine re = engine("trekking", 90, 1000, rc -> rc.allowSamewayback = true);
+    RoutingEngine re = RoundTripFixture.engine("trekking", 90, 1000, rc -> rc.allowSamewayback = true);
     Assert.assertNotNull("expected a failure for a non-closing out-and-back", re.getErrorMessage());
     Assert.assertNull("error set but a track was still returned", re.getFoundTrack());
   }
@@ -103,30 +79,10 @@ public class RoundTripScenarioTest {
   /** A round-trip through a user via point must keep the via and still be a valid loop. */
   @Test
   public void userViaPreservedInValidLoop() {
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.name = "from";
-    start.ilon = RoundTripFixture.START_ILON;
-    start.ilat = RoundTripFixture.START_ILAT;
-    wps.add(start);
-    OsmNodeNamed via = new OsmNodeNamed();      // known-good fixture road near the start
-    via.name = "via1";
-    via.ilon = 180000000 + (int) (8.722 * 1000000 + 0.5);
-    via.ilat = 90000000 + (int) (50.001 * 1000000 + 0.5);
-    wps.add(via);
-
-    RoutingContext rc = new RoutingContext();
-    rc.localFunction = RoundTripFixture.profileFile("trekking").getAbsolutePath();
-    rc.startDirection = 0;
-    rc.roundTripDistance = 1000;
-    rc.turnInstructionMode = 2;
-
-    RoutingEngine re = new RoutingEngine(null, null, RoundTripFixture.segmentDir(), wps, rc,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(0);
-
+    OsmNodeNamed via = RoundTripFixture.node("via1", 8.722, 50.001); // known-good fixture road
+    RoutingEngine re = RoundTripFixture.engine("trekking", 0, 1000, rc -> { }, via);
     Assert.assertNull("user-via round-trip failed: " + re.getErrorMessage(), re.getErrorMessage());
+
     OsmTrack track = re.getFoundTrack();
     RoundTripFixture.assertValidLoop(track, "userVia", 30.0);
 

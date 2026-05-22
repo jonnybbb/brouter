@@ -24,6 +24,9 @@ import java.util.List;
 @RunWith(Parameterized.class)
 public class RoundTripContractTest {
 
+  // Lower bounds the engine guarantees for any reported loop. Tighter than the engine's
+  // coarse "is it a loop at all" guard (400 m closure) because a successful loop on real
+  // road data closes within metres; this asserts the quality, not just the guard.
   private static final int MIN_LOOP_NODES = 6;
   private static final int MIN_LOOP_METERS = 200;
   private static final int CLOSURE_MAX_M = 150;
@@ -40,7 +43,8 @@ public class RoundTripContractTest {
     List<Object[]> params = new ArrayList<>();
     for (String profile : new String[]{"trekking", "fastbike", "gravel", "mtb"}) {
       for (int dir : new int[]{0, 90, 180, 270}) {
-        for (int radius : new int[]{500, 1500, 5000}) { // small / medium / oversized
+        // span feasible to over-constrained radii on the small fixture
+        for (int radius : new int[]{500, 1500, 5000}) {
           params.add(new Object[]{profile, dir, radius});
         }
       }
