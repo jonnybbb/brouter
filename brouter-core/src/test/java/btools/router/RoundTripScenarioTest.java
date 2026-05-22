@@ -50,15 +50,14 @@ public class RoundTripScenarioTest {
   }
 
   /**
-   * When an out-and-back cannot return to its origin (the return leg has no path back
-   * in that direction), the engine must report a clear failure with no track rather
-   * than returning a one-way stub as success.
+   * Regression: allowSamewayback used to have one leg deleted by back-and-forth removal
+   * at some directions (the two legs look like an overlap), leaving a one-way stub that
+   * did not close. It must now produce a closed out-and-back regardless of direction.
    */
   @Test
-  public void allowSamewaybackNonClosingFailsCleanly() {
-    RoutingEngine re = RoundTripFixture.engine("trekking", 90, 1000, rc -> rc.allowSamewayback = true);
-    Assert.assertNotNull("expected a failure for a non-closing out-and-back", re.getErrorMessage());
-    Assert.assertNull("error set but a track was still returned", re.getFoundTrack());
+  public void allowSamewaybackClosesAtConstrainedDirection() {
+    OsmTrack t = routeOk("trekking", 90, 1000, rc -> rc.allowSamewayback = true);
+    RoundTripFixture.assertValidLoop(t, "samewayback_dir90", 100.0);
   }
 
   /** roundTripLength sets the total loop distance directly and must yield a valid loop. */

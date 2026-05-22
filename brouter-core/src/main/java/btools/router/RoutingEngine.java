@@ -2508,8 +2508,14 @@ public class RoutingEngine extends Thread {
     postElevationCheck(totaltrack);
 
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
-      removeBackAndForthSegments(totaltrack, matchedWaypoints);
-      removeMicroDetours(totaltrack, 1500, matchedWaypoints);
+      // allowSamewayback is an out-and-back: it intentionally retraces the outbound leg.
+      // Back-and-forth/micro-detour removal would see the two legs as an overlap and delete
+      // one of them, leaving a one-way segment that no longer closes — so skip it here.
+      // (This also affected loops that reduced to a single intermediate waypoint.)
+      if (!routingContext.allowSamewayback) {
+        removeBackAndForthSegments(totaltrack, matchedWaypoints);
+        removeMicroDetours(totaltrack, 1500, matchedWaypoints);
+      }
       // removeBackAndForthSegments/removeMicroDetours edit the nodes list in place but
       // leave each node's origin back-pointer dangling through the removed nodes.
       // processVoiceHints() walks the origin chain (not the list), so a chain longer

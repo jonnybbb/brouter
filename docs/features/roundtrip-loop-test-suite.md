@@ -100,11 +100,16 @@ return). GREEDY is exercised in the gated tier where the network is large enough
   conservative and leave all well-formed loops (and the existing `RoutingEngineTest`) green.
 - **Voice-hint sanity** holds across the whole matrix (no negative indices / out-of-range
   angles) — the earlier origin-chain fix verified by `RoundTripInvariantTest`.
-- **`allowSamewayback` non-closing at some directions (OPEN, documented).** The out-and-back
-  closes perfectly at e.g. dir 0/270 (gap ~1 m) but at dir 90 ends ~860 m from the origin —
-  the return leg does not complete. The closure guard now reports this as a clear failure
-  instead of returning a one-way stub as success; the underlying return-leg issue (in the
-  same-way-back routing path) is left for review as it touches core routing logic.
+- **`allowSamewayback` non-closing at some directions (FIXED).** The out-and-back closed at
+  dir 0/270 but at dir 90/180 ended ~500–1000 m from origin. Root cause (found by routing the
+  gap endpoints point-to-point — a valid profile-matching path existed, so it was not a
+  reachability problem): for a same-way-back loop the two legs (out and back) traverse the
+  same roads, so `removeBackAndForthSegments` treated them as an overlap and **deleted one
+  whole leg**, leaving a one-way stub. Fix: skip back-and-forth/micro-detour removal when
+  `allowSamewayback` is set (retracing is the intent of that mode). All 12 direction×radius
+  samewayback configs now close (gap ~1 m). Same root cause also collapsed loops that reduced
+  to a single intermediate waypoint; those non-samewayback degenerate cases (e.g. greedy on
+  over-constrained data) still fail cleanly via the contract guard.
 - **Alpine long-loop continuity gaps (OPEN, gated tier).** `alpine_innsbruck` 100 km loops
   show large continuity gaps (maxGap 5–6 km) — beelines across unroutable mountain terrain.
   Within the lenient gated threshold today; flagged for the distance/continuity work.
