@@ -49,10 +49,11 @@ If both are set, `roundTripLength` wins.
 
 | Param | Default | Notes |
 |---|---|---|
-| `direction` (alias: `heading`) | `-1` (random) | Start bearing in degrees: `0`=N, `90`=E, `180`=S, `270`=W. |
+| `direction` | `-1` (random) | Start bearing in degrees: `0`=N, `90`=E, `180`=S, `270`=W. A **soft hint** — see below. |
+| `heading` | unset | Same bearing encoding, but a **hard constraint**: it also sets `forceUseStartDirection`, forcing the router to leave the start in that bearing. Not an alias of `direction`. |
 | `roundTripDirectionAdd` | `45` | Degrees added to the randomly picked direction when `direction` is unset. Ignored when `direction` is explicit. |
 
-**Critical semantic:** direction is a **hint**, not a constraint. The router may legitimately traverse the loop in the opposite direction (the loop still covers the requested bearing as its principal axis, just CW vs CCW). In asymmetric terrain (coast, mountain dead-end, sparse network) it may also ignore the hint entirely. Do not promise the user a specific traversal order.
+**Critical semantic:** `direction` is a **hint**, not a constraint. The router may legitimately traverse the loop in the opposite direction (the loop still covers the requested bearing as its principal axis, just CW vs CCW). In asymmetric terrain (coast, mountain dead-end, sparse network) it may also ignore the hint entirely. Do not promise the user a specific traversal order. `heading` differs: it hard-forces the start bearing (`forceUseStartDirection`) and applies to point-to-point routing too, so prefer `direction` for round-trips unless you specifically need the start edge constrained.
 
 ## Algorithm selection
 

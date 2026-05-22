@@ -63,9 +63,24 @@ public class RoundTripScenarioTest {
   /** roundTripLength sets the total loop distance directly and must yield a valid loop. */
   @Test
   public void roundTripLengthParameterValidLoop() {
-    // 6 km total loop ~= 955 m radius; precedence over roundTripDistance.
+    // 6 km total loop ~= 955 m radius.
     OsmTrack t = routeOk("trekking", 90, 1000, rc -> rc.roundTripLength = 6000);
     RoundTripFixture.assertValidLoop(t, "length6km", 30.0);
+  }
+
+  /**
+   * roundTripLength must take precedence over roundTripDistance (RoutingContext Javadoc).
+   * The radius arg sets roundTripDistance=3000 (which alone would give a ~18.8 km loop);
+   * roundTripLength=6000 must win and produce a ~6 km loop instead. A clearly different
+   * radius makes the two distinguishable, unlike values that happen to coincide.
+   */
+  @Test
+  public void roundTripLengthTakesPrecedenceOverRoundTripDistance() {
+    OsmTrack t = routeOk("trekking", 90, 3000, rc -> rc.roundTripLength = 6000);
+    RoundTripFixture.assertValidLoop(t, "length6km_precedence", 30.0);
+    // ~6 km (from roundTripLength), not ~18.8 km (2*PI*3000 from roundTripDistance).
+    Assert.assertTrue("roundTripLength must take precedence over roundTripDistance: expected "
+      + "~6km loop but got " + t.distance + "m", t.distance < 12000);
   }
 
   /** An explicit roundTripPoints waypoint count must still yield a valid loop. */

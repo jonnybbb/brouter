@@ -2394,6 +2394,17 @@ public class RoutingEngine extends Thread {
         hasDirectRouting = true;
       }
 
+      // greedyLegTracks is indexed by leg position and only valid while the
+      // matched-waypoint count is unchanged. If matching/filtering above added or
+      // removed a waypoint, the leg-to-waypoint correspondence is broken, so drop
+      // the corridor constraints rather than route through a misaligned leg track.
+      if (greedyLegTracks != null && greedyLegTracks.length != matchedWaypoints.size() - 1) {
+        logInfo("greedy leg tracks (" + greedyLegTracks.length + ") no longer match "
+          + (matchedWaypoints.size() - 1) + " legs after matching/filtering; "
+          + "dropping corridor constraints");
+        greedyLegTracks = null;
+      }
+
       for (MatchedWaypoint mwp : matchedWaypoints) {
         if (hasInfo() && matchedWaypoints.size() != nUnmatched)
           logInfo("new wp=" + mwp.waypoint + " " + mwp.crosspoint + (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT ? " beeline" : (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_MEETING ? " via" : "")));

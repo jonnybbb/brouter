@@ -171,12 +171,28 @@ public final class LoopQualityMetrics {
     return CheapAngleMeter.getDifferenceFromDirection(requestedDirectionDeg, actualDirection);
   }
 
+  /** A beeline shorter than this is a waypoint-snap connector, not a routing gap. */
+  private static final int BEELINE_MIN_METERS = 500;
+
+  /** Pseudo-tag BRouter writes on synthetic beeline links (see OsmPath.addAddionalPenalty). */
+  private static final String BEELINE_MARKER = "direct_segment";
+  private static final String FERRY_MARKER = "route=ferry";
+
   /**
    * Compute gap information for consecutive track points.
-   * A "gap" is detected when:
-   * 1. The segment is a ferry route (route=ferry tag), OR
-   * 2. The segment forms a very straight line (>500m with <5% deviation from straight)
-   *    indicating a potential beeline/shortcut.
+   * A "gap" is a segment that does not follow a real road:
+   * <ol>
+   *   <li>a ferry segment (carries the {@code route=ferry} tag), or</li>
+   *   <li>a synthetic beeline/shortcut longer than {@code BEELINE_MIN_METERS}.</li>
+   * </ol>
+   * The discriminator is BRouter's own marker, not segment length or tag-absence:
+   * a beeline link carries the pseudo-tag {@code direct_segment=N}
+   * ({@link OsmPath#addAddionalPenalty}, {@code descriptionBitmap == null} branch),
+   * while real road links carry their actual way tags (and only in detail mode).
+   * Matching on the {@code direct_segment} marker therefore detects real beelines of
+   * any length and never penalizes a legitimate long road segment (rural straight,
+   * bridge, sparse-node highway), which never carries that marker. The length floor
+   * skips trivial waypoint-snap connectors.
    *
    * @return int[]{maxGapMeters, totalGapMeters}
    */
@@ -189,22 +205,13 @@ public final class LoopQualityMetrics {
       OsmPathElement curr = nodes.get(i);
       int dist = prev.calcDistance(curr);
 
-      boolean isGap = false;
+      String tags = (curr.message != null) ? curr.message.wayKeyValues : null;
+      boolean isFerry = tags != null && tags.contains(FERRY_MARKER);
+      boolean isBeeline = tags != null && tags.contains(BEELINE_MARKER);
 
-      // Check if this segment is a ferry route
-      if (curr.message != null && curr.message.wayKeyValues != null
-          && curr.message.wayKeyValues.contains("route=ferry")) {
-        isGap = true;
-      }
-      // Check if this is a very straight line segment (potential beeline)
-      // A straight line over 500m with minimal intermediate nodes suggests a shortcut
-      else if (dist > 500) {
-        // For segments >500m, check if there are intermediate nodes that deviate
-        // from the straight line. If not, it's likely a beeline.
-        // Use a simplified approach: if the segment is >500m between two consecutive
-        // nodes in our track, it's likely a beeline (real roads have more nodes).
-        isGap = true;
-      }
+      // Ferries are gaps at any length; beelines only once they exceed the
+      // connector threshold (a short direct segment is just a waypoint snap).
+      boolean isGap = isFerry || (isBeeline && dist > BEELINE_MIN_METERS);
 
       if (isGap) {
         totalGap += dist;
