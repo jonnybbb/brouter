@@ -157,15 +157,16 @@ public class LoopQualityMetricsTest {
 
   @Test
   public void continuityWithKnownGap() {
-    // Build a track with a 500m gap in the middle
-    // Normal spacing: ~7m per step. Then a single 500m jump.
+    // Build a track with a long beeline gap in the middle. A real BRouter beeline
+    // carries the direct_segment marker (set in OsmPath.addAddionalPenalty); the gap
+    // detector keys off that marker, not the raw jump length.
     List<OsmPathElement> nodes = new ArrayList<>();
     // First segment: 10 points spaced ~7m apart
     for (int i = 0; i < 10; i++) {
       nodes.add(OsmPathElement.create(BASE_ILON + i * 100, BASE_ILAT, (short) 0, null));
     }
-    // Gap: jump ~500m (about 7000 ilon units at this latitude)
-    nodes.add(OsmPathElement.create(BASE_ILON + 7000000, BASE_ILAT, (short) 0, null));
+    // Gap: a long beeline jump tagged as a synthetic direct segment.
+    nodes.add(nodeWithTags(BASE_ILON + 7000000, BASE_ILAT, "direct_segment=1"));
     // After gap: a few more points
     for (int i = 1; i <= 5; i++) {
       nodes.add(OsmPathElement.create(BASE_ILON + 7000000 + i * 100, BASE_ILAT, (short) 0, null));
@@ -174,6 +175,58 @@ public class LoopQualityMetricsTest {
     int[] gapInfo = LoopQualityMetrics.computeGapInfo(nodes);
     Assert.assertTrue("maxGap should be > 100m", gapInfo[0] > 100);
     Assert.assertTrue("totalGap should be > 0", gapInfo[1] > 0);
+  }
+
+  /** Helper: a track node reached over a segment carrying the given way tags. */
+  private static OsmPathElement nodeWithTags(int ilon, int ilat, String wayKeyValues) {
+    OsmPathElement n = OsmPathElement.create(ilon, ilat, (short) 0, null);
+    MessageData msg = new MessageData();
+    msg.wayKeyValues = wayKeyValues;
+    n.message = msg;
+    return n;
+  }
+
+  @Test
+  public void gapDetectionUsesBeelineMarkerNotLength() {
+    // ~10000 ilon units ≈ 700m here, comfortably over the 500m beeline floor.
+    int farIlon = BASE_ILON + 10000;
+
+    // A long REAL road segment carries genuine way tags (no direct_segment marker)
+    // and must NOT be flagged — this is the rural-straight false-positive we fixed.
+    List<OsmPathElement> road = new ArrayList<>();
+    road.add(OsmPathElement.create(BASE_ILON, BASE_ILAT, (short) 0, null));
+    road.add(nodeWithTags(farIlon, BASE_ILAT, "highway=tertiary"));
+    int[] roadGap = LoopQualityMetrics.computeGapInfo(road);
+    Assert.assertEquals("a long real-road segment must not be flagged as a gap", 0, roadGap[0]);
+    Assert.assertEquals(0, roadGap[1]);
+
+    // A real BRouter beeline carries the direct_segment marker (set in
+    // OsmPath.addAddionalPenalty) and MUST be flagged when long enough.
+    List<OsmPathElement> beeline = new ArrayList<>();
+    beeline.add(OsmPathElement.create(BASE_ILON, BASE_ILAT, (short) 0, null));
+    beeline.add(nodeWithTags(farIlon, BASE_ILAT, "direct_segment=3"));
+    int[] beelineGap = LoopQualityMetrics.computeGapInfo(beeline);
+    Assert.assertTrue("a long direct_segment beeline must be flagged as a gap", beelineGap[0] > 0);
+    Assert.assertEquals("the whole beeline span counts as gap", beelineGap[0], beelineGap[1]);
+  }
+
+  @Test
+  public void shortBeelineConnectorIsNotAGap() {
+    // A sub-threshold direct_segment (waypoint-snap connector, ~70m) is not a routing gap.
+    List<OsmPathElement> nodes = new ArrayList<>();
+    nodes.add(OsmPathElement.create(BASE_ILON, BASE_ILAT, (short) 0, null));
+    nodes.add(nodeWithTags(BASE_ILON + 1000, BASE_ILAT, "direct_segment=1"));
+    int[] gap = LoopQualityMetrics.computeGapInfo(nodes);
+    Assert.assertEquals("a short beeline connector must not be flagged", 0, gap[0]);
+  }
+
+  @Test
+  public void ferrySegmentIsAGapAtAnyLength() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    nodes.add(OsmPathElement.create(BASE_ILON, BASE_ILAT, (short) 0, null));
+    nodes.add(nodeWithTags(BASE_ILON + 1000, BASE_ILAT, "route=ferry"));
+    int[] gap = LoopQualityMetrics.computeGapInfo(nodes);
+    Assert.assertTrue("a ferry segment is a gap regardless of length", gap[0] > 0);
   }
 
   // --- Compactness score tests ---

@@ -257,7 +257,7 @@ public class GreedyRoundTripPlanner {
             addVisitedEdges(returnTrack, visitedEdgeCounts);
             segments.add(returnTrack);
             OsmTrack finalTrack = mergeSegments(segments, null);
-            populateResult(result, finalTrack, waypointStack, start, startMwp, segments);
+            populateResult(result, finalTrack, waypointStack, start, startMwp, segments, desiredDistance, startDirection);
             result.setTotalDistanceMeters((int) closedDistance);
             result.setWithinTolerance(true);
             result.setSubRoutesChosen(step);
@@ -300,7 +300,7 @@ public class GreedyRoundTripPlanner {
 
     if (bestFallback != null) {
       populateResult(result, bestFallback.track, bestFallback.waypointStack, start,
-        startMwp, bestFallback.legTracks);
+        startMwp, bestFallback.legTracks, desiredDistance, startDirection);
       result.setTotalDistanceMeters(bestFallback.track.distance);
       result.setWithinTolerance(false);
       result.setFallbackReason("best error=" + String.format("%.1f%%", bestFallback.error * 100));
@@ -316,7 +316,7 @@ public class GreedyRoundTripPlanner {
       if (returnTrack != null && returnTrack.distance > 0) {
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegments(segments, null);
-        populateResult(result, finalTrack, waypointStack, start, startMwp, segments);
+        populateResult(result, finalTrack, waypointStack, start, startMwp, segments, desiredDistance, startDirection);
         result.setTotalDistanceMeters(finalTrack.distance);
         result.setWithinTolerance(false);
         result.setFallbackReason("forced closure");
@@ -332,12 +332,23 @@ public class GreedyRoundTripPlanner {
 
   private void populateResult(RoundTripResult result, OsmTrack track,
     List<MatchedWaypoint> waypointStack, OsmNodeNamed start,
-    MatchedWaypoint startMwp, List<OsmTrack> segments) {
+    MatchedWaypoint startMwp, List<OsmTrack> segments,
+    double desiredDistance, double startDirection) {
     result.setTrack(track);
     result.setLoopWaypoints(buildLoopWaypoints(waypointStack, start));
     result.setMatchedWaypoints(buildMatchedWaypoints(waypointStack, startMwp));
     result.setLegTracks(new ArrayList<>(segments));
-    result.setReusedEdgeRatio(computeReusedEdgeRatio(track));
+    // Compute the full quality metrics once and surface them: the reuse ratio
+    // drives the result field, and the complete metric set is recorded as a
+    // diagnostic so API callers can inspect loop quality instead of it being
+    // computed and discarded.
+    if (track != null && track.nodes != null && track.nodes.size() >= 2) {
+      LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, (int) desiredDistance, startDirection);
+      result.setReusedEdgeRatio(metrics.getRoadReusePercent() / 100.0);
+      result.addDiagnostic("quality: " + metrics);
+    } else {
+      result.setReusedEdgeRatio(0.0);
+    }
   }
 
   // --- Candidate generation ---
@@ -373,6 +384,7 @@ public class GreedyRoundTripPlanner {
       engine.maxRunningTime = SUB_ROUTE_TIMEOUT_MS;
       return engine.findTrack(name, from, to, null, refTrack, false);
     } catch (IllegalArgumentException e) {
+      engine.logInfo(name + ": no track (" + e.getMessage() + ")");
       return null;
     } finally {
       engine.startTime = savedStartTime;
@@ -396,6 +408,7 @@ public class GreedyRoundTripPlanner {
       }
       return mwp;
     } catch (Exception e) {
+      engine.logInfo("matchPoint(" + name + ") failed: " + e.getMessage());
       return null;
     }
   }
@@ -476,10 +489,6 @@ public class GreedyRoundTripPlanner {
     return lo ^ (hi * 0x9E3779B97F4A7C15L);
   }
 
-  private double computeReusedEdgeRatio(OsmTrack track) {
-    if (track.nodes == null || track.nodes.size() < 2) return 0.0;
-    return LoopQualityMetrics.compute(track, track.distance, 0).getRoadReusePercent() / 100.0;
-  }
 
   /**
    * Convert the waypoint stack (MatchedWaypoints) to a list of OsmNodeNamed

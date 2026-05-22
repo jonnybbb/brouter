@@ -83,6 +83,11 @@ public class LoopQualityTest {
 
   @Before
   public void setUp() throws Exception {
+    // Opt-in: this suite is slow (>1h with full segment data) and is excluded from the
+    // standard build. Run explicitly with -Dloop.tests=true (and segment data present).
+    Assume.assumeTrue(
+      "Loop quality tests are opt-in — run with -Dloop.tests=true",
+      Boolean.getBoolean("loop.tests"));
     projectDir = new File(".").getCanonicalFile().getParentFile();
   }
 
@@ -384,13 +389,8 @@ public class LoopQualityTest {
   }
 
   private File profileFile(String name) {
-    // Use test-local profiles bundled with a lookups.dat version matching the
-    // published segment files (which may lag behind the main lookups.dat version).
-    File testProfileDir = new File(projectDir, "brouter-core/src/test/resources/test-data/profiles");
-    File testProfile = new File(testProfileDir, name + ".brf");
-    if (testProfile.exists()) {
-      return testProfile;
-    }
+    // The published segment tiles and misc/profiles2 are now the same lookup
+    // version (v11), so route with the shipped profiles directly.
     return new File(projectDir, "misc/profiles2/" + name + ".brf");
   }
 

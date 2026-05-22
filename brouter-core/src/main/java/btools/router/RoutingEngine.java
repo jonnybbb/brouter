@@ -57,6 +57,15 @@ public class RoutingEngine extends Thread {
 
   private int ROUNDTRIP_DEFAULT_DIRECTIONADD = 45;
 
+  // A loop must enclose area: at least a triangle (start + 2 intermediate waypoints).
+  // A single intermediate point is only an out-and-back, not a loop.
+  private static final int MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS = 2;
+  // A produced round-trip below either bound is a degenerate stub, not a loop.
+  private static final int MIN_ROUNDTRIP_LOOP_NODES = 6;
+  private static final int MIN_ROUNDTRIP_LOOP_METERS = 200;
+  // A loop whose start/end gap exceeds this never returned to the origin.
+  private static final int MAX_ROUNDTRIP_CLOSURE_METERS = 400;
+
   private int MAX_DYNAMIC_RANGE = 60000;
 
   protected OsmTrack foundTrack = new OsmTrack();
@@ -145,7 +154,7 @@ public class RoutingEngine extends Thread {
     return infoLogEnabled || infoLogWriter != null;
   }
 
-  private void logInfo(String s) {
+  void logInfo(String s) {
     if (infoLogEnabled) {
       System.out.println(s);
     }
@@ -496,9 +505,13 @@ public class RoutingEngine extends Thread {
       double searchRadius;
       if (routingContext.roundTripLength != null) {
         // roundTripLength is the desired total loop distance — convert to internal search radius.
-        // The waypoint strategies place points at searchRadius from start and route between them.
-        // Empirically, total loop distance ≈ 2*PI * searchRadius. Note that the actual shape
-        // is rarely circular; it's typically a corridor, piece-of-cake, or at most a half-circle.
+        // The waypoint strategies place points at searchRadius from start and route between them,
+        // so the loop traces roughly the circle circumference: total ≈ 2*PI * searchRadius.
+        // Do NOT raise this factor toward L/2 (the out-and-back relation) thinking it gives a
+        // "wider" loop: a closed loop traces the circumference, so a larger radius overshoots.
+        // Measured across 4 real regions (urban/alpine/coastal/rural) for a 40km target, the
+        // distance ratio climbs monotonically with the factor — L/2π≈0.91, 0.20→1.3, 0.25→1.6,
+        // 0.33→2.1, L/2→3.2 — so L/2π is the calibrated optimum (closest to 1.0, best composite).
         searchRadius = routingContext.roundTripLength / (2 * Math.PI);
       } else {
         searchRadius = (routingContext.roundTripDistance == null ? 1500 : routingContext.roundTripDistance);
@@ -509,6 +522,10 @@ public class RoutingEngine extends Thread {
         direction = getRandomDirectionFromData(waypoints.get(0), searchRadius);
         direction += directionAdd;
       }
+      // Normalize to a [0,360) compass bearing: getRandomDirectionFromData()+directionAdd
+      // can exceed 360 (e.g. 332+45=377), and a user-supplied startDirection may be out of
+      // range, while downstream bearing comparisons assume a normalized value.
+      direction = CheapAngleMeter.normalize(direction);
 
       // Resolve effective algorithm
       RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
@@ -537,6 +554,50 @@ public class RoutingEngine extends Thread {
         doWaypointBasedRoundTrip(searchRadius, direction, algo);
       }
 
+      // A loop needs at least a triangle (start + 2 intermediate waypoints). With a single
+      // intermediate the route is only an out-and-back, which closure/detour handling cannot
+      // turn into a loop. Same-way-back is the deliberate exception (it IS an out-and-back).
+      int intermediateWaypoints = (matchedWaypoints == null) ? 0 : matchedWaypoints.size() - 2;
+      if (!routingContext.allowSamewayback
+          && intermediateWaypoints < MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS) {
+        errorMessage = "round-trip could not place enough waypoints to form a loop (need "
+          + MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS + " intermediate, got " + Math.max(0, intermediateWaypoints)
+          + ") for direction " + (int) direction + " at radius " + (int) searchRadius + "m";
+        logInfo(errorMessage);
+        foundTrack = null;
+        return;
+      }
+
+      // Contract: a round-trip must yield an actual loop. When intermediate waypoints
+      // cannot be placed on reachable roads (e.g. the requested direction has no roads
+      // within this radius), routing collapses to a 1-3 node stub. Report that as a
+      // failure rather than returning a non-loop as success.
+      if (foundTrack == null || foundTrack.nodes == null
+          || foundTrack.nodes.size() < MIN_ROUNDTRIP_LOOP_NODES
+          || foundTrack.distance < MIN_ROUNDTRIP_LOOP_METERS) {
+        int n = (foundTrack == null || foundTrack.nodes == null) ? 0 : foundTrack.nodes.size();
+        int d = foundTrack == null ? 0 : foundTrack.distance;
+        errorMessage = "round-trip could not form a loop for direction " + (int) direction
+          + " at radius " + (int) searchRadius + "m (only " + n + " nodes, " + d
+          + "m) — no reachable roads in that direction at this distance";
+        logInfo(errorMessage);
+        foundTrack = null;
+        return;
+      }
+
+      // A round-trip must return to its origin. If the road network forced the route
+      // to end far from the start (e.g. an over-constrained area), it is not a loop.
+      int closingGap = foundTrack.nodes.get(0).calcDistance(
+        foundTrack.nodes.get(foundTrack.nodes.size() - 1));
+      if (closingGap > MAX_ROUNDTRIP_CLOSURE_METERS) {
+        errorMessage = "round-trip did not return to origin (gap " + closingGap
+          + "m) for direction " + (int) direction + " at radius " + (int) searchRadius
+          + "m — the area is too constrained to close a loop at this distance";
+        logInfo(errorMessage);
+        foundTrack = null;
+        return;
+      }
+
       // Check distance accuracy and warn if terrain prevents a compact loop
       if (foundTrack != null && foundTrack.distance > 0) {
         double expectedDistance = 2 * Math.PI * searchRadius;
@@ -559,8 +620,8 @@ public class RoutingEngine extends Thread {
       long endTime = System.currentTimeMillis();
       logInfo("round trip execution time = " + (endTime - startTime) / 1000. + " seconds");
     } catch (Exception e) {
-      e.getStackTrace();
       logException(e);
+      logThrowable(e);
     }
 
   }
@@ -661,7 +722,10 @@ public class RoutingEngine extends Thread {
     GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this);
     RoundTripResult result = planner.plan(start, desiredDistance, direction);
 
-    if (result != null && result.getLoopWaypoints() != null && result.getLoopWaypoints().size() >= 3) {
+    // A real loop needs at least a triangle: start + 2 intermediate waypoints + closing
+    // start (>= 4 entries). A single intermediate is just an out-and-back, so fall back
+    // to the waypoint strategy (which targets more points) rather than accept it.
+    if (result != null && result.getLoopWaypoints() != null && result.getLoopWaypoints().size() >= 4) {
       for (String diag : result.getDiagnostics()) {
         logInfo("greedy: " + diag);
       }
@@ -913,6 +977,7 @@ public class RoutingEngine extends Thread {
     try {
       nodesCache.matchWaypointsToNodes(mwpList, maxSnapDist, islandNodePairs);
     } catch (Exception e) {
+      logInfo(logTag + ": match failed, leaving " + wps.size() + " waypoint(s) unsnapped: " + e.getMessage());
       List<Boolean> all = new ArrayList<>(wps.size());
       for (int i = 0; i < wps.size(); i++) all.add(false);
       return all;
@@ -1191,6 +1256,79 @@ public class RoutingEngine extends Thread {
         long cell = ((long) cx) << 32 | (cy & 0xFFFFFFFFL);
         grid.computeIfAbsent(cell, k -> new ArrayList<>()).add(i);
       }
+    }
+  }
+
+  /**
+   * Relink each node's origin back-pointer to its predecessor in the (possibly
+   * edited) nodes list, so the origin chain length matches nodes.size(). Required
+   * after round-trip node removal because processVoiceHints() walks the origin
+   * chain rather than the list.
+   */
+  private static void rebuildOriginChain(OsmTrack track) {
+    List<OsmPathElement> nodes = track.nodes;
+    for (int i = 0; i < nodes.size(); i++) {
+      nodes.get(i).origin = (i == 0) ? null : nodes.get(i - 1);
+    }
+  }
+
+  // Hints closer together than this are treated as one maneuver for round-trip cleanup.
+  private static final double ROUNDTRIP_VOICEHINT_MERGE_DIST = 25.0; // meters
+
+  /**
+   * Collapse clusters of voice hints produced by synthetic round-trip geometry
+   * (waypoint-snapping wiggles and curves reported as several turns). Within a run
+   * of hints spaced closer than {@link #ROUNDTRIP_VOICEHINT_MERGE_DIST}, if the net
+   * turn is near-straight the whole cluster is dropped; otherwise only the single
+   * dominant turn is kept. Roundabouts, beelines and the end marker are never merged,
+   * and the conservative distance threshold leaves genuine close turns intact.
+   * Round-trip only — does not affect normal point-to-point routes.
+   */
+  private void consolidateRoundTripVoiceHints(OsmTrack track) {
+    if (track.voiceHints == null || track.voiceHints.list.size() < 2) return;
+    List<VoiceHint> in = track.voiceHints.list;
+    List<VoiceHint> out = new ArrayList<>();
+    int i = 0;
+    while (i < in.size()) {
+      VoiceHint cur = in.get(i);
+      if (cur.cmd == VoiceHint.BL || cur.cmd == VoiceHint.END || cur.isRoundabout()) {
+        out.add(cur);
+        i++;
+        continue;
+      }
+      int j = i;
+      float netAngle = (cur.angle == Float.MAX_VALUE) ? 0f : cur.angle;
+      VoiceHint dominant = cur;
+      while (j + 1 < in.size()) {
+        VoiceHint next = in.get(j + 1);
+        if (next.cmd == VoiceHint.BL || next.cmd == VoiceHint.END || next.isRoundabout()) break;
+        if (in.get(j).distanceToNext >= ROUNDTRIP_VOICEHINT_MERGE_DIST) break;
+        netAngle += (next.angle == Float.MAX_VALUE) ? 0f : next.angle;
+        if (Math.abs(next.angle) > Math.abs(dominant.angle)) dominant = next;
+        j++;
+      }
+      if (j > i) {
+        if (Math.abs(netAngle) >= VoiceHintProcessor.SIGNIFICANT_ANGLE) {
+          // keep the cluster's sharpest turn, carrying the trailing distance forward
+          dominant.distanceToNext = in.get(j).distanceToNext;
+          out.add(dominant);
+        } else if (!out.isEmpty()) {
+          // net-straight wiggle — drop the cluster, but preserve its distance so the
+          // previous instruction's "distance to next" still reaches the following hint.
+          double dropped = 0;
+          for (int k = i; k <= j; k++) dropped += in.get(k).distanceToNext;
+          out.get(out.size() - 1).distanceToNext += dropped;
+        }
+        i = j + 1;
+      } else {
+        out.add(cur);
+        i++;
+      }
+    }
+    if (out.size() != in.size()) {
+      logInfo("roundtrip voicehints: consolidated " + in.size() + " -> " + out.size());
+      track.voiceHints.list.clear();
+      track.voiceHints.list.addAll(out);
     }
   }
 
@@ -2256,6 +2394,17 @@ public class RoutingEngine extends Thread {
         hasDirectRouting = true;
       }
 
+      // greedyLegTracks is indexed by leg position and only valid while the
+      // matched-waypoint count is unchanged. If matching/filtering above added or
+      // removed a waypoint, the leg-to-waypoint correspondence is broken, so drop
+      // the corridor constraints rather than route through a misaligned leg track.
+      if (greedyLegTracks != null && greedyLegTracks.length != matchedWaypoints.size() - 1) {
+        logInfo("greedy leg tracks (" + greedyLegTracks.length + ") no longer match "
+          + (matchedWaypoints.size() - 1) + " legs after matching/filtering; "
+          + "dropping corridor constraints");
+        greedyLegTracks = null;
+      }
+
       for (MatchedWaypoint mwp : matchedWaypoints) {
         if (hasInfo() && matchedWaypoints.size() != nUnmatched)
           logInfo("new wp=" + mwp.waypoint + " " + mwp.crosspoint + (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT ? " beeline" : (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_MEETING ? " via" : "")));
@@ -2395,8 +2544,21 @@ public class RoutingEngine extends Thread {
     postElevationCheck(totaltrack);
 
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
-      removeBackAndForthSegments(totaltrack, matchedWaypoints);
-      removeMicroDetours(totaltrack, 1500, matchedWaypoints);
+      // allowSamewayback is an out-and-back: it intentionally retraces the outbound leg.
+      // Back-and-forth/micro-detour removal would see the two legs as an overlap and delete
+      // one of them, leaving a one-way segment that no longer closes — so skip it here.
+      // (This also affected loops that reduced to a single intermediate waypoint.)
+      if (!routingContext.allowSamewayback) {
+        removeBackAndForthSegments(totaltrack, matchedWaypoints);
+        removeMicroDetours(totaltrack, 1500, matchedWaypoints);
+      }
+      // removeBackAndForthSegments/removeMicroDetours edit the nodes list in place but
+      // leave each node's origin back-pointer dangling through the removed nodes.
+      // processVoiceHints() walks the origin chain (not the list), so a chain longer
+      // than the list drives its node counter negative — producing voice hints with
+      // negative indexInTrack and stale, out-of-range turn angles at the loop seam.
+      // Relink origins to the surviving list order to restore the chain == list invariant.
+      rebuildOriginChain(totaltrack);
     }
 
     recalcTrack(totaltrack);
@@ -2404,6 +2566,9 @@ public class RoutingEngine extends Thread {
     matchedWaypoints.get(matchedWaypoints.size() - 1).indexInTrack = totaltrack.nodes.size() - 1;
     totaltrack.matchedWaypoints = matchedWaypoints;
     totaltrack.processVoiceHints(routingContext);
+    if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
+      consolidateRoundTripVoiceHints(totaltrack);
+    }
     totaltrack.prepareSpeedProfile(routingContext);
 
     totaltrack.showTime = routingContext.showTime;

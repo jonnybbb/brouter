@@ -1,6 +1,6 @@
 *.iml
 .gradle
-.idea/
+.idea/*
 build
 /local.properties
 /.idea/caches
@@ -23,3 +23,5 @@ misc/customprofiles
 .classpath
 .project
 !/.idea/runConfigurations
+!/.idea/inspectionProfiles
+!/.idea/inspectionProfiles/*
