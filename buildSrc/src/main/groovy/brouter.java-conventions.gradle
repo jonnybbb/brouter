@@ -20,10 +20,10 @@ compileJava {
 }
 
 test {
-    // Forward opt-in flags to the test JVM. The loop quality suites
-    // (LoopQualityTest, LoopGoldStandardTest) are slow (>1h with full segment data)
-    // and self-skip unless -Dloop.tests=true is passed, so they never run in the
-    // standard build but stay runnable on demand via Gradle.
+    // Forward opt-in flags to the test JVM. The loop-quality suites
+    // (LoopQualityTest, LoopGoldStandardTest) require downloaded segment data and
+    // are gated behind -Dloop.tests=true, so they self-skip in the standard build
+    // but stay runnable on demand via Gradle.
     systemProperty 'loop.tests', System.getProperty('loop.tests', 'false')
     systemProperty 'loop.profiles', System.getProperty('loop.profiles', '')
     systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
