@@ -117,10 +117,6 @@ public class LoopQualityTest {
     logVariantMetrics(isoResult);
     logVariantMetrics(greedyResult);
 
-    if (probeResult != null && probeResult.metrics != null) {
-      writeGoldenBaseline(probeResult);
-    }
-
     if (probeResult == null || probeResult.metrics == null) {
       Assume.assumeTrue("routing could not produce track for " + testLabel, false);
       return;
@@ -335,53 +331,6 @@ public class LoopQualityTest {
     }
     sb.append("\n  ]\n}\n");
     return sb.toString();
-  }
-
-  private void writeGoldenBaseline(LoopQualityResult result) {
-    if (result.metrics == null) return;
-    try {
-      File goldenDir = new File(projectDir, "brouter-core/src/test/resources/test-data/golden");
-      goldenDir.mkdirs();
-
-      File metricsFile = new File(goldenDir, testLabel + "_metrics.json");
-      if (!metricsFile.exists()) {
-        try (FileWriter fw = new FileWriter(metricsFile)) {
-          fw.write(formatMetricsJson(result.metrics));
-        }
-      }
-    } catch (IOException e) {
-      System.err.println("Failed to write golden baseline for " + testLabel + ": " + e.getMessage());
-    }
-  }
-
-  private String formatMetricsJson(LoopQualityMetrics metrics) {
-    return String.format(Locale.US,
-      "{\n" +
-      "  \"roadReusePercent\": %.2f,\n" +
-      "  \"distanceRatio\": %.4f,\n" +
-      "  \"directionDeltaDegrees\": %.2f,\n" +
-      "  \"actualDistanceMeters\": %d,\n" +
-      "  \"requestedDistanceMeters\": %d,\n" +
-      "  \"continuityScore\": %.4f,\n" +
-      "  \"maxGapMeters\": %d,\n" +
-      "  \"totalGapMeters\": %d,\n" +
-      "  \"compactnessScore\": %.4f,\n" +
-      "  \"averageCostPerMeter\": %.4f,\n" +
-      "  \"closureDistanceMeters\": %d,\n" +
-      "  \"compositeScore\": %.4f\n" +
-      "}\n",
-      metrics.getRoadReusePercent(),
-      metrics.getDistanceRatio(),
-      metrics.getDirectionDeltaDegrees(),
-      metrics.getActualDistanceMeters(),
-      metrics.getRequestedDistanceMeters(),
-      metrics.getContinuityScore(),
-      metrics.getMaxGapMeters(),
-      metrics.getTotalGapMeters(),
-      metrics.getCompactnessScore(),
-      metrics.getAverageCostPerMeter(),
-      metrics.getClosureDistanceMeters(),
-      metrics.compositeScore());
   }
 
   private File segmentDir() {
