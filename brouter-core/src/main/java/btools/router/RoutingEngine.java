@@ -529,7 +529,8 @@ public class RoutingEngine extends Thread {
 
       // Resolve effective algorithm
       RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
-      // Legacy compat: if roundTripIsochrone was set but roundTripAlgorithm wasn't explicitly changed
+      // roundTripIsochrone is a boolean shortcut for setting algorithm to ISOCHRONE;
+      // honour it only when no explicit algorithm was chosen.
       if (algo == RoundTripAlgorithm.AUTO && routingContext.roundTripIsochrone) {
         algo = RoundTripAlgorithm.ISOCHRONE;
       }

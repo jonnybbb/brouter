@@ -223,9 +223,8 @@ public class RoutingParamCollector {
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
         } else if (key.equals("roundTripIsochrone")) {
-          // Legacy compatibility: roundTripIsochrone=1 maps to ISOCHRONE.
-          // Only apply when roundTripAlgorithm has not been set explicitly, so an
-          // explicit roundTripAlgorithm wins regardless of URL parameter order.
+          // roundTripIsochrone=1 is a shortcut for roundTripAlgorithm=ISOCHRONE.
+          // An explicit roundTripAlgorithm always wins, regardless of parameter order.
           rctx.roundTripIsochrone = Integer.parseInt(value)==1;
           if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;

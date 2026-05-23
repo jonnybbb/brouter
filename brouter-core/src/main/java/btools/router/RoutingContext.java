@@ -228,8 +228,11 @@ public final class RoutingContext {
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
 
-  /** @deprecated Use {@link #roundTripAlgorithm} instead. Kept for backward compatibility. */
-  @Deprecated
+  /**
+   * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
+   * settable via the URL parameter {@code roundTripIsochrone=1}. Honoured only when
+   * {@link #roundTripAlgorithm} is left at AUTO — an explicit algorithm always wins.
+   */
   public boolean roundTripIsochrone;
 
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
