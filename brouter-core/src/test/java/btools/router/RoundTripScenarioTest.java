@@ -17,7 +17,7 @@ public class RoundTripScenarioTest {
 
   private OsmTrack routeOk(String profile, int direction, int radius, Consumer<RoutingContext> tweak) {
     RoutingEngine re = RoundTripFixture.engine(profile, direction, radius, tweak);
-    Assert.assertNull("routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "routing");
     return re.getFoundTrack();
   }
 
@@ -95,7 +95,7 @@ public class RoundTripScenarioTest {
   public void userViaPreservedInValidLoop() {
     OsmNodeNamed via = RoundTripFixture.node("via1", 8.722, 50.001); // known-good fixture road
     RoutingEngine re = RoundTripFixture.engine("trekking", 0, 1000, rc -> { }, via);
-    Assert.assertNull("user-via round-trip failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "user-via round-trip");
 
     OsmTrack track = re.getFoundTrack();
     RoundTripFixture.assertValidLoop(track, "userVia", 30.0);

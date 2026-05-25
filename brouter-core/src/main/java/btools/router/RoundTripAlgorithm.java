@@ -29,12 +29,27 @@ public enum RoundTripAlgorithm {
   /** QUALITY tier: greedy planner with isochrone-derived candidate pool. */
   ISO_GREEDY;
 
+  /**
+   * Parse the user-facing algorithm name. Accepts both the internal enum names
+   * ({@code WAYPOINT}, {@code GREEDY}, {@code ISO_GREEDY}, {@code ISOCHRONE},
+   * {@code AUTO}) and the user-facing tier aliases ({@code FAST} →
+   * {@code WAYPOINT}, {@code BALANCED} → {@code GREEDY}, {@code QUALITY} →
+   * {@code ISO_GREEDY}). Case-insensitive. Unknown input falls back to
+   * {@link #AUTO}.
+   */
   public static RoundTripAlgorithm fromString(String s) {
     if (s == null) return AUTO;
-    try {
-      return valueOf(s.toUpperCase());
-    } catch (IllegalArgumentException e) {
-      return AUTO;
+    String upper = s.toUpperCase();
+    switch (upper) {
+      case "FAST":     return WAYPOINT;
+      case "BALANCED": return GREEDY;
+      case "QUALITY":  return ISO_GREEDY;
+      default:
+        try {
+          return valueOf(upper);
+        } catch (IllegalArgumentException e) {
+          return AUTO;
+        }
     }
   }
 }

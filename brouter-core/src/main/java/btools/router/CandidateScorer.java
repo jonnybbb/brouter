@@ -26,6 +26,17 @@ public class CandidateScorer {
   private final double wIsoBonus;
   /** Penalty weight for high cost-per-airmeter at the candidate (hostility signal). */
   private final double wIsoHostility;
+  /**
+   * Whether iso-hostility scoring is active. The hostility metric
+   * ({@link #isoHostilityPenalty}) assumes a paved-profile cost-per-airmeter
+   * baseline of ~1.3; for MTB/gravel the baseline is ~9 (path_preference=20
+   * for MTB inflates costfactor on any paved way). Applying the same
+   * threshold to all profiles fires hostility on every candidate for MTB,
+   * collapsing ISO_GREEDY's selection space. Off by default — turn on
+   * explicitly via {@link #setHostilityActive(boolean)} only for profiles
+   * whose typical cost/airDist is close to 1.0.
+   */
+  private boolean hostilityActive;
 
   public CandidateScorer() {
     this(1.0, 2.0, 0.5, 3.0, 1.5, 1.5);
@@ -60,6 +71,19 @@ public class CandidateScorer {
     this.wPrev = wPrev;
     this.wIsoBonus = wIsoBonus;
     this.wIsoHostility = wIsoHostility;
+    this.hostilityActive = false; // safe default: profiles must opt in
+  }
+
+  /**
+   * Enable or disable iso-hostility scoring. Only enable for paved profiles
+   * (fastbike, road) where {@link #isoHostilityPenalty}'s 1.5-4.0 indirectness
+   * thresholds match the profile's cost-per-airmeter baseline. MTB/gravel
+   * profiles have a baseline of ~9 (every paved way costs 9× ideal) and the
+   * penalty fires on every candidate, collapsing the candidate pool. The
+   * other ISO weights (bonus, contour-mismatch) remain active either way.
+   */
+  public void setHostilityActive(boolean active) {
+    this.hostilityActive = active;
   }
 
   /**
@@ -135,7 +159,9 @@ public class CandidateScorer {
     double spreadScore = spreadPenalty(distFromStart, searchRadius, step, totalSteps);
     double prevScore = previousDistancePenalty(distFromPrevious, subRouteTarget);
     double isoBonus = isoValidatedBonus(costFromStart, bucketHits);
-    double isoHostility = isoHostilityPenalty(costFromStart, distFromStart);
+    double isoHostility = hostilityActive
+      ? isoHostilityPenalty(costFromStart, distFromStart)
+      : 0.0;
     double contourMismatch = isoContourDepthMismatch(sourceContour, step, totalSteps);
 
     return wDist * distScore

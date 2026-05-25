@@ -112,22 +112,16 @@ public class RoutingEngine extends Thread {
   private static final double SNAP_REJECT_COSTFACTOR_DEFAULT = 10.0;
 
   /**
-   * Profile-normalization for the isochrone Dijkstra (mtb / high-costfactor fix).
+   * Isochrone Dijkstra cost budget.
    *
-   * <p>The base cost budget {@code searchRadius * 4} translates to wildly different
-   * physical depths depending on the profile costfactor: ~3× searchRadius for
-   * fastbike (costfactor ≈ 1.3), ~1.33× for mtb (costfactor ≈ 3). A 5-step loop
-   * needs pool depth ≈ 2× searchRadius; mtb's pool is too clustered and the
-   * planner collapses to half target length (observed ratio 0.48).
-   *
-   * <p>Single-pass adaptive extension: if the Dijkstra exhausts its initial
-   * cost budget AND the frontier has not yet reached {@link #MIN_FRONTIER_REACH_RATIO}
-   * × searchRadius, the budget is doubled (once) up to {@link #MAX_ISO_BUDGET_RATIO}
-   * × searchRadius and expansion continues. Fastbike runs typically reach the
-   * target depth on the initial budget and trigger no extension.
+   * <p>The fixed budget {@code searchRadius * 4} produces wildly different
+   * physical pool depths depending on the profile costfactor: ~3× searchRadius
+   * for fastbike (costfactor ≈ 1.3), ~1.33× for mtb (costfactor ≈ 3). A 5-step
+   * loop needs pool depth ≈ 2× searchRadius; mtb's pool is too clustered and
+   * the planner collapses to half target length (observed ratio 0.48). An
+   * adaptive extension was specified but not implemented — ISO_GREEDY
+   * therefore stays opt-in only, never AUTO-selected.
    */
-  private static final double MIN_FRONTIER_REACH_RATIO = 1.8;
-  private static final double MAX_ISO_BUDGET_RATIO = 8.0; // 2× the initial 4×
 
   private int MAX_DYNAMIC_RANGE = 60000;
 
@@ -651,22 +645,29 @@ public class RoutingEngine extends Thread {
         return;
       }
 
-      // A round-trip must return to its origin. If the road network forced the route
-      // to end far from the start (e.g. an over-constrained area), it is not a loop.
-      int closingGap = foundTrack.nodes.get(0).calcDistance(
-        foundTrack.nodes.get(foundTrack.nodes.size() - 1));
-      if (closingGap > MAX_ROUNDTRIP_CLOSURE_METERS) {
-        errorMessage = "round-trip did not return to origin (gap " + closingGap
-          + "m) for direction " + (int) direction + " at radius " + (int) searchRadius
-          + "m — the area is too constrained to close a loop at this distance";
+      // Production-safety acceptance gate: applied uniformly across all
+      // round-trip algorithms (WAYPOINT/ISOCHRONE/GREEDY/ISO_GREEDY) right
+      // before returning success. The gate rejects unsafe routes (beeline
+      // segments, broken closure, distance way off, excessive reuse,
+      // path/track-heavy routes on a road bike). On rejection we prefer
+      // no route over a surprising route. See {@link RoundTripQualityGate}.
+      double expectedDistance = 2 * Math.PI * searchRadius;
+      String profileName = routingContext.getProfileName();
+      String rejectReason = RoundTripQualityGate.validate(foundTrack, expectedDistance, profileName,
+        routingContext.allowSamewayback);
+      if (rejectReason != null) {
+        errorMessage = "round-trip rejected by quality gate (direction " + (int) direction
+          + ", radius " + (int) searchRadius + "m): " + rejectReason;
         logInfo(errorMessage);
         foundTrack = null;
         return;
       }
 
-      // Check distance accuracy and warn if terrain prevents a compact loop
-      if (foundTrack != null && foundTrack.distance > 0) {
-        double expectedDistance = 2 * Math.PI * searchRadius;
+      // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
+      // overshoot is worth flagging so the caller can suggest a shorter
+      // distance. This stays informational because the hard gate above
+      // already rejects ratios outside the safe range.
+      if (foundTrack.distance > 0) {
         double ratio = foundTrack.distance / expectedDistance;
         if (ratio > 1.5) {
           String warning = String.format(
@@ -797,6 +798,10 @@ public class RoutingEngine extends Thread {
 
     RoundTripCandidateProvider provider = buildCandidateProvider(algo, start, searchRadius, direction);
     GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this, provider);
+    // ISO hostility scoring uses fastbike-tuned 1.5-4.0 indirectness thresholds.
+    // For MTB/gravel (baseline cost/airDist ~9) every candidate looks hostile,
+    // collapsing the candidate pool. Only enable for paved profiles.
+    planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(routingContext.getProfileName()));
     RoundTripResult result = planner.plan(start, desiredDistance, direction);
 
     // A real loop needs at least a triangle: start + 2 intermediate waypoints + closing

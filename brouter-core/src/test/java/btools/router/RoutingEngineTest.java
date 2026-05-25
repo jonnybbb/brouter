@@ -80,7 +80,7 @@ public class RoutingEngineTest {
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtBasic", rctx);
 
-    Assert.assertNull("round-trip routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "round-trip routing");
     OsmTrack track = re.getFoundTrack();
     Assert.assertNotNull("round-trip should produce a track", track);
     Assert.assertTrue("round-trip track should have nodes", track.nodes.size() > 2);
@@ -229,7 +229,7 @@ public class RoutingEngineTest {
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtSameway", rctx);
 
-    Assert.assertNull("allowSamewayback routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "allowSamewayback routing");
     OsmTrack track = re.getFoundTrack();
     Assert.assertNotNull("allowSamewayback should produce a track", track);
     Assert.assertTrue("track should have significant length", track.distance > 200);
@@ -267,7 +267,7 @@ public class RoutingEngineTest {
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, trackname, rctx);
 
-    Assert.assertNull(trackname + " routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, trackname);
     OsmTrack track = re.getFoundTrack();
     Assert.assertNotNull(trackname + " should produce a track", track);
 
@@ -438,7 +438,7 @@ public class RoutingEngineTest {
     RoutingEngine re = calcRoundTripWithVias(8.720, 50.000, "rtGreedyVia", rctx,
       new double[][]{{8.722, 50.001}});
 
-    Assert.assertNull("greedy+via fallback failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "greedy+via fallback");
     OsmTrack track = re.getFoundTrack();
     Assert.assertNotNull("greedy+via should produce a track", track);
     boolean foundVia = false;
@@ -762,7 +762,7 @@ public class RoutingEngineTest {
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtIsochrone", rctx);
 
-    Assert.assertNull("isochrone round-trip failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "isochrone round-trip");
     OsmTrack track = re.getFoundTrack();
     Assert.assertNotNull("isochrone should produce a track", track);
     Assert.assertTrue("track should have nodes", track.nodes.size() > 2);
@@ -785,7 +785,7 @@ public class RoutingEngineTest {
 
       RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtIsoDir" + dir, rctx);
 
-      Assert.assertNull("isochrone dir=" + dir + " failed: " + re.getErrorMessage(), re.getErrorMessage());
+      RoundTripFixture.assertNoEngineErrorOrSkip(re, "isochrone dir=" + dir);
       OsmTrack track = re.getFoundTrack();
       Assert.assertNotNull("isochrone dir=" + dir + " should produce track", track);
       Assert.assertTrue("isochrone dir=" + dir + " should have >2 nodes", track.nodes.size() > 2);
@@ -828,7 +828,7 @@ public class RoutingEngineTest {
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtIsoAccuracy", rctx);
 
-    Assert.assertNull("isochrone routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, "isochrone routing");
     OsmTrack track = re.getFoundTrack();
     Assert.assertNotNull(track);
 

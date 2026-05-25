@@ -126,6 +126,16 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
+   * Enable iso-hostility scoring on the scorer. Only call this for paved
+   * profiles whose typical {@code costFromStart/airDist} is close to 1.0;
+   * other profiles (gravel, MTB) have baselines around 9 and would have
+   * every candidate flagged as hostile. See {@link CandidateScorer#setHostilityActive}.
+   */
+  public void setHostilityActive(boolean active) {
+    scorer.setHostilityActive(active);
+  }
+
+  /**
    * Plan a greedy round-trip loop.
    */
   public RoundTripResult plan(OsmNodeNamed start, double desiredDistance, double startDirection) {

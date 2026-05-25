@@ -215,6 +215,10 @@ public class CandidateScorerTest {
     // Two iso candidates at same air-distance, same bucket density, but
     // different cost — the high-cost (hostile, e.g., switchback mountain
     // direction) should score worse than the low-cost (easy valley road).
+    // Hostility scoring is off by default (only meaningful for paved
+    // profiles whose cost/airDist baseline is ~1.0); enable explicitly
+    // for this test.
+    scorer.setHostilityActive(true);
     double easyRoad = scorer.score(
       2000, 2000, 0, 8000, 10000,
       90, DirectionPreference.ANY, 1, 5,
@@ -227,6 +231,23 @@ public class CandidateScorerTest {
       20000 /* cost/airDist = 20000/5000 = 4.0, very hostile */, 10);
     assertTrue("easy-road candidate beats hostile-mountain at same air-dist: "
       + easyRoad + " vs " + hostileMountain, easyRoad < hostileMountain);
+  }
+
+  @Test
+  public void hostilityDisabledByDefaultIsAProfileSafetyInvariant() {
+    // ISO_GREEDY must not collapse MTB/gravel candidates by applying a
+    // fastbike-tuned hostility threshold. The scorer defaults to OFF;
+    // the engine only enables it for paved profiles.
+    double easyRoad = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1, 6500, 10);
+    double hostileMountain = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1, 20000, 10);
+    assertEquals("hostility off → identical cost/airDist scores",
+      easyRoad, hostileMountain, 1e-9);
   }
 
   @Test
