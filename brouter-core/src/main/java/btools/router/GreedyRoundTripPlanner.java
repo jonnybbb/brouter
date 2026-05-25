@@ -32,11 +32,52 @@ public class GreedyRoundTripPlanner {
   private static final int DEFAULT_SUB_ROUTE_COUNT = 5;
   private static final double DEFAULT_TOLERANCE = 0.05;
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
-  private static final int CANDIDATE_DIRECTIONS = 12;
   private static final double ROAD_INDIRECTNESS = 1.3;
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
-  // Max candidates to actually route if higher-ranked ones fail
+  /**
+   * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
+   * (subRouteCount × maxAttempts × MAX_ROUTE_ATTEMPTS × SUB_ROUTE_TIMEOUT_MS)
+   * blows past 20 minutes; this is the safety net. Each timedFindTrack call
+   * uses min(SUB_ROUTE_TIMEOUT_MS, deadline - now) so the planner stops
+   * issuing new Dijkstras after the deadline.
+   */
+  private static final long DEFAULT_PLAN_DEADLINE_MS = 30_000;
+  /** Minimum per-Dijkstra timeout. Below this it's cheaper to skip than try. */
+  private static final long MIN_FIND_TRACK_MS = 250;
+  /**
+   * Backoff factors:
+   *   - "no routable candidate found at this radius" — gentle shrink so we don't
+   *     skip viable nearby radii after a few candidates fail to snap/route.
+   *   - "route too long" — aggressive shrink, the radius really needs to come down.
+   * Both clamp at MIN_LOCAL_RADIUS_M so we don't collapse to a degenerate 0m radius.
+   */
+  private static final double BACKOFF_FACTOR_NO_CANDIDATE = 0.8;
+  private static final double BACKOFF_FACTOR_TOO_LONG = 0.5;
+  private static final double MIN_LOCAL_RADIUS_M = 200;
+
+  /**
+   * Quality gates on bestFallback / forced-closure loops. A loop that's
+   * grossly the wrong length, retraces > half itself, or doesn't close gets
+   * downgraded — caller (RoutingEngine.doGreedyRoundTrip) treats a result
+   * with fallbackReason starting with "rejected" as a planner failure and
+   * falls through to WAYPOINT, rather than ship a low-quality loop as success.
+   */
+  static final String DEGRADED_FALLBACK_PREFIX = "rejected: ";
+  private static final double FALLBACK_MIN_RATIO = 0.5;
+  private static final double FALLBACK_MAX_RATIO = 1.8;
+  private static final double FALLBACK_MAX_REUSE = 0.5;
+  private static final int FALLBACK_MAX_CLOSURE_M = 400;
+  // Max candidates to route per step (heuristic top-K, with angular spread).
   private static final int MAX_ROUTE_ATTEMPTS = 3;
+  /** Raised cap on late steps or after a failed attempt, where extra exploration pays off. */
+  private static final int MAX_ROUTE_ATTEMPTS_LATE = 5;
+  /**
+   * Min angular separation between routed candidates within a step. Top-K by raw
+   * heuristic score is often spatially redundant in dense networks (two adjacent
+   * road choices have similar scores); enforcing a 30° gap gives diverse routed
+   * options instead of three picks in the same micro-direction.
+   */
+  private static final double MIN_ANGULAR_SEPARATION_DEG = 30.0;
   // Weight applied to cost-per-meter when picking among routed candidates.
   // Magnitude is similar to scorer.score() output; 0.5 keeps both signals relevant.
   static final double COST_PER_METER_WEIGHT = 0.5;
@@ -46,18 +87,38 @@ public class GreedyRoundTripPlanner {
 
   private final RoutingEngine engine;
   private final CandidateScorer scorer;
+  private final RoundTripCandidateProvider candidateProvider;
 
   private final int subRouteCount;
   private final double tolerance;
   private final int maxAttempts;
 
   public GreedyRoundTripPlanner(RoutingEngine engine) {
-    this(engine, new CandidateScorer(), DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
+    this(engine, new RoundTripCandidateProvider.RadialCandidateProvider(),
+      new CandidateScorer(), DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
   }
 
+  public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider) {
+    this(engine, provider, new CandidateScorer(),
+      DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
+  }
+
+  /**
+   * Configure scorer/sub-route count/tolerance/max-attempts. Uses the default
+   * {@link RoundTripCandidateProvider.RadialCandidateProvider}; for QUALITY-tier
+   * callers, prefer the 6-arg ctor with an {@link IsochroneCandidateProvider}.
+   */
   public GreedyRoundTripPlanner(RoutingEngine engine, CandidateScorer scorer,
                                 int subRouteCount, double tolerance, int maxAttempts) {
+    this(engine, new RoundTripCandidateProvider.RadialCandidateProvider(),
+      scorer, subRouteCount, tolerance, maxAttempts);
+  }
+
+  public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider,
+                                CandidateScorer scorer, int subRouteCount, double tolerance,
+                                int maxAttempts) {
     this.engine = engine;
+    this.candidateProvider = provider;
     this.scorer = scorer;
     this.subRouteCount = subRouteCount;
     this.tolerance = tolerance;
@@ -68,16 +129,27 @@ public class GreedyRoundTripPlanner {
    * Plan a greedy round-trip loop.
    */
   public RoundTripResult plan(OsmNodeNamed start, double desiredDistance, double startDirection) {
+    long planStart = System.currentTimeMillis();
+    long deadline = planStart + DEFAULT_PLAN_DEADLINE_MS;
     RoundTripResult result = new RoundTripResult();
     double subTarget = desiredDistance / subRouteCount;
     Map<Long, Integer> visitedEdgeCounts = new HashMap<>();
+    // Parallel map: first-visit cumulative distance from start, per edge. Lets
+    // the reuse signal weight back-and-forth near start/end heavier than mid-
+    // loop reuse — the start/end retraces are visible & annoying; mid-loop
+    // reuse is often unavoidable in constrained terrain.
+    Map<Long, Double> visitedEdgeFirstPos = new HashMap<>();
     List<OsmTrack> segments = new ArrayList<>();
     int totalAttempts = 0;
     double totalDistance = 0;
+    int candidatesGenerated = 0;
+    int candidatesRouted = 0;
+    int returnChecksPerformed = 0;
 
     MatchedWaypoint startMwp = matchPoint(start.ilon, start.ilat, "greedy_start");
     if (startMwp == null) {
       result.setFallbackReason("start point not on road network");
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed);
       return result;
     }
 
@@ -97,6 +169,10 @@ public class GreedyRoundTripPlanner {
     int prevIlat = -1;
 
     for (int step = 1; step <= subRouteCount; step++) {
+      if (System.currentTimeMillis() >= deadline) {
+        result.addDiagnostic("step " + step + ": planner deadline reached, stopping");
+        break;
+      }
       boolean candidateFound = false;
       double localRadius = subTarget;
       int currentIlon = currentMwp.crosspoint.getILon();
@@ -106,15 +182,21 @@ public class GreedyRoundTripPlanner {
 
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         totalAttempts++;
+        if (System.currentTimeMillis() >= deadline) break;
 
         double airRadius = localRadius / ROAD_INDIRECTNESS;
 
         // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
-        List<CandidatePoint> candidates = generateCandidatePoints(
-          currentIlon, currentIlat, airRadius, step, startDirection);
+        List<RoundTripCandidateProvider.CandidatePoint> candidates =
+          candidateProvider.candidatesForStep(
+            currentIlon, currentIlat, airRadius,
+            step, subRouteCount,
+            start.ilon, start.ilat,
+            startDirection);
+        candidatesGenerated += candidates.size();
 
         // Score using air-distance estimates — O(1) per candidate
-        for (CandidatePoint cp : candidates) {
+        for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
           double estimatedRouteDist = airDistToCp * ROAD_INDIRECTNESS;
           double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
@@ -132,7 +214,8 @@ public class GreedyRoundTripPlanner {
             step, subRouteCount,
             0.0, // can't estimate visited ratio without routing
             distFromStart, searchRadius,
-            distFromPrevious);
+            distFromPrevious,
+            cp.costFromStart, cp.bucketHits, cp.sourceContour);
         }
 
         // Rank by score (lowest = best)
@@ -142,44 +225,66 @@ public class GreedyRoundTripPlanner {
         // Heuristic score uses visitedEdgeRatio=0 since pre-routing can't know it.
         // Re-score with actual route distance and visited ratio so reuse-heavy
         // candidates lose to fresh ones at similar cost-per-meter.
+        //
+        // Pick top-K candidates with angular spread (≥ MIN_ANGULAR_SEPARATION_DEG
+        // between picks) rather than just the top K by score — the top heuristic
+        // picks are often spatially redundant in dense networks. Bump K from
+        // MAX_ROUTE_ATTEMPTS to MAX_ROUTE_ATTEMPTS_LATE on late steps or after
+        // an earlier failed attempt this step, where extra exploration pays off.
+        int routeBudget = (step >= subRouteCount - 1 || attempt > 1)
+          ? MAX_ROUTE_ATTEMPTS_LATE : MAX_ROUTE_ATTEMPTS;
+        List<RoundTripCandidateProvider.CandidatePoint> toRoute =
+          pickDiverseTopK(candidates, routeBudget);
+
         ScoredRoute accepted = null;
         double bestRoutedScore = Double.MAX_VALUE;
-        int routeAttempts = Math.min(MAX_ROUTE_ATTEMPTS, candidates.size());
+        int routeAttempts = toRoute.size();
         MatchedWaypoint fromMwp = currentMwp;
 
         for (int r = 0; r < routeAttempts; r++) {
-          CandidatePoint cp = candidates.get(r);
+          RoundTripCandidateProvider.CandidatePoint cp = toRoute.get(r);
 
           MatchedWaypoint toMwp = matchPoint(cp.ilon, cp.ilat, "greedy_to");
           if (toMwp == null) continue;
 
-          // Reject candidates that snapped too far from the geometric point.
-          double snapDist = CheapRuler.distance(cp.ilon, cp.ilat,
-            toMwp.crosspoint.getILon(), toMwp.crosspoint.getILat());
+          // Snap distance from the geometric candidate to its routed-on-road
+          // crosspoint. Reject candidates that snapped too far away.
+          int snappedIlon = toMwp.crosspoint.getILon();
+          int snappedIlat = toMwp.crosspoint.getILat();
+          double snapDist = CheapRuler.distance(cp.ilon, cp.ilat, snappedIlon, snappedIlat);
           if (snapDist > airRadius * 0.5) continue;
 
-          OsmTrack subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack);
+          OsmTrack subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, deadline);
+          candidatesRouted++;
           if (subTrack == null || subTrack.distance == 0) continue;
 
-          // Reject routes wildly longer than air-distance estimate.
-          double airDist = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
-          if (subTrack.distance > airDist * 3.0) continue;
+          // Recompute scoring inputs from the SNAPPED endpoint (toMwp.crosspoint).
+          // The router actually travels to that snapped location, not the raw
+          // candidate point — so air-distance, bearing, return estimate, and the
+          // overlong-route reject threshold should all reflect what was routed.
+          double snappedAirDistFromCurrent = CheapRuler.distance(
+            currentIlon, currentIlat, snappedIlon, snappedIlat);
+          if (subTrack.distance > snappedAirDistFromCurrent * 3.0) continue;
 
-          double actualVisitedRatio = computeTrackVisitedRatio(subTrack, visitedEdgeCounts);
-          double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
+          double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
+            visitedEdgeCounts, visitedEdgeFirstPos, totalDistance, desiredDistance);
+          double airDistToStart = CheapRuler.distance(snappedIlon, snappedIlat, start.ilon, start.ilat);
           double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
           double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * ROAD_INDIRECTNESS
+            ? CheapRuler.distance(prevIlon, prevIlat, snappedIlon, snappedIlat) * ROAD_INDIRECTNESS
             : -1;
+          double snappedBearing = CheapRuler.getScaledBearing(
+            currentIlon, currentIlat, snappedIlon, snappedIlat);
 
           double routedScorerScore = scorer.score(
             subTrack.distance, subTarget,
             totalDistance, estimatedReturn, desiredDistance,
-            cp.bearing, dirPref,
+            snappedBearing, dirPref,
             step, subRouteCount,
             actualVisitedRatio,
             airDistToStart, searchRadius,
-            distFromPrevious);
+            distFromPrevious,
+            cp.costFromStart, cp.bucketHits, cp.sourceContour);
 
           double costPerMeter = (double) subTrack.cost / subTrack.distance;
           double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
@@ -195,9 +300,12 @@ public class GreedyRoundTripPlanner {
         }
 
         if (accepted == null) {
+          // No routable candidate at this radius — gentle shrink so we don't
+          // jump past viable radii. The aggressive halving below applies only
+          // when the route is too long.
           result.addDiagnostic("step " + step + " attempt " + attempt
             + ": no routable candidate at radius " + (int) localRadius);
-          localRadius /= 2;
+          localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
           continue;
         }
 
@@ -206,7 +314,7 @@ public class GreedyRoundTripPlanner {
           + ", reuse=" + String.format("%.1f%%", accepted.visitedRatio * 100));
 
         // --- Phase 3: Accept sub-route, advance position ---
-        addVisitedEdges(accepted.track, visitedEdgeCounts);
+        addVisitedEdges(accepted.track, visitedEdgeCounts, visitedEdgeFirstPos, totalDistance);
         segments.add(accepted.track);
         totalDistance += accepted.routeDistance;
 
@@ -242,7 +350,8 @@ public class GreedyRoundTripPlanner {
 
         // One Dijkstra: return path to start.
         OsmTrack returnTrack = timedFindTrack("greedy-return", currentMwp, startMwp,
-          buildRefTrack(segments));
+          buildRefTrack(segments), deadline);
+        returnChecksPerformed++;
         if (returnTrack != null && returnTrack.distance > 0) {
           double closedDistance = totalDistance + returnTrack.distance;
           double error = Math.abs(closedDistance - desiredDistance) / desiredDistance;
@@ -254,7 +363,7 @@ public class GreedyRoundTripPlanner {
 
           // Within tolerance → close the loop
           if (error <= tolerance) {
-            addVisitedEdges(returnTrack, visitedEdgeCounts);
+            addVisitedEdges(returnTrack, visitedEdgeCounts, visitedEdgeFirstPos, totalDistance);
             segments.add(returnTrack);
             OsmTrack finalTrack = mergeSegments(segments, null);
             populateResult(result, finalTrack, waypointStack, start, startMwp, segments, desiredDistance, startDirection);
@@ -265,23 +374,24 @@ public class GreedyRoundTripPlanner {
             result.addDiagnostic("loop closed at step " + step
               + ", total=" + (int) closedDistance + "m"
               + ", error=" + String.format("%.1f%%", error * 100));
+            stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed);
             return result;
           }
 
-          // Too long → undo sub-route, shrink radius, retry
+          // Too long → undo sub-route, aggressively shrink radius, retry.
           if (closedDistance > desiredDistance * (1 + tolerance)) {
             result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
-              + "m exceeds desired " + (int) desiredDistance + "m, halving radius");
+              + "m exceeds desired " + (int) desiredDistance + "m, shrinking radius");
             segments.remove(segments.size() - 1);
             totalDistance -= accepted.routeDistance;
-            removeVisitedEdges(accepted.track, visitedEdgeCounts);
+            removeVisitedEdges(accepted.track, visitedEdgeCounts, visitedEdgeFirstPos);
             waypointStack.remove(waypointStack.size() - 1);
             currentMwp = waypointStack.get(waypointStack.size() - 1);
             currentIlon = currentMwp.crosspoint.getILon();
             currentIlat = currentMwp.crosspoint.getILat();
             prevIlon = savedPrevIlon;
             prevIlat = savedPrevIlat;
-            localRadius /= 2;
+            localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_TOO_LONG);
             continue;
           }
 
@@ -303,31 +413,100 @@ public class GreedyRoundTripPlanner {
         startMwp, bestFallback.legTracks, desiredDistance, startDirection);
       result.setTotalDistanceMeters(bestFallback.track.distance);
       result.setWithinTolerance(false);
-      result.setFallbackReason("best error=" + String.format("%.1f%%", bestFallback.error * 100));
+      String reject = qualityGateReason(bestFallback.track, desiredDistance);
+      String reason = "best error=" + String.format("%.1f%%", bestFallback.error * 100);
+      result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
       result.setSubRoutesChosen(bestFallback.legTracks.size());
       result.setAttemptsUsed(totalAttempts);
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed);
       return result;
     }
 
-    // Last resort: force-close
+    // Last resort: force-close. Allow up to 10s here even past the planner
+    // deadline — without a closing leg the planner has nothing usable to return.
     if (!segments.isEmpty()) {
+      long forceCloseDeadline = Math.max(deadline, System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS);
       OsmTrack returnTrack = timedFindTrack("greedy-force-close",
-        currentMwp, startMwp, buildRefTrack(segments));
+        currentMwp, startMwp, buildRefTrack(segments), forceCloseDeadline);
+      returnChecksPerformed++;
       if (returnTrack != null && returnTrack.distance > 0) {
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegments(segments, null);
         populateResult(result, finalTrack, waypointStack, start, startMwp, segments, desiredDistance, startDirection);
         result.setTotalDistanceMeters(finalTrack.distance);
         result.setWithinTolerance(false);
-        result.setFallbackReason("forced closure");
+        String reject = qualityGateReason(finalTrack, desiredDistance);
+        result.setFallbackReason(reject == null ? "forced closure" : DEGRADED_FALLBACK_PREFIX + reject + "; forced closure");
         result.setSubRoutesChosen(segments.size());
         result.setAttemptsUsed(totalAttempts);
+        stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed);
         return result;
       }
     }
 
     result.setFallbackReason("could not build any loop");
+    stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed);
     return result;
+  }
+
+  /**
+   * Returns {@code null} if {@code track} meets quality bars (distance ratio,
+   * reuse, closure); otherwise returns a short human-readable reason. Used to
+   * tag fallback / forced-closure results so the caller can choose to demote
+   * them rather than ship as success.
+   */
+  private String qualityGateReason(OsmTrack track, double desiredDistance) {
+    if (track == null || track.nodes == null || track.nodes.size() < 4) return "no track";
+    double ratio = track.distance / desiredDistance;
+    if (ratio < FALLBACK_MIN_RATIO || ratio > FALLBACK_MAX_RATIO) {
+      return String.format(java.util.Locale.US, "ratio=%.2f outside [%.1f,%.1f]",
+        ratio, FALLBACK_MIN_RATIO, FALLBACK_MAX_RATIO);
+    }
+    double reuse = finalTrackReuseRatio(track);
+    if (reuse > FALLBACK_MAX_REUSE) {
+      return String.format(java.util.Locale.US, "reuse=%.0f%% exceeds %.0f%%",
+        reuse * 100, FALLBACK_MAX_REUSE * 100);
+    }
+    OsmPathElement first = track.nodes.get(0);
+    OsmPathElement last = track.nodes.get(track.nodes.size() - 1);
+    int closure = first.calcDistance(last);
+    if (closure > FALLBACK_MAX_CLOSURE_M) {
+      return "closure=" + closure + "m exceeds " + FALLBACK_MAX_CLOSURE_M + "m";
+    }
+    return null;
+  }
+
+  /**
+   * Distance-share of the track on edges traversed more than once — matches
+   * {@link LoopQualityMetrics#computeRoadReusePercent}'s definition (first
+   * visit not reuse; subsequent visits ARE reuse). Self-contained (does not
+   * depend on the planner's running visit counts); use this when evaluating
+   * the FINAL loop, not when scoring per-step candidates.
+   */
+  static double finalTrackReuseRatio(OsmTrack track) {
+    if (track == null || track.nodes == null || track.nodes.size() < 2) return 0.0;
+    Map<Long, Integer> localCounts = new HashMap<>();
+    double total = 0;
+    double reused = 0;
+    for (int i = 1; i < track.nodes.size(); i++) {
+      OsmPathElement a = track.nodes.get(i - 1);
+      OsmPathElement b = track.nodes.get(i);
+      double segLen = a.calcDistance(b);
+      total += segLen;
+      long key = edgeKey(a, b);
+      int prev = localCounts.merge(key, 1, Integer::sum);
+      if (prev > 1) reused += segLen;
+    }
+    return total > 0 ? reused / total : 0.0;
+  }
+
+  private static void stampTelemetry(RoundTripResult result, long planStart,
+                                     int candidatesGenerated, int candidatesRouted,
+                                     int returnChecksPerformed) {
+    result.setCandidatesGenerated(candidatesGenerated);
+    result.setCandidatesRouted(candidatesRouted);
+    result.setReturnChecksPerformed(returnChecksPerformed);
+    result.setRuntimeMillis(System.currentTimeMillis() - planStart);
   }
 
   private void populateResult(RoundTripResult result, OsmTrack track,
@@ -351,37 +530,58 @@ public class GreedyRoundTripPlanner {
     }
   }
 
-  // --- Candidate generation ---
-
-  private List<CandidatePoint> generateCandidatePoints(
-    int fromIlon, int fromIlat, double airRadius, int step, double startDirection) {
-
-    List<CandidatePoint> points = new ArrayList<>();
-    double angleStep = 360.0 / CANDIDATE_DIRECTIONS;
-    double baseAngle = (step <= 2 && startDirection >= 0) ? startDirection : 0;
-
-    for (int i = 0; i < CANDIDATE_DIRECTIONS; i++) {
-      double bearing = CheapAngleMeter.normalize(baseAngle + i * angleStep);
-      int[] dest = CheapRuler.destination(fromIlon, fromIlat, airRadius, bearing);
-
-      CandidatePoint cp = new CandidatePoint();
-      cp.ilon = dest[0];
-      cp.ilat = dest[1];
-      cp.bearing = bearing;
-      points.add(cp);
+  /**
+   * Pick up to {@code k} candidates from the score-sorted list with angular
+   * spread: walk in score order, accept each pick if it is at least
+   * {@link #MIN_ANGULAR_SEPARATION_DEG} away from every previously picked
+   * candidate's bearing. If diversity culling leaves fewer than {@code k},
+   * back-fill with the next best-scored candidates regardless of spread so
+   * we never under-budget.
+   */
+  static List<RoundTripCandidateProvider.CandidatePoint> pickDiverseTopK(
+    List<RoundTripCandidateProvider.CandidatePoint> sorted, int k) {
+    List<RoundTripCandidateProvider.CandidatePoint> picked = new ArrayList<>(k);
+    for (RoundTripCandidateProvider.CandidatePoint cp : sorted) {
+      if (picked.size() >= k) break;
+      boolean farEnough = true;
+      for (RoundTripCandidateProvider.CandidatePoint other : picked) {
+        if (CheapAngleMeter.getDifferenceFromDirection(cp.bearing, other.bearing)
+            < MIN_ANGULAR_SEPARATION_DEG) {
+          farEnough = false;
+          break;
+        }
+      }
+      if (farEnough) picked.add(cp);
     }
-    return points;
+    if (picked.size() < k) {
+      for (RoundTripCandidateProvider.CandidatePoint cp : sorted) {
+        if (picked.size() >= k) break;
+        if (!picked.contains(cp)) picked.add(cp);
+      }
+    }
+    return picked;
   }
 
   // --- Routing with timeout ---
 
+  /**
+   * Routes from→to with a per-call timeout = min(SUB_ROUTE_TIMEOUT_MS, deadline - now).
+   * Returns {@code null} if the remaining budget is below {@link #MIN_FIND_TRACK_MS}.
+   */
   private OsmTrack timedFindTrack(String name, MatchedWaypoint from, MatchedWaypoint to,
-                                  OsmTrack refTrack) {
+                                  OsmTrack refTrack, long deadline) {
+    long now = System.currentTimeMillis();
+    long remaining = deadline - now;
+    if (remaining < MIN_FIND_TRACK_MS) {
+      engine.logInfo(name + ": deadline exceeded, skipping (remaining " + remaining + "ms)");
+      return null;
+    }
+    long budget = Math.min(SUB_ROUTE_TIMEOUT_MS, remaining);
     long savedStartTime = engine.startTime;
     long savedMaxRunningTime = engine.maxRunningTime;
     try {
-      engine.startTime = System.currentTimeMillis();
-      engine.maxRunningTime = SUB_ROUTE_TIMEOUT_MS;
+      engine.startTime = now;
+      engine.maxRunningTime = budget;
       return engine.findTrack(name, from, to, null, refTrack, false);
     } catch (IllegalArgumentException e) {
       engine.logInfo(name + ": no track (" + e.getMessage() + ")");
@@ -453,32 +653,103 @@ public class GreedyRoundTripPlanner {
 
   // --- Visited edge tracking (ref-counted) ---
 
-  private void addVisitedEdges(OsmTrack track, Map<Long, Integer> edgeCounts) {
+  private void addVisitedEdges(OsmTrack track, Map<Long, Integer> edgeCounts,
+                               Map<Long, Double> edgeFirstPos, double trackStartCumDist) {
     if (track.nodes == null || track.nodes.size() < 2) return;
+    double cumDist = trackStartCumDist;
     for (int i = 1; i < track.nodes.size(); i++) {
-      edgeCounts.merge(edgeKey(track.nodes.get(i - 1), track.nodes.get(i)), 1, Integer::sum);
+      OsmPathElement a = track.nodes.get(i - 1);
+      OsmPathElement b = track.nodes.get(i);
+      double segLen = a.calcDistance(b);
+      long key = edgeKey(a, b);
+      Integer prev = edgeCounts.get(key);
+      if (prev == null || prev == 0) {
+        // First visit ever — record the segment midpoint as the first-visit
+        // cumulative distance, used downstream for boundary-proximity weighting.
+        edgeFirstPos.put(key, cumDist + segLen / 2);
+      }
+      edgeCounts.merge(key, 1, Integer::sum);
+      cumDist += segLen;
     }
   }
 
-  private void removeVisitedEdges(OsmTrack track, Map<Long, Integer> edgeCounts) {
+  private void removeVisitedEdges(OsmTrack track, Map<Long, Integer> edgeCounts,
+                                  Map<Long, Double> edgeFirstPos) {
     if (track.nodes == null || track.nodes.size() < 2) return;
     for (int i = 1; i < track.nodes.size(); i++) {
       long key = edgeKey(track.nodes.get(i - 1), track.nodes.get(i));
-      edgeCounts.compute(key, (k, v) -> (v == null || v <= 1) ? null : v - 1);
+      Integer count = edgeCounts.get(key);
+      if (count == null) continue;
+      if (count <= 1) {
+        edgeCounts.remove(key);
+        edgeFirstPos.remove(key);
+      } else {
+        edgeCounts.put(key, count - 1);
+        // firstPos stays — earlier visit(s) still present in the route.
+      }
     }
   }
 
-  private double computeTrackVisitedRatio(OsmTrack track, Map<Long, Integer> edgeCounts) {
+  /**
+   * Position-weighted distance-share reuse ratio. Sum of (segment-length ×
+   * position-penalty) of reused edges divided by total track length. Matches
+   * {@link LoopQualityMetrics}'s distance-weighted definition for the
+   * unweighted case ({@link #BOUNDARY_PROXIMITY_FRAC} = 0) and adds a
+   * boundary-proximity multiplier: reuse where either the first visit or the
+   * current re-visit is within {@link #BOUNDARY_PROXIMITY_FRAC} of the loop's
+   * start or end gets full weight (1.0); mid-loop reuse gets reduced weight
+   * ({@link #MID_LOOP_REUSE_WEIGHT}). Implements the cyclist's intuition that
+   * back-and-forth near start/end is much more annoying than mid-loop reuse.
+   *
+   * @param trackStartCumDist cumulative loop distance at the start of {@code track}
+   * @param desiredDistance   target total loop distance (for proximity normalisation)
+   */
+  private double computeTrackVisitedRatio(OsmTrack track, Map<Long, Integer> edgeCounts,
+                                          Map<Long, Double> edgeFirstPos,
+                                          double trackStartCumDist, double desiredDistance) {
     if (edgeCounts.isEmpty() || track.nodes == null || track.nodes.size() < 2) return 0.0;
-    int total = 0;
-    int visited = 0;
+    double total = 0;
+    double weightedReuse = 0;
+    double cumDist = trackStartCumDist;
     for (int i = 1; i < track.nodes.size(); i++) {
-      total++;
-      if (edgeCounts.containsKey(edgeKey(track.nodes.get(i - 1), track.nodes.get(i)))) {
-        visited++;
+      OsmPathElement a = track.nodes.get(i - 1);
+      OsmPathElement b = track.nodes.get(i);
+      double segLen = a.calcDistance(b);
+      double midPos = cumDist + segLen / 2;
+      total += segLen;
+      long key = edgeKey(a, b);
+      if (edgeCounts.containsKey(key)) {
+        Double firstPos = edgeFirstPos.get(key);
+        double posWeight = (firstPos != null)
+          ? boundaryProximityWeight(firstPos, midPos, desiredDistance)
+          : 1.0;
+        weightedReuse += segLen * posWeight;
       }
+      cumDist += segLen;
     }
-    return total > 0 ? (double) visited / total : 0.0;
+    return total > 0 ? weightedReuse / total : 0.0;
+  }
+
+  /** Fraction of desired distance defining "near start or end" for back-and-forth weighting. */
+  private static final double BOUNDARY_PROXIMITY_FRAC = 0.20;
+  /** Reuse weight for mid-loop overlap (vs 1.0 for near-boundary). */
+  private static final double MID_LOOP_REUSE_WEIGHT = 0.5;
+
+  /**
+   * Returns 1.0 when either {@code firstPos} or {@code currentPos} is within
+   * {@link #BOUNDARY_PROXIMITY_FRAC} of loop start (0) or loop end
+   * (desiredDistance); {@link #MID_LOOP_REUSE_WEIGHT} when both are mid-loop.
+   * Matches the cyclist's intuition: visible/annoying retraces are at the
+   * boundaries; mid-loop crossings are often unavoidable and barely noticed.
+   */
+  static double boundaryProximityWeight(double firstPos, double currentPos, double desiredDistance) {
+    if (desiredDistance <= 0) return 1.0;
+    double firstFrac = firstPos / desiredDistance;
+    double currentFrac = currentPos / desiredDistance;
+    double firstBoundary = Math.min(Math.max(0, firstFrac), Math.max(0, 1 - firstFrac));
+    double currentBoundary = Math.min(Math.max(0, currentFrac), Math.max(0, 1 - currentFrac));
+    double minBoundary = Math.min(firstBoundary, currentBoundary);
+    return (minBoundary < BOUNDARY_PROXIMITY_FRAC) ? 1.0 : MID_LOOP_REUSE_WEIGHT;
   }
 
   private static long edgeKey(OsmPathElement a, OsmPathElement b) {
@@ -618,14 +889,6 @@ public class GreedyRoundTripPlanner {
     List<MatchedWaypoint> waypointStack;
     List<OsmTrack> legTracks;
     double error;
-  }
-
-  /** Geometric candidate point with heuristic score (before routing). */
-  private static final class CandidatePoint {
-    int ilon;
-    int ilat;
-    double bearing;
-    double score; // heuristic score — set during scoring phase
   }
 
   /** A candidate that has been routed. */

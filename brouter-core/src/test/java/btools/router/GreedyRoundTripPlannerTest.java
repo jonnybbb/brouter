@@ -65,6 +65,10 @@ public class GreedyRoundTripPlannerTest {
 
   @Test
   public void autoSelectsIsochroneForSmallRadius() {
+    // ISOCHRONE's indirectness-compensated placement is more reliable than GREEDY's
+    // 5-step iterative routing for tiny constrained loops (radius < 5km).
+    // ISO_GREEDY remains opt-in; only WAYPOINT and ISOCHRONE are AUTO-selectable
+    // at small radii.
     Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, RoutingEngine.selectRoundTripAlgorithm(4000));
     Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, RoutingEngine.selectRoundTripAlgorithm(1500));
   }
@@ -287,4 +291,75 @@ public class GreedyRoundTripPlannerTest {
     }
   }
 
+  // ---- Boundary-proximity weighting for back-and-forth penalty ----
+
+  @Test
+  public void boundaryProximityWeightFullPenaltyNearStart() {
+    // Both positions within first 20% of the loop → full penalty (1.0).
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(500, 1000, 10000);
+    Assert.assertEquals("near-start reuse → full penalty", 1.0, w, 0.001);
+  }
+
+  @Test
+  public void boundaryProximityWeightFullPenaltyNearEnd() {
+    // Both positions within last 20% of the loop → full penalty (1.0).
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(8500, 9000, 10000);
+    Assert.assertEquals("near-end reuse → full penalty", 1.0, w, 0.001);
+  }
+
+  @Test
+  public void boundaryProximityWeightHalfPenaltyMidLoop() {
+    // Both positions in middle 60% of the loop → half penalty (0.5). This
+    // reflects the cyclist intuition: a road crossed once on the way out and
+    // again on the way back at mid-loop is less annoying than the same
+    // crossing right after departure.
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(3500, 6500, 10000);
+    Assert.assertEquals("mid-loop reuse → half penalty", 0.5, w, 0.001);
+  }
+
+  @Test
+  public void boundaryProximityWeightFullPenaltyIfEitherEndIsNearBoundary() {
+    // First visit near start (boundary=0.05); current visit mid-loop (boundary=0.5).
+    // min(0.05, 0.5) = 0.05 < 0.2 → full penalty.
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(500, 5000, 10000);
+    Assert.assertEquals("one near-boundary → full penalty", 1.0, w, 0.001);
+  }
+
+  @Test
+  public void finalTrackReuseRatioCountsSecondAndLaterVisitsOnly() {
+    // Test the bug fix: finalTrackReuseRatio shouldn't count an edge as "reuse"
+    // just because it appears in the track — only subsequent re-traversals count.
+    OsmTrack track = new OsmTrack();
+    track.nodes = new ArrayList<>();
+    track.nodes.add(makeNode(0, 0));         // 0,0
+    track.nodes.add(makeNode(1000, 0));      // 1,0  (edge 0-1)
+    track.nodes.add(makeNode(2000, 0));      // 2,0  (edge 1-2)
+    track.nodes.add(makeNode(1000, 0));      // back to 1  (edge 1-2 REUSED)
+    track.nodes.add(makeNode(0, 0));         // back to 0  (edge 0-1 REUSED)
+    track.distance = (int) (track.nodes.get(0).calcDistance(track.nodes.get(1))
+      + track.nodes.get(1).calcDistance(track.nodes.get(2))
+      + track.nodes.get(2).calcDistance(track.nodes.get(3))
+      + track.nodes.get(3).calcDistance(track.nodes.get(4)));
+    double reuse = GreedyRoundTripPlanner.finalTrackReuseRatio(track);
+    // 4 edges total; 2 are first visits (no reuse), 2 are second visits (reuse).
+    // distance-weighted: equal segments, so reuse = 2/4 = 0.5.
+    Assert.assertEquals("half the track is reused", 0.5, reuse, 0.05);
+  }
+
+  @Test
+  public void finalTrackReuseRatioZeroForNonRepeatingTrack() {
+    OsmTrack track = new OsmTrack();
+    track.nodes = new ArrayList<>();
+    track.nodes.add(makeNode(0, 0));
+    track.nodes.add(makeNode(1000, 0));
+    track.nodes.add(makeNode(1000, 1000));
+    track.nodes.add(makeNode(0, 1000));
+    track.nodes.add(makeNode(0, 0));
+    Assert.assertEquals("no edge traversed twice → 0 reuse", 0.0,
+      GreedyRoundTripPlanner.finalTrackReuseRatio(track), 0.001);
+  }
+
+  private static OsmPathElement makeNode(int dx, int dy) {
+    return OsmPathElement.create(8720000 + dx, 50000000 + dy, (short) 0, null);
+  }
 }

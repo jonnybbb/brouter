@@ -22,6 +22,10 @@ public class CandidateScorer {
   private final double wReuse;
   private final double wSpread;
   private final double wPrev;
+  /** Bonus weight for a candidate validated by an isochrone Dijkstra (vs geometric ring). */
+  private final double wIsoBonus;
+  /** Penalty weight for high cost-per-airmeter at the candidate (hostility signal). */
+  private final double wIsoHostility;
 
   public CandidateScorer() {
     this(1.0, 2.0, 0.5, 3.0, 1.5, 1.5);
@@ -32,12 +36,30 @@ public class CandidateScorer {
   }
 
   public CandidateScorer(double wDist, double wLoop, double wDir, double wReuse, double wSpread, double wPrev) {
+    // ISO-aware weights are intentionally small — metadata acts as a tie-break
+    // between similar-quality candidates, not a strong quality override. A
+    // routed-leg-actually-shorter candidate must still win on the geometric
+    // terms; iso bonus only tilts ties.
+    this(wDist, wLoop, wDir, wReuse, wSpread, wPrev, 0.05, 0.3);
+  }
+
+  /**
+   * Full ctor including the ISO-aware weights. The bonus rewards iso-validated
+   * candidates of acceptable bucket density (small constant, tie-break only);
+   * the hostility weight penalises candidates whose Dijkstra cost-per-airmeter
+   * is high (mountains, switchbacks, sea-blocked sectors). Both default to 0
+   * for radial candidates with no iso metadata.
+   */
+  public CandidateScorer(double wDist, double wLoop, double wDir, double wReuse, double wSpread,
+                         double wPrev, double wIsoBonus, double wIsoHostility) {
     this.wDist = wDist;
     this.wLoop = wLoop;
     this.wDir = wDir;
     this.wReuse = wReuse;
     this.wSpread = wSpread;
     this.wPrev = wPrev;
+    this.wIsoBonus = wIsoBonus;
+    this.wIsoHostility = wIsoHostility;
   }
 
   /**
@@ -65,6 +87,46 @@ public class CandidateScorer {
                       int step, int totalSteps,
                       double visitedEdgeRatio, double distFromStart, double searchRadius,
                       double distFromPrevious) {
+    // Back-compat path — no iso metadata.
+    return score(candidateDistance, subRouteTarget, totalSoFar, returnDistance, desiredTotal,
+      candidateBearing, directionPreference, step, totalSteps,
+      visitedEdgeRatio, distFromStart, searchRadius, distFromPrevious,
+      RoundTripCandidateProvider.NO_ISO_COST, RoundTripCandidateProvider.NO_ISO_DENSITY,
+      RoundTripCandidateProvider.NO_ISO_CONTOUR);
+  }
+
+  /** Two-arg iso-metadata signature (no sourceContour) — back-compat for older planner callers. */
+  public double score(double candidateDistance, double subRouteTarget,
+                      double totalSoFar, double returnDistance, double desiredTotal,
+                      double candidateBearing, DirectionPreference directionPreference,
+                      int step, int totalSteps,
+                      double visitedEdgeRatio, double distFromStart, double searchRadius,
+                      double distFromPrevious,
+                      double costFromStart, int bucketHits) {
+    return score(candidateDistance, subRouteTarget, totalSoFar, returnDistance, desiredTotal,
+      candidateBearing, directionPreference, step, totalSteps,
+      visitedEdgeRatio, distFromStart, searchRadius, distFromPrevious,
+      costFromStart, bucketHits, RoundTripCandidateProvider.NO_ISO_CONTOUR);
+  }
+
+  /**
+   * Score a candidate, with optional ISO-aware metadata (option A).
+   *
+   * @param costFromStart Dijkstra cost-units from the loop start to this
+   *                      candidate; {@link RoundTripCandidateProvider#NO_ISO_COST}
+   *                      when the candidate is from a non-iso provider.
+   * @param bucketHits    Population of the candidate's angular bucket;
+   *                      {@link RoundTripCandidateProvider#NO_ISO_DENSITY} when
+   *                      unavailable. Higher = denser road network in that
+   *                      sector.
+   */
+  public double score(double candidateDistance, double subRouteTarget,
+                      double totalSoFar, double returnDistance, double desiredTotal,
+                      double candidateBearing, DirectionPreference directionPreference,
+                      int step, int totalSteps,
+                      double visitedEdgeRatio, double distFromStart, double searchRadius,
+                      double distFromPrevious,
+                      double costFromStart, int bucketHits, int sourceContour) {
 
     double distScore = distanceScore(candidateDistance, subRouteTarget);
     double loopScore = loopFeasibilityScore(totalSoFar, candidateDistance, returnDistance, desiredTotal);
@@ -72,13 +134,69 @@ public class CandidateScorer {
     double reuseScore = visitedEdgeRatio;
     double spreadScore = spreadPenalty(distFromStart, searchRadius, step, totalSteps);
     double prevScore = previousDistancePenalty(distFromPrevious, subRouteTarget);
+    double isoBonus = isoValidatedBonus(costFromStart, bucketHits);
+    double isoHostility = isoHostilityPenalty(costFromStart, distFromStart);
+    double contourMismatch = isoContourDepthMismatch(sourceContour, step, totalSteps);
 
     return wDist * distScore
       + wLoop * loopScore
       + wDir * dirScore
       + wReuse * reuseScore
       + wSpread * spreadScore
-      + wPrev * prevScore;
+      + wPrev * prevScore
+      - wIsoBonus * isoBonus
+      + wIsoHostility * isoHostility
+      + wIsoBonus * contourMismatch; // re-use the small tie-break weight
+  }
+
+  /**
+   * Phase-appropriate depth penalty for iso candidates: early loop steps (1–2)
+   * should prefer deep frontier candidates (contour 100); late steps should
+   * prefer shallower candidates (closer to current). Penalty in [0, 1]; 0 when
+   * the contour is missing or already matches the step's preferred depth.
+   */
+  double isoContourDepthMismatch(int sourceContour, int step, int totalSteps) {
+    if (sourceContour == RoundTripCandidateProvider.NO_ISO_CONTOUR) return 0;
+    // Preferred contour by step phase, ramping 100 → 25 across totalSteps.
+    // Step 1 wants frontier (100); final step wants near-in (25).
+    double phaseFraction = totalSteps <= 1 ? 0.0 : (step - 1.0) / (totalSteps - 1.0);
+    double preferred = 100 - 75 * phaseFraction;  // 100 at step 1 → 25 at last step
+    double diff = Math.abs(sourceContour - preferred);
+    return Math.min(1.0, diff / 75.0);
+  }
+
+  /**
+   * Bonus (subtracted from the score, so makes the candidate better) for an
+   * iso-validated candidate of acceptable bucket density. Plateaus at hits≥3
+   * — extra-dense buckets do NOT score better than typical-dense ones (we
+   * don't want to over-prefer urban-grid candidates). Sparse buckets
+   * (hits&lt;3) ramp down to 0 (fragility signal — one-shot road slivers).
+   * Radial candidates (no iso metadata) get 0.
+   */
+  double isoValidatedBonus(double costFromStart, int bucketHits) {
+    if (costFromStart == RoundTripCandidateProvider.NO_ISO_COST
+        || bucketHits == RoundTripCandidateProvider.NO_ISO_DENSITY) {
+      return 0;
+    }
+    if (bucketHits >= 3) return 1.0;
+    return bucketHits / 3.0;
+  }
+
+  /**
+   * Penalty for high cost-per-airmeter at the candidate — Dijkstra had to spend
+   * many cost-units per meter of straight-line distance to reach it, which
+   * means hostile terrain (mountains, sea-blocked, low road density).
+   * Profile-typical roads have cost/airDist ≈ 1.3; mountains/switchbacks 3-5.
+   * Scaled to [0, 1] linearly between 1.5 and 4.0; 0 if iso data is missing.
+   */
+  double isoHostilityPenalty(double costFromStart, double distFromStart) {
+    if (costFromStart == RoundTripCandidateProvider.NO_ISO_COST || distFromStart <= 50) {
+      return 0;
+    }
+    double indirectness = costFromStart / distFromStart;
+    if (indirectness <= 1.5) return 0;
+    if (indirectness >= 4.0) return 1;
+    return (indirectness - 1.5) / 2.5;
   }
 
   /**

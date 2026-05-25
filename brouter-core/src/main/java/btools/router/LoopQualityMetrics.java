@@ -123,17 +123,30 @@ public final class LoopQualityMetrics {
       if (entry == null) {
         edgeCounts.put(edgeKey, new int[]{1, segDist});
       } else {
-        if (entry[0] == 1) {
-          // Second traversal — this and all subsequent are reuse
-          reusedDistance += segDist;
-        } else {
-          reusedDistance += segDist;
-        }
+        // Second and subsequent traversals are reuse.
+        reusedDistance += segDist;
         entry[0]++;
       }
     }
 
     return (totalDistance > 0) ? (reusedDistance / totalDistance) * 100.0 : 0.0;
+  }
+
+  /** Profile-ideal cost-per-meter (cycleway/tertiary on fastbike). Score plateaus at 1.0 below this. */
+  private static final double IDEAL_COST_PER_METER = 1.5;
+  /** Cost-per-meter at which a route is on roads the profile actively dislikes; score = 0. */
+  private static final double ZERO_SCORE_COST_PER_METER = 4.0;
+
+  /**
+   * Score profile-match: how well the route's cost-per-meter matches a typical
+   * profile-preferred road. 1.0 at cost/m ≤ {@link #IDEAL_COST_PER_METER}, decays
+   * linearly to 0.0 at {@link #ZERO_SCORE_COST_PER_METER}+. Returns 0.0 if cost
+   * data is missing.
+   */
+  static double computeCostMatchScore(double avgCostPerMeter) {
+    if (avgCostPerMeter <= 0) return 0.0;
+    return Math.max(0.0, Math.min(1.0,
+      (ZERO_SCORE_COST_PER_METER - avgCostPerMeter) / (ZERO_SCORE_COST_PER_METER - IDEAL_COST_PER_METER)));
   }
 
   /**
@@ -339,20 +352,40 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Compute a weighted composite quality score in [0, 1].
-   * Higher is better. Combines all metric dimensions.
+   * Compute a weighted composite quality score in [0, 1]. Higher is better.
+   *
+   * <p>Weights are aligned with what cyclists actually care about for a round-trip:
+   * <ul>
+   *   <li><b>25% distance</b> — total length close to target</li>
+   *   <li><b>20% reuse</b> — no out-and-back / road retracing</li>
+   *   <li><b>20% continuity</b> — no synthetic beelines, with maxGap penalty baked in</li>
+   *   <li><b>20% profile match</b> — average cost/m matches profile-preferred roads</li>
+   *   <li><b>10% compactness</b> — convex hull area vs ideal-circle area</li>
+   *   <li><b>5% direction</b> — soft hint: user direction may not be reachable</li>
+   * </ul>
+   *
+   * <p>Direction is intentionally low-weighted: in asymmetric terrain (valleys,
+   * coastlines) the user's requested direction may not be achievable on real
+   * roads, and the farthest-node-bearing signal degrades to ~random. Closure is
+   * not scored — round-trips close by construction; bad closure should be a hard
+   * gate, not a soft signal.
    */
   public double compositeScore() {
     double distScore = 1.0 - Math.min(1.0, Math.abs(distanceRatio - 1.0) / 0.5);
     double reuseScore = 1.0 - Math.min(1.0, roadReusePercent / 50.0);
     double dirScore = 1.0 - Math.min(1.0, directionDeltaDegrees / 180.0);
+    // continuity already penalises totalGap; weight maxGap on top so a single
+    // 2km beeline scores worse than two 1km beelines of the same total length.
+    double maxGapScore = 1.0 - Math.min(1.0, maxGapMeters / 1500.0);
+    double continuityWithMaxGap = 0.75 * continuityScore + 0.25 * maxGapScore;
+    double costMatchScore = computeCostMatchScore(averageCostPerMeter);
 
-    return 0.20 * distScore
+    return 0.25 * distScore
       + 0.20 * reuseScore
-      + 0.15 * dirScore
-      + 0.20 * continuityScore
-      + 0.15 * compactnessScore
-      + 0.10 * (1.0 - Math.min(1.0, closureDistanceMeters / 1000.0));
+      + 0.20 * continuityWithMaxGap
+      + 0.20 * costMatchScore
+      + 0.10 * compactnessScore
+      + 0.05 * dirScore;
   }
 
   public double getRoadReusePercent() {

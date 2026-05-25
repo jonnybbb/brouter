@@ -156,7 +156,7 @@ final class LoopQualityReportGenerator {
     sb.append("}).addTo(map);\n\n");
 
     sb.append("var layers = [];\n");
-    sb.append("var variantColors = {probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44'};\n");
+    sb.append("var variantColors = {probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n");
     sb.append("var selectedIdx = -1;\n\n");
 
     sb.append("routes.forEach(function(r, i) {\n");
@@ -348,7 +348,7 @@ final class LoopQualityReportGenerator {
     sb.append(String.format(Locale.US, "var map = L.map('map').setView([%.4f, %.4f], 11);\n", region.lat, region.lon));
     sb.append("L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OSM',maxZoom:18}).addTo(map);\n");
     sb.append("var layers=[], selectedIdx=-1;\n");
-    sb.append("var variantColors = {probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44'};\n\n");
+    sb.append("var variantColors = {probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n\n");
 
     sb.append("routes.forEach(function(r,i){\n");
     sb.append("  var layer=null;\n");

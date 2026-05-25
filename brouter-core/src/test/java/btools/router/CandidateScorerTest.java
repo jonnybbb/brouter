@@ -171,4 +171,133 @@ public class CandidateScorerTest {
       prev = current;
     }
   }
+
+  // ----- A: ISO-aware scoring ------------------------------------------------
+
+  @Test
+  public void scoreWithoutIsoMetadataMatchesLegacySignature() {
+    // The 12-arg back-compat overload must produce exactly the same score as
+    // the 14-arg form with NO_ISO_COST/NO_ISO_DENSITY sentinels.
+    double legacy = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1);
+    double explicit = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      RoundTripCandidateProvider.NO_ISO_COST, RoundTripCandidateProvider.NO_ISO_DENSITY);
+    assertEquals("Legacy and explicit-no-iso must match", legacy, explicit, 1e-9);
+  }
+
+  @Test
+  public void isoValidatedCandidateScoresBetterAtSamePosition() {
+    // Two identical candidates at the same air-distance and bearing — one carries
+    // iso metadata, the other is from a radial provider. The iso-validated one
+    // should win the tie-break (lower score).
+    double withoutIso = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      RoundTripCandidateProvider.NO_ISO_COST, RoundTripCandidateProvider.NO_ISO_DENSITY);
+    double withIso = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      2600 /* costFromStart, indirectness 2600/5000=0.52 → no hostility */,
+      10 /* dense bucket → full validation bonus */);
+    assertTrue("iso-validated candidate should score lower (better): "
+      + withIso + " vs " + withoutIso, withIso < withoutIso);
+  }
+
+  @Test
+  public void hostileSectorPenalizedOverEasySector() {
+    // Two iso candidates at same air-distance, same bucket density, but
+    // different cost — the high-cost (hostile, e.g., switchback mountain
+    // direction) should score worse than the low-cost (easy valley road).
+    double easyRoad = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      6500 /* cost/airDist = 6500/5000 = 1.3, very easy */, 10);
+    double hostileMountain = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      20000 /* cost/airDist = 20000/5000 = 4.0, very hostile */, 10);
+    assertTrue("easy-road candidate beats hostile-mountain at same air-dist: "
+      + easyRoad + " vs " + hostileMountain, easyRoad < hostileMountain);
+  }
+
+  @Test
+  public void verySparseBucketLosesValidationBonus() {
+    // The bonus plateaus at hits>=3 (we don't reward extra-dense buckets); only
+    // very-sparse (hits<3) loses the bonus as a fragility signal. So
+    // typical-dense (hits=3) and ultra-dense (hits=20) should score equally,
+    // and one-shot (hits=1) should score worse.
+    double typicalDense = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      6500, 3);
+    double ultraDense = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      6500, 20);
+    double oneShot = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      6500, 1);
+    assertEquals("hits=3 and hits=20 score equally (no extra density reward)",
+      typicalDense, ultraDense, 1e-9);
+    assertTrue("one-shot scores worse than typical-dense (fragility): "
+      + oneShot + " vs " + typicalDense, oneShot > typicalDense);
+  }
+
+  @Test
+  public void isoValidatedBonusIsZeroWhenEitherFieldMissing() {
+    // Test the helper directly: both fields must be present for the bonus.
+    assertEquals(0.0, scorer.isoValidatedBonus(
+      RoundTripCandidateProvider.NO_ISO_COST, 10), 1e-9);
+    assertEquals(0.0, scorer.isoValidatedBonus(
+      6500, RoundTripCandidateProvider.NO_ISO_DENSITY), 1e-9);
+    assertEquals(0.0, scorer.isoValidatedBonus(
+      RoundTripCandidateProvider.NO_ISO_COST,
+      RoundTripCandidateProvider.NO_ISO_DENSITY), 1e-9);
+    assertTrue("populated → bonus > 0",
+      scorer.isoValidatedBonus(6500, 10) > 0);
+  }
+
+  @Test
+  public void contourDepthMatchesLoopPhase() {
+    // Step 1 of 5 wants the deep frontier (contour 100); step 5 wants near-in (25).
+    // mismatch values: 0 when contour matches expected phase, 1 at the extreme.
+    assertEquals("step 1 + contour 100 → no mismatch", 0.0,
+      scorer.isoContourDepthMismatch(100, 1, 5), 1e-9);
+    assertEquals("step 5 + contour 25 → no mismatch", 0.0,
+      scorer.isoContourDepthMismatch(25, 5, 5), 1e-9);
+    assertTrue("step 1 + contour 25 → large mismatch (wants depth)",
+      scorer.isoContourDepthMismatch(25, 1, 5) > 0.5);
+    assertTrue("step 5 + contour 100 → large mismatch (wants close-in)",
+      scorer.isoContourDepthMismatch(100, 5, 5) > 0.5);
+    // No sentinel → 0.
+    assertEquals(0.0,
+      scorer.isoContourDepthMismatch(RoundTripCandidateProvider.NO_ISO_CONTOUR, 1, 5), 1e-9);
+  }
+
+  @Test
+  public void hostilityPenaltyIsZeroBelowThreshold() {
+    // cost/airDist ≤ 1.5 → no penalty (profile-typical roads).
+    assertEquals(0.0, scorer.isoHostilityPenalty(7000, 5000), 1e-9); // ind=1.4
+    assertEquals(0.0, scorer.isoHostilityPenalty(7500, 5000), 1e-9); // ind=1.5
+    assertTrue("ind=2.0 should have a small penalty",
+      scorer.isoHostilityPenalty(10000, 5000) > 0);
+    assertEquals("ind≥4 should saturate at 1.0",
+      1.0, scorer.isoHostilityPenalty(20000, 5000), 1e-9);
+    // Missing-iso → no penalty.
+    assertEquals(0.0,
+      scorer.isoHostilityPenalty(RoundTripCandidateProvider.NO_ISO_COST, 5000), 1e-9);
+  }
 }

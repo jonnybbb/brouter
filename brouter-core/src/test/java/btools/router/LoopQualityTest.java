@@ -36,8 +36,9 @@ public class LoopQualityTest {
   // Target total loop distances in meters, and their corresponding search radii.
   // BRouter's roundTripDistance is a search RADIUS; actual loop length ≈ 2*pi*radius.
   // We use radius = targetDistance / (2*pi) ≈ targetDistance / 6.28.
-  private static final int[] TARGET_DISTANCES = {30000, 50000, 80000, 100000};
-  private static final int[] SEARCH_RADII = {4800, 8000, 12700, 15900};
+  // Spec §11 distance set: 30/50/75km. 80/100km retained for legacy coverage.
+  private static final int[] TARGET_DISTANCES = {30000, 50000, 75000, 80000, 100000};
+  private static final int[] SEARCH_RADII = {4800, 8000, 11937, 12700, 15900};
   // Directions in degrees
   private static final double[] DIRECTIONS = {0, 90, 180, 270};
   // Direction labels for naming
@@ -99,6 +100,15 @@ public class LoopQualityTest {
       " — run download-loop-test-segments.sh to fetch test data", segFile.exists());
     File profileFile = profileFile(profileName);
     Assume.assumeTrue("Profile not found: " + profileFile.getAbsolutePath(), profileFile.exists());
+    // Skip combos where the profile is fundamentally unsuitable for the
+    // terrain (e.g. MTB in urban Berlin: no singletrack network exists, so
+    // any route is forced through paved roads which the profile heavily
+    // penalises). The cyclist would not choose this combo in practice;
+    // testing it just produces noise that drowns out actionable failures.
+    Assume.assumeTrue(
+      "Profile " + profileName + " is not a supported profile for " + region.name()
+        + " (no plausible route exists for this terrain × profile combination)",
+      region.supportedProfiles.contains(profileName));
 
     // Run probe strategy (default)
     LoopQualityResult probeResult = runVariant("probe", RoundTripAlgorithm.WAYPOINT, segDir, profileFile);
@@ -106,16 +116,20 @@ public class LoopQualityTest {
     LoopQualityResult isoResult = runVariant("isochrone", RoundTripAlgorithm.ISOCHRONE, segDir, profileFile);
     // Run greedy sub-route strategy for comparison (best-effort, no assertions)
     LoopQualityResult greedyResult = runVariant("greedy", RoundTripAlgorithm.GREEDY, segDir, profileFile);
+    // Run QUALITY tier (isochrone-derived candidate pool through greedy planner)
+    LoopQualityResult isoGreedyResult = runVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY, segDir, profileFile);
 
     synchronized (results) {
       if (probeResult != null) results.add(probeResult);
       if (isoResult != null) results.add(isoResult);
       if (greedyResult != null) results.add(greedyResult);
+      if (isoGreedyResult != null) results.add(isoGreedyResult);
     }
 
     logVariantMetrics(probeResult);
     logVariantMetrics(isoResult);
     logVariantMetrics(greedyResult);
+    logVariantMetrics(isoGreedyResult);
 
     if (probeResult == null || probeResult.metrics == null) {
       Assume.assumeTrue("routing could not produce track for " + testLabel, false);
@@ -139,6 +153,51 @@ public class LoopQualityTest {
       String.format("%s: direction delta %.1f° exceeds max %.1f°",
         testLabel, metrics.getDirectionDeltaDegrees(), region.maxDirectionDelta),
       metrics.getDirectionDeltaDegrees() <= region.maxDirectionDelta);
+    // Profile-match gate: cost/m measures how well the route uses
+    // profile-preferred roads. For fastbike a route with cost/m > 3.5 is on
+    // roads the profile dislikes; gravel/mtb allow higher because their
+    // preferred surfaces have higher base cost.
+    double costPerM = metrics.getAverageCostPerMeter();
+    double maxCostPerM = maxCostPerMeterForProfile(profileName);
+    assertTrue(
+      String.format("%s: cost/m %.2f exceeds max %.2f for %s profile",
+        testLabel, costPerM, maxCostPerM, profileName),
+      costPerM <= maxCostPerM);
+    // Composite floor: a route with composite < MIN_COMPOSITE_PASS is bad
+    // along multiple dimensions even if individual thresholds pass. This is
+    // the catch-all that catches the "1.99x overshoot + low compactness +
+    // bad cost/m + bad direction" combinations that any single threshold
+    // misses but together signal an unusable loop.
+    double composite = metrics.compositeScore();
+    assertTrue(
+      String.format("%s: composite %.2f below floor %.2f (route fails on multiple dimensions)",
+        testLabel, composite, MIN_COMPOSITE_PASS),
+      composite >= MIN_COMPOSITE_PASS);
+  }
+
+  /**
+   * Composite-score floor for the WAYPOINT/probe variant assertion. A route below
+   * this is bad along multiple dimensions — the per-dimension thresholds in
+   * {@link LoopTestRegion} catch grossly-broken loops; this catches the more
+   * insidious "ratio 1.5 × low compactness × bad cost/m" combinations.
+   */
+  private static final double MIN_COMPOSITE_PASS = 0.50;
+
+  /**
+   * Profile-specific cost-per-meter ceiling. fastbike rejects high-costfactor
+   * roads (tracks, unpaved), gravel/mtb expect higher values because their
+   * preferred surfaces are themselves higher costfactor.
+   */
+  private static double maxCostPerMeterForProfile(String profileName) {
+    if (profileName == null) return 4.0;
+    switch (profileName.toLowerCase()) {
+      case "fastbike": return 3.5;
+      case "gravel": return 4.0;
+      case "mtb":
+      case "mtb-zossebart": return 5.0;
+      case "trekking": return 4.0;
+      default: return 4.5;
+    }
   }
 
   private LoopQualityResult runVariant(String variant, RoundTripAlgorithm algorithm, File segDir, File profileFile) {
@@ -277,20 +336,41 @@ public class LoopQualityTest {
     System.out.println();
   }
 
+  /** Cap on per-route coordinate points retained for the report — keeps heap
+   * usage bounded for the 1000+ route opt-in matrix without losing trace shape. */
+  private static final int MAX_REPORT_COORDS = 250;
+
   private static double[][] extractCoordinates(OsmTrack track) {
-    double[][] coords = new double[track.nodes.size()][2];
-    for (int i = 0; i < track.nodes.size(); i++) {
-      OsmPathElement n = track.nodes.get(i);
-      coords[i][0] = (n.getILon() - 180000000) / 1000000.0;
-      coords[i][1] = (n.getILat() - 90000000) / 1000000.0;
+    int n = track.nodes.size();
+    int step = Math.max(1, (int) Math.ceil(n / (double) MAX_REPORT_COORDS));
+    int outLen = ((n - 1) / step) + 1 + (((n - 1) % step != 0) ? 1 : 0);
+    if (outLen > n) outLen = n;
+    double[][] coords = new double[outLen][2];
+    int outIdx = 0;
+    for (int i = 0; i < n; i += step) {
+      OsmPathElement node = track.nodes.get(i);
+      coords[outIdx][0] = (node.getILon() - 180000000) / 1000000.0;
+      coords[outIdx][1] = (node.getILat() - 90000000) / 1000000.0;
+      outIdx++;
     }
-    return coords;
+    // Always include the closing endpoint so the rendered loop visually closes.
+    if (outIdx < coords.length && (n - 1) % step != 0) {
+      OsmPathElement last = track.nodes.get(n - 1);
+      coords[outIdx][0] = (last.getILon() - 180000000) / 1000000.0;
+      coords[outIdx][1] = (last.getILat() - 90000000) / 1000000.0;
+      outIdx++;
+    }
+    if (outIdx == coords.length) return coords;
+    double[][] trimmed = new double[outIdx][2];
+    System.arraycopy(coords, 0, trimmed, 0, outIdx);
+    return trimmed;
   }
 
   private static String variantColor(String variant) {
     switch (variant) {
       case "isochrone": return "#e67300";
       case "greedy": return "#22aa44";
+      case "iso_greedy": return "#aa22cc";
       default: return "#0066cc";
     }
   }

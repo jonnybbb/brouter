@@ -22,6 +22,11 @@ public class RoundTripResult {
   private final List<String> diagnostics = new ArrayList<>();
   private String fallbackReason;
   private List<OsmTrack> legTracks; // per-leg sub-route tracks from greedy planner
+  // Spec §10 telemetry — compute-budget audit signals.
+  private int candidatesGenerated;
+  private int candidatesRouted;
+  private int returnChecksPerformed;
+  private long runtimeMillis;
 
   public OsmTrack getTrack() {
     return track;
@@ -109,5 +114,41 @@ public class RoundTripResult {
 
   public void setLegTracks(List<OsmTrack> legTracks) {
     this.legTracks = legTracks;
+  }
+
+  /** Number of candidate points produced by the candidate provider across all steps. */
+  public int getCandidatesGenerated() {
+    return candidatesGenerated;
+  }
+
+  public void setCandidatesGenerated(int candidatesGenerated) {
+    this.candidatesGenerated = candidatesGenerated;
+  }
+
+  /** Number of candidate-leg sub-routes actually computed by Dijkstra. */
+  public int getCandidatesRouted() {
+    return candidatesRouted;
+  }
+
+  public void setCandidatesRouted(int candidatesRouted) {
+    this.candidatesRouted = candidatesRouted;
+  }
+
+  /** Number of return-to-start feasibility Dijkstras performed. */
+  public int getReturnChecksPerformed() {
+    return returnChecksPerformed;
+  }
+
+  public void setReturnChecksPerformed(int returnChecksPerformed) {
+    this.returnChecksPerformed = returnChecksPerformed;
+  }
+
+  /** Wall-clock duration of the planning attempt, milliseconds. */
+  public long getRuntimeMillis() {
+    return runtimeMillis;
+  }
+
+  public void setRuntimeMillis(long runtimeMillis) {
+    this.runtimeMillis = runtimeMillis;
   }
 }
