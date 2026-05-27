@@ -1368,38 +1368,68 @@ public class RoutingEngine extends Thread {
     }
     RoundTripCandidateProvider provider = buildCandidateProvider(algo, start, searchRadius, effectiveDirection, iso);
     int baseSubRouteCount = selectGreedySubRouteCount(desiredDistance, routingContext.getProfileName());
-    RoundTripResult result = null;
-    for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount)) {
-      logInfo("greedy round trip: subRouteCount=" + subRouteCount);
-      GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this, provider,
-        new CandidateScorer(), subRouteCount, 0.05, 8);
-      // ISO hostility scoring uses fastbike-tuned 1.5-4.0 indirectness thresholds.
-      // For MTB/gravel (baseline cost/airDist ~9) every candidate looks hostile,
-      // collapsing the candidate pool. Only enable for paved profiles.
-      planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(routingContext.getProfileName()));
-      // Phase 1.5: the planner's internal fallback gate delegates to the
-      // production gate; both need the active profile name to apply the
-      // paved-profile hostility branch consistently.
-      planner.setProfileName(routingContext.getProfileName());
-      result = planner.plan(start, desiredDistance, effectiveDirection);
-      // Stamp Phase 2.0 telemetry — must happen on every planner attempt
-      // so cross-attempt comparison via lastRoundTripResult sees consistent
-      // bias metadata.
-      if (result != null) {
-        result.setIsoAsymmetryBearingApplied(bias.applied);
-        result.setIsoAsymmetryBearingDegrees(bias.bearingDegrees);
-        result.setIsoAsymmetryBestBucketIndirectness(bias.indirectness);
-        result.setIsoAsymmetryBestBucketHits(bias.hits);
-        result.setIsoAsymmetryBestBucketAirDistMeters(bias.airDistMeters);
+
+    // First attempt — user direction (or Phase 2.0 biased bearing).
+    RoundTripResult result = runGreedyAttempt(start, searchRadius, desiredDistance,
+      effectiveDirection, baseSubRouteCount, provider, bias);
+
+    // Phase 2.1: if the first attempt degraded AND the user supplied an
+    // explicit direction AND the frontier has a strong terrain axis AND
+    // the user's direction is perpendicular to that axis, retry once
+    // along the axis. This addresses the Inn-Valley pattern: 100km loop
+    // requested heading N where the road network only supports E-W.
+    FrontierAxis frontierAxis = (iso != null)
+      ? computeFrontierAxis(iso.frontier, searchRadius) : FrontierAxis.NONE;
+    boolean phase21Triggered = false;
+    boolean phase21Succeeded = false;
+    double phase21RetryDir = Double.NaN;
+    if (isDegradedGreedyResult(result)
+        && direction >= 0
+        && frontierAxis.hasStrongAxis
+        && isPerpendicularToAxis(direction, frontierAxis.axisBearingDegrees)) {
+      phase21Triggered = true;
+      phase21RetryDir = chooseAxisBearing(frontierAxis.axisBearingDegrees, direction);
+      logInfo("ISO_GREEDY: Phase 2.1 axis retry — user direction " + (int) direction
+        + "° is perpendicular to terrain axis " + String.format("%.0f", frontierAxis.axisBearingDegrees)
+        + "° (strength=" + String.format("%.1fx", frontierAxis.strength)
+        + "); retrying with axis-aligned direction " + (int) phase21RetryDir + "°");
+      RoundTripResult retry = runGreedyAttempt(start, searchRadius, desiredDistance,
+        phase21RetryDir, baseSubRouteCount, provider, bias);
+      if (!isDegradedGreedyResult(retry)
+          && retry != null && retry.getLoopWaypoints() != null
+          && retry.getLoopWaypoints().size() >= 4) {
+        phase21Succeeded = true;
+        result = retry;
+      } else {
+        // Retry also degraded → geographic infeasibility. Keep first-attempt
+        // result for diagnostic display but mark the infeasibility for the
+        // caller's error path below.
+        logInfo("ISO_GREEDY: Phase 2.1 axis retry ALSO degraded — geographic infeasibility detected");
       }
-      lastRoundTripResult = result;
-      if (!isDegradedGreedyResult(result)
-          && result != null && result.getLoopWaypoints() != null
-          && result.getLoopWaypoints().size() >= 4) {
-        break;
-      }
-      logInfo("greedy: attempt with " + subRouteCount + " sub-routes did not produce an acceptable loop"
-        + (result == null || result.getFallbackReason() == null ? "" : " (" + result.getFallbackReason() + ")"));
+    }
+
+    if (result != null) {
+      result.setPhase21AxisRetryTriggered(phase21Triggered);
+      result.setPhase21AxisRetrySucceeded(phase21Succeeded);
+      result.setPhase21AxisBearingDegrees(frontierAxis.hasStrongAxis
+        ? frontierAxis.axisBearingDegrees : Double.NaN);
+      result.setPhase21AxisStrength(frontierAxis.hasStrongAxis ? frontierAxis.strength : 0.0);
+      result.setPhase21RetryDirectionDegrees(phase21RetryDir);
+    }
+
+    // Phase 2.1 used to also set errorMessage when both attempts degraded
+    // (the spec's "refuse with infeasibility error" option). That cut off
+    // doRoundTrip's later fallback path (waypoint algorithm), losing 2
+    // iso_greedy/gravel scenarios on the broader corpus that the legacy
+    // waypoint fallback had been salvaging. Drop the errorMessage write;
+    // let the result return as degraded so the caller can fall back as
+    // before. The axis info is still surfaced via the Phase 2.1 telemetry
+    // fields on RoundTripResult for diagnostic purposes.
+    if (phase21Triggered && !phase21Succeeded) {
+      logInfo("ISO_GREEDY: Phase 2.1 axis retry also degraded — geographic"
+        + " infeasibility (axis " + axisName(frontierAxis.axisBearingDegrees)
+        + ", strength " + String.format("%.1fx", frontierAxis.strength)
+        + "); falling through to legacy fallback chain");
     }
 
     // A real loop needs at least a triangle: start + 2 intermediate waypoints + closing
@@ -3092,6 +3122,61 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Runs one greedy planning attempt — the inner sub-route-count loop with
+   * a single {@code tryDirection}. Used by Phase 2.1 to attempt the same
+   * planner twice (user direction first, axis-aligned direction on retry)
+   * without code duplication.
+   *
+   * <p>Stamps Phase 2.0 telemetry on the result and updates
+   * {@link #lastRoundTripResult} on every iteration so cross-attempt
+   * comparison sees consistent metadata. Returns the final
+   * {@link RoundTripResult} produced (which may be degraded — the caller
+   * decides whether to accept or retry).
+   */
+  private RoundTripResult runGreedyAttempt(OsmNodeNamed start, double searchRadius,
+                                           double desiredDistance, double tryDirection,
+                                           int baseSubRouteCount,
+                                           RoundTripCandidateProvider provider,
+                                           IsoAsymmetryBias bias) {
+    RoundTripResult result = null;
+    for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount)) {
+      logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
+      GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this, provider,
+        new CandidateScorer(), subRouteCount, 0.05, 8);
+      planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(routingContext.getProfileName()));
+      planner.setProfileName(routingContext.getProfileName());
+      result = planner.plan(start, desiredDistance, tryDirection);
+      if (result != null) {
+        result.setIsoAsymmetryBearingApplied(bias.applied);
+        result.setIsoAsymmetryBearingDegrees(bias.bearingDegrees);
+        result.setIsoAsymmetryBestBucketIndirectness(bias.indirectness);
+        result.setIsoAsymmetryBestBucketHits(bias.hits);
+        result.setIsoAsymmetryBestBucketAirDistMeters(bias.airDistMeters);
+      }
+      lastRoundTripResult = result;
+      if (!isDegradedGreedyResult(result)
+          && result != null && result.getLoopWaypoints() != null
+          && result.getLoopWaypoints().size() >= 4) {
+        return result;
+      }
+      logInfo("greedy: attempt with " + subRouteCount + " sub-routes did not produce an acceptable loop"
+        + (result == null || result.getFallbackReason() == null ? "" : " (" + result.getFallbackReason() + ")"));
+    }
+    return result;
+  }
+
+  /** Phase 2.1: human-readable axis label for the infeasibility error. */
+  private static String axisName(double axisBearingDegrees) {
+    // axisBearingDegrees is canonical [0, 180). Snap to the nearest cardinal
+    // pair for a readable label.
+    double a = ((axisBearingDegrees % 180) + 180) % 180;
+    if (a < 22.5 || a >= 157.5) return "N-S";
+    if (a < 67.5) return "NE-SW";
+    if (a < 112.5) return "E-W";
+    return "NW-SE";
+  }
+
+  /**
    * Phase 2.0 of the closure-aware planning spec — isochrone-asymmetry
    * initial bearing. Examines the 36-bucket frontier table produced by
    * {@link #runIsochroneExpansion} and selects the most-reaching sector
@@ -3128,6 +3213,119 @@ public class RoutingEngine extends Thread {
     double[] best = frontier[bestIdx];
     return new IsoAsymmetryBias(true, best[0], bestIndirectness,
         (int) best[3], (int) best[1]);
+  }
+
+  /**
+   * Phase 2.1 of the closure-aware planning spec — frontier-axis detection
+   * for axis-aware retry when the user's explicit direction conflicts with
+   * the terrain's natural orientation.
+   *
+   * <p>Computes the principal axis of the reachable-frontier displacement
+   * vectors (good-quality buckets only, same thresholds as Phase 2.0).
+   * Returns an axis bearing in [0, 180) and the eigenvalue ratio
+   * (primary / secondary). An axis is considered "strong" when the ratio
+   * exceeds {@link #PHASE_2_1_STRONG_AXIS_RATIO}, indicating the reachable
+   * region is markedly elongated (Inn Valley, coast roads, ridge tops).
+   */
+  static FrontierAxis computeFrontierAxis(double[][] frontier, double searchRadius) {
+    if (frontier == null || frontier.length < 6) return FrontierAxis.NONE;
+    final double minAirDist = 0.6 * searchRadius;
+    final int minHits = 3;
+    double sumX2 = 0, sumY2 = 0, sumXY = 0;
+    int n = 0;
+    for (double[] b : frontier) {
+      if (b == null || b.length < 4) continue;
+      double airDist = b[1];
+      int hits = (int) b[3];
+      if (airDist < minAirDist || hits < minHits) continue;
+      // Compass bearing → (east, north) Cartesian.
+      double rad = Math.toRadians(b[0]);
+      double x = airDist * Math.sin(rad); // east
+      double y = airDist * Math.cos(rad); // north
+      sumX2 += x * x;
+      sumY2 += y * y;
+      sumXY += x * y;
+      n++;
+    }
+    if (n < 4) return FrontierAxis.NONE;
+    double a = sumX2 / n;
+    double bb = sumY2 / n;
+    double c = sumXY / n;
+    double trace = a + bb;
+    double det = a * bb - c * c;
+    double disc = Math.sqrt(Math.max(0, trace * trace - 4 * det));
+    double lambda1 = (trace + disc) / 2;
+    double lambda2 = (trace - disc) / 2;
+    if (lambda2 <= 0 || lambda1 <= 0) return FrontierAxis.NONE;
+    double strength = lambda1 / lambda2;
+    // Closed-form principal-axis angle for a 2x2 symmetric covariance:
+    // principalAngle = 0.5 * atan2(2c, a-b), in math convention (CCW from
+    // east). Robust to c ≈ 0 (avoids the fragile eigenvector-from-eigenvalue
+    // path which divides by tiny numbers). Convert to compass bearing
+    // (CW from north): bearing = 90° − math_angle.
+    double principalAngleDeg = 0.5 * Math.toDegrees(Math.atan2(2 * c, a - bb));
+    double bearing = (90 - principalAngleDeg + 360) % 360;
+    if (bearing >= 180) bearing -= 180; // canonical [0, 180), axis is bidirectional
+    return new FrontierAxis(strength >= PHASE_2_1_STRONG_AXIS_RATIO, bearing, strength);
+  }
+
+  /** Phase 2.1: eigenvalue ratio above which we treat the reachable region
+   *  as having a strong terrain axis. 3.0 corresponds to the reachable
+   *  region being ~1.7x as elongated along the principal axis as
+   *  perpendicular (sqrt(3) ≈ 1.73). Tunable; lower values fire more often. */
+  static final double PHASE_2_1_STRONG_AXIS_RATIO = 3.0;
+
+  /** Phase 2.1: half-angle (degrees) of the "near-perpendicular" cone.
+   *  User direction within 30° of perpendicular to the axis triggers retry. */
+  static final double PHASE_2_1_PERPENDICULAR_TOL = 30.0;
+
+  /** Phase 2.1: whether a user-supplied bearing is within
+   *  {@link #PHASE_2_1_PERPENDICULAR_TOL} of perpendicular to the given
+   *  axis. Both arguments are in compass degrees; axis canonical [0, 180). */
+  static boolean isPerpendicularToAxis(double userBearing, double axisBearing) {
+    double userMod = ((userBearing % 180) + 180) % 180;
+    double axisMod = ((axisBearing % 180) + 180) % 180;
+    double diff = Math.abs(userMod - axisMod);
+    if (diff > 90) diff = 180 - diff;
+    return diff >= (90 - PHASE_2_1_PERPENDICULAR_TOL);
+  }
+
+  /** Phase 2.1: pick the axis-aligned bearing (axis or axis+180) whose
+   *  half-plane is closer to the user's original direction. Used to retry
+   *  with a direction that respects both terrain (axis) and rough user
+   *  intent (the original half-plane). Tie-break: prefer the lower bearing. */
+  static double chooseAxisBearing(double axisBearing, double userBearing) {
+    double opt1 = ((axisBearing % 180) + 180) % 180;       // canonical axis
+    double opt2 = (opt1 + 180) % 360;                       // opposing direction
+    double user = ((userBearing % 360) + 360) % 360;
+    double d1 = angularDiff(opt1, user);
+    double d2 = angularDiff(opt2, user);
+    if (d1 < d2) return opt1;
+    if (d2 < d1) return opt2;
+    return Math.min(opt1, opt2);
+  }
+
+  private static double angularDiff(double a, double b) {
+    double d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+
+  /** Phase 2.1 result: principal axis of the reachable-frontier
+   *  displacements, with eigenvalue-ratio strength. */
+  static final class FrontierAxis {
+    static final FrontierAxis NONE = new FrontierAxis(false, Double.NaN, 0.0);
+    final boolean hasStrongAxis;
+    /** Axis bearing in [0, 180) — axis is direction-agnostic. */
+    final double axisBearingDegrees;
+    /** Eigenvalue ratio λ1 / λ2 of the displacement covariance. Strong axis
+     *  iff this is at least {@link #PHASE_2_1_STRONG_AXIS_RATIO}. */
+    final double strength;
+
+    FrontierAxis(boolean hasStrongAxis, double axisBearingDegrees, double strength) {
+      this.hasStrongAxis = hasStrongAxis;
+      this.axisBearingDegrees = axisBearingDegrees;
+      this.strength = strength;
+    }
   }
 
   /** Phase 2.0 result: which bucket of the isochrone frontier the bias

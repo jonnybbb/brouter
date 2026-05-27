@@ -49,6 +49,16 @@ public class RoundTripResult {
   private int     isoAsymmetryBestBucketHits = -1;
   private int     isoAsymmetryBestBucketAirDistMeters = -1;
 
+  // Phase 2.1 telemetry — frontier-axis retry. Populated when the planner
+  // detected a strong terrain axis perpendicular to the user's direction
+  // and retried with an axis-aligned bearing. Sentinels (NaN / 0 / false)
+  // when 2.1 did not trigger.
+  private boolean phase21AxisRetryTriggered = false;
+  private boolean phase21AxisRetrySucceeded = false;
+  private double  phase21AxisBearingDegrees = Double.NaN;
+  private double  phase21AxisStrength = 0.0;
+  private double  phase21RetryDirectionDegrees = Double.NaN;
+
   public OsmTrack getTrack() {
     return track;
   }
@@ -214,4 +224,32 @@ public class RoundTripResult {
    *  {@code -1} when not applied. */
   public int getIsoAsymmetryBestBucketAirDistMeters() { return isoAsymmetryBestBucketAirDistMeters; }
   public void setIsoAsymmetryBestBucketAirDistMeters(int v) { this.isoAsymmetryBestBucketAirDistMeters = v; }
+
+  /** Whether the Phase 2.1 axis-retry path fired. True when the first
+   *  attempt (with user direction) produced a degraded result AND the
+   *  frontier showed a strong terrain axis perpendicular to user direction. */
+  public boolean isPhase21AxisRetryTriggered() { return phase21AxisRetryTriggered; }
+  public void setPhase21AxisRetryTriggered(boolean v) { this.phase21AxisRetryTriggered = v; }
+
+  /** Whether the Phase 2.1 axis retry produced an acceptable (non-degraded)
+   *  loop. False either when retry was not triggered, or when retry also
+   *  produced a degraded result (geographic infeasibility). */
+  public boolean isPhase21AxisRetrySucceeded() { return phase21AxisRetrySucceeded; }
+  public void setPhase21AxisRetrySucceeded(boolean v) { this.phase21AxisRetrySucceeded = v; }
+
+  /** Bearing of the principal frontier axis (in [0, 180); axis is
+   *  bidirectional). {@code NaN} when 2.1 did not trigger. */
+  public double getPhase21AxisBearingDegrees() { return phase21AxisBearingDegrees; }
+  public void setPhase21AxisBearingDegrees(double v) { this.phase21AxisBearingDegrees = v; }
+
+  /** Eigenvalue ratio of the displacement covariance; higher = more
+   *  elongated reachable region. {@code 0.0} when 2.1 did not trigger. */
+  public double getPhase21AxisStrength() { return phase21AxisStrength; }
+  public void setPhase21AxisStrength(double v) { this.phase21AxisStrength = v; }
+
+  /** Direction used on the axis-retry attempt (axis-aligned bearing
+   *  closest to the user's original direction). {@code NaN} when 2.1
+   *  did not trigger. */
+  public double getPhase21RetryDirectionDegrees() { return phase21RetryDirectionDegrees; }
+  public void setPhase21RetryDirectionDegrees(double v) { this.phase21RetryDirectionDegrees = v; }
 }

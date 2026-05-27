@@ -1548,4 +1548,95 @@ public class RoutingEngineTest {
     Assert.assertEquals(-1, none.hits);
     Assert.assertEquals(-1, none.airDistMeters);
   }
+
+  // --- Phase 2.1: frontier-axis PCA + perpendicularity --------------------
+
+  @Test
+  public void frontierAxis_symmetricFrontier_noStrongAxis() {
+    // Uniform reach → eigenvalues nearly equal → no strong axis.
+    double[][] f = uniformFrontier(8000.0, 10000.0, 5);
+    RoutingEngine.FrontierAxis axis = RoutingEngine.computeFrontierAxis(f, 10000.0);
+    Assert.assertFalse("uniform reach should not register as strong axis", axis.hasStrongAxis);
+    Assert.assertTrue("strength should be near 1.0", axis.strength < 1.5);
+  }
+
+  @Test
+  public void frontierAxis_elongatedEastWest_detectsHorizontalAxis() {
+    // Inn Valley analog: only buckets near E (90°) or W (270°) reach far
+    // enough to pass the airDist quality threshold — mountains block the
+    // perpendicular sectors entirely. PCA operates only on the surviving
+    // axis-aligned buckets, producing a strongly anisotropic covariance.
+    double[] a = new double[36];
+    double[] c = new double[36];
+    int[] h = new int[36];
+    for (int i = 0; i < 36; i++) {
+      double bearing = i * 10.0;
+      double angleFromAxis = Math.min(angularDiff(bearing, 90), angularDiff(bearing, 270));
+      // searchRadius=10000 → minAirDist threshold = 6000m.
+      a[i] = angleFromAxis < 30 ? 8000.0 : 2000.0; // off-axis below threshold
+      c[i] = 10000.0;
+      h[i] = 5;
+    }
+    double[][] f = frontier36(a, c, h);
+    RoutingEngine.FrontierAxis axis = RoutingEngine.computeFrontierAxis(f, 10000.0);
+    Assert.assertTrue("east-west elongation should register as strong axis", axis.hasStrongAxis);
+    // Canonical [0, 180) → axis bearing should be ~90° (E-W).
+    Assert.assertEquals("axis bearing ~90°", 90.0, axis.axisBearingDegrees, 10.0);
+    Assert.assertTrue("strength should be substantial", axis.strength >= 3.0);
+  }
+
+  /** Local copy of RoutingEngine's private angularDiff for test fixture setup. */
+  private static double angularDiff(double x, double y) {
+    double d = Math.abs(x - y) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+
+  @Test
+  public void frontierAxis_tooFewGoodBuckets_returnsNone() {
+    // Only 3 buckets pass the quality thresholds; PCA requires ≥4.
+    double[] a = new double[36];
+    double[] c = new double[36];
+    int[] h = new int[36];
+    for (int i = 0; i < 36; i++) {
+      a[i] = 2000.0; // below reach floor for searchRadius=10000
+      c[i] = 5000.0;
+      h[i] = 5;
+    }
+    for (int i = 0; i < 3; i++) {
+      a[i] = 8000.0; // these 3 pass the floor
+    }
+    double[][] f = frontier36(a, c, h);
+    RoutingEngine.FrontierAxis axis = RoutingEngine.computeFrontierAxis(f, 10000.0);
+    Assert.assertFalse(axis.hasStrongAxis);
+  }
+
+  @Test
+  public void isPerpendicularToAxis_northVsEastWest() {
+    // User asks N (0°), axis is E-W (90°) → perpendicular.
+    Assert.assertTrue(RoutingEngine.isPerpendicularToAxis(0, 90));
+    Assert.assertTrue(RoutingEngine.isPerpendicularToAxis(180, 90));
+    // User asks E (90°), axis is E-W (90°) → colinear.
+    Assert.assertFalse(RoutingEngine.isPerpendicularToAxis(90, 90));
+    Assert.assertFalse(RoutingEngine.isPerpendicularToAxis(270, 90));
+    // User asks NE (45°), axis E-W → 45° off perpendicular → false at 30° tol.
+    Assert.assertFalse(RoutingEngine.isPerpendicularToAxis(45, 90));
+  }
+
+  @Test
+  public void chooseAxisBearing_picksHalfPlaneClosestToUser() {
+    // Axis E-W (90°), user asks NE (45°) → closer to E (90°) than W (270°).
+    Assert.assertEquals(90.0, RoutingEngine.chooseAxisBearing(90, 45), 0.01);
+    // Axis E-W, user asks NW (315°) → closer to W (270°) than E (90°).
+    Assert.assertEquals(270.0, RoutingEngine.chooseAxisBearing(90, 315), 0.01);
+    // Axis E-W, user asks N (0°) → equidistant; tie-break prefers lower → 90°.
+    Assert.assertEquals(90.0, RoutingEngine.chooseAxisBearing(90, 0), 0.01);
+  }
+
+  @Test
+  public void frontierAxisNone_carriesSentinels() {
+    RoutingEngine.FrontierAxis none = RoutingEngine.FrontierAxis.NONE;
+    Assert.assertFalse(none.hasStrongAxis);
+    Assert.assertTrue(Double.isNaN(none.axisBearingDegrees));
+    Assert.assertEquals(0.0, none.strength, 0.0);
+  }
 }
