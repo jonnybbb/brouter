@@ -1,0 +1,3 @@
+[
+  {"file":"dayout__1405919111__#11 ALRD 100 hilly GER Heitersheim.gpx","profile":"fastbike","algorithm":"GREEDY","realMeters":100194.7,"closureMeters":0.0,"accepted":false,"error":"greedy round trip planner produced no acceptable graph-native loop: rejected: route has 21 self-intersections (max 5) — chaotic loop geometry; best error=0.3%","score":0.81452,"distanceRatio":0.99723,"radialMae":0.30927,"maxRadiusRatioDelta":-0.55585,"bearingDelta":21.55985,"runtimeMillis":8181}
+]
