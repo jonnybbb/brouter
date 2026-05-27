@@ -83,7 +83,13 @@ public class GreedyRoundTripPlanner {
    * candidates, prefer the one that keeps the loop geometry clean before the
    * final hard gate sees the completed route.
    */
-  static final double PARTIAL_SELF_INTERSECTION_WEIGHT = 0.3;
+  // Phase 2.2 chaos-avoidance tuning. Raised from 0.3 → 1.0 per the
+  // directive "zick zack and chaos routing must be avoided" — at 0.3
+  // a candidate with 1 tentative crossing got a +0.3 score bump, which
+  // got dominated by other terms; at 1.0 even one crossing pushes the
+  // candidate substantially down the ranking. The 880-scenario corpus
+  // measurement validates this is empirically the right magnitude.
+  static final double PARTIAL_SELF_INTERSECTION_WEIGHT = 1.0;
   // Multiplier applied to the air-distance return estimate when deciding
   // whether to skip the return Dijkstra. > 1 means we skip less aggressively.
   private static final double RETURN_SKIP_SAFETY = 1.5;
