@@ -144,6 +144,21 @@ public final class RoundTripQualityGate {
   public static final double HOSTILE_COSTFACTOR_THRESHOLD = 4.0;
 
   /**
+   * Lower costfactor threshold used by the scorer-side approximation
+   * {@link #worstContiguousCostlyMetersForScorer}. The scorer cannot use
+   * tag-based hostility detection on single-pass tracks (wayKeyValues is
+   * null), so it compensates by flagging edges with moderately elevated
+   * costfactor — many hostile-by-tag edges sit in the 2-4 costfactor
+   * band under the fastbike profile, below the gate's hard threshold but
+   * already indicating "the profile is paying a real penalty here".
+   *
+   * <p>Calibrated to: (a) not flag quiet rural roads (~1.0-2.0) and
+   * (b) catch tracks/paths whose costfactor isn't quite at 4.0 but tags
+   * would have flagged them on a detailed track.
+   */
+  public static final double SCORER_HOSTILE_COSTFACTOR_THRESHOLD = 3.0;
+
+  /**
    * Way-tag fragments that signal profile-hostile terrain for a paved
    * profile. We match by substring against {@code MessageData.wayKeyValues}
    * because the cost lookup may not have populated {@code costfactor} for
@@ -649,6 +664,74 @@ public final class RoundTripQualityGate {
    */
   public static int worstContiguousHostileMetersPaved(OsmTrack track) {
     return worstHostileStretchPaved(track).meters;
+  }
+
+  /**
+   * Scorer-side approximation of {@link #worstContiguousHostileMetersPaved}
+   * that works on single-pass tracks (where {@code MessageData.wayKeyValues}
+   * is null and the tag-based hostility check at
+   * {@link #isHostileForPavedProfile} silently returns false).
+   *
+   * <p>The gate's precise predicate uses both costfactor and tag matching,
+   * and breaks the contiguous run on any edge with null {@code wayKeyValues}.
+   * That design is correct for the gate (don't reject without evidence) but
+   * produces a near-useless signal for candidate ranking: single-pass tracks
+   * always return 0, so the scorer's
+   * {@code contiguousHostilityPenalty} never fires and hostile candidates
+   * keep their high routedScore rank. The gate later rejects them post-
+   * detail, and the planner has to shrink radius or pick a worse-shape
+   * alternate to recover.
+   *
+   * <p>This method bypasses the {@code wayKeyValues == null} guard and
+   * uses ONLY the per-edge {@code costfactor} (which IS populated during
+   * single-pass routing). It uses a lower threshold than the gate
+   * ({@link #SCORER_HOSTILE_COSTFACTOR_THRESHOLD} = 3.0 vs
+   * {@link #HOSTILE_COSTFACTOR_THRESHOLD} = 4.0) to compensate for the
+   * missing tag check — many hostile-by-tag edges have costfactor in the
+   * 2-4 range under the fastbike profile, just below the gate's cost-only
+   * threshold. The lower bound is calibrated to flag edges whose cost
+   * already signals "the profile is paying a real penalty here" without
+   * firing on quiet rural roads (typically costfactor ~1.0-2.0).
+   *
+   * <p>Intended for candidate <em>ranking</em> only. Gate enforcement must
+   * continue to use the precise tag-aware
+   * {@link #worstContiguousHostileMetersPaved}.
+   *
+   * @return longest unbroken meters of edges with costfactor &gt;
+   *         {@link #SCORER_HOSTILE_COSTFACTOR_THRESHOLD}; 0 on tracks
+   *         without MessageData.
+   */
+  public static int worstContiguousCostlyMetersForScorer(OsmTrack track) {
+    return worstContiguousMetersAboveCostfactor(track, SCORER_HOSTILE_COSTFACTOR_THRESHOLD);
+  }
+
+  /**
+   * Costfactor-only worst-contiguous-stretch finder. Package-private for
+   * unit testing different thresholds; the production path uses
+   * {@link #worstContiguousCostlyMetersForScorer}.
+   */
+  static int worstContiguousMetersAboveCostfactor(OsmTrack track, double threshold) {
+    if (track == null || track.nodes == null || track.nodes.size() < 2) return 0;
+    int best = 0;
+    double current = 0;
+    for (int i = 1; i < track.nodes.size(); i++) {
+      OsmPathElement a = track.nodes.get(i - 1);
+      OsmPathElement b = track.nodes.get(i);
+      double segLen = a.calcDistance(b);
+      MessageData m = b.message;
+      if (m == null) {
+        current = 0;
+        continue;
+      }
+      if (m.costfactor > threshold) {
+        current += segLen;
+        int meters = (int) current;
+        if (meters > best) best = meters;
+      } else {
+        current = 0;
+      }
+    }
+    return best;
   }
 
   /**

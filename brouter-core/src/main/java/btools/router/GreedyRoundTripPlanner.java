@@ -369,8 +369,16 @@ public class GreedyRoundTripPlanner {
           // Computed only for paved profiles (the hostile predicate is
           // road-bike specific); -1 sentinel for the rest keeps the
           // scorer on its iso-hostility fall-back.
+          //
+          // Scorer-side approximation: the gate's worstContiguousHostileMetersPaved
+          // returns 0 on single-pass subTracks because it skips edges with
+          // null wayKeyValues (the tag check is the dominant hostility signal,
+          // costfactor>4.0 only catches extreme cases). Use the costfactor-
+          // only variant with the lower SCORER_HOSTILE_COSTFACTOR_THRESHOLD
+          // to get a usable signal on single-pass tracks. The gate's precise
+          // tag-aware check still runs post-detail before commit.
           int worstHostile = RoundTripQualityGate.isPavedProfile(profileName)
-            ? RoundTripQualityGate.worstContiguousHostileMetersPaved(subTrack)
+            ? RoundTripQualityGate.worstContiguousCostlyMetersForScorer(subTrack)
             : -1;
 
           double routedScorerScore = scorer.score(

@@ -692,4 +692,146 @@ public class RoundTripQualityGateTest {
     m.costfactor = src.costfactor;
     return m;
   }
+
+  // --- worstContiguousCostlyMetersForScorer (scorer-side divergence fix) ---
+
+  /** Single-pass-style MessageData: costfactor set, wayKeyValues null
+   *  (simulating a single-pass routed sub-track before retrackForDetail). */
+  private static MessageData msgSinglePass(float costfactor) {
+    MessageData m = new MessageData();
+    m.wayKeyValues = null;
+    m.costfactor = costfactor;
+    return m;
+  }
+
+  /** Actual CheapRuler distance between adjacent makeNode(*100, 0) nodes,
+   *  measured once so tests don't have to assume metric scaling. The
+   *  helper's "~1m per unit" comment is an approximation; at the encoded
+   *  latitude (ilat=50000000 → -40°) each unit is ~1.19m. */
+  private static final double ONE_HUNDRED_UNITS_METERS =
+    makeNode(0, 0).calcDistance(makeNode(100, 0));
+
+  @Test
+  public void worstContiguousCostlyMeters_emptyTrack_returnsZero() {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    assertEquals(0,
+      RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 3.0));
+  }
+
+  @Test
+  public void worstContiguousCostlyMeters_allLowCost_returnsZero() {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    for (int i = 1; i <= 10; i++) {
+      OsmPathElement n = makeNode(i * 100, 0);
+      n.message = msgSinglePass(1.5f);
+      t.nodes.add(n);
+    }
+    assertEquals(0,
+      RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 3.0));
+  }
+
+  @Test
+  public void worstContiguousCostlyMeters_singlePassTrack_detectsCostStretch() {
+    // The smoking-gun test: a single-pass track (wayKeyValues all null)
+    // has 5 contiguous high-costfactor edges. The legacy
+    // worstContiguousHostileMetersPaved would return 0 because the null
+    // wayKeyValues check breaks the run before costfactor is even
+    // considered. The scorer-side method must detect the stretch.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    for (int i = 1; i <= 10; i++) {
+      OsmPathElement n = makeNode(i * 100, 0);
+      n.message = msgSinglePass((i >= 3 && i <= 7) ? 5.0f : 1.0f);
+      t.nodes.add(n);
+    }
+    int worst = RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 3.0);
+    double expected = 5 * ONE_HUNDRED_UNITS_METERS;
+    assertEquals("5 contiguous high-cost edges", expected, worst, 5.0);
+
+    // Confirm the legacy gate-side check returns 0 on this same single-pass
+    // input (the bug being fixed).
+    assertEquals("legacy check returns 0 when wayKeyValues is null",
+      0, RoundTripQualityGate.worstContiguousHostileMetersPaved(t));
+  }
+
+  @Test
+  public void worstContiguousCostlyMeters_brokenByLowCostEdge() {
+    // Two separate high-cost runs of 3 and 5 edges; longest is reported.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    int[] pattern = {5, 5, 5, 1, 5, 5, 5, 5, 5, 1};
+    for (int i = 0; i < pattern.length; i++) {
+      OsmPathElement n = makeNode((i + 1) * 100, 0);
+      n.message = msgSinglePass((float) pattern[i]);
+      t.nodes.add(n);
+    }
+    int worst = RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 3.0);
+    double expected = 5 * ONE_HUNDRED_UNITS_METERS;
+    assertEquals("longest run is 5 contiguous high-cost edges", expected, worst, 5.0);
+  }
+
+  @Test
+  public void worstContiguousCostlyMeters_nullMessageDataBreaksRun() {
+    // Edges with null MessageData (no edge data at all) must break the run,
+    // since we cannot prove they are costly. This matches the legacy
+    // worstHostileStretchPaved behavior for that specific case.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    for (int i = 1; i <= 7; i++) {
+      OsmPathElement n = makeNode(i * 100, 0);
+      if (i == 4) {
+        n.message = null;
+      } else {
+        n.message = msgSinglePass(5.0f);
+      }
+      t.nodes.add(n);
+    }
+    int worst = RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 3.0);
+    double expected = 3 * ONE_HUNDRED_UNITS_METERS;
+    assertEquals("3 high-cost then null then 3 high-cost = 3-edge run best",
+      expected, worst, 5.0);
+  }
+
+  @Test
+  public void worstContiguousCostlyMeters_thresholdGovernsDetection() {
+    // A track of all edges at costfactor=3.5. With threshold=3.0, they all
+    // count. With threshold=4.0, none count.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    for (int i = 1; i <= 5; i++) {
+      OsmPathElement n = makeNode(i * 100, 0);
+      n.message = msgSinglePass(3.5f);
+      t.nodes.add(n);
+    }
+    double expected = 5 * ONE_HUNDRED_UNITS_METERS;
+    assertEquals("threshold 3.0 catches costfactor 3.5", expected,
+      RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 3.0), 5.0);
+    assertEquals("threshold 4.0 misses costfactor 3.5",
+      0, RoundTripQualityGate.worstContiguousMetersAboveCostfactor(t, 4.0));
+  }
+
+  @Test
+  public void worstContiguousCostlyMetersForScorer_usesDefaultThreshold() {
+    // Public wrapper should match the package-private overload at the
+    // configured threshold.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    for (int i = 1; i <= 5; i++) {
+      OsmPathElement n = makeNode(i * 100, 0);
+      n.message = msgSinglePass(3.5f);
+      t.nodes.add(n);
+    }
+    assertEquals(
+      RoundTripQualityGate.worstContiguousMetersAboveCostfactor(
+        t, RoundTripQualityGate.SCORER_HOSTILE_COSTFACTOR_THRESHOLD),
+      RoundTripQualityGate.worstContiguousCostlyMetersForScorer(t));
+  }
 }
