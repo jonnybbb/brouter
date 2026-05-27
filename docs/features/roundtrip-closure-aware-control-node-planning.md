@@ -907,6 +907,129 @@ are captured and committed as
 `docs/features/roundtrip-closure-aware-phase1.json` (same shape as the
 baseline artifact).
 
+### Phase 1 Investigation Results (May 2026)
+
+Two attempts at Phase 1 Step 3 were measured against the Phase 0 Basel
+baseline (commit `5ba4c4a6`, n=6 loops × 2 algorithms). **Both regressed
+beyond the spec's -0.02 similarity threshold.** Reverted without
+commit. The architectural assumption "try alternate candidate at the
+same radius before shrinking radius" is contradicted by this corpus.
+
+#### Attempt 1 — Step 3a only (alternate retry on pre-closure validation)
+
+Iterate ranked candidates; if validation (detail/metadata/hostility)
+fails for the locally best, try next at the same radius instead of
+shrinking.
+
+Results on Basel small corpus:
+
+| | Baseline | Step 3a | Δ |
+|---|---|---|---|
+| GREEDY avg similarity | 0.852 | 0.837 | **-0.015** |
+| ISO_GREEDY avg similarity | 0.850 | 0.811 | **-0.039** ✗ |
+
+ISO_GREEDY exceeded the -0.02 threshold. Reverted.
+
+#### Attempt 2 — Step 3a + scorer divergence fix + Step 3b (closure probe)
+
+After committing the scorer divergence fix (commit `c873e12e`, no
+behavior change on baseline), implemented the full Step 3 trial loop
+with closure-aware probe per spec Steps 3-4. Atomic commit-on-accept;
+no rollback paths.
+
+Results on Basel small corpus:
+
+| | Baseline | Step 3 (full) | Δ |
+|---|---|---|---|
+| GREEDY avg similarity | 0.852 | 0.816 | **-0.036** ✗ |
+| ISO_GREEDY avg similarity | 0.850 | 0.764 | **-0.086** ✗ |
+
+10 of 12 per-loop scenarios regressed. Two improved slightly. Runtime
+~70% slower (Basel 45 s → 76 s). Reverted.
+
+#### Root cause: shrink-and-retry is a candidate-pool diversifier
+
+The legacy `cand[0] fails → shrink radius → regenerate candidates from
+scratch at smaller radius` was a hidden architectural win, not just a
+last-resort fallback. At a smaller radius the candidate provider samples
+different points in the graph; the new candidate pool has structurally
+different geometric options, often producing a better overall loop
+shape.
+
+`Try alternate at the same radius` keeps the planner stuck in the same
+candidate cluster. On Basel, the locally-best candidate is shape-optimal
+by routedScore; alternates ranked lower precisely because their shape is
+worse (worse spread, worse direction, more reuse). When the planner
+picks them, the resulting routed loop has lower similarity to the GPX
+reference — even when the closure passes the production gate.
+
+Concretely on the Basel corpus, ~20 % of step decisions trigger
+alternate selection (driven by detail-time hostility failures the
+scorer cannot predict from single-pass tracks — see the scorer fix
+above for partial mitigation). The alternates that survive the gate
+produce visibly worse-shaped loops; aggregating across 6 loops the
+similarity drops 0.04–0.09 per variant.
+
+#### Implication for the spec
+
+The spec's Step 3 design assumption — *alternate retry before shrink
+is net-positive for loop quality* — is empirically false on this
+corpus. Two distinct mechanisms produce regression:
+
+1. **Same-radius alternates are systematically worse-shape** than
+   smaller-radius regenerated candidates (the scorer ranks alternates
+   lower for shape reasons).
+2. **Closure probing rejects candidates that the OLD post-commit gate
+   would have rejected too**, but in OLD the planner then shrank and
+   tried a smaller-radius candidate; in NEW it tries a worse-shape
+   same-radius alternate.
+
+Both mechanisms compound. The scorer-divergence fix (already committed)
+addresses neither — it improves ranking accuracy but doesn't change the
+fundamental "alternates at same radius are shape-suboptimal" reality.
+
+#### Revised Step 3 design (proposed; not yet implemented)
+
+Three options worth exploring before re-attempting Step 3:
+
+**A. Closure probe without alternate retry** — atomically commit
+   cand[0] only after a successful closure probe (preserving the
+   "no rollback" win). On any failure (validation, probe, gate),
+   shrink radius as the legacy code did. Smaller, safer change; only
+   gain is removing the rollback code path.
+
+**B. Closure-quality-aware shrink/alternate decision** — when cand[0]
+   fails closure for a *distance* reason (too long/too short), the
+   gate's verdict suggests the radius itself is wrong → shrink. When
+   cand[0] fails closure for a *shape* reason (hostility, self-
+   intersections, reuse), the alternates at the same radius have
+   different shapes → try alternates first. Distinguishes the failure
+   mode driving the next step.
+
+**C. Closure probe + alternate-bounded-by-score-delta** — try
+   alternates only when their `routedScore - bestRoutedScore` is below
+   some threshold (e.g. 0.2). When all alternates score much worse
+   than the locally-best, shrink instead. Heuristic but pragmatic;
+   tunes the trade-off between alternate-retry and shrink-and-retry.
+
+Recommendation: implement **A** first as the smallest reviewable change
+and re-measure. If it preserves the baseline (likely), it adds the
+closure-probe correctness guarantee without behavior regression. **B**
+or **C** can layer on top once **A** has corpus evidence.
+
+#### What stays from the failed attempts
+
+- The **scorer divergence fix** (commit `c873e12e`) is correct and
+  committed. It improves the scorer's hostility ranking without
+  changing baseline behavior. Foundation for any future Step 3
+  design that does rely on alternate-retry.
+- The **Step 2 ranked-candidate list** (commit `755b0d3a`) is the
+  structural foundation for any of the revised designs (A, B, C
+  above). It stays committed.
+- The **closure-probe helper (`probeClosure`) and ClosureProbe data
+  class** designs from the reverted Step 3 attempt are reusable for
+  any revised design; the spec's Step 4 description is unchanged.
+
 ### Phase 2 — Isochrone-Asymmetry Initial Bearing
 
 #### Phase 2 Hard Criteria
