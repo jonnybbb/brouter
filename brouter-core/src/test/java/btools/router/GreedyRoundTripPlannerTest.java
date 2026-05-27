@@ -58,6 +58,62 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
+  public void sortByRoutedScoreOrdersAscending() {
+    GreedyRoundTripPlanner.ScoredRoute a = new GreedyRoundTripPlanner.ScoredRoute();
+    a.routedScore = 0.42;
+    a.candidateIndex = 0;
+    GreedyRoundTripPlanner.ScoredRoute b = new GreedyRoundTripPlanner.ScoredRoute();
+    b.routedScore = 0.17;
+    b.candidateIndex = 1;
+    GreedyRoundTripPlanner.ScoredRoute c = new GreedyRoundTripPlanner.ScoredRoute();
+    c.routedScore = 0.81;
+    c.candidateIndex = 2;
+
+    List<GreedyRoundTripPlanner.ScoredRoute> list = new ArrayList<>();
+    list.add(a);
+    list.add(b);
+    list.add(c);
+    GreedyRoundTripPlanner.sortByRoutedScore(list);
+
+    Assert.assertSame("lowest routedScore first", b, list.get(0));
+    Assert.assertSame(a, list.get(1));
+    Assert.assertSame("highest routedScore last", c, list.get(2));
+  }
+
+  @Test
+  public void sortByRoutedScoreIsStableOnTies() {
+    // Stability matters: the legacy single-best-wins logic used `<` so the
+    // first candidate to reach a tied score won. Phase 1 Step 2 keeps that
+    // tie-break by relying on List.sort's stable contract.
+    GreedyRoundTripPlanner.ScoredRoute first = new GreedyRoundTripPlanner.ScoredRoute();
+    first.routedScore = 0.5;
+    first.candidateIndex = 0;
+    GreedyRoundTripPlanner.ScoredRoute second = new GreedyRoundTripPlanner.ScoredRoute();
+    second.routedScore = 0.5;
+    second.candidateIndex = 1;
+    GreedyRoundTripPlanner.ScoredRoute third = new GreedyRoundTripPlanner.ScoredRoute();
+    third.routedScore = 0.5;
+    third.candidateIndex = 2;
+
+    List<GreedyRoundTripPlanner.ScoredRoute> list = new ArrayList<>();
+    list.add(first);
+    list.add(second);
+    list.add(third);
+    GreedyRoundTripPlanner.sortByRoutedScore(list);
+
+    Assert.assertEquals(0, list.get(0).candidateIndex);
+    Assert.assertEquals(1, list.get(1).candidateIndex);
+    Assert.assertEquals(2, list.get(2).candidateIndex);
+  }
+
+  @Test
+  public void sortByRoutedScoreHandlesEmptyList() {
+    List<GreedyRoundTripPlanner.ScoredRoute> empty = new ArrayList<>();
+    GreedyRoundTripPlanner.sortByRoutedScore(empty);
+    Assert.assertTrue(empty.isEmpty());
+  }
+
+  @Test
   public void autoSelectsGreedyForLargeRadius() {
     Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(8000));
     Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(5000));

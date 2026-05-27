@@ -293,8 +293,12 @@ public class GreedyRoundTripPlanner {
         List<RoundTripCandidateProvider.CandidatePoint> toRoute =
           pickDiverseTopK(candidates, routeBudget);
 
-        ScoredRoute accepted = null;
-        double bestRoutedScore = Double.MAX_VALUE;
+        // Phase 1 Step 2: keep a ranked list of routed candidates instead of
+        // a single best-pick. Step 2 is structural and behavior-preserving —
+        // we still commit only the top-ranked candidate at the end. Step 3
+        // (closure-aware trial loop) will iterate this list when the locally
+        // best candidate's closed loop is rejected.
+        List<ScoredRoute> routedCandidates = new ArrayList<>();
         int routeAttempts = toRoute.size();
         MatchedWaypoint fromMwp = currentMwp;
 
@@ -394,16 +398,21 @@ public class GreedyRoundTripPlanner {
               costPerMeter, routedScore);
           }
 
-          if (routedScore < bestRoutedScore) {
-            bestRoutedScore = routedScore;
-            accepted = new ScoredRoute();
-            accepted.track = subTrack;
-            accepted.toMwp = toMwp;
-            accepted.routeDistance = subTrack.distance;
-            accepted.visitedRatio = actualVisitedRatio;
-            accepted.fromIsoCandidate = isIsoCandidate;
-          }
+          ScoredRoute candidate = new ScoredRoute();
+          candidate.track = subTrack;
+          candidate.toMwp = toMwp;
+          candidate.routeDistance = subTrack.distance;
+          candidate.visitedRatio = actualVisitedRatio;
+          candidate.fromIsoCandidate = isIsoCandidate;
+          candidate.routedScore = routedScore;
+          candidate.candidateIndex = r;
+          candidate.tentativeSelfIntersections = tentativeSelfIntersections;
+          candidate.routedLegWorstHostileMeters = worstHostile;
+          routedCandidates.add(candidate);
         }
+
+        sortByRoutedScore(routedCandidates);
+        ScoredRoute accepted = routedCandidates.isEmpty() ? null : routedCandidates.get(0);
 
         if (accepted == null) {
           // No routable candidate at this radius — gentle shrink so we don't
@@ -1207,13 +1216,47 @@ public class GreedyRoundTripPlanner {
     double error;
   }
 
-  /** A candidate that has been routed. */
-  private static final class ScoredRoute {
+  /**
+   * A candidate that has been routed. Package-private so unit tests can
+   * construct instances and verify candidate-list ordering (Phase 1 Step 2
+   * of the closure-aware control-node planning spec).
+   */
+  static final class ScoredRoute {
     OsmTrack track;
     MatchedWaypoint toMwp;
     double routeDistance;
     double visitedRatio;
     /** True iff this leg was selected from an iso-derived candidate. */
     boolean fromIsoCandidate;
+    /**
+     * Final routed score after combinedRoutedScore() and the partial
+     * self-intersection penalty (lower is better). Used to sort the
+     * per-step candidate list and as the input to the Step 5 closure score.
+     */
+    double routedScore;
+    /** Index of this candidate in the per-step trial loop (0-based). */
+    int candidateIndex;
+    /** Tentative self-intersections of the routed leg against committed segments. */
+    int tentativeSelfIntersections;
+    /**
+     * Longest contiguous hostile stretch in the routed leg, in meters,
+     * computed via {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}.
+     * Sentinel {@code -1} on non-paved profiles where the predicate would
+     * over-flag.
+     */
+    int routedLegWorstHostileMeters;
+  }
+
+  /**
+   * Sort routed candidates ascending by {@link ScoredRoute#routedScore}
+   * (lower is better). Stable: candidates with equal score retain their
+   * insertion order, which preserves the legacy first-best-wins tie-break.
+   *
+   * <p>Package-private for unit testing (Phase 1 Step 2 acceptance criterion:
+   * "routed candidates are sorted by routedScore; partial self-intersection
+   * penalty affects ordering").
+   */
+  static void sortByRoutedScore(List<ScoredRoute> candidates) {
+    candidates.sort(Comparator.comparingDouble(c -> c.routedScore));
   }
 }
