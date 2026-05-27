@@ -38,8 +38,11 @@ final class LoopQualityReportGenerator {
     sb.append("tr:hover { opacity: 0.8; cursor: pointer; }\n");
     sb.append("tr.selected { outline: 2px solid #007bff; }\n");
     sb.append(".metric-bad { color: #dc3545; font-weight: bold; }\n");
-    sb.append(".legend { margin-bottom: 12px; font-size: 12px; }\n");
+    sb.append(".legend { margin-bottom: 8px; font-size: 12px; }\n");
     sb.append(".legend span { display: inline-block; width: 14px; height: 14px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }\n");
+    sb.append(".variant-badge { display: inline-block; width: 16px; height: 16px; border-radius: 3px; color: #fff; text-align: center; font-weight: bold; font-size: 10px; line-height: 16px; }\n");
+    sb.append(".v-probe { background: #0066cc; } .v-isochrone { background: #e67300; } .v-greedy { background: #22aa44; } .v-iso_greedy { background: #aa22cc; }\n");
+    sb.append(".filters label { display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 12px; background: #fff; border: 1px solid #ced4da; border-radius: 3px; cursor: pointer; }\n");
     sb.append("</style>\n");
     sb.append("</head>\n<body>\n");
 
@@ -56,11 +59,17 @@ final class LoopQualityReportGenerator {
       passed, failed, errors, results.size()));
     sb.append("</div>\n");
 
-    // Legend
+    // Legend (status + variant colors)
     sb.append("<div class=\"legend\">\n");
     sb.append("<span style=\"background:#28a745\"></span> Pass &nbsp; ");
     sb.append("<span style=\"background:#dc3545\"></span> Fail &nbsp; ");
     sb.append("<span style=\"background:#ffc107\"></span> Error\n");
+    sb.append("</div>\n");
+    sb.append("<div class=\"legend\">\n");
+    sb.append("<span style=\"background:#0066cc\"></span> Probe &nbsp; ");
+    sb.append("<span style=\"background:#e67300\"></span> Isochrone &nbsp; ");
+    sb.append("<span style=\"background:#22aa44\"></span> Greedy &nbsp; ");
+    sb.append("<span style=\"background:#aa22cc\"></span> Iso-Greedy\n");
     sb.append("</div>\n");
 
     // Filters
@@ -79,17 +88,24 @@ final class LoopQualityReportGenerator {
     sb.append("<select id=\"fStatus\" onchange=\"applyFilters()\"><option value=\"\">All status</option>");
     sb.append("<option>pass</option><option>fail</option><option>error</option>");
     sb.append("</select>\n");
+    sb.append("<select id=\"fVariant\" onchange=\"applyFilters()\"><option value=\"\">All algorithms</option>");
+    sb.append("<option>probe</option><option>isochrone</option><option>greedy</option><option>iso_greedy</option>");
+    sb.append("</select>\n");
+    sb.append("<label><input type=\"checkbox\" id=\"fShowAll\" onchange=\"applyFilters()\"> Show all on map</label>\n");
     sb.append("</div>\n");
 
     // Results table
     sb.append("<table id=\"results\">\n");
-    sb.append("<thead><tr><th>Test</th><th>Reuse%</th><th>DistR</th><th>DirD</th><th>Cont</th><th>Comp</th><th>Score</th><th>Dist(m)</th></tr></thead>\n");
+    sb.append("<thead><tr><th>Alg</th><th>Test</th><th>Reuse%</th><th>DistR</th><th>DirD</th><th>Cont</th><th>Comp</th><th>Score</th><th>Dist(m)</th></tr></thead>\n");
     sb.append("<tbody>\n");
     for (int i = 0; i < results.size(); i++) {
       LoopQualityTest.LoopQualityResult r = results.get(i);
       String status = r.metrics == null ? "error" : (r.passed() ? "pass" : "fail");
-      sb.append(String.format("<tr class=\"%s\" data-idx=\"%d\" data-region=\"%s\" data-profile=\"%s\" data-dist=\"%d\" data-status=\"%s\" onclick=\"focusRoute(%d)\">",
-        status, i, r.region.name(), r.profileName, r.distanceMeters / 1000, status, i));
+      String variant = r.variant != null ? r.variant : "probe";
+      sb.append(String.format("<tr class=\"%s\" data-idx=\"%d\" data-region=\"%s\" data-profile=\"%s\" data-dist=\"%d\" data-status=\"%s\" data-variant=\"%s\" onclick=\"focusRoute(%d)\">",
+        status, i, r.region.name(), r.profileName, r.distanceMeters / 1000, status, variant, i));
+      sb.append(String.format("<td><span class=\"variant-badge v-%s\" title=\"%s\">%s</span></td>",
+        variant, variant, variant.substring(0, 1).toUpperCase()));
       sb.append(String.format("<td title=\"%s\">%s</td>", r.label, abbreviateLabel(r.label)));
       if (r.metrics != null) {
         sb.append(formatMetricCell(r.metrics.getRoadReusePercent(), r.region.maxReusePercent, "%.1f"));
@@ -109,7 +125,9 @@ final class LoopQualityReportGenerator {
     // Map
     sb.append("<div id=\"map\"></div>\n");
 
-    // Embedded route data as JS — coordinates simplified to every Nth point for performance
+    // Embedded route data as JS. LoopQualityTest already caps routes with
+    // Douglas-Peucker simplification; avoid a second stride simplification here
+    // because it can draw misleading straight cuts across curved roads.
     sb.append("<script>\n");
     sb.append("var routes = [\n");
     for (int i = 0; i < results.size(); i++) {
@@ -131,18 +149,11 @@ final class LoopQualityReportGenerator {
           r.metrics.getAverageCostPerMeter(), r.metrics.getMaxGapMeters(),
           r.metrics.getClosureDistanceMeters(), r.metrics.compositeScore()));
       }
-      // Embed simplified coordinates (every Nth point to keep HTML manageable)
       sb.append("coords:[");
       if (r.coordinates != null && r.coordinates.length > 0) {
-        int step = Math.max(1, r.coordinates.length / 200); // ~200 points per route max
-        for (int j = 0; j < r.coordinates.length; j += step) {
+        for (int j = 0; j < r.coordinates.length; j++) {
           if (j > 0) sb.append(",");
           sb.append(String.format(Locale.US, "[%.5f,%.5f]", r.coordinates[j][1], r.coordinates[j][0])); // Leaflet: [lat, lon]
-        }
-        // Always include last point to close the loop
-        if ((r.coordinates.length - 1) % step != 0) {
-          sb.append(String.format(Locale.US, ",[%.5f,%.5f]",
-            r.coordinates[r.coordinates.length - 1][1], r.coordinates[r.coordinates.length - 1][0]));
         }
       }
       sb.append("]},\n");
@@ -190,18 +201,24 @@ final class LoopQualityReportGenerator {
     sb.append("  layers.push(layer);\n");
     sb.append("});\n\n");
 
-    // Map starts empty; user clicks a row/route to view one route at a time
-    sb.append("// Map starts empty; selecting a row shows a single route\n");
+    // Default view: single-route focus. "Show all on map" toggle overlays
+    // every filtered loop so several algorithms can be compared side-by-side.
     sb.append("applyFilters();\n\n");
 
+    sb.append("function isVisibleRow(idx) {\n");
+    sb.append("  var row = document.querySelector('tr[data-idx=\"'+idx+'\"]');\n");
+    sb.append("  return row && row.style.display !== 'none';\n");
+    sb.append("}\n\n");
+
     sb.append("function focusRoute(idx) {\n");
-    sb.append("  // show only one route at a time — remove the previously displayed route\n");
-    sb.append("  if (selectedIdx >= 0 && selectedIdx !== idx && layers[selectedIdx]) layers[selectedIdx].remove();\n");
+    sb.append("  var showAll = document.getElementById('fShowAll').checked;\n");
+    sb.append("  if (!showAll && selectedIdx >= 0 && selectedIdx !== idx && layers[selectedIdx]) layers[selectedIdx].remove();\n");
     sb.append("  highlightRow(idx);\n");
     sb.append("  var r = routes[idx];\n");
     sb.append("  if (layers[idx]) {\n");
-    sb.append("    layers[idx].addTo(map);\n");
+    sb.append("    if (!map.hasLayer(layers[idx])) layers[idx].addTo(map);\n");
     sb.append("    layers[idx].setStyle({weight: 5, opacity: 1.0});\n");
+    sb.append("    layers[idx].bringToFront();\n");
     sb.append("    map.fitBounds(layers[idx].getBounds().pad(0.1));\n");
     sb.append("    layers[idx].openPopup();\n");
     sb.append("  } else {\n");
@@ -210,8 +227,7 @@ final class LoopQualityReportGenerator {
     sb.append("}\n\n");
 
     sb.append("function highlightRow(idx) {\n");
-    sb.append("  // Reset previous\n");
-    sb.append("  if (selectedIdx >= 0 && layers[selectedIdx]) layers[selectedIdx].setStyle({weight: 3, opacity: 0.6});\n");
+    sb.append("  if (selectedIdx >= 0 && selectedIdx !== idx && layers[selectedIdx]) layers[selectedIdx].setStyle({weight: 3, opacity: 0.6});\n");
     sb.append("  document.querySelectorAll('tr.selected').forEach(function(el) { el.classList.remove('selected'); });\n");
     sb.append("  selectedIdx = idx;\n");
     sb.append("  var row = document.querySelector('tr[data-idx=\"'+idx+'\"]');\n");
@@ -219,26 +235,37 @@ final class LoopQualityReportGenerator {
     sb.append("}\n\n");
 
     sb.append("function applyFilters() {\n");
-    sb.append("  // filters only narrow the table list; the map keeps showing the single selected route\n");
     sb.append("  var fR = document.getElementById('fRegion').value;\n");
     sb.append("  var fP = document.getElementById('fProfile').value;\n");
     sb.append("  var fD = document.getElementById('fDist').value;\n");
     sb.append("  var fS = document.getElementById('fStatus').value;\n");
-    sb.append("  var rows = document.querySelectorAll('#results tbody tr');\n");
-    sb.append("  rows.forEach(function(row) {\n");
+    sb.append("  var fV = document.getElementById('fVariant').value;\n");
+    sb.append("  var showAll = document.getElementById('fShowAll').checked;\n");
+    sb.append("  var visibleIdx = [];\n");
+    sb.append("  document.querySelectorAll('#results tbody tr').forEach(function(row) {\n");
     sb.append("    var show = true;\n");
     sb.append("    if (fR && row.dataset.region !== fR) show = false;\n");
     sb.append("    if (fP && row.dataset.profile !== fP) show = false;\n");
     sb.append("    if (fD && row.dataset.dist !== fD) show = false;\n");
     sb.append("    if (fS && row.dataset.status !== fS) show = false;\n");
+    sb.append("    if (fV && row.dataset.variant !== fV) show = false;\n");
     sb.append("    row.style.display = show ? '' : 'none';\n");
-    sb.append("    // if the displayed route is filtered out, clear it from the map\n");
-    sb.append("    if (!show && parseInt(row.dataset.idx) === selectedIdx && layers[selectedIdx]) {\n");
-    sb.append("      layers[selectedIdx].remove();\n");
-    sb.append("      row.classList.remove('selected');\n");
-    sb.append("      selectedIdx = -1;\n");
-    sb.append("    }\n");
+    sb.append("    var idx = parseInt(row.dataset.idx);\n");
+    sb.append("    if (show) visibleIdx.push(idx);\n");
+    sb.append("    if (!show && idx === selectedIdx) { row.classList.remove('selected'); selectedIdx = -1; }\n");
     sb.append("  });\n");
+    sb.append("  // Map sync: in show-all mode every visible route is drawn; otherwise only the selected one.\n");
+    sb.append("  layers.forEach(function(layer, idx) {\n");
+    sb.append("    if (!layer) return;\n");
+    sb.append("    var shouldShow = showAll ? isVisibleRow(idx) : (idx === selectedIdx);\n");
+    sb.append("    if (shouldShow && !map.hasLayer(layer)) layer.addTo(map);\n");
+    sb.append("    else if (!shouldShow && map.hasLayer(layer)) layer.remove();\n");
+    sb.append("  });\n");
+    sb.append("  if (showAll && visibleIdx.length > 0) {\n");
+    sb.append("    var bounds = L.latLngBounds([]);\n");
+    sb.append("    visibleIdx.forEach(function(idx) { if (layers[idx]) bounds.extend(layers[idx].getBounds()); });\n");
+    sb.append("    if (bounds.isValid()) map.fitBounds(bounds.pad(0.05));\n");
+    sb.append("  }\n");
     sb.append("}\n");
 
     sb.append("</script>\n</body>\n</html>\n");

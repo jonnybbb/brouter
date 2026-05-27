@@ -218,7 +218,8 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
     int fromIlon, int fromIlat, double airRadius,
     int step, int totalSteps,
     int startIlon, int startIlat,
-    double startDirection) {
+    double startDirection,
+    OsmTrack refTrack) {
 
     double minWindow = airRadius * STEP_WINDOW_LOW;
     double maxWindow = airRadius * STEP_WINDOW_HIGH;
@@ -243,6 +244,10 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
       cp.costFromStart = c.costFromStart;
       cp.bucketHits = c.bucketHits;
       cp.sourceContour = c.sourceContour;
+      // Start-centered ISO candidates are placement hints, not adoptable
+      // sub-legs: their stored path, if any, runs from the original loop
+      // start to the candidate. On later greedy steps the current node is
+      // different, so the planner must route from the current node instead.
       results.add(cp);
     }
 

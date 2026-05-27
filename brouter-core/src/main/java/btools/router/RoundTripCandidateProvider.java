@@ -8,12 +8,15 @@ import btools.util.CheapRuler;
 /**
  * Generates candidate next-step points for {@link GreedyRoundTripPlanner}.
  *
- * <p>Two production implementations:
+ * <p>Production implementations:
  * <ul>
- *   <li>{@link RadialCandidateProvider} — purely geometric ring around the current
- *       position. The legacy/default behavior (BALANCED tier).</li>
+ *   <li>{@link GraphNativeCandidateProvider} — bounded Dijkstra from the
+ *       current graph position. This is the default GREEDY candidate source.</li>
  *   <li>{@link IsochroneCandidateProvider} — road-native candidates extracted from a
- *       bounded isochrone expansion centered at the start (QUALITY tier).</li>
+ *       bounded isochrone expansion centered at the start (ISO_GREEDY bias).</li>
+ *   <li>{@link RadialCandidateProvider} — purely geometric ring around the current
+ *       position. Legacy/debug fallback only; generated production AUTO should
+ *       not use this for greedy placement.</li>
  * </ul>
  *
  * <p>The planner then routes a small number of these candidates and chooses the best
@@ -42,7 +45,8 @@ public interface RoundTripCandidateProvider {
     int fromIlon, int fromIlat, double airRadius,
     int step, int totalSteps,
     int startIlon, int startIlat,
-    double startDirection);
+    double startDirection,
+    OsmTrack refTrack);
 
   /** Sentinel for "iso cost-from-start not available" (radial candidates). */
   double NO_ISO_COST = -1;
@@ -71,6 +75,12 @@ public interface RoundTripCandidateProvider {
     public int bucketHits = NO_ISO_DENSITY;
     /** Source contour (25/50/75/100) the iso candidate was sampled from; {@link #NO_ISO_CONTOUR} = unavailable. */
     public int sourceContour = NO_ISO_CONTOUR;
+    /**
+     * Optional graph-native leg from the current position to this candidate.
+     * When present, the greedy planner can score and accept this exact Dijkstra
+     * leg instead of routing to the candidate coordinate a second time.
+     */
+    public OsmTrack routedTrack;
   }
 
   /**
@@ -96,7 +106,8 @@ public interface RoundTripCandidateProvider {
       int fromIlon, int fromIlat, double airRadius,
       int step, int totalSteps,
       int startIlon, int startIlat,
-      double startDirection) {
+      double startDirection,
+      OsmTrack refTrack) {
       // baseAngle: align the first ring slot with the user's direction on the
       // first two steps so the loop heads where the user asked; thereafter let
       // the scorer's loop/direction terms decide.

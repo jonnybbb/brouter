@@ -27,6 +27,16 @@ public class RoundTripResult {
   private int candidatesRouted;
   private int returnChecksPerformed;
   private long runtimeMillis;
+  // Auto-quality-redesign §132 telemetry: routed candidates broken down by
+  // candidate source (iso-derived vs radial). The greedy planner identifies
+  // source via the existing `costFromStart != NO_ISO_COST` sentinel.
+  // "Routed" counts every candidate that the planner ran through Dijkstra;
+  // "accepted" counts only those that became part of the final loop.
+  // Low-iso-usage classification should use ACCEPTED legs, not routed.
+  private int routedIsoCandidates;
+  private int routedRadialCandidates;
+  private int acceptedIsoLegs;
+  private int acceptedRadialLegs;
 
   public OsmTrack getTrack() {
     return track;
@@ -151,4 +161,20 @@ public class RoundTripResult {
   public void setRuntimeMillis(long runtimeMillis) {
     this.runtimeMillis = runtimeMillis;
   }
+
+  /** Number of iso-derived candidates the planner Dijkstra-routed. */
+  public int getRoutedIsoCandidates() { return routedIsoCandidates; }
+  public void setRoutedIsoCandidates(int v) { this.routedIsoCandidates = v; }
+
+  /** Number of radial (geometric) candidates the planner Dijkstra-routed. */
+  public int getRoutedRadialCandidates() { return routedRadialCandidates; }
+  public void setRoutedRadialCandidates(int v) { this.routedRadialCandidates = v; }
+
+  /** Number of iso-derived candidates that became legs in the final loop. */
+  public int getAcceptedIsoLegs() { return acceptedIsoLegs; }
+  public void setAcceptedIsoLegs(int v) { this.acceptedIsoLegs = v; }
+
+  /** Number of radial candidates that became legs in the final loop. */
+  public int getAcceptedRadialLegs() { return acceptedRadialLegs; }
+  public void setAcceptedRadialLegs(int v) { this.acceptedRadialLegs = v; }
 }

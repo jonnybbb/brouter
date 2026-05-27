@@ -30,6 +30,24 @@ public final class LoopQualityMetrics {
   private final double averageCostPerMeter;
   private final int closureDistanceMeters;
 
+  /**
+   * Reconstruct a metrics instance from primitive fields. Used by the
+   * test-time on-disk cache in {@code LoopQualityTest} to rehydrate results
+   * across Gradle test forks without depending on Java serialisation. Not
+   * part of the routing engine's normal write path — for new metrics
+   * always use {@link #compute(OsmTrack, int, double)}.
+   */
+  public static LoopQualityMetrics fromFields(double roadReusePercent, double distanceRatio,
+                                              double directionDeltaDegrees, int actualDistanceMeters,
+                                              int requestedDistanceMeters, double continuityScore,
+                                              int maxGapMeters, int totalGapMeters,
+                                              double compactnessScore, double averageCostPerMeter,
+                                              int closureDistanceMeters) {
+    return new LoopQualityMetrics(roadReusePercent, distanceRatio, directionDeltaDegrees,
+      actualDistanceMeters, requestedDistanceMeters, continuityScore, maxGapMeters, totalGapMeters,
+      compactnessScore, averageCostPerMeter, closureDistanceMeters);
+  }
+
   private LoopQualityMetrics(double roadReusePercent, double distanceRatio,
                              double directionDeltaDegrees, int actualDistanceMeters,
                              int requestedDistanceMeters, double continuityScore,

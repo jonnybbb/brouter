@@ -49,6 +49,14 @@ public enum LoopTestRegion {
   COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 30.0, 0.4, 1.8, 180,
     profiles("fastbike")),           // gravel: coastal area is mostly paved tourist roads
   RURAL_LOZERE(3.500, 44.500, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),
+  // Mallorca: island geometry forces a different loop-quality regime than
+  // mainland regions. The Serra de Tramuntana climbs in the NW, the coast
+  // road network is finite (you can't always loop around a cape), and the
+  // famous cycling routes are often forced-spur shape (e.g. Cap de Formentor,
+  // Sa Calobra). Slightly relaxed reuse/distance thresholds because
+  // out-and-back to a cape or pass IS the expected shape of a Mallorca ride.
+  MALLORCA(2.650, 39.570, "E0_N35.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel"));
 
   /** Longitude in decimal degrees */

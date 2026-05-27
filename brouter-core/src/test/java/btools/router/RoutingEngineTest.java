@@ -548,17 +548,17 @@ public class RoutingEngineTest {
 
     re.removeBackAndForthSegments(track, wpts);
 
-    // After removal: A, B, C, W, D, E (C2 and B2 removed)
-    Assert.assertEquals("should have 6 nodes after removal", 6, track.nodes.size());
+    // After removal: A, B, D, E. The whole B-C-W-C-B spur is removed so the
+    // cleanup does not create a synthetic W-D shortcut.
+    Assert.assertEquals("should have 4 nodes after removal", 4, track.nodes.size());
     Assert.assertSame("node 0 should be A", nodeA, track.nodes.get(0));
     Assert.assertSame("node 1 should be B", nodeB, track.nodes.get(1));
-    Assert.assertSame("node 2 should be C", nodeC, track.nodes.get(2));
-    Assert.assertSame("node 3 should be W (waypoint kept)", nodeW, track.nodes.get(3));
-    Assert.assertSame("node 4 should be D", nodeD, track.nodes.get(4));
-    Assert.assertSame("node 5 should be E", nodeE, track.nodes.get(5));
+    Assert.assertSame("node 2 should be D", nodeD, track.nodes.get(2));
+    Assert.assertSame("node 3 should be E", nodeE, track.nodes.get(3));
 
-    // End waypoint index should be updated
-    Assert.assertEquals("end waypoint index should be adjusted", 5, endWp.indexInTrack);
+    // Waypoint indices should be updated to the surviving branch/end.
+    Assert.assertEquals("mid waypoint index should move to branch", 1, midWp.indexInTrack);
+    Assert.assertEquals("end waypoint index should be adjusted", 3, endWp.indexInTrack);
   }
 
   // removeBackAndForthSegments does nothing when there's no overlap
@@ -938,6 +938,213 @@ public class RoutingEngineTest {
       Assert.assertTrue("result should be sorted by direction",
         merged[i][0] >= merged[i - 1][0]);
     }
+  }
+
+  @Test
+  public void mergeIsochroneWithProbePreservesSixElementEntries() {
+    // Isochrone-sourced entries are 6-element [dir, dist, cost, hits, ilon, ilat]
+    // — the merge must pass these through unchanged so direct-ISOCHRONE
+    // placement can find the road-native coord downstream.
+    double[][] frontier = {{0, 2000, 2600, 5, 188_720_111, 140_000_222}};
+    double[] probe = {180};
+    double[][] merged = RoutingEngine.mergeIsochroneWithProbe(frontier, probe, 1000);
+
+    Assert.assertEquals(2, merged.length);
+    for (double[] entry : merged) {
+      if (Math.abs(entry[0]) < 1) {
+        Assert.assertEquals("iso entry preserves 6 elements", 6, entry.length);
+        Assert.assertEquals(188_720_111, (int) entry[4]);
+        Assert.assertEquals(140_000_222, (int) entry[5]);
+      } else {
+        // Probe-only injection — 4 elements, no road-native data.
+        Assert.assertEquals("probe-only entry stays 4 elements", 4, entry.length);
+      }
+    }
+  }
+
+  // --- direct ISOCHRONE road-native waypoint placement ---
+
+  /**
+   * Fallback path: when no candidate pool is supplied, placement uses the
+   * frontier entry's road-native coord (entry[4]/entry[5]) rather than
+   * synthesizing a position. Production passes the full candidate pool to get
+   * airDist-aware selection — see
+   * {@link #placeWaypointsFromIsochronePicksCandidateMatchingPlacementRadius}.
+   */
+  @Test
+  public void placeWaypointsFromIsochroneUsesRoadNativeCoordsWhenAvailable() {
+    RoutingEngine re = createDummyEngine(0);
+
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = START_ILON;
+    start.ilat = START_ILAT;
+    wps.add(start);
+
+    // Frontier with 6-element entries, each at a distinct road-native coord
+    // far enough from start (airDist > 0.4 * searchRadius) and with hits >= 3
+    // so they pass the in-method usability filter.
+    double searchRadius = 2000;
+    int[][] expectedPositions = {
+      {START_ILON + 30_000, START_ILAT},
+      {START_ILON, START_ILAT + 25_000},
+      {START_ILON - 28_000, START_ILAT + 2_000},
+      {START_ILON - 5_000, START_ILAT - 27_000},
+    };
+    double[][] frontier = {
+      {  0, 1500, 1950, 5, expectedPositions[0][0], expectedPositions[0][1]},
+      { 90, 1600, 2080, 5, expectedPositions[1][0], expectedPositions[1][1]},
+      {180, 1550, 2015, 5, expectedPositions[2][0], expectedPositions[2][1]},
+      {270, 1500, 1950, 5, expectedPositions[3][0], expectedPositions[3][1]},
+    };
+
+    re.placeWaypointsFromIsochrone(wps, frontier, null, searchRadius, 0, 5);
+
+    // 1 start + 4 intermediates + 1 closing == 6
+    Assert.assertEquals("expected start + 4 rt + closing", 6, wps.size());
+    Assert.assertEquals(START_ILON, wps.get(0).ilon);
+    Assert.assertEquals(START_ILAT, wps.get(0).ilat);
+    Assert.assertEquals("closing waypoint must be a copy of start",
+      START_ILON, wps.get(wps.size() - 1).ilon);
+    Assert.assertEquals(START_ILAT, wps.get(wps.size() - 1).ilat);
+
+    // Each intermediate waypoint must land on one of the road-native coords —
+    // not at a CheapRuler.destination-synthesized position.
+    java.util.Set<Long> expectedKeys = new java.util.HashSet<>();
+    for (int[] pos : expectedPositions) {
+      expectedKeys.add(new OsmNode(pos[0], pos[1]).getIdFromPos());
+    }
+    for (int i = 1; i < wps.size() - 1; i++) {
+      OsmNodeNamed wp = wps.get(i);
+      Assert.assertTrue("waypoint " + wp.name + " (" + wp.ilon + "," + wp.ilat
+        + ") should match a road-native frontier coord",
+        expectedKeys.contains(wp.getIdFromPos()));
+    }
+  }
+
+  /**
+   * Mixed frontier: 6-element entries reuse their road-native coord while
+   * probe-only 4-element entries fall back to {@code CheapRuler.destination}
+   * at the indirectness-compensated air-distance. Note that probe-only
+   * (hits=0) entries enter the placement only via the relaxed-fallback branch
+   * in placeWaypointsFromIsochrone (usable.size() < 4).
+   */
+  @Test
+  public void placeWaypointsFromIsochroneFallsBackToSyntheticForProbeOnly() {
+    RoutingEngine re = createDummyEngine(0);
+
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = START_ILON;
+    start.ilat = START_ILAT;
+    wps.add(start);
+
+    double searchRadius = 2000;
+    // Two iso entries (6-element) at 0° and 180°, two probe-only at 90° and 270°.
+    int[] isoNorth = {START_ILON, START_ILAT + 24_000};
+    int[] isoSouth = {START_ILON, START_ILAT - 24_000};
+    double[][] frontier = {
+      {  0, 1500, 1950, 5, isoNorth[0], isoNorth[1]},
+      { 90, 2000, 2600, 0},  // probe-only, no coord
+      {180, 1500, 1950, 5, isoSouth[0], isoSouth[1]},
+      {270, 2000, 2600, 0},  // probe-only, no coord
+    };
+
+    re.placeWaypointsFromIsochrone(wps, frontier, null, searchRadius, 0, 5);
+
+    Assert.assertEquals(6, wps.size());
+
+    long northKey = new OsmNode(isoNorth[0], isoNorth[1]).getIdFromPos();
+    long southKey = new OsmNode(isoSouth[0], isoSouth[1]).getIdFromPos();
+    long startKey = new OsmNode(START_ILON, START_ILAT).getIdFromPos();
+    boolean sawNorth = false, sawSouth = false;
+    int syntheticCount = 0;
+    for (int i = 1; i < wps.size() - 1; i++) {
+      OsmNodeNamed wp = wps.get(i);
+      long key = wp.getIdFromPos();
+      if (key == northKey) sawNorth = true;
+      else if (key == southKey) sawSouth = true;
+      else {
+        Assert.assertNotEquals("synthetic waypoint must not coincide with start",
+          startKey, key);
+        syntheticCount++;
+      }
+    }
+    Assert.assertTrue("road-native north entry should appear", sawNorth);
+    Assert.assertTrue("road-native south entry should appear", sawSouth);
+    Assert.assertEquals("two probe-only directions placed synthetically", 2, syntheticCount);
+  }
+
+  /**
+   * When a candidate pool is passed, placement must pick the candidate whose
+   * air-distance best matches the indirectness-compensated target — not the
+   * frontier-max coord (which sits at the cost-budget envelope and would
+   * overshoot the requested loop size for small radii).
+   */
+  @Test
+  public void placeWaypointsFromIsochronePicksCandidateMatchingPlacementRadius() {
+    RoutingEngine re = createDummyEngine(0);
+
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = START_ILON;
+    start.ilat = START_ILAT;
+    wps.add(start);
+
+    // 4 buckets at 0/90/180/270. For each bucket, give the candidate pool a
+    // frontier-max far out (at 3000m) plus a 25%-contour candidate at ~1000m.
+    // With searchRadius=2000 the placement target is roughly searchRadius, so
+    // the 25%-contour candidate (near 1000m) should be picked over the
+    // frontier-max (at 3000m).
+    double searchRadius = 2000;
+    int[][] frontierCoords = {
+      {START_ILON + 60_000, START_ILAT},
+      {START_ILON, START_ILAT + 50_000},
+      {START_ILON - 60_000, START_ILAT},
+      {START_ILON, START_ILAT - 50_000},
+    };
+    int[][] contourCoords = {
+      {START_ILON + 20_000, START_ILAT},
+      {START_ILON, START_ILAT + 16_000},
+      {START_ILON - 20_000, START_ILAT},
+      {START_ILON, START_ILAT - 16_000},
+    };
+    double[][] frontier = new double[4][];
+    List<IsoCandidate> candidates = new ArrayList<>();
+    int[] buckets = {0, 9, 18, 27};
+    double[] bearings = {0, 90, 180, 270};
+    for (int i = 0; i < 4; i++) {
+      frontier[i] = new double[]{bearings[i], 3000, 3900, 5, frontierCoords[i][0], frontierCoords[i][1]};
+      candidates.add(new IsoCandidate(frontierCoords[i][0], frontierCoords[i][1],
+        bearings[i], 3000, 3900, buckets[i], 5, 100));
+      candidates.add(new IsoCandidate(contourCoords[i][0], contourCoords[i][1],
+        bearings[i], 1000, 1300, buckets[i], 5, 25));
+    }
+
+    re.placeWaypointsFromIsochrone(wps, frontier, candidates, searchRadius, 0, 5);
+
+    Assert.assertEquals(6, wps.size());
+
+    // Every intermediate waypoint should land on a contour-coord, not on the
+    // far-out frontier-max coord.
+    java.util.Set<Long> contourKeys = new java.util.HashSet<>();
+    java.util.Set<Long> frontierKeys = new java.util.HashSet<>();
+    for (int i = 0; i < 4; i++) {
+      contourKeys.add(new OsmNode(contourCoords[i][0], contourCoords[i][1]).getIdFromPos());
+      frontierKeys.add(new OsmNode(frontierCoords[i][0], frontierCoords[i][1]).getIdFromPos());
+    }
+    int contourHits = 0, frontierHits = 0;
+    for (int i = 1; i < wps.size() - 1; i++) {
+      long key = wps.get(i).getIdFromPos();
+      if (contourKeys.contains(key)) contourHits++;
+      else if (frontierKeys.contains(key)) frontierHits++;
+    }
+    Assert.assertEquals("airDist-aware selection should prefer the 1000m contour over the 3000m frontier",
+      4, contourHits);
+    Assert.assertEquals(0, frontierHits);
   }
 
   // --- Reachability-aware waypoint placement tests ---

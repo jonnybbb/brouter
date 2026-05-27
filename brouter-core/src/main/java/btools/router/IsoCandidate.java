@@ -5,8 +5,11 @@ import btools.util.CheapRuler;
 
 /**
  * A road-native candidate node extracted from a {@link RoutingEngine#runIsochroneExpansion}
- * Dijkstra. Each candidate represents the farthest air-distance node Dijkstra reached in
- * a particular angular bucket within a particular cost contour from the start point.
+ * Dijkstra. Each candidate represents the node in a particular angular bucket whose
+ * path-cost from the start is closest to a specific cost target — either the full cost
+ * budget ({@link #sourceContour}=100, "frontier-max") or an intermediate contour
+ * (25/50/75% of budget). Selection is by {@link RoutingEngine#costContourScore}, which
+ * normalizes cost error and applies a soft air-reach tiebreaker.
  *
  * <p>Used by {@link IsochroneCandidateProvider} as the QUALITY-tier candidate pool —
  * a road-on-the-ground replacement for the radial provider's geometric ring.
@@ -32,13 +35,22 @@ final class IsoCandidate implements OsmPos {
   final int bucketHits;
   /**
    * Source contour the candidate came from (25, 50, 75 = cost-budget percentage;
-   * 100 = frontier-max). Used by the filter pipeline to prefer farthest candidates
-   * within each bucket.
+   * 100 = frontier-max). Used by the filter pipeline to prefer the frontier-max
+   * over inner contours within each bucket (higher source contour wins).
    */
   final int sourceContour;
+  /** Optional exact graph path to this candidate, available for per-step graph-native candidates. */
+  final OsmTrack routedTrack;
 
   IsoCandidate(int ilon, int ilat, double bearingFromStart, double airDistanceFromStart,
                int costFromStart, int bucket, int bucketHits, int sourceContour) {
+    this(ilon, ilat, bearingFromStart, airDistanceFromStart,
+      costFromStart, bucket, bucketHits, sourceContour, null);
+  }
+
+  IsoCandidate(int ilon, int ilat, double bearingFromStart, double airDistanceFromStart,
+               int costFromStart, int bucket, int bucketHits, int sourceContour,
+               OsmTrack routedTrack) {
     this.ilon = ilon;
     this.ilat = ilat;
     this.bearingFromStart = bearingFromStart;
@@ -47,6 +59,7 @@ final class IsoCandidate implements OsmPos {
     this.bucket = bucket;
     this.bucketHits = bucketHits;
     this.sourceContour = sourceContour;
+    this.routedTrack = routedTrack;
   }
 
   @Override

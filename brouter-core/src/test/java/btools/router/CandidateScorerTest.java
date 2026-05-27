@@ -321,4 +321,68 @@ public class CandidateScorerTest {
     assertEquals(0.0,
       scorer.isoHostilityPenalty(RoundTripCandidateProvider.NO_ISO_COST, 5000), 1e-9);
   }
+
+  // ----- Phase 2 v2 — contiguous-hostile-meters routed-leg term -----------
+
+  @Test
+  public void contiguousHostilityPenaltyRamps() {
+    // 0 below the safe floor; linear ramp 500→1500m; saturates at the
+    // gate's hard cap. The mapping mirrors the gate's enforcement metric
+    // so candidate scoring biases toward sub-tracks whose worst stretch
+    // stays under MAX_CONTIGUOUS_HOSTILE_METERS.
+    assertEquals("0m hostile → 0", 0.0, scorer.contiguousHostilityPenalty(0), 1e-9);
+    assertEquals("500m (safe floor) → 0", 0.0, scorer.contiguousHostilityPenalty(500), 1e-9);
+    assertEquals("1000m → mid-ramp 0.5", 0.5, scorer.contiguousHostilityPenalty(1000), 1e-9);
+    assertEquals("1500m (gate cap) → saturated 1.0",
+      1.0, scorer.contiguousHostilityPenalty(1500), 1e-9);
+    assertEquals("3000m (over cap) → still 1.0",
+      1.0, scorer.contiguousHostilityPenalty(3000), 1e-9);
+    assertEquals("-1 sentinel (no data) → 0",
+      0.0, scorer.contiguousHostilityPenalty(-1), 1e-9);
+  }
+
+  @Test
+  public void routedHostilitySignalReplacesIsoHostility() {
+    // The Phase 2 v2 overload takes a routed-leg worst-contiguous meters.
+    // When non-negative, it REPLACES the iso-hostility penalty: the route
+    // is now known, so the iso estimate is obsolete.
+    scorer.setHostilityActive(true);
+    // Two iso candidates with the same iso indirectness (so iso term would
+    // tie). Candidate A's routed leg has 200m worst-contiguous (clean);
+    // candidate B's has 1400m (almost-at-cap). A should win.
+    double cleanLeg = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      10000, 10, RoundTripCandidateProvider.NO_ISO_CONTOUR,
+      /*routedLegWorstContiguousHostileMeters*/ 200);
+    double nearCapLeg = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      10000, 10, RoundTripCandidateProvider.NO_ISO_CONTOUR,
+      /*routedLegWorstContiguousHostileMeters*/ 1400);
+    assertTrue("clean routed leg beats near-cap routed leg: "
+      + cleanLeg + " vs " + nearCapLeg, cleanLeg < nearCapLeg);
+  }
+
+  @Test
+  public void minusOneRoutedSignalFallsBackToIso() {
+    // -1 sentinel = "no routed data" → scorer must keep using the iso
+    // term so pre-Phase-2 callers and non-paved profiles see no behaviour
+    // change.
+    scorer.setHostilityActive(true);
+    double routedSentinel = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      10000, 10, RoundTripCandidateProvider.NO_ISO_CONTOUR, -1);
+    double legacy16Arg = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      10000, 10, RoundTripCandidateProvider.NO_ISO_CONTOUR);
+    assertEquals("sentinel == legacy 16-arg form",
+      legacy16Arg, routedSentinel, 1e-9);
+  }
 }

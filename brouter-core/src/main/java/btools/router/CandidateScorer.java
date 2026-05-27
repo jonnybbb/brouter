@@ -151,6 +151,33 @@ public class CandidateScorer {
                       double visitedEdgeRatio, double distFromStart, double searchRadius,
                       double distFromPrevious,
                       double costFromStart, int bucketHits, int sourceContour) {
+    return score(candidateDistance, subRouteTarget, totalSoFar, returnDistance, desiredTotal,
+      candidateBearing, directionPreference, step, totalSteps,
+      visitedEdgeRatio, distFromStart, searchRadius, distFromPrevious,
+      costFromStart, bucketHits, sourceContour, -1);
+  }
+
+  /**
+   * Phase 2 v2 entry point. {@code routedLegWorstContiguousHostileMeters}
+   * is the longest unbroken hostile stretch in the candidate's routed
+   * sub-track (computed via
+   * {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}).
+   * When ≥ 0 it REPLACES the {@link #isoHostilityPenalty} term — the
+   * routed signal is strictly more accurate than iso-Dijkstra
+   * indirectness because the route is now known, not estimated. Pass
+   * {@code -1} to retain the legacy iso behaviour.
+   *
+   * <p>Only paved profiles activate hostility (gated by
+   * {@link #setHostilityActive}); gravel/MTB routes ignore the signal.
+   */
+  public double score(double candidateDistance, double subRouteTarget,
+                      double totalSoFar, double returnDistance, double desiredTotal,
+                      double candidateBearing, DirectionPreference directionPreference,
+                      int step, int totalSteps,
+                      double visitedEdgeRatio, double distFromStart, double searchRadius,
+                      double distFromPrevious,
+                      double costFromStart, int bucketHits, int sourceContour,
+                      int routedLegWorstContiguousHostileMeters) {
 
     double distScore = distanceScore(candidateDistance, subRouteTarget);
     double loopScore = loopFeasibilityScore(totalSoFar, candidateDistance, returnDistance, desiredTotal);
@@ -159,9 +186,14 @@ public class CandidateScorer {
     double spreadScore = spreadPenalty(distFromStart, searchRadius, step, totalSteps);
     double prevScore = previousDistancePenalty(distFromPrevious, subRouteTarget);
     double isoBonus = isoValidatedBonus(costFromStart, bucketHits);
-    double isoHostility = hostilityActive
-      ? isoHostilityPenalty(costFromStart, distFromStart)
-      : 0.0;
+    double hostility;
+    if (!hostilityActive) {
+      hostility = 0.0;
+    } else if (routedLegWorstContiguousHostileMeters >= 0) {
+      hostility = contiguousHostilityPenalty(routedLegWorstContiguousHostileMeters);
+    } else {
+      hostility = isoHostilityPenalty(costFromStart, distFromStart);
+    }
     double contourMismatch = isoContourDepthMismatch(sourceContour, step, totalSteps);
 
     return wDist * distScore
@@ -171,8 +203,8 @@ public class CandidateScorer {
       + wSpread * spreadScore
       + wPrev * prevScore
       - wIsoBonus * isoBonus
-      + wIsoHostility * isoHostility
-      + wIsoBonus * contourMismatch; // re-use the small tie-break weight
+      + wIsoHostility * hostility
+      + wIsoBonus * contourMismatch;
   }
 
   /**
@@ -223,6 +255,30 @@ public class CandidateScorer {
     if (indirectness <= 1.5) return 0;
     if (indirectness >= 4.0) return 1;
     return (indirectness - 1.5) / 2.5;
+  }
+
+  /**
+   * Phase 2 v2: penalty for the longest unbroken hostile stretch in a
+   * routed sub-track. Mirrors {@link RoundTripQualityGate}'s contiguous-
+   * stretch ceiling — the cyclist's complaint surface is "I was sent
+   * down 2 km of farm track," not "my route averaged a 1.4 cost ratio."
+   * Feeding this back into candidate scoring lets the planner prefer
+   * sub-routes whose worst stretch stays well under the gate's cap.
+   *
+   * <p>Mapping: 0 m → 0; ramps linearly from {@code SAFE_FLOOR} to
+   * {@code MAX_CONTIGUOUS_HOSTILE_METERS}; saturates at 1 once the
+   * routed leg already exceeds the gate's hard ceiling.
+   *
+   * <p>Sentinel {@code -1} signals "no data" (e.g. non-paved profile,
+   * or caller did not compute) and returns 0.
+   */
+  double contiguousHostilityPenalty(int worstStretchMeters) {
+    if (worstStretchMeters < 0) return 0;
+    final int safeFloor = 500; // well under the 1500 m gate cap → no penalty
+    if (worstStretchMeters <= safeFloor) return 0;
+    int cap = RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS;
+    if (worstStretchMeters >= cap) return 1.0;
+    return (worstStretchMeters - safeFloor) / (double) (cap - safeFloor);
   }
 
   /**

@@ -201,7 +201,7 @@ public class IsochroneCandidateProviderTest {
     // Query from start position; airRadius=2500 → window [1250, 4000].
     List<RoundTripCandidateProvider.CandidatePoint> step =
       p.candidatesForStep(START_ILON, START_ILAT, 2500, 1, 5,
-        START_ILON, START_ILAT, 0);
+        START_ILON, START_ILAT, 0, null);
     // Each returned point must be within [airRadius*0.5, *1.6] = [1250, 4000] from start.
     for (RoundTripCandidateProvider.CandidatePoint cp : step) {
       double d = CheapRuler.distance(START_ILON, START_ILAT, cp.ilon, cp.ilat);
@@ -222,7 +222,7 @@ public class IsochroneCandidateProviderTest {
     IsochroneCandidateProvider p = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 0.0, raw);
     List<RoundTripCandidateProvider.CandidatePoint> step =
       p.candidatesForStep(START_ILON, START_ILAT, 3000, 1, 5,
-        START_ILON, START_ILAT, 0);
+        START_ILON, START_ILAT, 0, null);
     assertNotNull("returned list", step);
     // Verify sorted ascending by abs(airDist - 3000):
     double prevKey = -1;
@@ -291,7 +291,7 @@ public class IsochroneCandidateProviderTest {
     // every bucket. Verify the returned candidates span >90° around the circle.
     List<RoundTripCandidateProvider.CandidatePoint> all =
       p.candidatesForStep(START_ILON, START_ILAT, 2000, 1, 5,
-        START_ILON, START_ILAT, 0);
+        START_ILON, START_ILAT, 0, null);
     java.util.Set<Integer> seenBuckets = new java.util.HashSet<>();
     for (RoundTripCandidateProvider.CandidatePoint cp : all) {
       double bearing = CheapRuler.getScaledBearing(START_ILON, START_ILAT, cp.ilon, cp.ilat);

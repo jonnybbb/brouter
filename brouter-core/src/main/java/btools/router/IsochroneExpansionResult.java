@@ -14,7 +14,18 @@ import java.util.List;
  */
 final class IsochroneExpansionResult {
 
-  /** Per-bucket frontier: {@code [direction_deg, airDist_m, cost, hits]}. */
+  /**
+   * Per-bucket frontier table. Each entry is {@code [direction_deg, airDist_m,
+   * cost, hits, ilon, ilat]} — the first four fields are the legacy contract
+   * (existing readers keep working); the trailing {@code ilon}/{@code ilat}
+   * expose the road-native coordinate of the selected frontier node so direct
+   * ISOCHRONE placement can avoid synthesizing waypoint positions via
+   * {@link btools.util.CheapRuler#destination CheapRuler.destination}.
+   *
+   * <p>Probe-only entries injected by {@link RoutingEngine#mergeIsochroneWithProbe}
+   * remain 4-element (no road-native data available); callers must guard with
+   * {@code entry.length >= 6} before reading {@code ilon}/{@code ilat}.
+   */
   final double[][] frontier;
 
   /** Road-native candidates extracted from intermediate cost contours + the frontier max. */

@@ -64,13 +64,23 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
-  public void autoSelectsIsochroneForSmallRadius() {
-    // ISOCHRONE's indirectness-compensated placement is more reliable than GREEDY's
-    // 5-step iterative routing for tiny constrained loops (radius < 5km).
-    // ISO_GREEDY remains opt-in; only WAYPOINT and ISOCHRONE are AUTO-selectable
-    // at small radii.
-    Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, RoutingEngine.selectRoundTripAlgorithm(4000));
-    Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, RoutingEngine.selectRoundTripAlgorithm(1500));
+  public void autoFallbackSelectsGreedyForSmallRadius() {
+    // Generated-loop AUTO resolution now runs inside doRoundTrip() via the
+    // greedy-first candidate competition. The cheap helper is only a fallback
+    // for unsupported/direct callers, and it must keep the same greedy default
+    // across radii.
+    Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(4000));
+    Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(1500));
+  }
+
+  @Test
+  public void greedySubRouteCountScalesWithDistanceAndProfile() {
+    Assert.assertEquals(3, RoutingEngine.selectGreedySubRouteCount(7000, "fastbike"));
+    Assert.assertEquals(4, RoutingEngine.selectGreedySubRouteCount(20000, "fastbike"));
+    Assert.assertEquals(5, RoutingEngine.selectGreedySubRouteCount(50000, "fastbike"));
+    Assert.assertEquals(6, RoutingEngine.selectGreedySubRouteCount(90000, "fastbike"));
+    Assert.assertEquals(6, RoutingEngine.selectGreedySubRouteCount(50000, "mtb"));
+    Assert.assertEquals(6, RoutingEngine.selectGreedySubRouteCount(90000, "mtb"));
   }
 
   @Test
@@ -292,6 +302,14 @@ public class GreedyRoundTripPlannerTest {
   }
 
   // ---- Boundary-proximity weighting for back-and-forth penalty ----
+  //
+  // These weights are a planner steering hint, NOT the semantic stem/spur
+  // classifier (that runs in ReuseClassifier after routing). Keeping the
+  // boundary-near-1.0/mid-loop-0.5 split matches what the production planner
+  // actually needs: pushing the semantic stem-vs-mid distinction down to
+  // per-edge weights regressed real Dreieich loops (the planner skipped
+  // viable paved sub-routes and picked path/track alternatives that the
+  // profile gate then rejected).
 
   @Test
   public void boundaryProximityWeightFullPenaltyNearStart() {
@@ -362,4 +380,87 @@ public class GreedyRoundTripPlannerTest {
   private static OsmPathElement makeNode(int dx, int dy) {
     return OsmPathElement.create(8720000 + dx, 50000000 + dy, (short) 0, null);
   }
+
+  // ---- Phase 1.5 — internal fallback gate delegates to production gate -
+
+  @Test
+  public void qualityGateReasonDelegatesToProductionGate() {
+    // Build a track tripping the production gate's hostile-fraction check
+    // (every edge tagged highway=path with surface=ground → 100% hostile)
+    // and verify the planner's internal qualityGateReason returns a
+    // rejection reason matching the production gate's prefix. Pre-Phase 1.5
+    // the planner used independent FALLBACK_* constants and would have
+    // accepted this track (it has zero reuse and clean ratio).
+    OsmTrack heavy = squarePathTrack(/*sideMeters*/ 5000);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    planner.setProfileName("fastbike");
+    String reason = planner.qualityGateReason(heavy, heavy.distance);
+    Assert.assertNotNull("planner rejects hostile-fraction routes", reason);
+    Assert.assertTrue(
+      "planner reason matches production gate prefix (contiguous or % hostile): " + reason,
+      reason.startsWith("contiguous ") || reason.contains("of distance on profile-hostile ways"));
+  }
+
+  @Test
+  public void qualityGateReasonAcceptsCleanLoop() {
+    // The same delegation accepts a clean paved loop.
+    OsmTrack clean = squareResidentialTrack(/*sideMeters*/ 5000);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    planner.setProfileName("fastbike");
+    Assert.assertNull("planner accepts clean residential loop",
+      planner.qualityGateReason(clean, clean.distance));
+  }
+
+  /** Synthetic 4-side square loop tagged entirely with highway=path
+   * surface=ground (no asphalt override, so trips the gate). */
+  private static OsmTrack squarePathTrack(int side) {
+    OsmTrack t = squareTrack(side);
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=path surface=ground";
+    m.costfactor = 3.0f; // low enough not to trip costfactor check alone
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = cloneMsg(m);
+    }
+    return t;
+  }
+
+  /** Synthetic 4-side square loop tagged residential / asphalt (clean). */
+  private static OsmTrack squareResidentialTrack(int side) {
+    OsmTrack t = squareTrack(side);
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=residential surface=asphalt";
+    m.costfactor = 1.0f;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = cloneMsg(m);
+    }
+    return t;
+  }
+
+  private static OsmTrack squareTrack(int side) {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    int baseLon = 180_000_000;
+    int baseLat = 50_000_000;
+    int ilonPerM = 14;
+    int ilatPerM = 9;
+    t.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon + side * ilonPerM, baseLat, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon + side * ilonPerM, baseLat + side * ilatPerM, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon, baseLat + side * ilatPerM, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    int d = 0;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      d += t.nodes.get(i - 1).calcDistance(t.nodes.get(i));
+    }
+    t.distance = d;
+    return t;
+  }
+
+  private static MessageData cloneMsg(MessageData src) {
+    MessageData m = new MessageData();
+    m.wayKeyValues = src.wayKeyValues;
+    m.costfactor = src.costfactor;
+    return m;
+  }
+
 }
