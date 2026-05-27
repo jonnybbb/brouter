@@ -38,6 +38,17 @@ public class RoundTripResult {
   private int acceptedIsoLegs;
   private int acceptedRadialLegs;
 
+  // Phase 2.0 telemetry — isochrone-asymmetry initial bearing.
+  // Populated by RoutingEngine.doGreedyRoundTrip after running the
+  // best-reaching-bearing computation. Sentinels (NaN / -1) when the
+  // bias was not applied (explicit user direction, GREEDY mode, or
+  // no bucket satisfied the frontier-quality thresholds).
+  private boolean isoAsymmetryBearingApplied = false;
+  private double  isoAsymmetryBearingDegrees = Double.NaN;
+  private double  isoAsymmetryBestBucketIndirectness = Double.NaN;
+  private int     isoAsymmetryBestBucketHits = -1;
+  private int     isoAsymmetryBestBucketAirDistMeters = -1;
+
   public OsmTrack getTrack() {
     return track;
   }
@@ -177,4 +188,30 @@ public class RoundTripResult {
   /** Number of radial candidates that became legs in the final loop. */
   public int getAcceptedRadialLegs() { return acceptedRadialLegs; }
   public void setAcceptedRadialLegs(int v) { this.acceptedRadialLegs = v; }
+
+  /** Whether Phase 2.0 isochrone-asymmetry bearing bias fired for this loop.
+   *  False when the algorithm wasn't ISO_GREEDY, when the user provided an
+   *  explicit direction, or when no frontier bucket met the quality
+   *  thresholds (airDist &gt;= 0.6 * searchRadius AND hits &gt;= 3). */
+  public boolean isIsoAsymmetryBearingApplied() { return isoAsymmetryBearingApplied; }
+  public void setIsoAsymmetryBearingApplied(boolean v) { this.isoAsymmetryBearingApplied = v; }
+
+  /** Bearing (degrees) the iso-asymmetry bias selected as the most-reaching
+   *  sector; {@code NaN} when not applied. */
+  public double getIsoAsymmetryBearingDegrees() { return isoAsymmetryBearingDegrees; }
+  public void setIsoAsymmetryBearingDegrees(double v) { this.isoAsymmetryBearingDegrees = v; }
+
+  /** {@code cost / airDist} of the bucket that won the bias; {@code NaN}
+   *  when not applied. Lower = more direct reach. */
+  public double getIsoAsymmetryBestBucketIndirectness() { return isoAsymmetryBestBucketIndirectness; }
+  public void setIsoAsymmetryBestBucketIndirectness(double v) { this.isoAsymmetryBestBucketIndirectness = v; }
+
+  /** Hit count of the bucket that won the bias; {@code -1} when not applied. */
+  public int getIsoAsymmetryBestBucketHits() { return isoAsymmetryBestBucketHits; }
+  public void setIsoAsymmetryBestBucketHits(int v) { this.isoAsymmetryBestBucketHits = v; }
+
+  /** Air distance (meters) at the frontier of the winning bucket;
+   *  {@code -1} when not applied. */
+  public int getIsoAsymmetryBestBucketAirDistMeters() { return isoAsymmetryBestBucketAirDistMeters; }
+  public void setIsoAsymmetryBestBucketAirDistMeters(int v) { this.isoAsymmetryBestBucketAirDistMeters = v; }
 }

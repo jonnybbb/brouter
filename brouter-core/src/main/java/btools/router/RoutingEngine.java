@@ -1337,7 +1337,36 @@ public class RoutingEngine extends Thread {
       + "m, searchRadius=" + (int) searchRadius + "m, direction=" + (int) direction
       + ", mode=" + algo);
 
-    RoundTripCandidateProvider provider = buildCandidateProvider(algo, start, searchRadius, direction);
+    // Phase 2.0: when ISO_GREEDY runs without an explicit user direction,
+    // use the isochrone's reachability asymmetry to bias the initial bearing
+    // toward the most-reaching sector. The legacy default of "direction=-1"
+    // (ANY) means candidate scoring's direction term is inert at step 1,
+    // and the candidate placement uses an unrelated heuristic. On terrain-
+    // asymmetric networks (coast, valley, island) this can place initial
+    // candidates in geographically unreachable regions. The asymmetry bias
+    // grounds the initial direction in actual graph reachability.
+    //
+    // Bias applies ONLY when:
+    //   - algo == ISO_GREEDY (we need the frontier table)
+    //   - direction < 0 (user did not specify a direction)
+    //   - at least one bucket meets quality thresholds (airDist >= 0.6 *
+    //     searchRadius AND hits >= 3)
+    // Otherwise direction is preserved verbatim.
+    IsochroneExpansionResult iso = (algo == RoundTripAlgorithm.ISO_GREEDY)
+      ? runIsochroneExpansion(start, searchRadius)
+      : null;
+    double effectiveDirection = direction;
+    IsoAsymmetryBias bias = IsoAsymmetryBias.NONE;
+    if (algo == RoundTripAlgorithm.ISO_GREEDY && direction < 0 && iso != null) {
+      bias = computeIsoAsymmetryBearing(iso.frontier, searchRadius);
+      if (bias.applied) {
+        effectiveDirection = bias.bearingDegrees;
+        logInfo("ISO_GREEDY: iso-asymmetry bias selected bearing="
+          + (int) bias.bearingDegrees + "° (indirectness=" + String.format("%.2f", bias.indirectness)
+          + ", hits=" + bias.hits + ", airDist=" + bias.airDistMeters + "m)");
+      }
+    }
+    RoundTripCandidateProvider provider = buildCandidateProvider(algo, start, searchRadius, effectiveDirection, iso);
     int baseSubRouteCount = selectGreedySubRouteCount(desiredDistance, routingContext.getProfileName());
     RoundTripResult result = null;
     for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount)) {
@@ -1352,7 +1381,17 @@ public class RoutingEngine extends Thread {
       // production gate; both need the active profile name to apply the
       // paved-profile hostility branch consistently.
       planner.setProfileName(routingContext.getProfileName());
-      result = planner.plan(start, desiredDistance, direction);
+      result = planner.plan(start, desiredDistance, effectiveDirection);
+      // Stamp Phase 2.0 telemetry — must happen on every planner attempt
+      // so cross-attempt comparison via lastRoundTripResult sees consistent
+      // bias metadata.
+      if (result != null) {
+        result.setIsoAsymmetryBearingApplied(bias.applied);
+        result.setIsoAsymmetryBearingDegrees(bias.bearingDegrees);
+        result.setIsoAsymmetryBestBucketIndirectness(bias.indirectness);
+        result.setIsoAsymmetryBestBucketHits(bias.hits);
+        result.setIsoAsymmetryBestBucketAirDistMeters(bias.airDistMeters);
+      }
       lastRoundTripResult = result;
       if (!isDegradedGreedyResult(result)
           && result != null && result.getLoopWaypoints() != null
@@ -1515,12 +1554,12 @@ public class RoutingEngine extends Thread {
   private RoundTripCandidateProvider buildCandidateProvider(RoundTripAlgorithm algo,
                                                             OsmNodeNamed start,
                                                             double searchRadius,
-                                                            double startDirection) {
+                                                            double startDirection,
+                                                            IsochroneExpansionResult iso) {
     GraphNativeCandidateProvider graphNative = new GraphNativeCandidateProvider(this);
     if (algo != RoundTripAlgorithm.ISO_GREEDY) {
       return graphNative;
     }
-    IsochroneExpansionResult iso = runIsochroneExpansion(start, searchRadius);
     if (iso == null || iso.frontier.length < 6 || iso.candidates.size() < 12) {
       logInfo("ISO_GREEDY: insufficient isochrone data ("
         + (iso == null ? 0 : iso.frontier.length) + " buckets, "
@@ -3050,6 +3089,66 @@ public class RoutingEngine extends Thread {
     }
 
     return selected;
+  }
+
+  /**
+   * Phase 2.0 of the closure-aware planning spec — isochrone-asymmetry
+   * initial bearing. Examines the 36-bucket frontier table produced by
+   * {@link #runIsochroneExpansion} and selects the most-reaching sector
+   * (lowest {@code cost / airDist}) subject to quality thresholds.
+   *
+   * <p>Returns {@link IsoAsymmetryBias#NONE} when no bucket clears the
+   * thresholds. The caller falls back to the legacy direction-selection
+   * behavior in that case.
+   *
+   * <p>Package-private + static for unit testing with synthetic frontier
+   * tables.
+   */
+  static IsoAsymmetryBias computeIsoAsymmetryBearing(double[][] frontier, double searchRadius) {
+    if (frontier == null || frontier.length == 0) return IsoAsymmetryBias.NONE;
+    final double minAirDist = 0.6 * searchRadius;
+    final int minHits = 3;
+    int bestIdx = -1;
+    double bestIndirectness = Double.POSITIVE_INFINITY;
+    for (int i = 0; i < frontier.length; i++) {
+      double[] b = frontier[i];
+      if (b == null || b.length < 4) continue;
+      double airDist = b[1];
+      double cost = b[2];
+      int hits = (int) b[3];
+      if (airDist < minAirDist || hits < minHits || airDist <= 0) continue;
+      double indirectness = cost / airDist;
+      if (indirectness < bestIndirectness) {
+        bestIndirectness = indirectness;
+        bestIdx = i;
+      }
+      // Tie-break: lowest bucket index wins (already enforced by strict <).
+    }
+    if (bestIdx < 0) return IsoAsymmetryBias.NONE;
+    double[] best = frontier[bestIdx];
+    return new IsoAsymmetryBias(true, best[0], bestIndirectness,
+        (int) best[3], (int) best[1]);
+  }
+
+  /** Phase 2.0 result: which bucket of the isochrone frontier the bias
+   *  selected, plus the metadata for telemetry. */
+  static final class IsoAsymmetryBias {
+    static final IsoAsymmetryBias NONE =
+      new IsoAsymmetryBias(false, Double.NaN, Double.NaN, -1, -1);
+    final boolean applied;
+    final double bearingDegrees;
+    final double indirectness;
+    final int hits;
+    final int airDistMeters;
+
+    IsoAsymmetryBias(boolean applied, double bearingDegrees, double indirectness,
+                     int hits, int airDistMeters) {
+      this.applied = applied;
+      this.bearingDegrees = bearingDegrees;
+      this.indirectness = indirectness;
+      this.hits = hits;
+      this.airDistMeters = airDistMeters;
+    }
   }
 
   /**

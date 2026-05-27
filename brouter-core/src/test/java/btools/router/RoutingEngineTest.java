@@ -1428,4 +1428,124 @@ public class RoutingEngineTest {
     return re.getErrorMessage();
   }
 
+  // --- Phase 2.0: iso-asymmetry bearing computation -----------------------
+
+  /** Build a synthetic 36-bucket frontier table. Bucket i is at bearing
+   *  i*10°. Each bucket = [direction_deg, airDist_m, cost, hits, ilon, ilat].
+   *  ilon/ilat are zeroed (not used by the bias computation). */
+  private static double[][] frontier36(double[] airDist, double[] cost, int[] hits) {
+    double[][] f = new double[36][];
+    for (int i = 0; i < 36; i++) {
+      f[i] = new double[]{i * 10.0, airDist[i], cost[i], hits[i], 0, 0};
+    }
+    return f;
+  }
+
+  /** Uniform-reach helper: every bucket has the same airDist/cost/hits. */
+  private static double[][] uniformFrontier(double airDist, double cost, int hits) {
+    double[] a = new double[36];
+    double[] c = new double[36];
+    int[] h = new int[36];
+    for (int i = 0; i < 36; i++) {
+      a[i] = airDist;
+      c[i] = cost;
+      h[i] = hits;
+    }
+    return frontier36(a, c, h);
+  }
+
+  @Test
+  public void isoAsymmetry_symmetricFrontier_picksLowestBucketIndex() {
+    // All buckets identical → tie-break by lowest bucket index → bucket 0 = 0°.
+    double[][] f = uniformFrontier(8000.0, 10000.0, 5);
+    RoutingEngine.IsoAsymmetryBias bias = RoutingEngine.computeIsoAsymmetryBearing(f, 10000.0);
+    Assert.assertTrue("bias should fire when all buckets pass thresholds", bias.applied);
+    Assert.assertEquals("tie → bucket 0 (bearing 0°)", 0.0, bias.bearingDegrees, 0.01);
+  }
+
+  @Test
+  public void isoAsymmetry_asymmetricFrontier_picksLowestIndirectness() {
+    // 5 buckets reach far at low cost (best reach); 31 reach moderately.
+    double[] a = new double[36];
+    double[] c = new double[36];
+    int[] h = new int[36];
+    for (int i = 0; i < 36; i++) {
+      a[i] = 7000.0;
+      c[i] = 12000.0; // indirectness ≈ 1.71
+      h[i] = 5;
+    }
+    // The east sector (buckets 8-12, bearings 80°-120°) is the "valley":
+    // long reach for less cost.
+    for (int i = 8; i <= 12; i++) {
+      a[i] = 9500.0;
+      c[i] = 11000.0; // indirectness ≈ 1.16
+      h[i] = 8;
+    }
+    double[][] f = frontier36(a, c, h);
+    RoutingEngine.IsoAsymmetryBias bias = RoutingEngine.computeIsoAsymmetryBearing(f, 10000.0);
+    Assert.assertTrue("bias should fire", bias.applied);
+    Assert.assertTrue("bearing should be in the east sector (80°-120°)",
+      bias.bearingDegrees >= 80.0 && bias.bearingDegrees <= 120.0);
+    Assert.assertEquals("hits from the winning bucket", 8, bias.hits);
+  }
+
+  @Test
+  public void isoAsymmetry_sparseBuckets_noBiasApplied() {
+    // All buckets reach far enough but hit count is below the minHits=3 floor.
+    double[][] f = uniformFrontier(8000.0, 10000.0, 1);
+    RoutingEngine.IsoAsymmetryBias bias = RoutingEngine.computeIsoAsymmetryBearing(f, 10000.0);
+    Assert.assertFalse("hits < 3 disqualifies all buckets", bias.applied);
+  }
+
+  @Test
+  public void isoAsymmetry_reachFloorNotMet_noBiasApplied() {
+    // hits OK but airDist below 0.6 * searchRadius (= 6000m).
+    double[][] f = uniformFrontier(4000.0, 10000.0, 5);
+    RoutingEngine.IsoAsymmetryBias bias = RoutingEngine.computeIsoAsymmetryBearing(f, 10000.0);
+    Assert.assertFalse("airDist < 0.6 * searchRadius disqualifies all buckets", bias.applied);
+  }
+
+  @Test
+  public void isoAsymmetry_emptyFrontier_noBiasApplied() {
+    Assert.assertFalse(RoutingEngine.computeIsoAsymmetryBearing(new double[0][], 10000.0).applied);
+    Assert.assertFalse(RoutingEngine.computeIsoAsymmetryBearing(null, 10000.0).applied);
+  }
+
+  @Test
+  public void isoAsymmetry_probeOnlyEntriesIgnored() {
+    // Mix of 6-element road-native entries and 4-element probe-only entries
+    // (from IsochroneExpansionResult docs). All should be considered uniformly
+    // for the bias since indices 0-3 are populated on both forms.
+    double[][] f = new double[36][];
+    for (int i = 0; i < 36; i++) {
+      if (i % 2 == 0) {
+        f[i] = new double[]{i * 10.0, 8000.0, 10000.0, 5, 0, 0}; // 6-element
+      } else {
+        f[i] = new double[]{i * 10.0, 8000.0, 10000.0, 5};       // 4-element
+      }
+    }
+    RoutingEngine.IsoAsymmetryBias bias = RoutingEngine.computeIsoAsymmetryBearing(f, 10000.0);
+    Assert.assertTrue("4-element probe entries must still be considered", bias.applied);
+  }
+
+  @Test
+  public void isoAsymmetry_resultCarriesAllTelemetry() {
+    double[][] f = uniformFrontier(8000.0, 10000.0, 5);
+    RoutingEngine.IsoAsymmetryBias bias = RoutingEngine.computeIsoAsymmetryBearing(f, 10000.0);
+    Assert.assertTrue(bias.applied);
+    Assert.assertEquals(0.0, bias.bearingDegrees, 0.01);
+    Assert.assertEquals(10000.0 / 8000.0, bias.indirectness, 0.001);
+    Assert.assertEquals(5, bias.hits);
+    Assert.assertEquals(8000, bias.airDistMeters);
+  }
+
+  @Test
+  public void isoAsymmetryNone_carriesSentinels() {
+    RoutingEngine.IsoAsymmetryBias none = RoutingEngine.IsoAsymmetryBias.NONE;
+    Assert.assertFalse(none.applied);
+    Assert.assertTrue(Double.isNaN(none.bearingDegrees));
+    Assert.assertTrue(Double.isNaN(none.indirectness));
+    Assert.assertEquals(-1, none.hits);
+    Assert.assertEquals(-1, none.airDistMeters);
+  }
 }
