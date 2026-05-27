@@ -88,7 +88,11 @@ public class GreedyRoundTripPlanner {
   // a candidate with 1 tentative crossing got a +0.3 score bump, which
   // got dominated by other terms; at 1.0 even one crossing pushes the
   // candidate substantially down the ranking. The 880-scenario corpus
-  // measurement validates this is empirically the right magnitude.
+  // measurement validates this is empirically the right magnitude:
+  // weight=2.0 was measured but OVER-penalizes — it forces the planner
+  // to pick candidates with 0 tentative crossings whose closed loops
+  // chaos-out via different geometry, raising chaotic-loop count by
+  // +11 vs weight=1.0 (production chaotic 40 → 51).
   static final double PARTIAL_SELF_INTERSECTION_WEIGHT = 1.0;
   // Multiplier applied to the air-distance return estimate when deciding
   // whether to skip the return Dijkstra. > 1 means we skip less aggressively.
