@@ -1,6 +1,7 @@
 package btools.router;
 
 import org.junit.Assume;
+import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.File;
@@ -100,6 +101,13 @@ public class GpxLoopSimilarityTest {
 
     Assume.assumeTrue("no closed GPX loops matched the configured filters", !references.isEmpty());
     writeReports(root, references, results, algorithms);
+    if (Boolean.getBoolean("gpx.loop.assertAccepted")) {
+      for (ScenarioResult result : results) {
+        Assert.assertTrue(
+          result.ref.path.getFileName() + " " + result.algorithm + " rejected: " + result.error,
+          result.accepted());
+      }
+    }
   }
 
   private static ScenarioResult runGeneratedLoop(ReferenceLoop ref, RoundTripAlgorithm algorithm,

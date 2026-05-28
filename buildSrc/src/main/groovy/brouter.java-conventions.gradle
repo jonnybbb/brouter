@@ -37,7 +37,8 @@ test {
             'gpx.loop.minKm',
             'gpx.loop.maxKm',
             'gpx.loop.maxClosureMeters',
-            'gpx.loop.profile'
+            'gpx.loop.profile',
+            'gpx.loop.assertAccepted'
     ].each { prop ->
         if (System.getProperty(prop)) {
             systemProperty prop, System.getProperty(prop)
