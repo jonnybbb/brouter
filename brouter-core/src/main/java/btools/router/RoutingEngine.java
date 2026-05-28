@@ -1554,11 +1554,13 @@ public class RoutingEngine extends Thread {
 
   static int[] greedySubRouteCountPlan(int base) {
     int clamped = Math.max(3, Math.min(6, base));
-    java.util.ArrayList<Integer> counts = new java.util.ArrayList<>(4);
+    java.util.ArrayList<Integer> counts = new java.util.ArrayList<>(6);
     addUniqueCount(counts, clamped);
     addUniqueCount(counts, clamped + 1);
     addUniqueCount(counts, clamped - 1);
+    addUniqueCount(counts, clamped - 2);
     addUniqueCount(counts, clamped + 2);
+    addUniqueCount(counts, clamped - 3);
     int[] result = new int[counts.size()];
     for (int i = 0; i < counts.size(); i++) result[i] = counts.get(i);
     return result;
