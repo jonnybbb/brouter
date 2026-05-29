@@ -37,3 +37,12 @@ tmp/
 # files are overwritten by every test invocation and are not tracked.
 docs/features/gpx-loop-similarity/*-loop-similarity.json
 docs/features/gpx-loop-similarity/*-loop-similarity.md
+
+# Investigation notes + baseline snapshots — kept locally on the fork's
+# master for personal reference, not committed (removed from PR #903 via
+# commit fc3a2db0 to avoid shipping work-in-progress notes upstream).
+docs/features/roundtrip-closure-aware-baseline.json
+docs/features/roundtrip-closure-aware-control-node-planning.md
+docs/features/roundtrip-benchmark-2026-05.md
+docs/features/gpx-loop-similarity/Basel-*-baseline.json
+docs/features/gpx-loop-similarity/Basel-*-baseline.md
