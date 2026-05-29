@@ -1,7 +1,6 @@
 package btools.router;
 
 import java.util.ArrayList;
-import java.util.List;
 
 import org.junit.Test;
 
@@ -225,7 +224,7 @@ public class RoundTripQualityGateTest {
   @Test
   public void worstContiguousHelperHandlesEmptyTrack() {
     OsmTrack t = new OsmTrack();
-    t.nodes = new java.util.ArrayList<>();
+    t.nodes = new ArrayList<>();
     assertEquals(0, RoundTripQualityGate.worstContiguousHostileMetersPaved(t));
   }
 

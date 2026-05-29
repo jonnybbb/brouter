@@ -322,7 +322,7 @@ public class RoutingEngineAutoCompetitionTest {
     start.ilon = (int) ((2.650 + 180) * 1_000_000);
     start.ilat = (int) ((39.570 + 90) * 1_000_000);
     start.name = "from";
-    java.util.List<OsmNodeNamed> wps = new java.util.ArrayList<>();
+    List<OsmNodeNamed> wps = new ArrayList<>();
     wps.add(start);
 
     RoutingContext rctx = new RoutingContext();

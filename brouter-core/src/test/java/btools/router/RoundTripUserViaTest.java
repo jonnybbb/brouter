@@ -10,7 +10,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 import btools.mapaccess.MatchedWaypoint;
-import btools.mapaccess.OsmNode;
 
 /**
  * Acceptance tests for the explicit-via round-trip semantics described in

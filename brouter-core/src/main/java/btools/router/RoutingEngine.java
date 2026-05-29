@@ -897,7 +897,7 @@ public class RoutingEngine extends Thread {
    */
   private void runAutoCandidateCompetition(double searchRadius, double direction) {
     long t0 = System.currentTimeMillis();
-    java.util.List<RoundTripCandidateResult> results = new java.util.ArrayList<>(3);
+    List<RoundTripCandidateResult> results = new ArrayList<>(3);
 
     // 1. ISO_GREEDY.
     RoundTripCandidateResult isoGreedyR = runChildCandidate(
@@ -969,7 +969,7 @@ public class RoutingEngine extends Thread {
       childCtx.startDirection = (int) direction;
       childCtx.forceUseStartDirection = true;
       // Copy waypoint list — child engine mutates its own list.
-      java.util.List<OsmNodeNamed> childWps = new java.util.ArrayList<>(waypoints.size());
+      List<OsmNodeNamed> childWps = new ArrayList<>(waypoints.size());
       for (OsmNodeNamed wp : waypoints) {
         OsmNodeNamed copy = new OsmNodeNamed(new OsmNode(wp.ilon, wp.ilat));
         copy.name = wp.name;
@@ -1020,7 +1020,7 @@ public class RoutingEngine extends Thread {
    * a summary diagnostic listing what was tried and which won.
    */
   private void adoptCandidateWinner(RoundTripCandidateResult winner,
-                                    java.util.List<RoundTripCandidateResult> all, long totalMs) {
+                                    List<RoundTripCandidateResult> all, long totalMs) {
     foundTrack = winner.track;
     errorMessage = null;
     finalizeAdoptedRoundTripTrack(foundTrack, foundTrack == null ? null : foundTrack.matchedWaypoints);
@@ -1089,7 +1089,7 @@ public class RoutingEngine extends Thread {
         new FormatCsv(routingContext).write(filename, track);
       }
       if (output != null) {
-        try (java.io.FileWriter fw = new java.io.FileWriter(filename)) {
+        try (FileWriter fw = new FileWriter(filename)) {
           fw.write(output);
         }
       }
@@ -1554,7 +1554,7 @@ public class RoutingEngine extends Thread {
 
   static int[] greedySubRouteCountPlan(int base) {
     int clamped = Math.max(3, Math.min(6, base));
-    java.util.ArrayList<Integer> counts = new java.util.ArrayList<>(6);
+    List<Integer> counts = new ArrayList<>(6);
     addUniqueCount(counts, clamped);
     addUniqueCount(counts, clamped + 1);
     addUniqueCount(counts, clamped - 1);
@@ -1566,7 +1566,7 @@ public class RoutingEngine extends Thread {
     return result;
   }
 
-  private static void addUniqueCount(java.util.ArrayList<Integer> counts, int n) {
+  private static void addUniqueCount(List<Integer> counts, int n) {
     if (n < 3 || n > 6 || counts.contains(n)) return;
     counts.add(n);
   }
@@ -2824,7 +2824,7 @@ public class RoutingEngine extends Thread {
         candidatesByBucket.computeIfAbsent(c.bucket, k -> new ArrayList<>(4)).add(c);
       }
     } else {
-      candidatesByBucket = java.util.Collections.emptyMap();
+      candidatesByBucket = Collections.emptyMap();
     }
 
     // Pre-filter the frontier data:

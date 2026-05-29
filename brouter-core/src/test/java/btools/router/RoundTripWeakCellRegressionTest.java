@@ -9,8 +9,6 @@ import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 
-import btools.mapaccess.OsmNode;
-
 /**
  * Regression guard for {@link LoopQualityTest} cells that were historically weak
  * or that we explicitly improved in the F.* iteration. Opt-in via
