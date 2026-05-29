@@ -101,9 +101,17 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
     // 2) Drop low-population buckets (hits < 3) IF alternatives exist. A
     //    one-shot Dijkstra hit in a sparse bucket is usually a dead-end road
     //    sliver (rural_lozere noise pattern).
-    int strongCount = 0;
-    for (IsoCandidate c : step1) if (c.bucketHits >= 3) strongCount++;
-    boolean dropLowPop = strongCount >= 12;
+    // Count distinct strong *buckets*, not candidates: runIsochroneExpansion
+    // emits up to (contourCount + 1) candidates per populated bucket, all
+    // carrying that bucket's hit count, so a per-candidate tally inflates the
+    // diversity estimate (~4x) and prunes sparse buckets far too eagerly.
+    java.util.BitSet strongBuckets = new java.util.BitSet(TOTAL_BUCKETS);
+    for (IsoCandidate c : step1) {
+      if (c.bucketHits >= 3 && c.bucket >= 0 && c.bucket < TOTAL_BUCKETS) {
+        strongBuckets.set(c.bucket);
+      }
+    }
+    boolean dropLowPop = strongBuckets.cardinality() >= 12;
     List<IsoCandidate> step2 = new ArrayList<>(step1.size());
     for (IsoCandidate c : step1) {
       if (dropLowPop && c.bucketHits < 3) continue;

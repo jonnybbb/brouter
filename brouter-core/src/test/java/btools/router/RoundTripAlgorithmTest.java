@@ -1,5 +1,7 @@
 package btools.router;
 
+import java.util.Locale;
+
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -50,5 +52,22 @@ public class RoundTripAlgorithmTest {
   @Test
   public void nullAlgorithmFallsBackToAuto() {
     assertEquals(RoundTripAlgorithm.AUTO, RoundTripAlgorithm.fromString(null));
+  }
+
+  @Test
+  public void parsingIsLocaleIndependent() {
+    // Turkish/Azeri locales map 'i'.toUpperCase() to dotted-İ, not 'I'. Without
+    // Locale.ROOT, "isochrone"/"iso_greedy"/"quality" would silently fall back
+    // to AUTO. Guard against that regression.
+    Locale prev = Locale.getDefault();
+    try {
+      Locale.setDefault(new Locale("tr", "TR"));
+      assertEquals(RoundTripAlgorithm.ISOCHRONE, RoundTripAlgorithm.fromString("isochrone"));
+      assertEquals(RoundTripAlgorithm.ISO_GREEDY, RoundTripAlgorithm.fromString("iso_greedy"));
+      assertEquals(RoundTripAlgorithm.ISO_GREEDY, RoundTripAlgorithm.fromString("quality"));
+      assertEquals(RoundTripAlgorithm.WAYPOINT, RoundTripAlgorithm.fromString("waypoint"));
+    } finally {
+      Locale.setDefault(prev);
+    }
   }
 }

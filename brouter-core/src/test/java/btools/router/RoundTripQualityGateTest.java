@@ -229,6 +229,19 @@ public class RoundTripQualityGateTest {
   }
 
   @Test
+  public void tagMatchIsTokenBoundedNotSubstring() {
+    // bicycle=no is a restriction; oneway:bicycle=no is the OPPOSITE (cyclists
+    // exempted from a oneway) and must NOT match as a substring.
+    assertTrue(RoundTripQualityGate.hasTag("highway=residential bicycle=no", "bicycle=no"));
+    assertTrue(RoundTripQualityGate.hasTag("bicycle=no", "bicycle=no"));
+    assertTrue(RoundTripQualityGate.hasTag("surface=asphalt bicycle=no foo=bar", "bicycle=no"));
+    assertFalse(RoundTripQualityGate.hasTag(
+      "highway=track surface=asphalt oneway:bicycle=no", "bicycle=no"));
+    assertFalse(RoundTripQualityGate.hasTag("access=designated", "access=no"));
+    assertFalse(RoundTripQualityGate.hasTag(null, "bicycle=no"));
+  }
+
+  @Test
   public void missingMetadataFractionCountsOnlyUnverifiedEdges() {
     OsmTrack t = squareLoop(5000);
     t.nodes.get(2).message = null;

@@ -84,6 +84,31 @@ public class IsochroneCandidateProviderTest {
   }
 
   @Test
+  public void lowPopDropGatesOnDistinctBucketsNotCandidateCount() {
+    // runIsochroneExpansion emits up to (contourCount + 1) candidates per bucket,
+    // all sharing the bucket's hit count. Here: 3 strong buckets × 4 contour
+    // candidates = 12 strong candidates but only 3 distinct buckets, plus one
+    // weak bucket. The old per-candidate tally hit 12 and dropped the weak
+    // candidate; the distinct-bucket count (3 < 12) must keep it.
+    List<IsoCandidate> raw = new ArrayList<>();
+    int[] strongBuckets = {0, 12, 24};
+    double[] contourDists = {1500, 2000, 2500, 3000}; // distinct positions → no dedupe
+    int[] contours = {25, 50, 75, 100};
+    for (int b : strongBuckets) {
+      for (int k = 0; k < contourDists.length; k++) {
+        raw.add(at(b, contourDists[k], 5, contours[k]));
+      }
+    }
+    raw.add(at(6, 2000, 1, 100));  // weak buckets — must survive
+    raw.add(at(18, 2000, 1, 100));
+    IsochroneCandidateProvider p = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 0.0, raw);
+    // Selection takes up to 2 per occupied bucket: fix keeps both weak buckets
+    // (5 occupied → 3 strong×2 + 2 weak×1 = 8); the old per-candidate count
+    // (12 ≥ 12) would have dropped them (3 strong×2 = 6).
+    assertEquals("weak buckets kept: only 3 distinct strong buckets (<12)", 8, p.poolSize());
+  }
+
+  @Test
   public void minDiversityFallbackUsesUnfilteredSet() {
     // Edge: aggressive filtering would leave a tiny step2, so the code falls back
     // to step1. With 13 strong + 3 weak, normal path drops 3 weak → 13 strong remain.
