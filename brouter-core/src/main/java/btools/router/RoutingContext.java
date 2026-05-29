@@ -228,8 +228,11 @@ public final class RoutingContext {
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
 
-  /** @deprecated Use {@link #roundTripAlgorithm} instead. Kept for backward compatibility. */
-  @Deprecated
+  /**
+   * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
+   * settable via the URL parameter {@code roundTripIsochrone=1}. Honoured only when
+   * {@link #roundTripAlgorithm} is left at AUTO — an explicit algorithm always wins.
+   */
   public boolean roundTripIsochrone;
 
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
@@ -581,6 +584,69 @@ public final class RoutingContext {
     OsmPath p = pm.createPath();
     p.init(origin, link, refTrack, detailMode, this);
     return p;
+  }
+
+  /**
+   * Produce a fresh {@link RoutingContext} carrying only the REQUEST-LEVEL
+   * fields: profile path, key/value lookups, round-trip settings, output
+   * format, no-go list. Used by the AUTO candidate competition (see
+   * docs/features/roundtrip-auto-quality-redesign.md §183) to construct
+   * isolated child engines without sharing parsed/runtime state.
+   *
+   * <p>What is intentionally NOT copied:
+   * <ul>
+   *   <li>{@code expctxWay} / {@code expctxNode} — compiled profile
+   *       expression contexts. Each child engine compiles its own via
+   *       {@link ProfileCache#parseProfile}; the cache makes this cheap.</li>
+   *   <li>{@code pm} — profile path model; child re-creates.</li>
+   *   <li>{@code anglemeter}, {@code wayfraction}, {@code ilonshortest}/
+   *       {@code ilatshortest}, {@code shortestmatch}, {@code inverseDirection} —
+   *       mutable search state.</li>
+   *   <li>{@code messageHandler}, {@code ai} — caller-specific output state.</li>
+   * </ul>
+   * Adding new request-level fields? Mirror them here so the child engine
+   * receives them.
+   */
+  public RoutingContext copyRequestFields() {
+    RoutingContext c = new RoutingContext();
+    c.localFunction = this.localFunction;
+    c.keyValues = this.keyValues;
+    c.profileTimestamp = this.profileTimestamp;
+    c.rawTrackPath = this.rawTrackPath;
+    c.rawAreaPath = this.rawAreaPath;
+    c.alternativeIdx = this.alternativeIdx;
+    c.memoryclass = this.memoryclass;
+    c.processUnusedTags = this.processUnusedTags;
+    c.forceSecondaryData = this.forceSecondaryData;
+    c.useDynamicDistance = this.useDynamicDistance;
+    c.buildBeelineOnRange = this.buildBeelineOnRange;
+    c.correctMisplacedViaPoints = this.correctMisplacedViaPoints;
+    c.correctMisplacedViaPointsDistance = this.correctMisplacedViaPointsDistance;
+    c.continueStraight = this.continueStraight;
+    c.startDirection = this.startDirection;
+    c.startDirectionValid = this.startDirectionValid;
+    c.forceUseStartDirection = this.forceUseStartDirection;
+    c.roundTripDistance = this.roundTripDistance;
+    c.roundTripLength = this.roundTripLength;
+    c.roundTripDirectionAdd = this.roundTripDirectionAdd;
+    c.roundTripPoints = this.roundTripPoints;
+    c.allowSamewayback = this.allowSamewayback;
+    c.roundTripAlgorithm = this.roundTripAlgorithm;
+    c.roundTripIsochrone = this.roundTripIsochrone;
+    c.outputFormat = this.outputFormat;
+    c.waypointCatchingRange = this.waypointCatchingRange;
+    c.exportWaypoints = this.exportWaypoints;
+    c.exportCorrectedWaypoints = this.exportCorrectedWaypoints;
+    c.poipoints = this.poipoints;
+    c.nogopoints = this.nogopoints; // shared read-only nogo list is safe to alias
+    c.inverseRouting = this.inverseRouting;
+    c.turnInstructionMode = this.turnInstructionMode;
+    c.turnInstructionCatchingRange = this.turnInstructionCatchingRange;
+    c.turnInstructionRoundabouts = this.turnInstructionRoundabouts;
+    c.showTime = this.showTime;
+    c.showspeed = this.showspeed;
+    c.showSpeedProfile = this.showSpeedProfile;
+    return c;
   }
 
 }

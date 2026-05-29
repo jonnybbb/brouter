@@ -63,6 +63,10 @@ public final class OsmTrack {
   public boolean exportWaypoints = false;
   public boolean exportCorrectedWaypoints = false;
 
+  public List<MatchedWaypoint> getMatchedWaypoints() {
+    return matchedWaypoints;
+  }
+
   public void addNode(OsmPathElement node) {
     nodes.add(0, node);
   }

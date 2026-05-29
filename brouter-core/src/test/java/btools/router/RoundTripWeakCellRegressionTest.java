@@ -1,0 +1,145 @@
+package btools.router;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+import org.junit.Assume;
+import org.junit.Before;
+import org.junit.Test;
+
+import btools.mapaccess.OsmNode;
+
+/**
+ * Regression guard for {@link LoopQualityTest} cells that were historically weak
+ * or that we explicitly improved in the F.* iteration. Opt-in via
+ * {@code -Dloop.tests=true} (same gate as {@link LoopQualityTest} — these need
+ * downloaded segment data).
+ *
+ * <p>Each test asserts a routed loop falls inside a documented quality envelope.
+ * The envelopes are intentionally loose (≈±20% slack on observed numbers) so we
+ * catch a regression without false-positive flapping; they're not "ratchet" targets.
+ */
+public class RoundTripWeakCellRegressionTest {
+
+  private File projectDir;
+
+  @Before
+  public void setUp() throws Exception {
+    Assume.assumeTrue(
+      "Weak-cell regression tests are opt-in — run with -Dloop.tests=true",
+      Boolean.getBoolean("loop.tests"));
+    projectDir = new File(".").getCanonicalFile().getParentFile();
+  }
+
+  // ---- GREEDY (BALANCED) ---------------------------------------------------
+
+  @Test
+  public void greedyRuralLozere30kmFastbike() throws Exception {
+    LoopQualityMetrics m = runLoop(LoopTestRegion.RURAL_LOZERE, "fastbike", 30_000, 4775, 0,
+      RoundTripAlgorithm.GREEDY);
+    assertEnvelope("greedy rural_lozere 30km N fastbike", m, 0.70, 1.30, 30.0);
+  }
+
+  @Test
+  public void greedyRuralLozere50kmFastbike() throws Exception {
+    LoopQualityMetrics m = runLoop(LoopTestRegion.RURAL_LOZERE, "fastbike", 50_000, 7958, 0,
+      RoundTripAlgorithm.GREEDY);
+    assertEnvelope("greedy rural_lozere 50km N fastbike", m, 0.70, 1.30, 30.0);
+  }
+
+  @Test
+  public void greedyCoastalNice50kmEastFastbike() throws Exception {
+    LoopQualityMetrics m = runLoop(LoopTestRegion.COASTAL_NICE, "fastbike", 50_000, 7958, 90,
+      RoundTripAlgorithm.GREEDY);
+    assertEnvelope("greedy coastal_nice 50km E fastbike", m, 0.70, 1.40, 30.0);
+  }
+
+  // ---- ISO_GREEDY (QUALITY) ------------------------------------------------
+
+  @Test
+  public void isoGreedyAlpine30kmEastFastbike() throws Exception {
+    // The cell where ISO_GREEDY beats GREEDY most reliably in the May 2026 study.
+    LoopQualityMetrics m = runLoop(LoopTestRegion.ALPINE_INNSBRUCK, "fastbike", 30_000, 4775, 90,
+      RoundTripAlgorithm.ISO_GREEDY);
+    assertEnvelope("iso_greedy alpine 30km E fastbike", m, 0.80, 1.20, 25.0);
+  }
+
+  @Test
+  public void isoGreedyAlpine30kmSouthFastbike() throws Exception {
+    LoopQualityMetrics m = runLoop(LoopTestRegion.ALPINE_INNSBRUCK, "fastbike", 30_000, 4775, 180,
+      RoundTripAlgorithm.ISO_GREEDY);
+    assertEnvelope("iso_greedy alpine 30km S fastbike", m, 0.75, 1.20, 25.0);
+  }
+
+  /**
+   * Guard against the May 2026 ISO_GREEDY-mtb collapse (avg ratio 0.48). Until
+   * we fix the profile-cost-factor compensation in {@code IsochroneCandidateProvider},
+   * the blended provider's radial fallback should keep mtb out of the cellar.
+   * Envelope is deliberately wider than fastbike because mtb on real terrain
+   * has genuinely higher routing indirectness.
+   */
+  @Test
+  public void isoGreedyAlpine30kmFastbikeMtbDoesNotCollapse() throws Exception {
+    LoopQualityMetrics m = runLoop(LoopTestRegion.ALPINE_INNSBRUCK, "mtb", 30_000, 4775, 0,
+      RoundTripAlgorithm.ISO_GREEDY);
+    // Reject distance ratios below 0.6 — that was the smoking gun in the
+    // earlier benchmark and is what F3 (blended provider) is supposed to fix.
+    org.junit.Assert.assertTrue(
+      String.format(Locale.US, "iso_greedy alpine mtb regression: ratio %.2f < 0.60",
+        m.getDistanceRatio()),
+      m.getDistanceRatio() >= 0.60);
+  }
+
+  // ---- helpers -------------------------------------------------------------
+
+  private LoopQualityMetrics runLoop(LoopTestRegion region, String profile,
+                                     int targetDistance, int searchRadius,
+                                     int directionDeg, RoundTripAlgorithm algo)
+      throws Exception {
+    File segDir = new File(projectDir, "segments4");
+    File segFile = new File(segDir, region.segmentFile);
+    Assume.assumeTrue("segment file missing: " + segFile, segFile.exists());
+    File profileFile = new File(projectDir, "misc/profiles2/" + profile + ".brf");
+    Assume.assumeTrue("profile file missing: " + profileFile, profileFile.exists());
+
+    List<OsmNodeNamed> wplist = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = region.ilon;
+    start.ilat = region.ilat;
+    wplist.add(start);
+
+    RoutingContext rctx = new RoutingContext();
+    rctx.localFunction = profileFile.getAbsolutePath();
+    rctx.startDirection = directionDeg;
+    rctx.roundTripDistance = searchRadius;
+    rctx.roundTripAlgorithm = algo;
+
+    RoutingEngine engine = new RoutingEngine(null, null, segDir, wplist, rctx,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    engine.quite = true;
+    engine.doRun(0);
+    OsmTrack track = engine.getFoundTrack();
+    Assume.assumeNotNull("routing produced no track (terrain limitation)", track);
+    return LoopQualityMetrics.compute(track, targetDistance, directionDeg);
+  }
+
+  private static void assertEnvelope(String label, LoopQualityMetrics m,
+                                     double minRatio, double maxRatio,
+                                     double maxReusePct) {
+    org.junit.Assert.assertTrue(
+      String.format(Locale.US, "%s: distance ratio %.2f below min %.2f",
+        label, m.getDistanceRatio(), minRatio),
+      m.getDistanceRatio() >= minRatio);
+    org.junit.Assert.assertTrue(
+      String.format(Locale.US, "%s: distance ratio %.2f exceeds max %.2f",
+        label, m.getDistanceRatio(), maxRatio),
+      m.getDistanceRatio() <= maxRatio);
+    org.junit.Assert.assertTrue(
+      String.format(Locale.US, "%s: reuse %.1f%% exceeds max %.1f%%",
+        label, m.getRoadReusePercent(), maxReusePct),
+      m.getRoadReusePercent() <= maxReusePct);
+  }
+}

@@ -58,15 +58,85 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
+  public void sortByRoutedScoreOrdersAscending() {
+    GreedyRoundTripPlanner.ScoredRoute a = new GreedyRoundTripPlanner.ScoredRoute();
+    a.routedScore = 0.42;
+    a.candidateIndex = 0;
+    GreedyRoundTripPlanner.ScoredRoute b = new GreedyRoundTripPlanner.ScoredRoute();
+    b.routedScore = 0.17;
+    b.candidateIndex = 1;
+    GreedyRoundTripPlanner.ScoredRoute c = new GreedyRoundTripPlanner.ScoredRoute();
+    c.routedScore = 0.81;
+    c.candidateIndex = 2;
+
+    List<GreedyRoundTripPlanner.ScoredRoute> list = new ArrayList<>();
+    list.add(a);
+    list.add(b);
+    list.add(c);
+    GreedyRoundTripPlanner.sortByRoutedScore(list);
+
+    Assert.assertSame("lowest routedScore first", b, list.get(0));
+    Assert.assertSame(a, list.get(1));
+    Assert.assertSame("highest routedScore last", c, list.get(2));
+  }
+
+  @Test
+  public void sortByRoutedScoreIsStableOnTies() {
+    // Stability matters: the legacy single-best-wins logic used `<` so the
+    // first candidate to reach a tied score won. Phase 1 Step 2 keeps that
+    // tie-break by relying on List.sort's stable contract.
+    GreedyRoundTripPlanner.ScoredRoute first = new GreedyRoundTripPlanner.ScoredRoute();
+    first.routedScore = 0.5;
+    first.candidateIndex = 0;
+    GreedyRoundTripPlanner.ScoredRoute second = new GreedyRoundTripPlanner.ScoredRoute();
+    second.routedScore = 0.5;
+    second.candidateIndex = 1;
+    GreedyRoundTripPlanner.ScoredRoute third = new GreedyRoundTripPlanner.ScoredRoute();
+    third.routedScore = 0.5;
+    third.candidateIndex = 2;
+
+    List<GreedyRoundTripPlanner.ScoredRoute> list = new ArrayList<>();
+    list.add(first);
+    list.add(second);
+    list.add(third);
+    GreedyRoundTripPlanner.sortByRoutedScore(list);
+
+    Assert.assertEquals(0, list.get(0).candidateIndex);
+    Assert.assertEquals(1, list.get(1).candidateIndex);
+    Assert.assertEquals(2, list.get(2).candidateIndex);
+  }
+
+  @Test
+  public void sortByRoutedScoreHandlesEmptyList() {
+    List<GreedyRoundTripPlanner.ScoredRoute> empty = new ArrayList<>();
+    GreedyRoundTripPlanner.sortByRoutedScore(empty);
+    Assert.assertTrue(empty.isEmpty());
+  }
+
+  @Test
   public void autoSelectsGreedyForLargeRadius() {
     Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(8000));
     Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(5000));
   }
 
   @Test
-  public void autoSelectsIsochroneForSmallRadius() {
-    Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, RoutingEngine.selectRoundTripAlgorithm(4000));
-    Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, RoutingEngine.selectRoundTripAlgorithm(1500));
+  public void autoFallbackSelectsGreedyForSmallRadius() {
+    // Generated-loop AUTO resolution now runs inside doRoundTrip() via the
+    // greedy-first candidate competition. The cheap helper is only a fallback
+    // for unsupported/direct callers, and it must keep the same greedy default
+    // across radii.
+    Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(4000));
+    Assert.assertEquals(RoundTripAlgorithm.GREEDY, RoutingEngine.selectRoundTripAlgorithm(1500));
+  }
+
+  @Test
+  public void greedySubRouteCountScalesWithDistanceAndProfile() {
+    Assert.assertEquals(3, RoutingEngine.selectGreedySubRouteCount(7000, "fastbike"));
+    Assert.assertEquals(4, RoutingEngine.selectGreedySubRouteCount(20000, "fastbike"));
+    Assert.assertEquals(5, RoutingEngine.selectGreedySubRouteCount(50000, "fastbike"));
+    Assert.assertEquals(6, RoutingEngine.selectGreedySubRouteCount(90000, "fastbike"));
+    Assert.assertEquals(6, RoutingEngine.selectGreedySubRouteCount(50000, "mtb"));
+    Assert.assertEquals(6, RoutingEngine.selectGreedySubRouteCount(90000, "mtb"));
   }
 
   @Test
@@ -285,6 +355,168 @@ public class GreedyRoundTripPlannerTest {
       Assert.assertEquals("Deterministic: same distance",
         re1.foundTrack.distance, re2.foundTrack.distance);
     }
+  }
+
+  // ---- Boundary-proximity weighting for back-and-forth penalty ----
+  //
+  // These weights are a planner steering hint, NOT the semantic stem/spur
+  // classifier (that runs in ReuseClassifier after routing). Keeping the
+  // boundary-near-1.0/mid-loop-0.5 split matches what the production planner
+  // actually needs: pushing the semantic stem-vs-mid distinction down to
+  // per-edge weights regressed real Dreieich loops (the planner skipped
+  // viable paved sub-routes and picked path/track alternatives that the
+  // profile gate then rejected).
+
+  @Test
+  public void boundaryProximityWeightFullPenaltyNearStart() {
+    // Both positions within first 20% of the loop → full penalty (1.0).
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(500, 1000, 10000);
+    Assert.assertEquals("near-start reuse → full penalty", 1.0, w, 0.001);
+  }
+
+  @Test
+  public void boundaryProximityWeightFullPenaltyNearEnd() {
+    // Both positions within last 20% of the loop → full penalty (1.0).
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(8500, 9000, 10000);
+    Assert.assertEquals("near-end reuse → full penalty", 1.0, w, 0.001);
+  }
+
+  @Test
+  public void boundaryProximityWeightHalfPenaltyMidLoop() {
+    // Both positions in middle 60% of the loop → half penalty (0.5). This
+    // reflects the cyclist intuition: a road crossed once on the way out and
+    // again on the way back at mid-loop is less annoying than the same
+    // crossing right after departure.
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(3500, 6500, 10000);
+    Assert.assertEquals("mid-loop reuse → half penalty", 0.5, w, 0.001);
+  }
+
+  @Test
+  public void boundaryProximityWeightFullPenaltyIfEitherEndIsNearBoundary() {
+    // First visit near start (boundary=0.05); current visit mid-loop (boundary=0.5).
+    // min(0.05, 0.5) = 0.05 < 0.2 → full penalty.
+    double w = GreedyRoundTripPlanner.boundaryProximityWeight(500, 5000, 10000);
+    Assert.assertEquals("one near-boundary → full penalty", 1.0, w, 0.001);
+  }
+
+  @Test
+  public void finalTrackReuseRatioCountsSecondAndLaterVisitsOnly() {
+    // Test the bug fix: finalTrackReuseRatio shouldn't count an edge as "reuse"
+    // just because it appears in the track — only subsequent re-traversals count.
+    OsmTrack track = new OsmTrack();
+    track.nodes = new ArrayList<>();
+    track.nodes.add(makeNode(0, 0));         // 0,0
+    track.nodes.add(makeNode(1000, 0));      // 1,0  (edge 0-1)
+    track.nodes.add(makeNode(2000, 0));      // 2,0  (edge 1-2)
+    track.nodes.add(makeNode(1000, 0));      // back to 1  (edge 1-2 REUSED)
+    track.nodes.add(makeNode(0, 0));         // back to 0  (edge 0-1 REUSED)
+    track.distance = (int) (track.nodes.get(0).calcDistance(track.nodes.get(1))
+      + track.nodes.get(1).calcDistance(track.nodes.get(2))
+      + track.nodes.get(2).calcDistance(track.nodes.get(3))
+      + track.nodes.get(3).calcDistance(track.nodes.get(4)));
+    double reuse = GreedyRoundTripPlanner.finalTrackReuseRatio(track);
+    // 4 edges total; 2 are first visits (no reuse), 2 are second visits (reuse).
+    // distance-weighted: equal segments, so reuse = 2/4 = 0.5.
+    Assert.assertEquals("half the track is reused", 0.5, reuse, 0.05);
+  }
+
+  @Test
+  public void finalTrackReuseRatioZeroForNonRepeatingTrack() {
+    OsmTrack track = new OsmTrack();
+    track.nodes = new ArrayList<>();
+    track.nodes.add(makeNode(0, 0));
+    track.nodes.add(makeNode(1000, 0));
+    track.nodes.add(makeNode(1000, 1000));
+    track.nodes.add(makeNode(0, 1000));
+    track.nodes.add(makeNode(0, 0));
+    Assert.assertEquals("no edge traversed twice → 0 reuse", 0.0,
+      GreedyRoundTripPlanner.finalTrackReuseRatio(track), 0.001);
+  }
+
+  private static OsmPathElement makeNode(int dx, int dy) {
+    return OsmPathElement.create(8720000 + dx, 50000000 + dy, (short) 0, null);
+  }
+
+  // ---- Phase 1.5 — internal fallback gate delegates to production gate -
+
+  @Test
+  public void qualityGateReasonDelegatesToProductionGate() {
+    // Build a track tripping the production gate's hostile-fraction check
+    // (every edge tagged highway=path with surface=ground → 100% hostile)
+    // and verify the planner's internal qualityGateReason returns a
+    // rejection reason matching the production gate's prefix. Pre-Phase 1.5
+    // the planner used independent FALLBACK_* constants and would have
+    // accepted this track (it has zero reuse and clean ratio).
+    OsmTrack heavy = squarePathTrack(/*sideMeters*/ 5000);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    planner.setProfileName("fastbike");
+    String reason = planner.qualityGateReason(heavy, heavy.distance);
+    Assert.assertNotNull("planner rejects hostile-fraction routes", reason);
+    Assert.assertTrue(
+      "planner reason matches production gate prefix (contiguous or % hostile): " + reason,
+      reason.startsWith("contiguous ") || reason.contains("of distance on profile-hostile ways"));
+  }
+
+  @Test
+  public void qualityGateReasonAcceptsCleanLoop() {
+    // The same delegation accepts a clean paved loop.
+    OsmTrack clean = squareResidentialTrack(/*sideMeters*/ 5000);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    planner.setProfileName("fastbike");
+    Assert.assertNull("planner accepts clean residential loop",
+      planner.qualityGateReason(clean, clean.distance));
+  }
+
+  /** Synthetic 4-side square loop tagged entirely with highway=path
+   * surface=ground (no asphalt override, so trips the gate). */
+  private static OsmTrack squarePathTrack(int side) {
+    OsmTrack t = squareTrack(side);
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=path surface=ground";
+    m.costfactor = 3.0f; // low enough not to trip costfactor check alone
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = cloneMsg(m);
+    }
+    return t;
+  }
+
+  /** Synthetic 4-side square loop tagged residential / asphalt (clean). */
+  private static OsmTrack squareResidentialTrack(int side) {
+    OsmTrack t = squareTrack(side);
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=residential surface=asphalt";
+    m.costfactor = 1.0f;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = cloneMsg(m);
+    }
+    return t;
+  }
+
+  private static OsmTrack squareTrack(int side) {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    int baseLon = 180_000_000;
+    int baseLat = 50_000_000;
+    int ilonPerM = 14;
+    int ilatPerM = 9;
+    t.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon + side * ilonPerM, baseLat, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon + side * ilonPerM, baseLat + side * ilatPerM, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon, baseLat + side * ilatPerM, (short) 0, null));
+    t.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    int d = 0;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      d += t.nodes.get(i - 1).calcDistance(t.nodes.get(i));
+    }
+    t.distance = d;
+    return t;
+  }
+
+  private static MessageData cloneMsg(MessageData src) {
+    MessageData m = new MessageData();
+    m.wayKeyValues = src.wayKeyValues;
+    m.costfactor = src.costfactor;
+    return m;
   }
 
 }

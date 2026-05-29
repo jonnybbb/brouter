@@ -320,11 +320,15 @@ public class LoopGoldStandardTest {
     if (requested.contains("greedy")) {
       variants.add(new AlgorithmVariant("greedy", RoundTripAlgorithm.GREEDY));
     }
+    if (requested.contains("iso_greedy") || requested.contains("quality")) {
+      variants.add(new AlgorithmVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY));
+    }
     if (variants.isEmpty()) {
       // Fallback: run all
       variants.add(new AlgorithmVariant("probe", RoundTripAlgorithm.WAYPOINT));
       variants.add(new AlgorithmVariant("isochrone", RoundTripAlgorithm.ISOCHRONE));
       variants.add(new AlgorithmVariant("greedy", RoundTripAlgorithm.GREEDY));
+      variants.add(new AlgorithmVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY));
     }
     return variants;
   }

@@ -20,13 +20,39 @@ compileJava {
 }
 
 test {
-    // Forward opt-in flags to the test JVM. The loop quality suites
-    // (LoopQualityTest, LoopGoldStandardTest) are slow (>1h with full segment data)
-    // and self-skip unless -Dloop.tests=true is passed, so they never run in the
-    // standard build but stay runnable on demand via Gradle.
+    // Forward opt-in flags to the test JVM. The loop-quality suites
+    // (LoopQualityTest, LoopGoldStandardTest) require downloaded segment data and
+    // are gated behind -Dloop.tests=true, so they self-skip in the standard build
+    // but stay runnable on demand via Gradle.
     systemProperty 'loop.tests', System.getProperty('loop.tests', 'false')
     systemProperty 'loop.profiles', System.getProperty('loop.profiles', '')
     systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
+    systemProperty 'greedy.diagnostic', System.getProperty('greedy.diagnostic', 'false')
+    systemProperty 'greedy.useplannertrack', System.getProperty('greedy.useplannertrack', 'false')
+    if (System.getProperty('gpx.dir')) {
+        systemProperty 'gpx.dir', System.getProperty('gpx.dir')
+    }
+    [
+            'gpx.loop.limit',
+            'gpx.loop.minKm',
+            'gpx.loop.maxKm',
+            'gpx.loop.maxClosureMeters',
+            'gpx.loop.profile',
+            'gpx.loop.assertAccepted'
+    ].each { prop ->
+        if (System.getProperty(prop)) {
+            systemProperty prop, System.getProperty(prop)
+        }
+    }
+    // The loop-quality matrix accumulates 1000+ route coordinate sets per
+    // opt-in run; the default 512m heap OOMs during the @AfterClass HTML
+    // report write. Bump only when loop.tests is on so standard CI stays light.
+    // The 8g headroom is generous given coordinate subsampling already caps
+    // per-route storage in LoopQualityTest.MAX_REPORT_COORDS — better one big
+    // heap than restarting a 35-min run mid-flight.
+    if (Boolean.getBoolean('loop.tests')) {
+        maxHeapSize = '8g'
+    }
 }
 
 pmd {

@@ -1,0 +1,83 @@
+{
+  "spec": "docs/features/roundtrip-closure-aware-control-node-planning.md",
+  "phase": "Phase 0 — Baseline Capture",
+  "capturedAtCommit": "5ba4c4a64c77c37876cf80dc0770cc1d455ed617",
+  "capturedAtCommitShort": "5ba4c4a6",
+  "capturedAtDate": "2026-05-27",
+  "corpus": "tmp/gpx/Basel",
+  "harness": "btools.router.GpxLoopSimilarityTest",
+  "harnessOutputSnapshots": {
+    "smallCorpus": "docs/features/gpx-loop-similarity/Basel-small-corpus-baseline.json",
+    "known100kmBasel": "docs/features/gpx-loop-similarity/Basel-known100km-baseline.json"
+  },
+  "notes": [
+    "Manual extraction from GpxLoopSimilarityTest output. The -Dloop.baseline.capture flag specified in the spec is not yet implemented; numbers below are computed from per-scenario runtimeMillis and score fields in the harness JSON, with averageRouteReuse parsed from the Markdown summary table (the JSON writer does not currently emit reuse).",
+    "Sample sizes (n=6 for smallCorpus, n=1 for known100kmBasel) are small. Median/p95 over 6 samples is statistically noisy; interpret as order-of-magnitude indicators rather than precise budgets.",
+    "rejectionReasonDistribution categories follow the per-scenario error string: keys are best-effort substrings rather than a closed enum. Phase 1 may formalize this.",
+    "MAX_SELF_INTERSECTIONS is 5 at this commit (RoundTripQualityGate.java:93). The known 100 km Basel long-loop fails with 21 self-intersections — this is the headline failure mode the closure-aware reranking work targets."
+  ],
+  "smallCorpus": {
+    "filter": {
+      "loopLimit": 6,
+      "minKm": 25,
+      "maxKm": 90,
+      "maxClosureMeters": 500,
+      "profile": "fastbike (inferred per file)",
+      "algorithms": ["greedy", "iso_greedy"]
+    },
+    "greedy": {
+      "acceptedRoutes": 6,
+      "eligibleLoops": 6,
+      "averageSimilarityScore": 0.85164,
+      "averageDistanceRatio": 0.94704,
+      "radialProfileMeanAbsoluteError": 0.23876,
+      "maxRadiusDelta": -0.16433,
+      "farthestBearingDelta": 28.816,
+      "averageRouteReuse": 0.003,
+      "rejectionReasonDistribution": {},
+      "medianPlannerWallClockMs": 2256,
+      "p95PlannerWallClockMs": 3385,
+      "perLoopRuntimeMillis": [947, 1171, 2096, 2416, 2645, 3631]
+    },
+    "iso_greedy": {
+      "acceptedRoutes": 6,
+      "eligibleLoops": 6,
+      "averageSimilarityScore": 0.85017,
+      "averageDistanceRatio": 0.97312,
+      "radialProfileMeanAbsoluteError": 0.24914,
+      "maxRadiusDelta": -0.18844,
+      "farthestBearingDelta": 31.533,
+      "averageRouteReuse": 0.007,
+      "rejectionReasonDistribution": {},
+      "medianPlannerWallClockMs": 3025,
+      "p95PlannerWallClockMs": 13319,
+      "perLoopRuntimeMillis": [1616, 2651, 2795, 3255, 4795, 16160]
+    }
+  },
+  "known100kmBasel": {
+    "filter": {
+      "loopLimit": 1,
+      "minKm": 100,
+      "maxKm": 101,
+      "maxClosureMeters": 500,
+      "algorithms": ["greedy"]
+    },
+    "loopFile": "dayout__1405919111__#11 ALRD 100 hilly GER Heitersheim.gpx",
+    "realMeters": 100194.7,
+    "greedy": {
+      "acceptedRoutes": 0,
+      "eligibleLoops": 1,
+      "accepted": false,
+      "rejectionReason": "self-intersections",
+      "rejectionReasonRaw": "greedy round trip planner produced no acceptable graph-native loop: rejected: route has 21 self-intersections (max 5) — chaotic loop geometry; best error=0.3%",
+      "selfIntersectionsAtRejection": 21,
+      "selfIntersectionGateLimit": 5,
+      "scoreIfAccepted": 0.81452,
+      "distanceRatio": 0.99723,
+      "radialProfileMeanAbsoluteError": 0.30927,
+      "maxRadiusDelta": -0.55585,
+      "farthestBearingDelta": 21.560,
+      "plannerWallClockMs": 8181
+    }
+  }
+}
