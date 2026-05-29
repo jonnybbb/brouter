@@ -359,6 +359,58 @@ public class RoutingEngineAutoCompetitionTest {
       selfCrossings <= 5);
   }
 
+  /**
+   * Regression: AUTO must not hard-force the start direction on its child
+   * candidates when the user supplied only a soft {@code direction}. Innsbruck
+   * 50 km westward on fastbike is accepted by a free-bearing ISO_GREEDY, but
+   * hard-forcing the opening bearing shoves the first leg onto a >1.5 km
+   * profile-hostile stretch and the whole competition fails. Before the fix
+   * AUTO returned no track here; it must now produce one.
+   */
+  @Test
+  public void autoSoftDirectionDoesNotHardForceFirstLeg() {
+    Assume.assumeTrue("Segment data required", hasSegmentData("E10_N45.rd5"));
+    OsmTrack track = runAuto("fastbike", 8000, 270, /*forceHeading=*/false);
+    Assert.assertNotNull("AUTO produced a track (soft direction must not hard-force)", track);
+  }
+
+  /**
+   * Regression: when ISO_GREEDY, GREEDY and WAYPOINT all fail, AUTO falls back
+   * to direct ISOCHRONE placement. Innsbruck 100 km southward on gravel is one
+   * such case — the greedy/probe candidates produce only chaotic loops, while
+   * the isochrone frontier yields an accepted loop. Before the fallback was
+   * added AUTO returned no track here.
+   */
+  @Test
+  public void autoFallsBackToIsochroneWhenGreedyVariantsFail() {
+    Assume.assumeTrue("Segment data required", hasSegmentData("E10_N45.rd5"));
+    OsmTrack track = runAuto("gravel", 15900, 180, /*forceHeading=*/false);
+    Assert.assertNotNull("AUTO produced a track via the ISOCHRONE fallback", track);
+  }
+
+  /** Run an AUTO round trip from the Innsbruck start and return the found track. */
+  private OsmTrack runAuto(String profileName, int searchRadius, int direction, boolean forceHeading) {
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.ilon = (int) ((11.400 + 180) * 1_000_000);
+    start.ilat = (int) ((47.260 + 90) * 1_000_000);
+    start.name = "from";
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    wps.add(start);
+
+    RoutingContext rctx = new RoutingContext();
+    rctx.localFunction = new File(profileDir, profileName + ".brf").getAbsolutePath();
+    rctx.roundTripDistance = searchRadius;
+    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
+    rctx.startDirection = direction;
+    rctx.forceUseStartDirection = forceHeading;
+
+    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.quite = true;
+    re.doRun(180_000);
+    return re.getFoundTrack();
+  }
+
   /** Count consecutive-edge intersections in a track polyline (excluding
    * shared endpoints). Mirrors the analyzer-script logic; O(n²) but track
    * sizes are bounded by routing tolerances so this is fine for one test. */
