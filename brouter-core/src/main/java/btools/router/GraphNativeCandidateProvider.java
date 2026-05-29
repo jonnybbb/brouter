@@ -34,7 +34,15 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
   private static final int DEDUPE_GRANULARITY = 100;
 
   private final RoutingEngine engine;
-  private final Map<CacheKey, List<Template>> cache = new HashMap<>();
+  /**
+   * Caches the <em>unfiltered</em> Dijkstra expansion pool per
+   * (position, expansionRadius). The expensive expansion genuinely is the same
+   * for a given rounded radius; the airRadius-specific window/sort is applied
+   * per call in {@link #buildTemplates}, so callers whose airRadius rounds to
+   * the same expansionRadius share the expansion without poisoning each other's
+   * window.
+   */
+  private final Map<CacheKey, List<IsoCandidate>> expansionCache = new HashMap<>();
 
   GraphNativeCandidateProvider(RoutingEngine engine) {
     this.engine = engine;
@@ -51,16 +59,21 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     if (engine == null || airRadius <= 0) return new ArrayList<>();
 
     int expansionRadius = roundedExpansionRadius(airRadius);
-    List<Template> templates;
+    List<IsoCandidate> pool;
     if (refTrack == null || refTrack.nodes == null || refTrack.nodes.isEmpty()) {
       CacheKey key = new CacheKey(fromIlon, fromIlat, expansionRadius);
-      templates = cache.computeIfAbsent(key,
-        k -> expandTemplates(fromIlon, fromIlat, airRadius, expansionRadius, null));
+      pool = expansionCache.computeIfAbsent(key,
+        k -> runExpansion(fromIlon, fromIlat, expansionRadius, null));
     } else {
       // Poisoning depends on the already-accepted route, so do not reuse the
       // no-ref cache when a reference track is present.
-      templates = expandTemplates(fromIlon, fromIlat, airRadius, expansionRadius, refTrack);
+      pool = runExpansion(fromIlon, fromIlat, expansionRadius, refTrack);
     }
+    // Window/sort is airRadius-specific and must run per call, not be cached:
+    // distinct airRadius values that round to the same expansionRadius share
+    // the expansion above but need their own window [LOW, HIGH] and
+    // distance-error sort.
+    List<Template> templates = buildTemplates(pool, fromIlon, fromIlat, airRadius);
 
     List<CandidatePoint> result = new ArrayList<>(templates.size());
     for (Template t : templates) {
@@ -86,10 +99,9 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     return ((r + g - 1) / g) * g;
   }
 
-  private List<Template> expandTemplates(int fromIlon, int fromIlat,
-                                         double targetAirRadius,
-                                         int expansionRadius,
-                                         OsmTrack refTrack) {
+  /** Run (and return) the unfiltered Dijkstra expansion pool. Cached per radius. */
+  private List<IsoCandidate> runExpansion(int fromIlon, int fromIlat,
+                                          int expansionRadius, OsmTrack refTrack) {
     OsmNodeNamed current = new OsmNodeNamed();
     current.ilon = fromIlon;
     current.ilat = fromIlat;
@@ -102,13 +114,18 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
         + expansionRadius + "m");
       return new ArrayList<>();
     }
+    return expansion.candidates;
+  }
 
+  /** Window-filter, dedupe, score and cap the expansion pool for one airRadius. */
+  private List<Template> buildTemplates(List<IsoCandidate> pool, int fromIlon,
+                                        int fromIlat, double targetAirRadius) {
     double minWindow = targetAirRadius * STEP_WINDOW_LOW;
     double maxWindow = targetAirRadius * STEP_WINDOW_HIGH;
     List<Template> raw = new ArrayList<>();
     Set<Long> seenCells = new HashSet<>();
 
-    for (IsoCandidate c : expansion.candidates) {
+    for (IsoCandidate c : pool) {
       double airDist = CheapRuler.distance(fromIlon, fromIlat, c.ilon, c.ilat);
       if (airDist < minWindow || airDist > maxWindow) continue;
 

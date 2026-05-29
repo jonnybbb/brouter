@@ -1,5 +1,7 @@
 package btools.router;
 
+import java.util.Locale;
+
 /**
  * Round-trip loop generation modes.
  *
@@ -39,7 +41,7 @@ public enum RoundTripAlgorithm {
    */
   public static RoundTripAlgorithm fromString(String s) {
     if (s == null) return AUTO;
-    String upper = s.toUpperCase();
+    String upper = s.toUpperCase(Locale.ROOT);
     switch (upper) {
       case "FAST":     return WAYPOINT;
       case "BALANCED": return GREEDY;

@@ -978,9 +978,32 @@ public final class RoundTripQualityGate {
    * already penalises it appropriately.
    */
   private static boolean hasExplicitBicycleRestriction(String tags) {
-    return tags.contains("bicycle=no")
-      || tags.contains("access=private")
-      || tags.contains("access=no");
+    return hasTag(tags, "bicycle=no")
+      || hasTag(tags, "access=private")
+      || hasTag(tags, "access=no");
+  }
+
+  /**
+   * Whether {@code keyValue} appears as a whole token in {@code tags} (a
+   * space-joined list of {@code key=value} pairs from
+   * {@link btools.expressions.BExpressionContext#getKeyValueDescription}).
+   * Token-boundary matching avoids the substring trap where a naive
+   * {@code contains("bicycle=no")} also matches the cyclist-friendly
+   * {@code oneway:bicycle=no} (cyclists exempted from a oneway — the opposite
+   * of a ban).
+   */
+  static boolean hasTag(String tags, String keyValue) {
+    if (tags == null) return false;
+    int from = 0;
+    while (true) {
+      int idx = tags.indexOf(keyValue, from);
+      if (idx < 0) return false;
+      boolean leftBoundary = idx == 0 || tags.charAt(idx - 1) == ' ';
+      int end = idx + keyValue.length();
+      boolean rightBoundary = end == tags.length() || tags.charAt(end) == ' ';
+      if (leftBoundary && rightBoundary) return true;
+      from = idx + 1;
+    }
   }
 
   /**
@@ -992,7 +1015,7 @@ public final class RoundTripQualityGate {
    */
   public static boolean isPavedProfile(String profileName) {
     if (profileName == null) return false;
-    String n = profileName.toLowerCase();
+    String n = profileName.toLowerCase(Locale.ROOT);
     return n.contains("fastbike") || n.contains("road") || n.contains("racing");
   }
 }

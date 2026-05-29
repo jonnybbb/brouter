@@ -74,7 +74,7 @@ public final class RouteChoiceScore {
 
   static double[] costMBand(String profileName) {
     if (profileName == null) return new double[]{1.5, 4.0};
-    String n = profileName.toLowerCase();
+    String n = profileName.toLowerCase(Locale.ROOT);
     if (n.contains("fastbike") || n.contains("road") || n.contains("racing")) {
       return new double[]{1.2, 3.0};   // tight band: paved-friendly profiles
     }
