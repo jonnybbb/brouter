@@ -37,3 +37,8 @@ tmp/
 # files are overwritten by every test invocation and are not tracked.
 docs/features/gpx-loop-similarity/*-loop-similarity.json
 docs/features/gpx-loop-similarity/*-loop-similarity.md
+
+# Local-only "known failure" investigation tests and analysis tooling — kept on
+# disk for manual debugging (opt-in via -Dloop.tests=true) but not part of the PR.
+brouter-core/src/test/java/btools/router/known/
+tools/visualize-failures.py
