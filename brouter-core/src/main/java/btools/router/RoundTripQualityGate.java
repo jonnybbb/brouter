@@ -515,7 +515,7 @@ public final class RoundTripQualityGate {
 
   private static List<OsmPathElement> sampledShapeNodes(List<OsmPathElement> nodes) {
     if (nodes.size() <= MAX_SHAPE_SCAN_NODES) return nodes;
-    ArrayList<OsmPathElement> sampled = new ArrayList<>(MAX_SHAPE_SCAN_NODES);
+    List<OsmPathElement> sampled = new ArrayList<>(MAX_SHAPE_SCAN_NODES);
     double step = (double) (nodes.size() - 1) / (MAX_SHAPE_SCAN_NODES - 1);
     for (int i = 0; i < MAX_SHAPE_SCAN_NODES; i++) {
       int idx = (int) Math.round(i * step);

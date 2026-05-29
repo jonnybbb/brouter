@@ -67,7 +67,7 @@ final class LoopTestSegments {
 
   /** Tiles overlapping the [lon±margin] × [lat±margin] box around a start. */
   static java.util.Set<String> tilesFor(double lon, double lat, double margin) {
-    java.util.LinkedHashSet<String> tiles = new java.util.LinkedHashSet<>();
+    java.util.Set<String> tiles = new java.util.LinkedHashSet<>();
     for (double dLon : new double[] {-margin, 0, margin}) {
       for (double dLat : new double[] {-margin, 0, margin}) {
         tiles.add(tileName(lon + dLon, lat + dLat));

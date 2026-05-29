@@ -1094,7 +1094,9 @@ public class RoutingEngine extends Thread {
       switch (routingContext.outputFormat) {
         case "gpx":     output = new FormatGpx(routingContext).format(track); break;
         case "geojson":
-        case "json":    output = new FormatJson(routingContext).format(track); break;
+        case "json":
+          output = new FormatJson(routingContext).format(track);
+          break;
         case "kml":     output = new FormatKml(routingContext).format(track); break;
         case "csv":     output = null; break;
         default:        output = null;
