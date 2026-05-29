@@ -1,6 +1,7 @@
 package btools.router;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
@@ -40,6 +41,42 @@ public class LoopTestSegmentsTest {
   }
 
   @Test
+  public void nodownloadSkipsNetworkForMissingTile() throws Exception {
+    // Hermetic mode never touches the network: a missing tile reports failure
+    // (rather than attempting a download) and nothing is created on disk.
+    File tmp = Files.createTempDirectory("seg-nodownload-test").toFile();
+    tmp.deleteOnExit();
+    String tile = "E0_N35.rd5";
+    System.setProperty("loop.segments.nodownload", "true");
+    try {
+      assertFalse("missing tile must report unavailable", LoopTestSegments.fetch(tmp, tile));
+      assertFalse("no tile should be created", new File(tmp, tile).exists());
+    } finally {
+      System.clearProperty("loop.segments.nodownload");
+    }
+  }
+
+  @Test
+  public void noupdateKeepsExistingTileWithoutNetwork() throws Exception {
+    // download-if-missing-only: a present tile is accepted as-is and the
+    // freshness check is skipped, so the call succeeds offline and the file is
+    // left byte-for-byte untouched.
+    File tmp = Files.createTempDirectory("seg-noupdate-test").toFile();
+    tmp.deleteOnExit();
+    String tile = "E0_N35.rd5";
+    File existing = new File(tmp, tile);
+    Files.write(existing.toPath(), new byte[] {1, 2, 3, 4});
+    long lenBefore = existing.length();
+    System.setProperty("loop.segments.noupdate", "true");
+    try {
+      assertTrue("present tile must be accepted as-is", LoopTestSegments.fetch(tmp, tile));
+      assertEquals("file must be untouched", lenBefore, existing.length());
+    } finally {
+      System.clearProperty("loop.segments.noupdate");
+    }
+  }
+
+  @Test
   public void fetchDownloadsMissingTile() throws Exception {
     Assume.assumeTrue("network download is opt-in — run with -Dloop.tests=true",
       Boolean.getBoolean("loop.tests"));
@@ -50,8 +87,11 @@ public class LoopTestSegmentsTest {
     File got = new File(tmp, smallest);
     assertTrue("tile should exist after fetch", got.isFile());
     assertTrue("tile should be non-trivial", got.length() > 1_000_000);
-    // Second call is a no-op (already present).
+    // Second call re-validates via If-Modified-Since: an up-to-date tile yields
+    // a 304 and is NOT re-downloaded, so its modification time is unchanged.
+    long modAfterFirst = got.lastModified();
     assertTrue(LoopTestSegments.fetch(tmp, smallest));
+    assertEquals("up-to-date tile must not be refreshed", modAfterFirst, got.lastModified());
     got.delete();
   }
 }
