@@ -120,8 +120,13 @@ public class RoutingEngineTest {
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtEdge", rctx);
 
     Assert.assertNotNull("expected a clean failure at the data edge", re.getErrorMessage());
-    Assert.assertTrue("error should explain the waypoint shortfall: " + re.getErrorMessage(),
-      re.getErrorMessage().contains("form a loop"));
+    // AUTO runs a candidate competition (ISO_GREEDY → GREEDY → WAYPOINT →
+    // ISOCHRONE fallback); at the data edge every candidate fails, so the
+    // surfaced message is the competition wrapper rather than one specific
+    // candidate's diagnosis. The contract under test is the clean failure
+    // itself: an explained rejection and no degenerate out-and-back track.
+    Assert.assertTrue("error should report the AUTO competition failure: " + re.getErrorMessage(),
+      re.getErrorMessage().contains("no acceptable route"));
     Assert.assertNull("no track should be returned on failure", re.getFoundTrack());
   }
 

@@ -16,20 +16,26 @@ import org.junit.Assume;
  * loop-quality suites depend on. Replaces the old
  * {@code download-loop-test-segments.sh}: instead of a manual pre-step, each
  * suite calls {@link #ensureAvailable(File, String)} in its setup and the tile
- * is downloaded on first run, then reused (the file is cached on disk and never
- * re-fetched while present).
+ * is downloaded on first run, reused while current, and re-fetched only when the
+ * server has published a newer version (detected via an HTTP conditional GET).
  *
  * <p>Design notes:
  * <ul>
- *   <li>Idempotent — a present tile is left untouched, so repeat runs are free.</li>
+ *   <li>Idempotent — an up-to-date tile is left untouched after a cheap
+ *       {@code 304 Not Modified} check, so repeat runs are nearly free.</li>
+ *   <li>Freshness — each downloaded tile is stamped with the server's
+ *       {@code Last-Modified} time and re-validated on the next run via
+ *       {@code If-Modified-Since}; a newer upstream tile is pulled automatically.</li>
  *   <li>Fork-safe — downloads to a unique {@code .part} file and atomically
  *       renames into place, so parallel Gradle test JVMs can't read a
  *       half-written tile.</li>
  *   <li>Skip, don't fail, when the network is unavailable — offline developers
- *       get a JUnit {@code Assume} skip rather than a red build.</li>
- *   <li>Escape hatch — {@code -Dloop.segments.nodownload=true} disables the
- *       fetch and falls back to a plain existence check, for hermetic CI that
- *       provisions tiles out-of-band.</li>
+ *       get a JUnit {@code Assume} skip rather than a red build, and any network
+ *       error leaves an existing local tile in place (staleness over failure).</li>
+ *   <li>Escape hatches — {@code -Dloop.segments.nodownload=true} disables the
+ *       fetch entirely (plain existence check, for hermetic CI that provisions
+ *       tiles out-of-band); {@code -Dloop.segments.noupdate=true} keeps existing
+ *       tiles without the freshness check (download-if-missing only).</li>
  * </ul>
  */
 final class LoopTestSegments {
@@ -67,7 +73,7 @@ final class LoopTestSegments {
 
   /** Tiles overlapping the [lon±margin] × [lat±margin] box around a start. */
   static java.util.Set<String> tilesFor(double lon, double lat, double margin) {
-    java.util.LinkedHashSet<String> tiles = new java.util.LinkedHashSet<>();
+    java.util.Set<String> tiles = new java.util.LinkedHashSet<>();
     for (double dLon : new double[] {-margin, 0, margin}) {
       for (double dLat : new double[] {-margin, 0, margin}) {
         tiles.add(tileName(lon + dLon, lat + dLat));
@@ -99,47 +105,69 @@ final class LoopTestSegments {
   }
 
   /**
-   * Ensure {@code tile} is present, downloading if needed. Returns {@code true}
-   * if the tile is available afterwards, {@code false} otherwise. Never throws.
+   * Ensure {@code tile} is present and up-to-date, downloading it when missing or
+   * when the server has published a newer version. Returns {@code true} if the
+   * tile is available afterwards, {@code false} otherwise. Never throws.
+   *
+   * <p>Freshness is an HTTP conditional GET: the local tile's modification time
+   * (set to the server's {@code Last-Modified} on each download) is sent as
+   * {@code If-Modified-Since}, so an unchanged tile costs one cheap {@code 304}
+   * and a changed tile is re-fetched in the same request. Any network error or
+   * non-OK response leaves an existing local tile untouched.
    */
   static boolean fetch(File segDir, String tile) {
     File target = new File(segDir, tile);
-    if (target.isFile() && target.length() > 0) {
-      return true;
-    }
+    boolean present = target.isFile() && target.length() > 0;
     if (Boolean.getBoolean("loop.segments.nodownload")) {
-      return false;
+      return present; // hermetic mode: never touch the network
+    }
+    if (present && Boolean.getBoolean("loop.segments.noupdate")) {
+      return true; // keep whatever is on disk, skip the freshness check
     }
     if (!segDir.exists() && !segDir.mkdirs()) {
       System.out.println("[segments] cannot create " + segDir.getAbsolutePath());
-      return false;
+      return present;
     }
 
     String url = BASE_URL + tile;
     Path part = new File(segDir, tile + ".part." + ProcessHandle.current().pid()).toPath();
-    System.out.println("[segments] fetching " + url);
     try {
       HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
       conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
       conn.setReadTimeout(READ_TIMEOUT_MS);
       conn.setInstanceFollowRedirects(true);
+      if (present) {
+        // Only re-download when the upstream tile is newer than ours.
+        conn.setIfModifiedSince(target.lastModified());
+      }
       int code = conn.getResponseCode();
+      if (present && code == HttpURLConnection.HTTP_NOT_MODIFIED) {
+        conn.disconnect();
+        return true; // already up-to-date
+      }
       if (code != HttpURLConnection.HTTP_OK) {
         System.out.println("[segments] HTTP " + code + " for " + url);
         conn.disconnect();
-        return false;
+        return present; // keep an existing copy; only treat as missing if we had none
       }
+      System.out.println("[segments] " + (present ? "refreshing " : "fetching ") + url);
+      long remoteLastModified = conn.getLastModified();
       try (InputStream in = conn.getInputStream()) {
         Files.copy(in, part, StandardCopyOption.REPLACE_EXISTING);
       }
       conn.disconnect();
       if (Files.size(part) <= 0) {
         Files.deleteIfExists(part);
-        return false;
+        return present;
       }
       // Atomic publish; if a sibling fork beat us, its copy is equivalent.
       Files.move(part, target.toPath(),
         StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      // Stamp the tile with the server's Last-Modified so the next run's
+      // conditional GET can detect a newer upstream version.
+      if (remoteLastModified > 0) {
+        target.setLastModified(remoteLastModified);
+      }
       System.out.println("[segments] ready " + target.getName() + " (" + target.length() + " bytes)");
       return true;
     } catch (IOException e) {

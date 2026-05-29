@@ -1,5 +1,6 @@
 package btools.router;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import btools.util.CheapAngleMeter;
@@ -113,7 +114,7 @@ public interface RoundTripCandidateProvider {
       // the scorer's loop/direction terms decide.
       double baseAngle = (step <= 2 && startDirection >= 0) ? startDirection : 0;
       double angleStep = 360.0 / directions;
-      java.util.List<CandidatePoint> points = new java.util.ArrayList<>(directions);
+      List<CandidatePoint> points = new ArrayList<>(directions);
       for (int i = 0; i < directions; i++) {
         double bearing = CheapAngleMeter.normalize(baseAngle + i * angleStep);
         int[] dest = CheapRuler.destination(fromIlon, fromIlat, airRadius, bearing);

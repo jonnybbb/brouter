@@ -936,6 +936,22 @@ public class RoutingEngine extends Thread {
         winner = waypointR;
       }
     }
+
+    // 5. Last-resort ISOCHRONE fallback. The direct isochrone-frontier
+    //    placement reaches loops the greedy radial candidates miss in
+    //    constrained terrain (e.g. a valley where the radial probe can't
+    //    form a loop in the requested direction, or only finds a chaotic
+    //    one). Purely additive: only runs when ISO_GREEDY, GREEDY and
+    //    WAYPOINT have all already failed, so it cannot displace a winner.
+    if (winner == null) {
+      RoundTripCandidateResult isochroneR = runChildCandidate(
+        RoundTripAlgorithm.ISOCHRONE, searchRadius, direction);
+      results.add(isochroneR);
+      logInfo("AUTO candidate: " + isochroneR);
+      if (isochroneR.accepted()) {
+        winner = isochroneR;
+      }
+    }
     long totalMs = System.currentTimeMillis() - t0;
 
     if (winner == null) {
@@ -967,7 +983,13 @@ public class RoutingEngine extends Thread {
       RoutingContext childCtx = routingContext.copyRequestFields();
       childCtx.roundTripAlgorithm = algo;
       childCtx.startDirection = (int) direction;
-      childCtx.forceUseStartDirection = true;
+      // Inherit the user's direction intent from copyRequestFields rather than
+      // hard-forcing it. forceUseStartDirection makes the first leg leave on a
+      // strict bearing; when the user supplied only a soft `direction` (or
+      // none) that over-constrains the loop and can shove the opening leg onto
+      // a profile-hostile stretch, failing a candidate that the same algorithm
+      // accepts when free to pick a nearby bearing. Only an explicit `heading`
+      // (which sets forceUseStartDirection on the parent) hard-forces here.
       // Copy waypoint list — child engine mutates its own list.
       List<OsmNodeNamed> childWps = new ArrayList<>(waypoints.size());
       for (OsmNodeNamed wp : waypoints) {
@@ -1072,7 +1094,9 @@ public class RoutingEngine extends Thread {
       switch (routingContext.outputFormat) {
         case "gpx":     output = new FormatGpx(routingContext).format(track); break;
         case "geojson":
-        case "json":    output = new FormatJson(routingContext).format(track); break;
+        case "json":
+          output = new FormatJson(routingContext).format(track);
+          break;
         case "kml":     output = new FormatKml(routingContext).format(track); break;
         case "csv":     output = null; break;
         default:        output = null;

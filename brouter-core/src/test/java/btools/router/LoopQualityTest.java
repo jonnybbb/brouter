@@ -224,8 +224,7 @@ public class LoopQualityTest {
     switch (profileName.toLowerCase()) {
       case "fastbike": return 3.5;
       case "gravel": return 4.0;
-      case "mtb":
-      case "mtb-zossebart": return 5.0;
+      case "mtb": return 5.0;
       case "trekking": return 4.0;
       default: return 4.5;
     }
