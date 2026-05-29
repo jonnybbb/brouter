@@ -260,7 +260,7 @@ public class IsochroneCandidateProviderTest {
   public void startAnchoredStrideOrderCoversFullCircle() {
     int[] order = IsochroneCandidateProvider.startAnchoredStrideOrder(0, 36);
     assertEquals("order length matches bucket count", 36, order.length);
-    java.util.Set<Integer> seen = new java.util.HashSet<>();
+    Set<Integer> seen = new HashSet<>();
     for (int b : order) seen.add(b);
     assertEquals("every bucket visited exactly once", 36, seen.size());
     assertEquals("first visit is startBucket", 0, order[0]);
@@ -292,7 +292,7 @@ public class IsochroneCandidateProviderTest {
     List<RoundTripCandidateProvider.CandidatePoint> all =
       p.candidatesForStep(START_ILON, START_ILAT, 2000, 1, 5,
         START_ILON, START_ILAT, 0, null);
-    java.util.Set<Integer> seenBuckets = new java.util.HashSet<>();
+    Set<Integer> seenBuckets = new HashSet<>();
     for (RoundTripCandidateProvider.CandidatePoint cp : all) {
       double bearing = CheapRuler.getScaledBearing(START_ILON, START_ILAT, cp.ilon, cp.ilat);
       seenBuckets.add((int) (bearing / 10) % 36);

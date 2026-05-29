@@ -46,3 +46,8 @@ docs/features/roundtrip-closure-aware-control-node-planning.md
 docs/features/roundtrip-benchmark-2026-05.md
 docs/features/gpx-loop-similarity/Basel-*-baseline.json
 docs/features/gpx-loop-similarity/Basel-*-baseline.md
+
+# Local-only "known failure" investigation tests and analysis tooling — kept on
+# disk for manual debugging (opt-in via -Dloop.tests=true) but not part of the PR.
+brouter-core/src/test/java/btools/router/known/
+tools/visualize-failures.py

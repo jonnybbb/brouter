@@ -36,7 +36,8 @@ import static org.junit.Assert.assertTrue;
  *   -Dloop.profiles=fastbike,gravel,mtb  # all profiles
  * </pre>
  * <p>
- * Requires downloaded segment data (see download-loop-test-segments.sh).
+ * Segment tiles are fetched on demand by {@link LoopTestSegments} on first run
+ * and cached on disk; tests skip when a tile is missing and cannot be fetched.
  */
 @RunWith(Parameterized.class)
 public class LoopGoldStandardTest {
@@ -107,9 +108,7 @@ public class LoopGoldStandardTest {
   @Test
   public void loopQuality() {
     File segDir = new File(projectDir, "segments4");
-    File segFile = new File(segDir, region.segmentFile);
-    Assume.assumeTrue("Segment file not found: " + segFile.getAbsolutePath() +
-      " — run download-loop-test-segments.sh to fetch test data", segFile.exists());
+    LoopTestSegments.ensureRegion(segDir, region);
     File profileFile = new File(projectDir, "misc/profiles2/" + profileName + ".brf");
     Assume.assumeTrue("Profile not found: " + profileFile.getAbsolutePath(), profileFile.exists());
 
