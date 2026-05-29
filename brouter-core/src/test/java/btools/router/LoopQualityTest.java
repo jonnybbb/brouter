@@ -14,7 +14,6 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -28,8 +27,9 @@ import static org.junit.Assert.assertTrue;
  * Generates round-trip routes across 5 regions × 4 distances × 3 profiles × 4 directions
  * (240 combinations) and asserts quality metrics fall within acceptable bounds.
  * <p>
- * Requires downloaded segment data (see download-loop-test-segments.sh).
- * Tests are skipped when the required segment tile is not present.
+ * Segment tiles are fetched on demand by {@link LoopTestSegments} on first run
+ * and cached on disk. Tests are skipped when a required tile is missing and
+ * cannot be downloaded (e.g. offline).
  */
 @RunWith(Parameterized.class)
 public class LoopQualityTest {
@@ -121,9 +121,7 @@ public class LoopQualityTest {
   @Test
   public void loopQuality() {
     File segDir = segmentDir();
-    File segFile = new File(segDir, region.segmentFile);
-    Assume.assumeTrue("Segment file not found: " + segFile.getAbsolutePath() +
-      " — run download-loop-test-segments.sh to fetch test data", segFile.exists());
+    LoopTestSegments.ensureRegion(segDir, region);
     File profileFile = profileFile(profileName);
     Assume.assumeTrue("Profile not found: " + profileFile.getAbsolutePath(), profileFile.exists());
     // Skip combos where the profile is fundamentally unsuitable for the
