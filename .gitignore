@@ -38,7 +38,7 @@ tmp/
 docs/features/gpx-loop-similarity/*-loop-similarity.json
 docs/features/gpx-loop-similarity/*-loop-similarity.md
 
-# Local-only "known failure" investigation tests and analysis tooling — kept on
-# disk for manual debugging (opt-in via -Dloop.tests=true) but not part of the PR.
+# Scratch/eval-only "known failure" investigation tests and analysis tooling.
+# Removed from the repo; ignored so they don't get re-added if recreated locally.
 brouter-core/src/test/java/btools/router/known/
 tools/visualize-failures.py
