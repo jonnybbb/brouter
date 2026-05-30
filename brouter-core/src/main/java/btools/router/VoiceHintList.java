@@ -20,23 +20,6 @@ public class VoiceHintList {
   int turnInstructionMode;
   List<VoiceHint> list = new ArrayList<>();
 
-  /**
-   * Refuse to emit a turn-instruction format with no hints. A real multi-node
-   * route always yields at least START and END hints; an empty list when a
-   * turn-instruction mode was requested means the route never produced turn
-   * data (e.g. a round trip whose detour metadata was lost). The format
-   * routines call this so the invalid state is intercepted loudly rather than
-   * silently written as an empty turn-instruction block.
-   */
-  public void assertNonEmptyIfRequested(int trackNodeCount) {
-    if (turnInstructionMode > 0 && list.isEmpty() && trackNodeCount > 1) {
-      throw new IllegalArgumentException(
-        "turn-instruction mode " + turnInstructionMode + " requested but the route "
-          + "produced no voice hints (" + trackNodeCount + " nodes) — refusing to "
-          + "emit an empty turn-instruction list");
-    }
-  }
-
   public void setTransportMode(boolean isCar, boolean isBike) {
     transportMode = isCar ? TRANS_MODE_CAR : (isBike ? TRANS_MODE_BIKE : TRANS_MODE_FOOT);
   }
