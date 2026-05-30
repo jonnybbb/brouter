@@ -215,6 +215,33 @@ public class ReuseClassifierTest {
   }
 
   @Test
+  public void startTouchingDominantSpurStillClassifiesAsLollipop() {
+    // Regression: a lollipop whose DOMINANT retrace touches the START (not the
+    // end) used to be wrongly rejected as SCENIC_OUT_AND_BACK because
+    // isStructuralLollipop's touchesStart branch skipped the hub node by one,
+    // counting the start hub once (closing visit) instead of twice.
+    //
+    // Layout A,Q,A,P,c1,c2,P,A: a 6km start spur (A→Q→A, the longer/dominant
+    // retrace, within the 8% boundary band of this ~200km loop), a 5km stem
+    // (A→P / P→A), and a large non-retraced loop body (P→c1→c2→P). The hub is
+    // the start node A — visited at the end of the start spur AND again when
+    // the loop closes — so the unique suffix revisits it: a genuine LOLLIPOP.
+    OsmTrack t = track(new int[][]{
+      {0, 0},            // A
+      {6000, 0},         // Q  (start spur out)
+      {0, 0},            // A  (start spur back — hub)
+      {0, 5000},         // P  (stem out)
+      {50000, 5000},     // c1 (loop body)
+      {25000, 55000},    // c2 (loop body)
+      {0, 5000},         // P  (stem back)
+      {0, 0}             // A  (close — hub revisited)
+    });
+    RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
+    assertEquals(RouteShape.LOLLIPOP, r.getShape());
+    assertTrue("start-touching-dominant lollipop accepted: " + r, r.isAccepted());
+  }
+
+  @Test
   public void scenicOutAndBackNotReturnedAsStrictLoop() {
     // Even when allowed, an out-and-back is never returned as STRICT_LOOP.
     OsmTrack t = outAndBack(8000);

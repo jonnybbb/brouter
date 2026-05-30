@@ -502,7 +502,12 @@ public final class ReuseClassifier {
 
     OsmPathElement hubCandidate = track.nodes.get(boundaryNodeIdx);
     int prefixEnd = touchesEnd ? boundaryNodeIdx : track.nodes.size();
-    int prefixStart = touchesEnd ? 0 : boundaryNodeIdx + 1;
+    // Both branches count the hub INCLUSIVELY: touchesEnd scans the prefix
+    // [0, boundaryNodeIdx] (i <= prefixEnd), so touchesStart must scan the
+    // suffix [boundaryNodeIdx, end] — starting at boundaryNodeIdx, not +1.
+    // Skipping the hub here undercounts a start-touching lollipop's hub by one
+    // and wrongly rejects it as SCENIC_OUT_AND_BACK.
+    int prefixStart = touchesEnd ? 0 : boundaryNodeIdx;
 
     int occurrences = 0;
     for (int i = prefixStart; i <= prefixEnd && i < track.nodes.size(); i++) {
