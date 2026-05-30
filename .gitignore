@@ -1,6 +1,6 @@
 *.iml
 .gradle
-.idea/*
+.idea/
 build
 /local.properties
 /.idea/caches
@@ -15,30 +15,8 @@ build
 .externalNativeBuild
 .cxx
 misc/segments4
-/segments4
-# Golden baseline GeoJSON tracks (large, regenerated from test runs)
-*_track.geojson
 misc/customprofiles
 *.BAK
 .classpath
 .project
 !/.idea/runConfigurations
-!/.idea/inspectionProfiles
-!/.idea/inspectionProfiles/*
-
-# Node tooling under tools/ (analysis scripts) — installed packages, not source
-node_modules/
-
-# Local GPX corpus and other working data for the loop-quality harness
-tmp/
-
-# GpxLoopSimilarityTest live output — versioned baseline snapshots use the
-# `*-baseline.{json,md}` naming convention; the per-run `*-loop-similarity.*`
-# files are overwritten by every test invocation and are not tracked.
-docs/features/gpx-loop-similarity/*-loop-similarity.json
-docs/features/gpx-loop-similarity/*-loop-similarity.md
-
-# Scratch/eval-only "known failure" investigation tests and analysis tooling.
-# Removed from the repo; ignored so they don't get re-added if recreated locally.
-brouter-core/src/test/java/btools/router/known/
-tools/visualize-failures.py
