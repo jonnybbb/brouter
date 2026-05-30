@@ -28,6 +28,10 @@ test {
     systemProperty 'loop.profiles', System.getProperty('loop.profiles', '')
     systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
     systemProperty 'greedy.diagnostic', System.getProperty('greedy.diagnostic', 'false')
+    // Golden route-signature regression gate (LoopGoldenSignatureTest). Opt-in
+    // like the loop-quality suites; -Dgolden.write=true recaptures the baseline.
+    systemProperty 'golden.tests', System.getProperty('golden.tests', 'false')
+    systemProperty 'golden.write', System.getProperty('golden.write', 'false')
     // The loop-quality matrix accumulates 1000+ route coordinate sets per
     // opt-in run; the default 512m heap OOMs during the @AfterClass HTML
     // report write. Bump only when loop.tests is on so standard CI stays light.
