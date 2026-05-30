@@ -19,6 +19,9 @@ public class FormatJson extends Formatter {
   @Override
   public String format(OsmTrack t) {
     int turnInstructionMode = t.voiceHints != null ? t.voiceHints.turnInstructionMode : 0;
+    if (t.voiceHints != null) {
+      t.voiceHints.assertNonEmptyIfRequested(t.nodes == null ? 0 : t.nodes.size());
+    }
 
     StringBuilder sb = new StringBuilder(8192);
 

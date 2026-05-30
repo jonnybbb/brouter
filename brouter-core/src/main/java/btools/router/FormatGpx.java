@@ -32,6 +32,9 @@ public class FormatGpx extends Formatter {
 
   public String formatAsGpx(BufferedWriter sb, OsmTrack t) throws IOException {
     int turnInstructionMode = t.voiceHints != null ? t.voiceHints.turnInstructionMode : 0;
+    if (t.voiceHints != null) {
+      t.voiceHints.assertNonEmptyIfRequested(t.nodes == null ? 0 : t.nodes.size());
+    }
 
     sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     if (turnInstructionMode != 9) {
