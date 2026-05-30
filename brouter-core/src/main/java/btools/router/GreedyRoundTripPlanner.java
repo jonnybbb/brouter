@@ -602,7 +602,7 @@ public class GreedyRoundTripPlanner {
 
           // Within tolerance → close the loop
           if (error <= tolerance) {
-            OsmTrack finalTrack = mergeSegments(segments, returnTrack);
+            OsmTrack finalTrack = mergeSegmentsDetoured(segments, returnTrack);
             String reject = qualityGateReason(finalTrack, desiredDistance);
             if (reject != null) {
               if (DIAGNOSTIC) {
@@ -713,7 +713,7 @@ public class GreedyRoundTripPlanner {
       if (returnTrack != null && returnTrack.distance > 0) {
         returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, buildRefTrack(segments));
         segments.add(returnTrack);
-        OsmTrack finalTrack = mergeSegments(segments, null);
+        OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
         if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
           RoundTripQualityGate.HostileStretch forceHostile =
             RoundTripQualityGate.worstHostileStretchPaved(finalTrack);
@@ -1059,6 +1059,30 @@ public class GreedyRoundTripPlanner {
     return merged;
   }
 
+  /**
+   * Like {@link #mergeSegments} but also carries each detailed leg's detour data
+   * onto the merged loop, so the result track has the {@code detourMap}
+   * {@link OsmTrack#processVoiceHints} needs to emit turn instructions. The
+   * greedy legs are already retracked for detail (frozen detourMap), so this is
+   * a metadata-only merge: node geometry is identical to {@link #mergeSegments},
+   * so a track validated by the quality gate stays valid. Used only for the
+   * final result track, not the per-step refTrack merges (which don't need
+   * detours).
+   */
+  private OsmTrack mergeSegmentsDetoured(List<OsmTrack> segments, OsmTrack finalSegment) {
+    OsmTrack merged = new OsmTrack();
+    for (OsmTrack seg : segments) {
+      appendTrack(merged, seg);
+      merged.mergeDetoursFrom(seg);
+    }
+    if (finalSegment != null) {
+      appendTrack(merged, finalSegment);
+      merged.mergeDetoursFrom(finalSegment);
+    }
+    merged.buildMap();
+    return merged;
+  }
+
   private void appendTrack(OsmTrack target, OsmTrack source) {
     if (source.nodes == null) return;
     boolean first = true;
@@ -1337,7 +1361,7 @@ public class GreedyRoundTripPlanner {
   private Snapshot snapshotFallback(List<OsmTrack> segments, OsmTrack returnTrack,
                                     List<MatchedWaypoint> waypointStack, double error) {
     Snapshot snap = new Snapshot();
-    snap.track = mergeSegments(segments, returnTrack);
+    snap.track = mergeSegmentsDetoured(segments, returnTrack);
     snap.waypointStack = new ArrayList<>(waypointStack);
     snap.legTracks = new ArrayList<>(segments);
     snap.legTracks.add(returnTrack);
