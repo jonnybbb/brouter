@@ -33,6 +33,19 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
   /** Dedupe granularity in ilon/ilat units, roughly 7-11m in typical regions. */
   private static final int DEDUPE_GRANULARITY = 100;
 
+  /**
+   * Hoisted template ranking comparator: distanceError ascending, then more
+   * bucketHits first, then higher sourceContour first. Pure (captures no
+   * state), so a shared static instance ranks byte-identically to the former
+   * per-call allocation while removing comparator + 3 lambda allocations from
+   * every {@code buildTemplates} call. {@code List.sort} stability preserves
+   * the pre-sort insertion order for fully-equal templates.
+   */
+  private static final Comparator<Template> BY_TEMPLATE_RANK = Comparator
+    .comparingDouble((Template t) -> t.distanceError)
+    .thenComparing((Template t) -> -t.bucketHits)
+    .thenComparing((Template t) -> -t.sourceContour);
+
   private final RoutingEngine engine;
   /**
    * Caches the <em>unfiltered</em> Dijkstra expansion pool per
@@ -143,10 +156,7 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
         c.routedTrack));
     }
 
-    raw.sort(Comparator
-      .comparingDouble((Template t) -> t.distanceError)
-      .thenComparing((Template t) -> -t.bucketHits)
-      .thenComparing((Template t) -> -t.sourceContour));
+    raw.sort(BY_TEMPLATE_RANK);
 
     if (raw.size() > CANDIDATE_CAP) {
       return new ArrayList<>(raw.subList(0, CANDIDATE_CAP));

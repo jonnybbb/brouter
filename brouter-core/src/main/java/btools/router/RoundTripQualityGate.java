@@ -702,7 +702,18 @@ public final class RoundTripQualityGate {
    *         without MessageData.
    */
   public static int worstContiguousCostlyMetersForScorer(OsmTrack track) {
-    return worstContiguousMetersAboveCostfactor(track, SCORER_HOSTILE_COSTFACTOR_THRESHOLD);
+    return worstContiguousMetersAboveCostfactor(track, SCORER_HOSTILE_COSTFACTOR_THRESHOLD, null);
+  }
+
+  /**
+   * SAFE-5 overload: same as {@link #worstContiguousCostlyMetersForScorer(OsmTrack)}
+   * but uses caller-precomputed per-segment distances ({@code segLens[i-1]} =
+   * distance from node i-1 to i) instead of recomputing {@code calcDistance}.
+   * {@code segLens} must match {@code calcDistance} for every segment (it is the
+   * same int), so the result is bit-identical.
+   */
+  public static int worstContiguousCostlyMetersForScorer(OsmTrack track, int[] segLens) {
+    return worstContiguousMetersAboveCostfactor(track, SCORER_HOSTILE_COSTFACTOR_THRESHOLD, segLens);
   }
 
   /**
@@ -711,13 +722,23 @@ public final class RoundTripQualityGate {
    * {@link #worstContiguousCostlyMetersForScorer}.
    */
   static int worstContiguousMetersAboveCostfactor(OsmTrack track, double threshold) {
+    return worstContiguousMetersAboveCostfactor(track, threshold, null);
+  }
+
+  /**
+   * @param segLens SAFE-5 precomputed per-segment distances ({@code segLens[i-1]}
+   *                = distance from node i-1 to i), or {@code null} to compute
+   *                inline. The original always computed {@code calcDistance}
+   *                for every segment (before the null-message check), so a
+   *                fully-populated buffer reproduces the scan exactly.
+   */
+  static int worstContiguousMetersAboveCostfactor(OsmTrack track, double threshold, int[] segLens) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) return 0;
     int best = 0;
     double current = 0;
     for (int i = 1; i < track.nodes.size(); i++) {
-      OsmPathElement a = track.nodes.get(i - 1);
       OsmPathElement b = track.nodes.get(i);
-      double segLen = a.calcDistance(b);
+      double segLen = (segLens != null) ? segLens[i - 1] : track.nodes.get(i - 1).calcDistance(b);
       MessageData m = b.message;
       if (m == null) {
         current = 0;

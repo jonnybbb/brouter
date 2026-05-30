@@ -109,6 +109,18 @@ public class GreedyRoundTripPlanner {
   private static final boolean DIAGNOSTIC =
     Boolean.parseBoolean(System.getProperty("greedy.diagnostic", "false"));
 
+  /**
+   * Hoisted ranking comparators. Both are pure (capture no state) and use
+   * {@link Comparator#comparingDouble}'s {@link Double#compare} semantics, so a
+   * shared static instance ranks identically to a per-call allocation while
+   * avoiding a comparator + lambda allocation on every attempt. {@code List.sort}
+   * is stable, so equal-key ties still resolve by pre-sort insertion order.
+   */
+  private static final Comparator<RoundTripCandidateProvider.CandidatePoint> BY_HEURISTIC_SCORE =
+    Comparator.comparingDouble(c -> c.score);
+  private static final Comparator<ScoredRoute> BY_ROUTED_SCORE =
+    Comparator.comparingDouble(c -> c.routedScore);
+
   private final RoutingEngine engine;
   private final CandidateScorer scorer;
   private final RoundTripCandidateProvider candidateProvider;
@@ -187,12 +199,12 @@ public class GreedyRoundTripPlanner {
     long deadline = planStart + DEFAULT_PLAN_DEADLINE_MS;
     RoundTripResult result = new RoundTripResult();
     double subTarget = desiredDistance / subRouteCount;
-    Map<Long, Integer> visitedEdgeCounts = new HashMap<>();
-    // Parallel map: first-visit cumulative distance from start, per edge. Lets
-    // the reuse signal weight back-and-forth near start/end heavier than mid-
-    // loop reuse — the start/end retraces are visible & annoying; mid-loop
-    // reuse is often unavoidable in constrained terrain.
-    Map<Long, Double> visitedEdgeFirstPos = new HashMap<>();
+    // SAFE-3: primitive open-addressing store replacing the former
+    // HashMap<Long,Integer> reuse counts + HashMap<Long,Double> first-visit
+    // positions. The two were always maintained in lock-step, so they fold
+    // into one boxing-free table. It is only ever point-queried (never
+    // iterated), so slot layout cannot affect any routing decision.
+    VisitedEdgeStore visitedEdges = new VisitedEdgeStore();
     List<OsmTrack> segments = new ArrayList<>();
     int totalAttempts = 0;
     double totalDistance = 0;
@@ -286,7 +298,7 @@ public class GreedyRoundTripPlanner {
         }
 
         // Rank by score (lowest = best)
-        candidates.sort(Comparator.comparingDouble(c -> c.score));
+        candidates.sort(BY_HEURISTIC_SCORE);
 
         // --- Phase 2: Route top candidates, pick best by combined routed score ---
         // Heuristic score uses visitedEdgeRatio=0 since pre-routing can't know it.
@@ -311,6 +323,13 @@ public class GreedyRoundTripPlanner {
         List<ScoredRoute> routedCandidates = new ArrayList<>();
         int routeAttempts = toRoute.size();
         MatchedWaypoint fromMwp = currentMwp;
+
+        // SAFE-4: merge the committed segments into a prefix node list ONCE per
+        // attempt and share it (read-only) across every routed candidate's
+        // tentative self-intersection count, instead of re-merging the whole
+        // prefix per candidate. segments is not mutated inside the r-loop.
+        List<OsmPathElement> committedPrefixNodes =
+          segments.isEmpty() ? null : mergeSegmentsNoMap(segments, null).nodes;
 
         for (int r = 0; r < routeAttempts; r++) {
           RoundTripCandidateProvider.CandidatePoint cp = toRoute.get(r);
@@ -356,8 +375,19 @@ public class GreedyRoundTripPlanner {
             currentIlon, currentIlat, snappedIlon, snappedIlat);
           if (subTrack.distance > snappedAirDistFromCurrent * 3.0) continue;
 
+          // SAFE-5: computeTrackVisitedRatio and the paved-profile
+          // worst-contiguous scan below both iterate subTrack.nodes calling
+          // a.calcDistance(b) over the identical segments in the identical
+          // orientation. On paved profiles (where both run) compute the
+          // per-segment integer distances ONCE and feed both passes, halving
+          // the CheapRuler sqrt+round calls. calcDistance returns an int, so
+          // the cached value widened to double is bit-identical to recomputing
+          // it. Non-paved profiles run only the first pass, so they keep the
+          // inline computation (no buffer to share).
+          boolean pavedProfile = RoundTripQualityGate.isPavedProfile(profileName);
+          int[] segLens = pavedProfile ? segmentDistances(subTrack) : null;
           double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
-            visitedEdgeCounts, visitedEdgeFirstPos, totalDistance, desiredDistance);
+            visitedEdges, totalDistance, desiredDistance, segLens);
           double airDistToStart = CheapRuler.distance(snappedIlon, snappedIlat, start.ilon, start.ilat);
           double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
           double distFromPrevious = (prevIlon >= 0)
@@ -387,8 +417,8 @@ public class GreedyRoundTripPlanner {
           // only variant with the lower SCORER_HOSTILE_COSTFACTOR_THRESHOLD
           // to get a usable signal on single-pass tracks. The gate's precise
           // tag-aware check still runs post-detail before commit.
-          int worstHostile = RoundTripQualityGate.isPavedProfile(profileName)
-            ? RoundTripQualityGate.worstContiguousCostlyMetersForScorer(subTrack)
+          int worstHostile = pavedProfile
+            ? RoundTripQualityGate.worstContiguousCostlyMetersForScorer(subTrack, segLens)
             : -1;
 
           double routedScorerScore = scorer.score(
@@ -404,7 +434,7 @@ public class GreedyRoundTripPlanner {
 
           double costPerMeter = (double) subTrack.cost / subTrack.distance;
           double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
-          int tentativeSelfIntersections = countTentativeSelfIntersections(segments, subTrack);
+          int tentativeSelfIntersections = countTentativeSelfIntersections(committedPrefixNodes, subTrack);
           if (tentativeSelfIntersections > 0) {
             routedScore += PARTIAL_SELF_INTERSECTION_WEIGHT * tentativeSelfIntersections;
           }
@@ -455,7 +485,15 @@ public class GreedyRoundTripPlanner {
         // bypass hostility (under suspect-tolerance) or trip the
         // missing-metadata floor. One Dijkstra per committed leg (5-6
         // per loop) — negligible vs the candidate scoring loop above.
-        OsmTrack refBeforeAccept = buildRefTrack(segments);
+        // SAFE-6: reuse cachedRefTrack instead of rebuilding it. segments is
+        // not mutated between its construction (top of step) and here:
+        // segments.add happens below, and every attempt-loop continue path
+        // that could re-reach this point either never added a leg or added
+        // then undid it, restoring step-start content. Routing/retrack treat
+        // the refTrack as read-only (a fresh OsmTrack is built internally),
+        // which the code already relies on by reusing cachedRefTrack across
+        // all candidate sub-routes — so the merged content here is identical.
+        OsmTrack refBeforeAccept = cachedRefTrack;
         OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, deadline);
         if (detailedAccepted == null || detailedAccepted.distance == 0) {
           result.addDiagnostic("step " + step + ": accepted leg could not be detailed, retrying");
@@ -492,7 +530,7 @@ public class GreedyRoundTripPlanner {
         }
         accepted.track = detailedAccepted;
         accepted.routeDistance = detailedAccepted.distance;
-        addVisitedEdges(accepted.track, visitedEdgeCounts, visitedEdgeFirstPos, totalDistance);
+        addVisitedEdges(accepted.track, visitedEdges, totalDistance);
         segments.add(accepted.track);
         totalDistance += accepted.routeDistance;
         if (accepted.fromIsoCandidate) acceptedIsoLegs++;
@@ -581,7 +619,7 @@ public class GreedyRoundTripPlanner {
               totalDistance -= accepted.routeDistance;
               if (accepted.fromIsoCandidate) acceptedIsoLegs--;
               else acceptedRadialLegs--;
-              removeVisitedEdges(accepted.track, visitedEdgeCounts, visitedEdgeFirstPos);
+              removeVisitedEdges(accepted.track, visitedEdges);
               waypointStack.remove(waypointStack.size() - 1);
               currentMwp = waypointStack.get(waypointStack.size() - 1);
               currentIlon = currentMwp.crosspoint.getILon();
@@ -592,7 +630,7 @@ public class GreedyRoundTripPlanner {
               continue;
             }
 
-            addVisitedEdges(returnTrack, visitedEdgeCounts, visitedEdgeFirstPos, totalDistance);
+            addVisitedEdges(returnTrack, visitedEdges, totalDistance);
             segments.add(returnTrack);
             if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
               System.err.printf("[greedy-diag] FINAL TRACK accepted-path step=%d totalDist=%d returnDist=%d finalWorstHost=%d%n",
@@ -619,7 +657,7 @@ public class GreedyRoundTripPlanner {
             totalDistance -= accepted.routeDistance;
             if (accepted.fromIsoCandidate) acceptedIsoLegs--;
             else acceptedRadialLegs--;
-            removeVisitedEdges(accepted.track, visitedEdgeCounts, visitedEdgeFirstPos);
+            removeVisitedEdges(accepted.track, visitedEdges);
             waypointStack.remove(waypointStack.size() - 1);
             currentMwp = waypointStack.get(waypointStack.size() - 1);
             currentIlon = currentMwp.crosspoint.getILon();
@@ -938,20 +976,73 @@ public class GreedyRoundTripPlanner {
     return mergeSegments(segments, null);
   }
 
-  private int countTentativeSelfIntersections(List<OsmTrack> acceptedSegments,
+  /**
+   * Count self-intersections of the committed prefix + one candidate leg.
+   *
+   * <p>SAFE-4: {@code committedPrefixNodes} is the node list of the merged
+   * committed segments, built ONCE per attempt by the caller and shared
+   * read-only across all routed candidates of that attempt — replacing the
+   * former per-candidate re-merge of the whole prefix. We copy it into a fresh
+   * list and append only this candidate's nodes (replicating
+   * {@link #appendTrack}'s first-node dedupe), so the resulting node sequence
+   * is element-identical to {@code mergeSegmentsNoMap(segments, candidate)} and
+   * the crossing count is bit-identical. The shared prefix list is never
+   * mutated.
+   *
+   * <p>SAFE-1: the tentative track is consumed only by
+   * {@link RoundTripQualityGate#countSelfIntersections}, which reads
+   * {@code track.nodes} exclusively (sampled shape nodes + integer ccw
+   * geometry) and never touches {@code nodesMap}/{@code containsNode}, so no
+   * map build is needed.
+   */
+  private int countTentativeSelfIntersections(List<OsmPathElement> committedPrefixNodes,
                                               OsmTrack candidateSegment) {
     if (candidateSegment == null || candidateSegment.nodes == null
         || candidateSegment.nodes.size() < 2) {
       return 0;
     }
-    if (acceptedSegments.isEmpty()) {
+    if (committedPrefixNodes == null || committedPrefixNodes.isEmpty()) {
       return RoundTripQualityGate.countSelfIntersections(candidateSegment);
     }
-    OsmTrack tentative = mergeSegments(acceptedSegments, candidateSegment);
+    OsmTrack tentative = new OsmTrack();
+    tentative.nodes = new ArrayList<>(
+      committedPrefixNodes.size() + candidateSegment.nodes.size());
+    tentative.nodes.addAll(committedPrefixNodes);
+    appendNodesDeduped(tentative.nodes, candidateSegment.nodes);
     return RoundTripQualityGate.countSelfIntersections(tentative);
   }
 
-  private OsmTrack mergeSegments(List<OsmTrack> segments, OsmTrack finalSegment) {
+  /**
+   * Append {@code source} nodes onto {@code targetNodes}, skipping the first
+   * source node when it duplicates the current tail — the exact node-dedupe
+   * {@link #appendTrack} performs (distance/ascend/cost are irrelevant here
+   * because the only consumer reads the node sequence).
+   */
+  // Package-private for unit testing the dedupe contract (SAFE-4 parity).
+  static void appendNodesDeduped(List<OsmPathElement> targetNodes,
+                                 List<OsmPathElement> source) {
+    boolean first = true;
+    for (OsmPathElement node : source) {
+      if (first && !targetNodes.isEmpty()) {
+        OsmPathElement last = targetNodes.get(targetNodes.size() - 1);
+        if (last.getILon() == node.getILon() && last.getILat() == node.getILat()) {
+          first = false;
+          continue;
+        }
+      }
+      first = false;
+      targetNodes.add(node);
+    }
+  }
+
+  /**
+   * Concatenate {@code segments} (then optional {@code finalSegment}) into one
+   * track WITHOUT building the node lookup map. The map is only needed by
+   * callers that do {@code containsNode}/{@code nodesMap} lookups on the
+   * merged track (refTrack poisoning, final/snapshot output); callers that
+   * only read the node sequence should use this and skip the map build.
+   */
+  private OsmTrack mergeSegmentsNoMap(List<OsmTrack> segments, OsmTrack finalSegment) {
     OsmTrack merged = new OsmTrack();
     for (OsmTrack seg : segments) {
       appendTrack(merged, seg);
@@ -959,6 +1050,11 @@ public class GreedyRoundTripPlanner {
     if (finalSegment != null) {
       appendTrack(merged, finalSegment);
     }
+    return merged;
+  }
+
+  private OsmTrack mergeSegments(List<OsmTrack> segments, OsmTrack finalSegment) {
+    OsmTrack merged = mergeSegmentsNoMap(segments, finalSegment);
     merged.buildMap();
     return merged;
   }
@@ -984,8 +1080,8 @@ public class GreedyRoundTripPlanner {
 
   // --- Visited edge tracking (ref-counted) ---
 
-  private void addVisitedEdges(OsmTrack track, Map<Long, Integer> edgeCounts,
-                               Map<Long, Double> edgeFirstPos, double trackStartCumDist) {
+  private void addVisitedEdges(OsmTrack track, VisitedEdgeStore edges,
+                               double trackStartCumDist) {
     if (track.nodes == null || track.nodes.size() < 2) return;
     double cumDist = trackStartCumDist;
     for (int i = 1; i < track.nodes.size(); i++) {
@@ -993,29 +1089,26 @@ public class GreedyRoundTripPlanner {
       OsmPathElement b = track.nodes.get(i);
       double segLen = a.calcDistance(b);
       long key = edgeKey(a, b);
-      Integer prev = edgeCounts.get(key);
-      if (prev == null || prev == 0) {
+      if (edges.count(key) == 0) {
         // First visit ever — record the segment midpoint as the first-visit
         // cumulative distance, used downstream for boundary-proximity weighting.
-        edgeFirstPos.put(key, cumDist + segLen / 2);
+        edges.setFirstPos(key, cumDist + segLen / 2);
       }
-      edgeCounts.merge(key, 1, Integer::sum);
+      edges.increment(key);
       cumDist += segLen;
     }
   }
 
-  private void removeVisitedEdges(OsmTrack track, Map<Long, Integer> edgeCounts,
-                                  Map<Long, Double> edgeFirstPos) {
+  private void removeVisitedEdges(OsmTrack track, VisitedEdgeStore edges) {
     if (track.nodes == null || track.nodes.size() < 2) return;
     for (int i = 1; i < track.nodes.size(); i++) {
       long key = edgeKey(track.nodes.get(i - 1), track.nodes.get(i));
-      Integer count = edgeCounts.get(key);
-      if (count == null) continue;
+      int count = edges.count(key);
+      if (count == 0) continue;
       if (count <= 1) {
-        edgeCounts.remove(key);
-        edgeFirstPos.remove(key);
+        edges.remove(key);
       } else {
-        edgeCounts.put(key, count - 1);
+        edges.decrement(key);
         // firstPos stays — earlier visit(s) still present in the route.
       }
     }
@@ -1035,25 +1128,32 @@ public class GreedyRoundTripPlanner {
    * @param trackStartCumDist cumulative loop distance at the start of {@code track}
    * @param desiredDistance   target total loop distance (for proximity normalisation)
    */
-  private double computeTrackVisitedRatio(OsmTrack track, Map<Long, Integer> edgeCounts,
-                                          Map<Long, Double> edgeFirstPos,
-                                          double trackStartCumDist, double desiredDistance) {
-    if (edgeCounts.isEmpty() || track.nodes == null || track.nodes.size() < 2) return 0.0;
+  /**
+   * @param segLens SAFE-5 precomputed per-segment distances ({@code segLens[i-1]}
+   *                = distance from node i-1 to i), or {@code null} to compute
+   *                inline. When non-null it must equal {@code calcDistance} for
+   *                every segment — it is the same int widened to double.
+   */
+  private double computeTrackVisitedRatio(OsmTrack track, VisitedEdgeStore edges,
+                                          double trackStartCumDist, double desiredDistance,
+                                          int[] segLens) {
+    if (edges.isEmpty() || track.nodes == null || track.nodes.size() < 2) return 0.0;
     double total = 0;
     double weightedReuse = 0;
     double cumDist = trackStartCumDist;
     for (int i = 1; i < track.nodes.size(); i++) {
       OsmPathElement a = track.nodes.get(i - 1);
       OsmPathElement b = track.nodes.get(i);
-      double segLen = a.calcDistance(b);
+      double segLen = (segLens != null) ? segLens[i - 1] : a.calcDistance(b);
       double midPos = cumDist + segLen / 2;
       total += segLen;
       long key = edgeKey(a, b);
-      if (edgeCounts.containsKey(key)) {
-        Double firstPos = edgeFirstPos.get(key);
-        double posWeight = (firstPos != null)
-          ? boundaryProximityWeight(firstPos, midPos, desiredDistance)
-          : 1.0;
+      // A present key always has its firstPos recorded (setFirstPos precedes
+      // increment on first visit), so this reproduces the former
+      // containsKey-count + non-null-firstPos path exactly; firstPos may be
+      // 0.0 (1m first edge) and is still "present" via the occupancy flag.
+      if (edges.containsKey(key)) {
+        double posWeight = boundaryProximityWeight(edges.firstPos(key), midPos, desiredDistance);
         weightedReuse += segLen * posWeight;
       }
       cumDist += segLen;
@@ -1093,6 +1193,24 @@ public class GreedyRoundTripPlanner {
     double currentBoundary = Math.min(Math.max(0, currentFrac), Math.max(0, 1 - currentFrac));
     double minBoundary = Math.min(firstBoundary, currentBoundary);
     return (minBoundary < BOUNDARY_PROXIMITY_FRAC) ? 1.0 : MID_LOOP_REUSE_WEIGHT;
+  }
+
+  /**
+   * SAFE-5: per-segment integer distances of {@code track}, indexed so
+   * {@code result[i-1] == nodes[i-1].calcDistance(nodes[i])}. Shared by
+   * {@link #computeTrackVisitedRatio} and
+   * {@link RoundTripQualityGate#worstContiguousCostlyMetersForScorer} on the
+   * same track so the {@link CheapRuler} distance is computed once, not twice.
+   */
+  private static int[] segmentDistances(OsmTrack track) {
+    if (track == null || track.nodes == null || track.nodes.size() < 2) {
+      return new int[0];
+    }
+    int[] lens = new int[track.nodes.size() - 1];
+    for (int i = 1; i < track.nodes.size(); i++) {
+      lens[i - 1] = track.nodes.get(i - 1).calcDistance(track.nodes.get(i));
+    }
+    return lens;
   }
 
   private static long edgeKey(OsmPathElement a, OsmPathElement b) {
@@ -1275,6 +1393,6 @@ public class GreedyRoundTripPlanner {
    * penalty affects ordering").
    */
   static void sortByRoutedScore(List<ScoredRoute> candidates) {
-    candidates.sort(Comparator.comparingDouble(c -> c.routedScore));
+    candidates.sort(BY_ROUTED_SCORE);
   }
 }
