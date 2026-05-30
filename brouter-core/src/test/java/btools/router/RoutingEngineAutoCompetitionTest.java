@@ -411,6 +411,52 @@ public class RoutingEngineAutoCompetitionTest {
     return re.getFoundTrack();
   }
 
+  /**
+   * Regression: greedy/iso/AUTO round trips must emit voice hints when a
+   * turn-instruction mode is requested. The greedy planner assembles its loop
+   * from already-detailed legs but used to drop their detour metadata, leaving
+   * processVoiceHints with nothing — so the GPX came back with an empty
+   * turn-instruction list. The detoured merge carries the leg detourMaps onto
+   * the result track so hints are produced (afischerdev review).
+   */
+  @Test
+  public void greedyRoundTripEmitsVoiceHints() {
+    Assume.assumeTrue("Segment data required", hasSegmentData("E5_N40.rd5"));
+    RoundTripAlgorithm[] algos = {
+      RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY, RoundTripAlgorithm.AUTO
+    };
+    for (RoundTripAlgorithm algo : algos) {
+      OsmTrack t = runRoundTripWithTurns(7.270, 43.700, "hiking-mountain", 5000, 180, algo, 4);
+      Assert.assertNotNull(algo + " produced a round-trip track", t);
+      Assert.assertNotNull(algo + " track has a voice-hint list", t.voiceHints);
+      Assert.assertFalse(algo + " round trip (timode=4) must emit voice hints",
+        t.voiceHints.list.isEmpty());
+    }
+  }
+
+  private OsmTrack runRoundTripWithTurns(double lon, double lat, String profileName,
+      int searchRadius, int direction, RoundTripAlgorithm algo, int turnInstructionMode) {
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.ilon = (int) ((lon + 180) * 1_000_000);
+    start.ilat = (int) ((lat + 90) * 1_000_000);
+    start.name = "from";
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    wps.add(start);
+
+    RoutingContext rctx = new RoutingContext();
+    rctx.localFunction = new File(profileDir, profileName + ".brf").getAbsolutePath();
+    rctx.roundTripDistance = searchRadius;
+    rctx.roundTripAlgorithm = algo;
+    rctx.startDirection = direction;
+    rctx.turnInstructionMode = turnInstructionMode;
+
+    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.quite = true;
+    re.doRun(180_000);
+    return re.getFoundTrack();
+  }
+
   /** Count consecutive-edge intersections in a track polyline (excluding
    * shared endpoints). Mirrors the analyzer-script logic; O(n²) but track
    * sizes are bounded by routing tolerances so this is fine for one test. */

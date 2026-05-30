@@ -92,6 +92,29 @@ public final class OsmTrack {
     detourMap = source.detourMap == null ? null : new FrozenLongMap<>(source.detourMap);
   }
 
+  /**
+   * Merge a routed leg's detour data into this track, mirroring the detour-merge
+   * branch of {@link #appendTrack}. Used by callers that concatenate detailed
+   * legs outside {@code appendTrack} (the greedy round-trip planner builds its
+   * own merged track), so {@link #processVoiceHints} — which returns early when
+   * {@code detourMap} is null — can still emit turn instructions.
+   *
+   * <p>Only legs that are already detailed (a frozen detourMap and a built
+   * nodesMap, as produced by {@code retrackForDetail}) are merged; an
+   * un-detailed or empty leg is skipped rather than re-frozen (re-freezing an
+   * already-frozen map throws). Skipping degrades gracefully — that leg's span
+   * simply contributes no hints — instead of breaking the assembled track.
+   */
+  public void mergeDetoursFrom(OsmTrack source) {
+    if (source == null || source.detourMap == null || source.nodesMap == null) return;
+    if (!(source.detourMap instanceof FrozenLongMap)) return;
+    if (detourMap == null) {
+      detourMap = source.detourMap;
+    } else {
+      addDetours(source);
+    }
+  }
+
   public void addDetours(OsmTrack source) {
     if (detourMap != null) {
       CompactLongMap<OsmPathElementHolder> tmpDetourMap = new CompactLongMap<>();
