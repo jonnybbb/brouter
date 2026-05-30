@@ -244,8 +244,10 @@ public final class ReuseClassifier {
     int stemCap = stemReuseCap(requestedDistance);
     int midCap = unclassifiedContiguousCap(requestedDistance);
 
-    int stemMeters = 0;
-    int spurMeters = 0;
+    // Accumulate as double (stretch lengths are fractional); round once where
+    // surfaced, rather than truncating each stretch into an int.
+    double stemMeters = 0;
+    double spurMeters = 0;
     int midRouteUnclassifiedMaxMeters = 0;
     int midRouteUnclassifiedTotalMeters = 0;
     boolean hasLongTerminalReuse = false;
@@ -268,7 +270,8 @@ public final class ReuseClassifier {
           break;
       }
     }
-    b.terminalStemReuseMeters(stemMeters).scenicSpurReuseMeters(spurMeters);
+    b.terminalStemReuseMeters((int) Math.round(stemMeters))
+      .scenicSpurReuseMeters((int) Math.round(spurMeters));
 
     // 1. Reject on long unclassified mid-route retrace (single stretch).
     if (midRouteUnclassifiedMaxMeters > midCap) {
@@ -374,7 +377,7 @@ public final class ReuseClassifier {
     RoundTripQualityResult.Builder out = b.accepted(true).shape(RouteShape.STRICT_LOOP);
     if (stemMeters > 0) {
       out.addDisclosure(String.format(Locale.US,
-        "short shared stem near start/end: %dm", stemMeters));
+        "short shared stem near start/end: %dm", (int) Math.round(stemMeters)));
     }
     if (midRouteUnclassifiedTotalMeters > 0) {
       out.addDisclosure(String.format(Locale.US,
