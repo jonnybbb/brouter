@@ -16,10 +16,10 @@ import java.util.Locale;
  * the MIN-over-repetitions (most stable estimate of achievable time).
  *
  * <pre>
- *   ./gradlew :brouter-core:test --tests '*LoopPerfBenchmark' -Dgolden.tests=true --rerun-tasks
+ *   ./gradlew :brouter-core:test --tests '*LoopPerfBenchmarkTest' -Dgolden.tests=true --rerun-tasks
  * </pre>
  */
-public class LoopPerfBenchmark {
+public class LoopPerfBenchmarkTest {
 
   private static final int WARMUP_PASSES = 2;
   private static final int TIMED_PASSES = 6;
