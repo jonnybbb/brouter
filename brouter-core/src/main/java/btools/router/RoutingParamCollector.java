@@ -209,6 +209,11 @@ public class RoutingParamCollector {
           rctx.startDirection = Integer.valueOf(value);
         } else if (key.equals("roundTripLength")) {
           rctx.roundTripLength = Integer.valueOf(value);
+          // A non-positive length would yield a zero/negative searchRadius
+          // (length / 2π); invalidate it so the roundTripDistance path is used.
+          if (rctx.roundTripLength <= 0) {
+            rctx.roundTripLength = null;
+          }
         } else if (key.equals("roundTripDistance")) {
           rctx.roundTripDistance = Integer.valueOf(value);
         } else if (key.equals("roundTripDirectionAdd")) {

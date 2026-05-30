@@ -28,7 +28,7 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
   private static final double STEP_WINDOW_LOW = 0.5;
   private static final double STEP_WINDOW_HIGH = 1.6;
   /** Dedupe granularity in ilon units (~7m at lat 50°N — within snap range). */
-  private static final long DEDUPE_GRANULARITY = 100;
+  private static final int DEDUPE_GRANULARITY = 100;
   /** Below this filtered-pool size, we relax the hits<3 filter (matches buildCandidateProvider gate). */
   private static final int MIN_DIVERSITY_BEFORE_RELAX = 6;
   /** Minimum distinct angular buckets the filtered pool must span. */

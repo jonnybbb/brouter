@@ -632,6 +632,7 @@ public class GreedyRoundTripPlanner {
 
             addVisitedEdges(returnTrack, visitedEdges, totalDistance);
             segments.add(returnTrack);
+            totalDistance += returnTrack.distance; // keep consistent with segments
             if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
               System.err.printf("[greedy-diag] FINAL TRACK accepted-path step=%d totalDist=%d returnDist=%d finalWorstHost=%d%n",
                 step, (int) totalDistance, returnTrack.distance,
