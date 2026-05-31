@@ -616,8 +616,7 @@ public class GreedyRoundTripPlanner {
             // lowest error. Selecting by error alone could latch a rejected
             // low-error loop and discard a usable accepted higher-error one.
             if (bestFallback == null
-                || (gateAccepted && !bestFallback.gateAccepted)
-                || (gateAccepted == bestFallback.gateAccepted && error < bestFallback.error)) {
+                || isBetterFallback(gateAccepted, error, bestFallback.gateAccepted, bestFallback.error)) {
               bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, gateAccepted);
             }
           }
@@ -1379,6 +1378,21 @@ public class GreedyRoundTripPlanner {
    * {@code segments} / {@code waypointStack} do not desync the track from the
    * recorded waypoints and leg list.
    */
+  /**
+   * Fallback-selection rule: a candidate closed loop replaces the incumbent
+   * best fallback when it is gate-accepted and the incumbent is not (regardless
+   * of error), or — when both share the same gate verdict — when its geometric
+   * error is lower. This prevents latching a gate-rejected low-error loop and
+   * discarding a usable gate-accepted higher-error one.
+   */
+  static boolean isBetterFallback(boolean candidateAccepted, double candidateError,
+                                  boolean incumbentAccepted, double incumbentError) {
+    if (candidateAccepted != incumbentAccepted) {
+      return candidateAccepted;
+    }
+    return candidateError < incumbentError;
+  }
+
   private Snapshot snapshotFallback(OsmTrack track, List<OsmTrack> segments, OsmTrack returnTrack,
                                     List<MatchedWaypoint> waypointStack, double error, boolean gateAccepted) {
     Snapshot snap = new Snapshot();

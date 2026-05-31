@@ -141,6 +141,20 @@ public class RoutingEngineAutoCompetitionTest {
   }
 
   @Test
+  public void childCandidateBudgetSharesTheDeadline() {
+    // The AUTO competition runs candidates sequentially against one shared
+    // deadline; each child gets the REMAINING time, floored so a spawned
+    // candidate still gets a usable slice (never the full request timeout).
+    long now = 1_000_000L;
+    Assert.assertEquals("ample time remaining → full remainder",
+      50_000L, RoutingEngine.childCandidateBudgetMs(now + 50_000L, now));
+    Assert.assertEquals("remaining below the 5s floor → floored",
+      5_000L, RoutingEngine.childCandidateBudgetMs(now + 3_000L, now));
+    Assert.assertEquals("deadline already passed → floored, never negative",
+      5_000L, RoutingEngine.childCandidateBudgetMs(now - 10_000L, now));
+  }
+
+  @Test
   public void roundTripResultExposesIsoRadialTelemetry() {
     // §353.12. The RoundTripResult model carries iso/radial routed +
     // accepted counters; default 0.

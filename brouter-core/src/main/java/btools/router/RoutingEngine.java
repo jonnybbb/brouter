@@ -996,6 +996,15 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Budget (ms) for the next sequential AUTO candidate: the time remaining to
+   * the shared competition deadline, floored at {@link #MIN_CHILD_BUDGET_MS} so
+   * a candidate that is still spawned gets a usable slice rather than ~0.
+   */
+  static long childCandidateBudgetMs(long deadline, long now) {
+    return Math.max(MIN_CHILD_BUDGET_MS, deadline - now);
+  }
+
+  /**
    * Run one AUTO candidate in an isolated child engine, score the result,
    * and return the wrapper. Never throws — failures land in
    * {@link RoundTripCandidateResult#errorMessage}.
@@ -1031,7 +1040,7 @@ public class RoutingEngine extends Thread {
       child.quite = true;
       // Give the child only the remaining shared budget (floored so a spawned
       // candidate still gets a usable slice), not the full request timeout.
-      long budget = Math.max(MIN_CHILD_BUDGET_MS, deadline - System.currentTimeMillis());
+      long budget = childCandidateBudgetMs(deadline, System.currentTimeMillis());
       child.doRun(budget);
       r.track = child.foundTrack;
       r.errorMessage = child.errorMessage;

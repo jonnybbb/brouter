@@ -1,5 +1,8 @@
 package btools.router;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -107,6 +110,75 @@ public class RoundTripQualityFixtureTest {
     Assert.assertTrue("error should explain the rejection: " + re.getErrorMessage(),
       re.getErrorMessage().contains("rejected") || re.getErrorMessage().contains("hostile")
         || re.getErrorMessage().contains("no acceptable route"));
+  }
+
+  /**
+   * The AUTO competition now bounds its candidates with a shared wall-clock
+   * budget (and the WAYPOINT/ISOCHRONE fallbacks honour it). A generous finite
+   * budget must not prematurely time out a normal fixture loop: the result must
+   * match the unbounded (doRun(0)) run exactly. This guards against the timeout
+   * plumbing breaking valid completions; the timeout actually firing needs a
+   * runaway route that the tiny fixture cannot produce.
+   */
+  @Test
+  public void finiteBudgetMatchesUnboundedForSmallLoop() {
+    OsmTrack unbounded = autoLoopWithBudget(0L);
+    OsmTrack timed = autoLoopWithBudget(60_000L);
+    Assert.assertNotNull("unbounded run produced a loop", unbounded);
+    Assert.assertNotNull("finite-budget run produced a loop", timed);
+    Assert.assertEquals("finite budget must not alter the loop (node count)",
+      unbounded.nodes.size(), timed.nodes.size());
+    Assert.assertEquals("finite budget must not alter the loop (distance)",
+      unbounded.distance, timed.distance);
+  }
+
+  /**
+   * Wiring guard for the shared competition budget: a 1 ms overall deadline
+   * lets only the FIRST candidate run (it still gets the MIN_CHILD floor so it
+   * completes), and every later candidate is skipped once now >= deadline — so
+   * the adopted AUTO message records exactly one candidate. With a full budget
+   * the same request runs more than one. This proves the budget is shared
+   * across the competition, not handed to each candidate in full.
+   */
+  @Test
+  public void tinyBudgetRunsOnlyTheFirstCandidate() {
+    RoutingEngine re = autoEngineWithBudget(1L);
+    Assert.assertNull("tiny budget must complete cleanly: " + re.getErrorMessage(),
+      re.getErrorMessage());
+    OsmTrack t = re.getFoundTrack();
+    Assert.assertNotNull("first candidate still runs under the MIN budget floor", t);
+    Assert.assertTrue("still a real loop", t.nodes.size() > 2);
+    Assert.assertNotNull("adopted track carries the competition summary", t.message);
+    Assert.assertTrue("only the first AUTO candidate ran (rest skipped past the 1ms deadline): "
+      + t.message, t.message.contains("after 1 candidate(s)"));
+
+    // Sanity: the same request with a full budget runs more than one candidate,
+    // so the single-candidate result above is the deadline-skip at work, not an
+    // intrinsic property of the request.
+    OsmTrack full = autoEngineWithBudget(60_000L).getFoundTrack();
+    Assert.assertNotNull(full);
+    Assert.assertFalse("full budget should run more than one candidate: " + full.message,
+      full.message.contains("after 1 candidate(s)"));
+  }
+
+  private OsmTrack autoLoopWithBudget(long budgetMs) {
+    return autoEngineWithBudget(budgetMs).getFoundTrack();
+  }
+
+  private RoutingEngine autoEngineWithBudget(long budgetMs) {
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    wps.add(RoundTripFixture.node("from", 8.72, 50.0));
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = RoundTripFixture.profileFile(PROFILE).getAbsolutePath();
+    rc.roundTripDistance = RADIUS;
+    rc.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
+    rc.startDirection = EAST;
+    rc.turnInstructionMode = 2;
+    RoutingEngine re = new RoutingEngine(null, null, RoundTripFixture.segmentDir(), wps, rc,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.quite = true;
+    re.doRun(budgetMs);
+    return re;
   }
 
   /** A larger search radius must yield a longer loop (the radius is honoured). */

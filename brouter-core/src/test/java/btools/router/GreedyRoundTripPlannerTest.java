@@ -185,6 +185,34 @@ public class GreedyRoundTripPlannerTest {
     }
   }
 
+  // --- fallback-selection rule (gate-accept-aware) ---
+
+  @Test
+  public void betterFallbackPrefersGateAcceptedOverRejected() {
+    // A gate-accepted loop beats a gate-rejected one regardless of error — this
+    // is the core of the fix: don't latch a rejected low-error loop and discard
+    // a usable accepted higher-error one.
+    Assert.assertTrue("accepted (worse error) beats rejected (better error)",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.90, false, 0.10));
+    Assert.assertFalse("rejected (better error) does not beat accepted (worse error)",
+      GreedyRoundTripPlanner.isBetterFallback(false, 0.10, true, 0.90));
+  }
+
+  @Test
+  public void betterFallbackBreaksTiesByLowerError() {
+    // Same gate verdict → lower geometric error wins; equal error is not "better".
+    Assert.assertTrue("accepted: lower error wins",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.10, true, 0.20));
+    Assert.assertFalse("accepted: higher error loses",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.30, true, 0.20));
+    Assert.assertTrue("rejected: lower error wins",
+      GreedyRoundTripPlanner.isBetterFallback(false, 0.10, false, 0.20));
+    Assert.assertFalse("rejected: higher error loses",
+      GreedyRoundTripPlanner.isBetterFallback(false, 0.30, false, 0.20));
+    Assert.assertFalse("equal error + same verdict is not strictly better",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.20, true, 0.20));
+  }
+
   @Test
   public void greedyRejectsAllowSamewayback() {
     // allowSamewayback semantics (out-and-back) are not implemented by greedy;
