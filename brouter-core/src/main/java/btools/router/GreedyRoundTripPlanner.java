@@ -577,13 +577,20 @@ public class GreedyRoundTripPlanner {
           // Phase 2 v3: detail the closing return leg before either snapshot
           // or final commit — both paths feed the quality gate which needs
           // per-edge MessageData.
+          // Detail the closing return leg before snapshotting or committing —
+          // both feed the quality gate, which needs per-edge MessageData. Also
+          // re-detail when the current best fallback was gate-rejected, so we
+          // keep searching for a gate-accepted closure even at higher error.
           boolean needDetail = (bestFallback == null || error < bestFallback.error)
-            || (error <= tolerance);
+            || (error <= tolerance)
+            || (bestFallback != null && !bestFallback.gateAccepted);
           if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
             needDetail = true;
           }
           if (needDetail) {
-            returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, buildRefTrack(segments));
+            // retrackForDetail ignores the refTrack arg (its guide track already
+            // fixes the node sequence), so don't pay for a buildRefTrack merge here.
+            returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
           }
           if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
             RoundTripQualityGate.HostileStretch returnHostile =
@@ -595,15 +602,28 @@ public class GreedyRoundTripPlanner {
               (int) closedDistance, error, returnHostile.describe());
           }
 
-          // Snapshot now: later retries may mutate segments / waypointStack.
-          if (bestFallback == null || error < bestFallback.error) {
-            bestFallback = snapshotFallback(segments, returnTrack, waypointStack, error);
+          // Build the closed loop and evaluate the production gate once (only
+          // meaningful when the leg was detailed); reuse the verdict for both
+          // fallback selection and the within-tolerance close decision.
+          OsmTrack finalTrack = null;
+          String reject = null;
+          if (needDetail) {
+            finalTrack = mergeSegmentsDetoured(segments, returnTrack);
+            reject = qualityGateReason(finalTrack, desiredDistance);
+            boolean gateAccepted = reject == null;
+            // Prefer a gate-accepted fallback over a gate-rejected one even at a
+            // higher geometric error; among same-status candidates keep the
+            // lowest error. Selecting by error alone could latch a rejected
+            // low-error loop and discard a usable accepted higher-error one.
+            if (bestFallback == null
+                || (gateAccepted && !bestFallback.gateAccepted)
+                || (gateAccepted == bestFallback.gateAccepted && error < bestFallback.error)) {
+              bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, gateAccepted);
+            }
           }
 
           // Within tolerance → close the loop
           if (error <= tolerance) {
-            OsmTrack finalTrack = mergeSegmentsDetoured(segments, returnTrack);
-            String reject = qualityGateReason(finalTrack, desiredDistance);
             if (reject != null) {
               if (DIAGNOSTIC) {
                 System.err.printf("[greedy-diag] closed loop rejected at step %d: %s%n",
@@ -712,7 +732,7 @@ public class GreedyRoundTripPlanner {
         currentMwp, startMwp, buildRefTrack(segments), forceCloseDeadline);
       returnChecksPerformed++;
       if (returnTrack != null && returnTrack.distance > 0) {
-        returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, buildRefTrack(segments));
+        returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
         if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
@@ -1359,14 +1379,15 @@ public class GreedyRoundTripPlanner {
    * {@code segments} / {@code waypointStack} do not desync the track from the
    * recorded waypoints and leg list.
    */
-  private Snapshot snapshotFallback(List<OsmTrack> segments, OsmTrack returnTrack,
-                                    List<MatchedWaypoint> waypointStack, double error) {
+  private Snapshot snapshotFallback(OsmTrack track, List<OsmTrack> segments, OsmTrack returnTrack,
+                                    List<MatchedWaypoint> waypointStack, double error, boolean gateAccepted) {
     Snapshot snap = new Snapshot();
-    snap.track = mergeSegmentsDetoured(segments, returnTrack);
+    snap.track = track;
     snap.waypointStack = new ArrayList<>(waypointStack);
     snap.legTracks = new ArrayList<>(segments);
     snap.legTracks.add(returnTrack);
     snap.error = error;
+    snap.gateAccepted = gateAccepted;
     return snap;
   }
 
@@ -1375,6 +1396,7 @@ public class GreedyRoundTripPlanner {
     List<MatchedWaypoint> waypointStack;
     List<OsmTrack> legTracks;
     double error;
+    boolean gateAccepted;
   }
 
   /**

@@ -154,7 +154,11 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
     //    up to POOL_CAP from this sequence (skipping empties) yields an evenly-
     //    distributed pool — not the leading-buckets-clustered set the
     //    contour-then-bucket sort used to produce.
-    int startBucket = ((int) Math.round(startDirection / (360.0 / TOTAL_BUCKETS))) % TOTAL_BUCKETS;
+    // Floor (not round) into the containing bucket, matching how
+    // runIsochroneExpansion buckets bearings; round-to-nearest would anchor a
+    // direction in the outer half of a bucket (or near the 360° wrap) one
+    // bucket off.
+    int startBucket = ((int) (startDirection / (360.0 / TOTAL_BUCKETS))) % TOTAL_BUCKETS;
     if (startBucket < 0) startBucket += TOTAL_BUCKETS;
     int[] visitOrder = startAnchoredStrideOrder(startBucket, TOTAL_BUCKETS);
 

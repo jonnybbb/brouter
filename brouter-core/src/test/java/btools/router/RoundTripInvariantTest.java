@@ -1,5 +1,7 @@
 package btools.router;
 
+import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -7,6 +9,7 @@ import org.junit.runners.Parameterized;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Structural invariants every generated round-trip loop must satisfy, exercised
@@ -45,9 +48,24 @@ public class RoundTripInvariantTest {
     return params;
   }
 
+  // assertValidLoop Assume-skips a case whose fixture loop the quality gate
+  // rejected. That per-case tolerance is intentional, but it lets the whole
+  // parameterized suite pass green-by-skip if a regression made the gate reject
+  // every fixture loop. Count the cases that actually asserted and require a
+  // floor, so a wholesale-rejection regression fails loudly instead.
+  private static final AtomicInteger ASSERTED = new AtomicInteger();
+
   @Test
   public void loopInvariants() {
     OsmTrack track = RoundTripFixture.route(profile, direction, radius);
     RoundTripFixture.assertValidLoop(track, profile + "_dir" + direction + "_r" + radius, MAX_REUSE_PCT);
+    ASSERTED.incrementAndGet(); // only reached when the case was not Assume-skipped
+  }
+
+  @AfterClass
+  public static void atLeastSomeCasesRan() {
+    Assert.assertTrue("every parameterized invariant case was skipped — the fixture/gate"
+      + " produced no acceptable loop, so this suite gave zero real coverage",
+      ASSERTED.get() > 0);
   }
 }

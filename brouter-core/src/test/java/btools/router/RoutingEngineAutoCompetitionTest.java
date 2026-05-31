@@ -79,22 +79,35 @@ public class RoutingEngineAutoCompetitionTest {
 
   @Test
   public void directionDeltaCannotDominateScore() {
-    // §353.7. Two tracks differing only in direction-delta should differ in
-    // score by at most W_DIRECTION (~5%), never more.
+    // §353.7. Direction may shift a candidate's score by at most W_DIRECTION
+    // (5%), never more — it must not dominate distance/reuse/closure/etc.
     OsmTrack good = cleanSquareLoop(5000);
-    RoundTripQualityResult gateVerdict = RoundTripQualityResult.builder()
+    RoundTripQualityResult gate = RoundTripQualityResult.builder()
       .accepted(true).shape(RouteShape.STRICT_LOOP).build();
 
-    // Compute score with two different "requested directions" by replaying
-    // the same track. Direction delta is computed from the track's farthest-
-    // point bearing vs requested; we can't directly inject delta, but the
-    // weight cap is hardcoded so verify by inspecting the reason.
-    RouteChoiceScore.Verdict v = RouteChoiceScore.score(good, good.distance, "fastbike", gateVerdict);
-    double dirContrib = v.reasons().stream()
-      .filter(r -> r.label.startsWith("direction delta"))
+    // (a) The direction reason's contribution is bounded by a hard literal
+    //     (0.05). Asserting against RouteChoiceScore.W_DIRECTION itself would be
+    //     tautological — dirContrib == W_DIRECTION * dirScore with dirScore in
+    //     [0,1], so it always holds and a W_DIRECTION regression would slip past.
+    double dirContrib = RouteChoiceScore.score(good, good.distance, "fastbike", gate, 0)
+      .reasons().stream().filter(r -> r.label.startsWith("direction delta"))
       .findFirst().get().scoreContribution;
-    Assert.assertTrue("direction contribution never exceeds W_DIRECTION (" + RouteChoiceScore.W_DIRECTION
-      + "); got " + dirContrib, Math.abs(dirContrib) <= RouteChoiceScore.W_DIRECTION + 1e-9);
+    Assert.assertTrue("direction contribution must stay <= 0.05; got " + dirContrib,
+      Math.abs(dirContrib) <= 0.05 + 1e-9);
+
+    // (b) Dominance: scoring the SAME track across every requested direction
+    //     varies only the direction delta, so the total score may move by at
+    //     most 0.05 between the best- and worst-aligned direction.
+    double min = Double.MAX_VALUE, max = -Double.MAX_VALUE;
+    for (int dir = 0; dir < 360; dir += 30) {
+      double s = RouteChoiceScore.score(good, good.distance, "fastbike", gate, dir).score();
+      min = Math.min(min, s);
+      max = Math.max(max, s);
+    }
+    Assert.assertTrue("direction must actually affect the score (otherwise the bound is vacuous)",
+      max - min > 0);
+    Assert.assertTrue("direction may swing the total score by at most 0.05; swing was " + (max - min),
+      max - min <= 0.05 + 1e-9);
   }
 
   @Test

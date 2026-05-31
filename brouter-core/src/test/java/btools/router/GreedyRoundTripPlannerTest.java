@@ -7,7 +7,9 @@ import org.junit.Test;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmNode;
@@ -140,14 +142,47 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
-  public void legacyRoundTripIsochroneParam() {
+  public void legacyRoundTripIsochroneParamMapsToIsochrone() {
+    // Drive the real parser: roundTripIsochrone=1 promotes AUTO -> ISOCHRONE.
     RoutingContext rctx = new RoutingContext();
     Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
-
-    // Legacy compat: setting roundTripIsochrone should map to ISOCHRONE algorithm
-    rctx.roundTripIsochrone = true;
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("roundTripIsochrone", "1");
+    new RoutingParamCollector().setParams(rctx, null, params);
     Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, rctx.roundTripAlgorithm);
+    Assert.assertTrue(rctx.roundTripIsochrone);
+  }
+
+  @Test
+  public void explicitRoundTripAlgorithmWinsOverIsochroneShortcut() {
+    // An explicit roundTripAlgorithm beats the roundTripIsochrone=1 shortcut,
+    // regardless of parameter order (the parser only promotes when AUTO).
+    for (boolean algoFirst : new boolean[]{true, false}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> params = new LinkedHashMap<>();
+      if (algoFirst) {
+        params.put("roundTripAlgorithm", "GREEDY");
+        params.put("roundTripIsochrone", "1");
+      } else {
+        params.put("roundTripIsochrone", "1");
+        params.put("roundTripAlgorithm", "GREEDY");
+      }
+      new RoutingParamCollector().setParams(rctx, null, params);
+      Assert.assertEquals("explicit algorithm must win (algoFirst=" + algoFirst + ")",
+        RoundTripAlgorithm.GREEDY, rctx.roundTripAlgorithm);
+    }
+  }
+
+  @Test
+  public void nonPositiveRoundTripLengthIsNulled() {
+    // roundTripLength <= 0 must be discarded (null), not passed through.
+    for (String v : new String[]{"0", "-5"}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> params = new LinkedHashMap<>();
+      params.put("roundTripLength", v);
+      new RoutingParamCollector().setParams(rctx, null, params);
+      Assert.assertNull("roundTripLength=" + v + " must null out", rctx.roundTripLength);
+    }
   }
 
   @Test

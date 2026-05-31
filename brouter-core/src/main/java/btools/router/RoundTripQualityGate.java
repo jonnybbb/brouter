@@ -340,7 +340,8 @@ public final class RoundTripQualityGate {
         .build();
     }
 
-    // 2. Distance ratio: not 1/3 of the requested length, not 2× either.
+    // 2. Distance ratio: not below half (MIN_DISTANCE_RATIO=0.5) of the
+    //    requested length, not above MAX_DISTANCE_RATIO=1.8× either.
     //    Same-way-back routes go out half the loop length then come back,
     //    so their total distance ≈ desired (out is half, back is half).
     //    Use the full-loop band either way; same-way-back doesn't change
@@ -591,9 +592,10 @@ public final class RoundTripQualityGate {
    *       {@link #MAX_HOSTILE_FRACTION}.</li>
    * </ul>
    * Missing metadata is treated as suspect, never as proof of quality.
-   * Suspect edges in the middle of a hostile run <em>do not</em> reset the
-   * contiguous-hostile counter nor extend it — they're unknown spans, so
-   * we neither break nor lengthen the hostile stretch across them.
+   * Suspect edges <em>break</em> the contiguous-hostile run (reset to 0): an
+   * unknown span is conservatively assumed to interrupt the hostile stretch, so
+   * the worst contiguous hostile length is under-reported rather than spanned
+   * across unknown gaps (see {@link #worstContiguousHostileMetersPaved}).
    */
   private static String checkHostileSegmentsPaved(OsmTrack track) {
     double total = 0;
