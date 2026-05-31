@@ -1064,6 +1064,9 @@ public class RoutingEngine extends Thread {
     } else {
       foundTrack.message += " " + summary.toString();
     }
+    // Keep messageList.get(0) in sync with the just-extended message so the
+    // GPX <brouter:info> / comment block reflects the AUTO summary too.
+    ensureInfoMessage(foundTrack);
     logInfo(summary.toString());
     if (winner.score != null) {
       logInfo("AUTO winner score breakdown:\n" + winner.score.describe());
@@ -1125,6 +1128,39 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Guarantee the track carries the standard one-line info message and a
+   * matching {@code messageList}, mirroring the direct-routing output path in
+   * {@link #doRouting} (lines that set {@code track.message} /
+   * {@code track.messageList}). Round-trip result tracks are assembled from
+   * merged segments via {@code new OsmTrack()} and otherwise reach the
+   * formatters with {@code messageList == null}, which made
+   * {@link FormatGpx#formatAsGpx} throw a NullPointerException on export.
+   * Idempotent: re-running it keeps {@code messageList.get(0)} in sync with
+   * any later additions to {@code track.message} (e.g. the AUTO summary).
+   */
+  private void ensureInfoMessage(OsmTrack track) {
+    if (track == null) {
+      return;
+    }
+    if (track.message == null || track.message.isEmpty()) {
+      track.message = "track-length = " + track.distance + " filtered ascend = " + track.ascend
+        + " plain-ascend = " + track.plainAscend + " cost=" + track.cost;
+      if (track.energy != 0) {
+        track.message += " energy=" + Formatter.getFormattedEnergy(track.energy)
+          + " time=" + Formatter.getFormattedTime2(track.getTotalSeconds());
+      }
+    }
+    if (track.messageList == null) {
+      track.messageList = new ArrayList<>();
+    }
+    if (track.messageList.isEmpty()) {
+      track.messageList.add(track.message);
+    } else {
+      track.messageList.set(0, track.message);
+    }
+  }
+
+  /**
    * Bring a directly adopted round-trip track up to the same metadata
    * contract that {@link #doRouting(long)} provides before returning:
    * matched waypoints attached, indices filled, origin chain coherent for
@@ -1139,6 +1175,7 @@ public class RoutingEngine extends Thread {
     }
     rebuildOriginChain(track);
     recalcTrack(track);
+    ensureInfoMessage(track);
     if (mwps != null && !mwps.isEmpty()) {
       assignMatchedWaypointIndexes(track, mwps);
       matchedWaypoints = mwps;

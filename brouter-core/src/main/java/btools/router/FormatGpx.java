@@ -34,7 +34,7 @@ public class FormatGpx extends Formatter {
     int turnInstructionMode = t.voiceHints != null ? t.voiceHints.turnInstructionMode : 0;
 
     sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    if (turnInstructionMode != 9) {
+    if (turnInstructionMode != 9 && t.messageList != null) {
       for (int i = t.messageList.size() - 1; i >= 0; i--) {
         String message = t.messageList.get(i);
         if (i < t.messageList.size() - 1)
@@ -74,7 +74,7 @@ public class FormatGpx extends Formatter {
       sb.append(" <metadata>\n");
       sb.append("  <name>").append(t.name).append("</name>\n");
       sb.append("  <extensions>\n");
-      sb.append("   <brouter:info>").append(t.messageList.get(0)).append("</brouter:info>\n");
+      sb.append("   <brouter:info>").append(t.messageList != null && !t.messageList.isEmpty() ? t.messageList.get(0) : "").append("</brouter:info>\n");
       if (t.params != null && t.params.size() > 0) {
         sb.append("   <brouter:params><![CDATA[");
         int i = 0;
