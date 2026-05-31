@@ -4,37 +4,43 @@ import org.junit.Assert;
 import org.junit.Test;
 
 /**
- * Geometric- and algorithm-quality guards for round-trip routing that run in CI
- * against the bundled Dreieich fixture (see {@link RoundTripFixture}). These
- * complement {@link RoundTripInvariantTest} (which validates the default/AUTO
- * algorithm's structural invariants across profiles/directions) by covering
- * aspects the existing CI suites do not:
+ * Geometric- and algorithm-quality guards for <em>small</em> round-trip loops
+ * that run in CI against the bundled Dreieich fixture (see {@link RoundTripFixture}).
+ * They complement {@link RoundTripInvariantTest} (structural invariants of the
+ * default/AUTO algorithm across profiles/directions) by covering aspects no CI
+ * suite touched:
  *
  * <ul>
- *   <li><b>Geometric cleanliness</b> — the whole point of the AUTO redesign was
- *       to replace the probe-spike chaos pattern (many self-crossings) with
- *       clean loops. That was only guarded by the segments-gated Mallorca test
- *       (skipped in CI). This pins self-crossings on the fixture.</li>
+ *   <li><b>Omnidirectional cleanliness</b> — small loops in <em>all four</em>
+ *       compass directions for AUTO and both greedy variants. The whole point of
+ *       the AUTO redesign was to replace the probe-spike chaos pattern (many
+ *       self-crossings) with clean loops; that was only guarded by the
+ *       segments-gated Mallorca test (skipped in CI). Here it runs on the fixture.</li>
  *   <li><b>Explicit GREEDY / ISO_GREEDY validity</b> — the scenario suite forces
- *       WAYPOINT and ISOCHRONE; the greedy variants (which assemble a loop from
- *       merged legs) were only validated structurally via AUTO's internal
- *       choice. Here they are forced and validated directly.</li>
- *   <li><b>AUTO competition is entered and the winner recorded</b> — previously
- *       only asserted in the segments-gated competition suite.</li>
+ *       only WAYPOINT and ISOCHRONE; the greedy variants (which assemble a loop
+ *       from merged legs) are forced and validated directly here.</li>
+ *   <li><b>AUTO competition entered + winner recorded</b>, and forced variants
+ *       fully finalized — previously only in the segments-gated competition suite.</li>
+ *   <li><b>Profile policy</b> — a paved-only profile must reject the fixture's
+ *       path/track terrain with a clear error and no degenerate track.</li>
+ *   <li><b>Radius is honoured</b> — a larger search radius yields a longer loop.</li>
  * </ul>
  *
- * <p>The fixture is a tiny synthetic tile, so loops only form in directions with
- * enough road; east (90°) reliably yields a loop for every algorithm here. Other
- * directions hit the quality gate's distance band and are covered by the
- * gated real-geography suite ({@link LoopQualityTest}) and {@link RoundTripContractTest}.
+ * <p>The fixture is a ~3 km synthetic tile. The {@code gravel} profile forms a
+ * clean loop in every direction at small radii (matrix-verified across
+ * algorithm/direction/radius), so these tests are reliable rather than
+ * direction-fragile. Larger radii and real-geography shape quality live in the
+ * gated suite ({@link LoopQualityTest}).
  */
 public class RoundTripQualityFixtureTest {
 
+  private static final String PROFILE = "gravel";
+  private static final int RADIUS = 1000;
   private static final int EAST = 90;
-  private static final int RADIUS = 2000;
+  private static final int[] DIRECTIONS = {0, 90, 180, 270};
 
-  /** Clean loops measure 0 self-crossings on the fixture; allow a small margin
-   *  for routing-engine variance while still failing the chaos pattern (many). */
+  /** Clean loops measure 0–1 self-crossings on the fixture; allow a small margin
+   *  while still failing the chaos pattern (many crossings). */
   private static final int MAX_SELF_CROSSINGS = 2;
 
   /** Greedy-merged loops retrace a short shared stem near the origin, so allow
@@ -42,19 +48,18 @@ public class RoundTripQualityFixtureTest {
   private static final double MAX_REUSE_PCT = 40.0;
 
   @Test
-  public void autoLoopIsGeometricallyCleanAndValid() {
-    assertCleanLoop(RoundTripAlgorithm.AUTO);
-  }
-
-  @Test
-  public void greedyVariantsProduceCleanValidLoops() {
-    assertCleanLoop(RoundTripAlgorithm.GREEDY);
-    assertCleanLoop(RoundTripAlgorithm.ISO_GREEDY);
+  public void omnidirectionalSmallLoopsAreCleanAndValid() {
+    for (RoundTripAlgorithm algo : new RoundTripAlgorithm[]{
+        RoundTripAlgorithm.AUTO, RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY}) {
+      for (int dir : DIRECTIONS) {
+        assertCleanLoop(algo, dir);
+      }
+    }
   }
 
   @Test
   public void autoCompetitionAdoptsAndRecordsWinner() {
-    RoutingEngine re = RoundTripFixture.engine("trekking", EAST, RADIUS,
+    RoutingEngine re = RoundTripFixture.engine(PROFILE, EAST, RADIUS,
       rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.AUTO);
     Assert.assertNull("AUTO completed: " + re.getErrorMessage(), re.getErrorMessage());
     OsmTrack track = re.getFoundTrack();
@@ -69,13 +74,13 @@ public class RoundTripQualityFixtureTest {
    * Forced GREEDY/ISO_GREEDY bypass the competition but still run through the
    * shared finalize path; the result must record the standard info line (not be
    * left with only the planner's internal note), proving the adopted track is
-   * fully finalized.
+   * fully finalized — and must not carry an AUTO summary.
    */
   @Test
   public void forcedGreedyVariantsAreFullyFinalized() {
     for (RoundTripAlgorithm algo : new RoundTripAlgorithm[]{
         RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY}) {
-      RoutingEngine re = RoundTripFixture.engine("trekking", EAST, RADIUS,
+      RoutingEngine re = RoundTripFixture.engine(PROFILE, EAST, RADIUS,
         rc -> rc.roundTripAlgorithm = algo);
       Assert.assertNull(algo + " completed: " + re.getErrorMessage(), re.getErrorMessage());
       OsmTrack track = re.getFoundTrack();
@@ -87,18 +92,54 @@ public class RoundTripQualityFixtureTest {
     }
   }
 
-  private void assertCleanLoop(RoundTripAlgorithm algo) {
-    RoutingEngine re = RoundTripFixture.engine("trekking", EAST, RADIUS,
-      rc -> rc.roundTripAlgorithm = algo);
-    Assert.assertNull(algo + " completed: " + re.getErrorMessage(), re.getErrorMessage());
-    OsmTrack track = re.getFoundTrack();
-    Assert.assertNotNull(algo + ": fixture should form an eastward loop", track);
+  /**
+   * Profile policy: a paved-only road-bike profile must reject the fixture's
+   * unpaved path/track terrain through the quality gate — a clear error and no
+   * degenerate track, never a silently-bad loop on hostile ways.
+   */
+  @Test
+  public void pavedOnlyProfileRejectsHostileFixtureCleanly() {
+    RoutingEngine re = RoundTripFixture.engine("fastbike", EAST, RADIUS,
+      rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.AUTO);
+    Assert.assertNotNull("paved-only profile must fail on the unpaved fixture",
+      re.getErrorMessage());
+    Assert.assertNull("a rejected route must not return a track", re.getFoundTrack());
+    Assert.assertTrue("error should explain the rejection: " + re.getErrorMessage(),
+      re.getErrorMessage().contains("rejected") || re.getErrorMessage().contains("hostile")
+        || re.getErrorMessage().contains("no acceptable route"));
+  }
 
-    RoundTripFixture.assertValidLoop(track, algo + "_dir90_r" + RADIUS, MAX_REUSE_PCT);
+  /** A larger search radius must yield a longer loop (the radius is honoured). */
+  @Test
+  public void largerRadiusYieldsLongerLoop() {
+    OsmTrack small = loop(RoundTripAlgorithm.AUTO, EAST, 800);
+    OsmTrack large = loop(RoundTripAlgorithm.AUTO, EAST, 1500);
+    Assert.assertNotNull("r800 loop", small);
+    Assert.assertNotNull("r1500 loop", large);
+    Assert.assertTrue("r1500 loop (" + large.distance + "m) must be clearly longer than r800 ("
+        + small.distance + "m)", large.distance > small.distance * 1.2);
+  }
+
+  // -------------------------------------------------------------------------
+
+  private void assertCleanLoop(RoundTripAlgorithm algo, int dir) {
+    String label = algo + "_dir" + dir + "_r" + RADIUS;
+    RoutingEngine re = RoundTripFixture.engine(PROFILE, dir, RADIUS,
+      rc -> rc.roundTripAlgorithm = algo);
+    Assert.assertNull(label + " completed: " + re.getErrorMessage(), re.getErrorMessage());
+    OsmTrack track = re.getFoundTrack();
+    Assert.assertNotNull(label + ": fixture should form a small loop", track);
+
+    RoundTripFixture.assertValidLoop(track, label, MAX_REUSE_PCT);
 
     int selfCrossings = RoundTripFixture.countSelfCrossings(track);
-    Assert.assertTrue(algo + ": loop must be geometrically clean — self-crossings "
+    Assert.assertTrue(label + ": loop must be geometrically clean — self-crossings "
         + selfCrossings + " > " + MAX_SELF_CROSSINGS,
       selfCrossings <= MAX_SELF_CROSSINGS);
+  }
+
+  private OsmTrack loop(RoundTripAlgorithm algo, int dir, int radius) {
+    return RoundTripFixture.engine(PROFILE, dir, radius,
+      rc -> rc.roundTripAlgorithm = algo).getFoundTrack();
   }
 }

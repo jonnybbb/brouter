@@ -17,17 +17,21 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /**
- * Real Dreieich round-trip tests for the <em>output</em> pipeline — the
+ * Real Dreieich <em>small-loop</em> tests for the output pipeline — the
  * formatters ({@link FormatGpx}/{@link FormatJson}/{@link FormatKml}) and the
  * engine's file-write path ({@code writeAdoptedTrackOutput}).
  *
  * <p>They run against the bundled fixture segment used by {@link RoundTripFixture}
  * (the build-generated Dreieich {@code E5_N50.rd5}), so they execute in CI
- * instead of being skipped — the "not ignored, Dreieich mini round-trip" test
- * afischerdev asked for on PR&nbsp;#903.
+ * instead of being skipped — the "not ignored, Dreieich mini round-trip" tests
+ * afischerdev asked for on PR&nbsp;#903. The fixture is a tiny tile, so the loops
+ * are deliberately small ({@value #RADIUS} m search radius); the {@code gravel}
+ * profile forms a clean loop in every compass direction on it (verified across
+ * the algorithm/direction/radius matrix), which keeps these tests reliable
+ * rather than direction-fragile.
  *
- * <p><b>Regression guarded.</b> The AUTO candidate competition (and the forced
- * GREEDY/ISO_GREEDY paths) adopt a track assembled from merged greedy legs via
+ * <p><b>Regression guarded.</b> The AUTO competition and the forced
+ * GREEDY/ISO_GREEDY paths adopt a track assembled from merged greedy legs via
  * {@code new OsmTrack()}. Plain point-to-point routes get their
  * {@code messageList} populated in {@code doRouting}; the merged round-trip
  * track did not, so it reached {@link FormatGpx} with {@code messageList == null}
@@ -37,9 +41,9 @@ import org.junit.rules.TemporaryFolder;
  * GPX-only and the pre-existing round-trip tests (which only inspect the track
  * object, never format it) missed it entirely.
  *
- * <p>Pre-fix, {@link #autoRoundTripGpxExportDoesNotThrow} and
- * {@link #mergedRoundTripsExportGpxWithoutNpe} fail on this exact fixture;
- * post-fix they pass. The root-cause fix populates {@code messageList} in
+ * <p>Pre-fix, the GPX tests below fail on this exact fixture (verified by
+ * reverting the fix at any of these small radii); post-fix they pass. The
+ * root-cause fix populates {@code messageList} in
  * {@code finalizeAdoptedRoundTripTrack} ({@code ensureInfoMessage}); the
  * formatters were additionally hardened to tolerate a null/empty list.
  */
@@ -48,72 +52,74 @@ public class RoundTripOutputFormatTest {
   @Rule
   public TemporaryFolder outputDir = new TemporaryFolder();
 
-  /**
-   * The greedy-merge competition reliably kicks in at this radius for the
-   * Dreieich fixture: a 2&nbsp;km loop to the east is large enough that AUTO
-   * adopts a merged greedy track (the path that produced the null
-   * {@code messageList}) rather than a {@code messageList}-carrying p2p
-   * candidate. Verified empirically against the bundled segment.
-   */
-  private static final int MERGE_RADIUS = 2000;
+  /** gravel forms a clean loop in every direction on the fixture (matrix-verified). */
+  private static final String PROFILE = "gravel";
+  /** Small loop: the fixture is a ~3 km tile, so keep the search radius tiny. */
+  private static final int RADIUS = 1000;
+  private static final int[] DIRECTIONS = {0, 90, 180, 270};
   private static final int EAST = 90;
 
   // -------------------------------------------------------------------------
-  // The regression guards: an AUTO / greedy round trip must export GPX.
+  // The regression guards: AUTO / greedy small loops must export GPX in every
+  // direction (the merged-track path that had a null messageList).
   // -------------------------------------------------------------------------
 
   @Test
-  public void autoRoundTripGpxExportDoesNotThrow() {
-    Result r = route(RoundTripAlgorithm.AUTO, EAST, MERGE_RADIUS, "trekking", 2);
-    assertProduced(r, "AUTO");
-    assertMessageList(r.track, "AUTO");
+  public void autoSmallLoopGpxExportDoesNotThrow() {
+    for (int dir : DIRECTIONS) {
+      Result r = route(RoundTripAlgorithm.AUTO, dir, RADIUS, PROFILE, 2);
+      String label = "AUTO dir=" + dir;
+      assertProduced(r, label);
+      assertMessageList(r.track, label);
 
-    // Format through the same context the engine routed with — exactly the
-    // call that threw before the fix.
-    String gpx = new FormatGpx(r.rc).format(r.track);
-    assertWellFormedGpx(gpx, "AUTO");
-    // The info line the fix attaches must reach the GPX verbatim.
-    Assert.assertTrue("AUTO GPX must embed the info message: " + r.track.messageList.get(0),
-      gpx.contains(r.track.messageList.get(0)));
-    Assert.assertTrue("AUTO round trip (timode=2) must carry turn instructions",
-      r.track.voiceHints != null && !r.track.voiceHints.list.isEmpty());
+      String gpx = new FormatGpx(r.rc).format(r.track);
+      assertWellFormedGpx(gpx, label);
+      // The info line the fix attaches must reach the GPX verbatim.
+      Assert.assertTrue(label + ": GPX must embed the info message: " + r.track.messageList.get(0),
+        gpx.contains(r.track.messageList.get(0)));
+      Assert.assertTrue(label + ": small loop (timode=2) must carry turn instructions",
+        r.track.voiceHints != null && !r.track.voiceHints.list.isEmpty());
+    }
   }
 
   @Test
-  public void mergedRoundTripsExportGpxWithoutNpe() {
-    // GREEDY and ISO_GREEDY both adopt a merged greedy track — the exact
-    // shape whose messageList was null. Exercise both directly.
+  public void mergedSmallLoopsExportGpxWithoutNpe() {
+    // GREEDY and ISO_GREEDY always adopt a merged greedy track — the exact
+    // shape whose messageList was null. Cover both, in every direction.
     for (RoundTripAlgorithm algo : new RoundTripAlgorithm[]{
         RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY}) {
-      Result r = route(algo, EAST, MERGE_RADIUS, "trekking", 4);
-      assertProduced(r, algo.name());
-      assertMessageList(r.track, algo.name());
-      assertWellFormedGpx(new FormatGpx(r.rc).format(r.track), algo.name());
+      for (int dir : DIRECTIONS) {
+        Result r = route(algo, dir, RADIUS, PROFILE, 4);
+        String label = algo + " dir=" + dir;
+        assertProduced(r, label);
+        assertMessageList(r.track, label);
+        assertWellFormedGpx(new FormatGpx(r.rc).format(r.track), label);
+      }
     }
   }
 
   // -------------------------------------------------------------------------
   // Full-matrix coverage: every output format and every turn-instruction mode
-  // must export a merged round trip without throwing.
+  // must export a merged small loop without throwing.
   // -------------------------------------------------------------------------
 
   @Test
   public void gpxExportCoversAllTurnInstructionModes() {
     // timode 9 (BRouter style) reads messageList.get(0) for <brouter:info>;
     // every other mode iterates the whole messageList for the comment header.
-    // Both reads NPE'd pre-fix, so cover the representative spread.
+    // Both reads NPE'd pre-fix. ISO_GREEDY guarantees the merged-track path.
     for (int timode : new int[]{0, 2, 3, 4, 5, 6, 7, 9}) {
-      Result r = route(RoundTripAlgorithm.AUTO, EAST, MERGE_RADIUS, "trekking", timode);
-      assertProduced(r, "AUTO timode=" + timode);
-      assertMessageList(r.track, "AUTO timode=" + timode);
-      String gpx = new FormatGpx(r.rc).format(r.track);
-      assertWellFormedGpx(gpx, "AUTO timode=" + timode);
+      Result r = route(RoundTripAlgorithm.ISO_GREEDY, EAST, RADIUS, PROFILE, timode);
+      String label = "ISO_GREEDY timode=" + timode;
+      assertProduced(r, label);
+      assertMessageList(r.track, label);
+      assertWellFormedGpx(new FormatGpx(r.rc).format(r.track), label);
     }
   }
 
   @Test
-  public void roundTripExportsGpxJsonAndKml() {
-    Result r = route(RoundTripAlgorithm.AUTO, EAST, MERGE_RADIUS, "trekking", 2);
+  public void smallLoopExportsGpxJsonAndKml() {
+    Result r = route(RoundTripAlgorithm.AUTO, EAST, RADIUS, PROFILE, 2);
     assertProduced(r, "AUTO");
 
     String gpx = new FormatGpx(r.rc).format(r.track);
@@ -128,14 +134,14 @@ public class RoundTripOutputFormatTest {
   // -------------------------------------------------------------------------
   // The engine's own write path (the actual production scenario afischerdev
   // ran): outfileBase set, the parent engine formats + writes the adopted
-  // winner to a .gpx file. Must produce a parseable file, not log
+  // winner to a file. Must produce a parseable file, not log
   // "AUTO: failed to write adopted track: NullPointerException".
   // -------------------------------------------------------------------------
 
   @Test
-  public void engineWritesParseableGpxFileForAutoRoundTrip() throws Exception {
+  public void engineWritesParseableGpxFileForSmallLoop() throws Exception {
     String base = new File(outputDir.getRoot(), "auto").getAbsolutePath();
-    Result r = route(RoundTripAlgorithm.AUTO, EAST, MERGE_RADIUS, "trekking", 2, "gpx", base);
+    Result r = route(RoundTripAlgorithm.AUTO, EAST, RADIUS, PROFILE, 2, "gpx", base);
     Assert.assertNull("engine reported an error: " + r.engine.getErrorMessage(),
       r.engine.getErrorMessage());
     Assert.assertNotNull("engine produced a track", r.track);
@@ -149,9 +155,9 @@ public class RoundTripOutputFormatTest {
   }
 
   @Test
-  public void engineWritesCsvFileForAutoRoundTrip() {
+  public void engineWritesCsvFileForSmallLoop() {
     String base = new File(outputDir.getRoot(), "autocsv").getAbsolutePath();
-    Result r = route(RoundTripAlgorithm.AUTO, EAST, MERGE_RADIUS, "trekking", 0, "csv", base);
+    Result r = route(RoundTripAlgorithm.AUTO, EAST, RADIUS, PROFILE, 0, "csv", base);
     Assert.assertNull("engine reported an error: " + r.engine.getErrorMessage(),
       r.engine.getErrorMessage());
     Assert.assertNotNull("engine produced a track", r.track);
@@ -168,8 +174,8 @@ public class RoundTripOutputFormatTest {
   // -------------------------------------------------------------------------
 
   @Test
-  public void roundTripWithExportWaypointsStaysWellFormed() {
-    Result r = route(RoundTripAlgorithm.AUTO, EAST, MERGE_RADIUS, "trekking", 2, null, null, rc -> {
+  public void smallLoopWithExportWaypointsStaysWellFormed() {
+    Result r = route(RoundTripAlgorithm.AUTO, EAST, RADIUS, PROFILE, 2, null, null, rc -> {
       rc.exportWaypoints = true;
       rc.exportCorrectedWaypoints = true;
     });
@@ -180,21 +186,21 @@ public class RoundTripOutputFormatTest {
   }
 
   // -------------------------------------------------------------------------
-  // Voice-hint regression, now in CI: greedy-merged round trips drop their
-  // leg detour metadata unless the detoured merge carries it forward, which
-  // would leave processVoiceHints with nothing to emit. The earlier guard for
-  // this (greedyRoundTripEmitsVoiceHints) is segments-gated and skipped in CI;
-  // this one runs on the bundled fixture.
+  // Voice-hint regression, now in CI: greedy-merged round trips drop their leg
+  // detour metadata unless the detoured merge carries it forward, which would
+  // leave processVoiceHints with nothing to emit. The earlier guard for this
+  // (greedyRoundTripEmitsVoiceHints) is segments-gated and skipped in CI; this
+  // one runs on the bundled fixture.
   // -------------------------------------------------------------------------
 
   @Test
-  public void mergedRoundTripsEmitVoiceHints() {
+  public void mergedSmallLoopsEmitVoiceHints() {
     for (RoundTripAlgorithm algo : new RoundTripAlgorithm[]{
         RoundTripAlgorithm.AUTO, RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY}) {
-      Result r = route(algo, EAST, MERGE_RADIUS, "trekking", 4);
+      Result r = route(algo, EAST, RADIUS, PROFILE, 4);
       assertProduced(r, algo.name());
       Assert.assertNotNull(algo + " track must carry a voice-hint list", r.track.voiceHints);
-      Assert.assertFalse(algo + " round trip (timode=4) must emit voice hints",
+      Assert.assertFalse(algo + " small loop (timode=4) must emit voice hints",
         r.track.voiceHints.list.isEmpty());
     }
   }
@@ -249,10 +255,10 @@ public class RoundTripOutputFormatTest {
   }
 
   /**
-   * The fixture reliably routes these AUTO/greedy loops to the east at
-   * {@link #MERGE_RADIUS}; if a future fixture change stops producing them the
-   * test should fail loudly (it is meant to run, not be skipped), so this
-   * asserts rather than {@code Assume}s.
+   * gravel reliably routes these small loops in every direction on the fixture;
+   * if a future fixture change stops producing one the test should fail loudly
+   * (it is meant to run, not be skipped), so this asserts rather than
+   * {@code Assume}s.
    */
   private static void assertProduced(Result r, String label) {
     Assert.assertNull(label + ": engine error — " + r.engine.getErrorMessage(),
