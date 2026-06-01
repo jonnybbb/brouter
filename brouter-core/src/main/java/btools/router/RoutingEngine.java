@@ -683,13 +683,16 @@ public class RoutingEngine extends Thread {
         logInfo("round trip: explicit-via mode (" + (waypoints.size() - 1) + " user via points)");
         doExplicitViaRoundTrip(searchRadius, direction);
       } else {
-        // Resolve effective algorithm
-        RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
-        // roundTripIsochrone is a boolean shortcut for setting algorithm to ISOCHRONE;
-        // honour it only when no explicit algorithm was chosen.
-        if (algo == RoundTripAlgorithm.AUTO && routingContext.roundTripIsochrone) {
-          algo = RoundTripAlgorithm.ISOCHRONE;
+        // Resolve the roundTripIsochrone shortcut into the canonical
+        // roundTripAlgorithm ONCE, so the algorithm is the single source of
+        // truth from here down and the boolean never has to propagate to child
+        // contexts. Honoured only when no explicit algorithm was chosen — an
+        // explicit algorithm always wins.
+        if (routingContext.roundTripAlgorithm == RoundTripAlgorithm.AUTO
+            && routingContext.roundTripIsochrone) {
+          routingContext.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
         }
+        RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
 
         // AUTO candidate competition.
         //
