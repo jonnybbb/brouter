@@ -47,8 +47,13 @@ public enum LoopTestRegion {
   ALPINE_INNSBRUCK(11.400, 47.260, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),
   COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike")),           // gravel: coastal area is mostly paved tourist roads
-  RURAL_LOZERE(3.500, 44.500, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")), // gravel rides the hills above Nice (Aspremont,
+                                     // Tourrette-Levens); loops verified accepted from this start
+  // Start near Rieutort-de-Randon (paved-road country) rather than the original
+  // (3.500, 44.500) on the Causse de Mende plateau, which is ~77% highway=track:
+  // no paved road-bike loop closes there at any size, so fastbike never formed a
+  // loop. fastbike + gravel both loop cleanly from here (real komoot route start).
+  RURAL_LOZERE(3.43980, 44.65161, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),
   // Mallorca: island geometry forces a different loop-quality regime than
   // mainland regions. The Serra de Tramuntana climbs in the NW, the coast
