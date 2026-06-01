@@ -37,7 +37,6 @@ public class LoopPerfBenchmarkTest {
 
   @Test
   public void benchmark() throws Exception {
-    Assume.assumeTrue(Boolean.getBoolean("golden.tests"));
     File projectDir = new File(".").getCanonicalFile().getParentFile();
     File segDir = new File(projectDir, "segments4");
     Assume.assumeTrue("segments4 missing", segDir.isDirectory());

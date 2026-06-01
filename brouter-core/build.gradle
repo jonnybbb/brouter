@@ -9,5 +9,59 @@ dependencies {
     implementation project(':brouter-codec')
 }
 
-// MapcreatorTest generates segments which are used in tests
+// MapcreatorTest generates the bundled Dreieich fixture used by the fast
+// round-trip tests in src/test.
 test.dependsOn ':brouter-map-creator:test'
+
+// --- Integration tests -----------------------------------------------------
+// Slow, real-segment round-trip suites (loop-quality matrix, golden signatures,
+// real-geography regression tests) live in src/integrationTest and run only via
+// `./gradlew integrationTest`. This keeps `./gradlew test` fast and free of the
+// Assume-skip noise those suites used to produce, and gives a single explicit
+// entry point instead of -Dloop.tests/-Dgolden.tests opt-in flags.
+sourceSets {
+    integrationTest {
+        java.srcDir 'src/integrationTest/java'
+        resources.srcDir 'src/integrationTest/resources'
+        // Reuse the production classes and the shared test helpers (RoundTripFixture,
+        // etc.) from src/test rather than duplicating them.
+        compileClasspath += sourceSets.main.output + sourceSets.test.output
+        runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs the slow real-segment round-trip suites (downloads segment tiles on demand).'
+    group = 'verification'
+    useJUnit()
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter test
+    // Real tiles are downloaded on demand by LoopTestSegments; the bundled
+    // fixture is also available for suites that use it.
+    dependsOn ':brouter-map-creator:test'
+
+    // The loop-quality matrix accumulates 1000+ route coordinate sets and writes
+    // an HTML report in @AfterClass; the default heap OOMs, so give it headroom.
+    maxHeapSize = '8g'
+
+    // Segment handling: fetch missing neighbour tiles, reuse already-present ones
+    // without a freshness re-fetch. Override per-run with -Dloop.segments.*.
+    systemProperty 'loop.segments.noupdate', System.getProperty('loop.segments.noupdate', 'true')
+    systemProperty 'loop.segments.nodownload', System.getProperty('loop.segments.nodownload', 'false')
+    // Optional filters / golden recapture (no opt-in flag needed — the task IS the gate).
+    systemProperty 'loop.profiles', System.getProperty('loop.profiles', '')
+    systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
+    systemProperty 'golden.write', System.getProperty('golden.write', 'false')
+    systemProperty 'greedy.diagnostic', System.getProperty('greedy.diagnostic', 'false')
+
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'short'
+    }
+}

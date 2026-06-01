@@ -20,27 +20,11 @@ compileJava {
 }
 
 test {
-    // Forward opt-in flags to the test JVM. The loop-quality suites
-    // (LoopQualityTest, LoopGoldStandardTest) require downloaded segment data and
-    // are gated behind -Dloop.tests=true, so they self-skip in the standard build
-    // but stay runnable on demand via Gradle.
-    systemProperty 'loop.tests', System.getProperty('loop.tests', 'false')
-    systemProperty 'loop.profiles', System.getProperty('loop.profiles', '')
-    systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
+    // Fast unit + bundled-fixture tests only. The slow real-segment suites moved
+    // to brouter-core's src/integrationTest (run via `./gradlew integrationTest`),
+    // so the loop.tests/golden.tests/via.measure opt-in flags and the 8g heap that
+    // used to live here now belong to that task.
     systemProperty 'greedy.diagnostic', System.getProperty('greedy.diagnostic', 'false')
-    // Golden route-signature regression gate (LoopGoldenSignatureTest). Opt-in
-    // like the loop-quality suites; -Dgolden.write=true recaptures the baseline.
-    systemProperty 'golden.tests', System.getProperty('golden.tests', 'false')
-    systemProperty 'golden.write', System.getProperty('golden.write', 'false')
-    // The loop-quality matrix accumulates 1000+ route coordinate sets per
-    // opt-in run; the default 512m heap OOMs during the @AfterClass HTML
-    // report write. Bump only when loop.tests is on so standard CI stays light.
-    // The 8g headroom is generous given coordinate subsampling already caps
-    // per-route storage in LoopQualityTest.MAX_REPORT_COORDS — better one big
-    // heap than restarting a 35-min run mid-flight.
-    if (Boolean.getBoolean('loop.tests')) {
-        maxHeapSize = '8g'
-    }
 }
 
 pmd {

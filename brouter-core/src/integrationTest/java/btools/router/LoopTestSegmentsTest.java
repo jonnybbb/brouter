@@ -8,7 +8,6 @@ import java.io.File;
 import java.nio.file.Files;
 import java.util.Set;
 
-import org.junit.Assume;
 import org.junit.Test;
 
 /**
@@ -78,8 +77,6 @@ public class LoopTestSegmentsTest {
 
   @Test
   public void fetchDownloadsMissingTile() throws Exception {
-    Assume.assumeTrue("network download is opt-in — run with -Dloop.tests=true",
-      Boolean.getBoolean("loop.tests"));
     File tmp = Files.createTempDirectory("seg-fetch-test").toFile();
     tmp.deleteOnExit();
     String smallest = "E0_N35.rd5"; // ~16 MB, the lightest test tile

@@ -25,9 +25,6 @@ public class RoundTripWeakCellRegressionTest {
 
   @Before
   public void setUp() throws Exception {
-    Assume.assumeTrue(
-      "Weak-cell regression tests are opt-in — run with -Dloop.tests=true",
-      Boolean.getBoolean("loop.tests"));
     projectDir = new File(".").getCanonicalFile().getParentFile();
   }
 

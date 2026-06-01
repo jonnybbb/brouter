@@ -70,9 +70,6 @@ public class LoopGoldenSignatureTest {
 
   @Test
   public void signaturesMatchGolden() throws Exception {
-    Assume.assumeTrue(
-      "Golden signature suite is opt-in — run with -Dgolden.tests=true",
-      Boolean.getBoolean("golden.tests"));
 
     File moduleDir = new File(".").getCanonicalFile();
     File projectDir = moduleDir.getParentFile();

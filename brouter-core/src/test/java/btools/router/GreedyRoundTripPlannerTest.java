@@ -1,11 +1,9 @@
 package btools.router;
 
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,31 +13,18 @@ import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmNode;
 
 /**
- * Integration tests for the greedy sub-route round-trip planner.
- * Tests require segment data in brouter-core/src/test/resources/test-data/segments/
- * and are skipped if data is absent.
+ * Fast unit tests for the greedy sub-route round-trip planner. These exercise
+ * pure helpers (scoring, sort, param parsing, fallback selection, the quality
+ * gate delegation) against bundled fixtures and never touch real segment data.
+ * The slow, segment-gated end-to-end tests live in {@code GreedyRoundTripPlannerIT}.
  */
 public class GreedyRoundTripPlannerTest {
 
-  private File segmentDir;
-  private File profileDir;
-
   @Before
   public void setup() {
-    segmentDir = new File("src/test/resources/test-data/segments");
-    profileDir = new File("misc/profiles2");
-    if (!profileDir.exists()) {
-      profileDir = new File("../misc/profiles2");
-    }
     // Classification now comes from the cost-model probe (PavedProfileProbeTest),
     // not the profile name; seed "fastbike" as paved for the gate-delegation case.
     RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
-  }
-
-  private boolean hasSegmentData() {
-    return segmentDir.exists() && segmentDir.isDirectory()
-      && segmentDir.listFiles() != null
-      && segmentDir.listFiles().length > 0;
   }
 
   @Test
@@ -374,76 +359,6 @@ public class GreedyRoundTripPlannerTest {
     // (can't invoke plan() without segments, but constructors should succeed)
     Assert.assertNotNull(new CandidateScorer());
     Assert.assertNotNull(new CandidateScorer(1.0, 2.0, 0.5, 3.0, 1.5));
-  }
-
-  @Test
-  public void greedyRoundTripWithSegments() {
-    Assume.assumeTrue("Segment data required", hasSegmentData());
-
-    // Basel area: 47.5581, 7.5878
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((7.5878 + 180) * 1e6);
-    start.ilat = (int) ((47.5581 + 90) * 1e6);
-    start.name = "start";
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx.roundTripDistance = 8000; // ~50km loop
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
-
-    List<OsmNodeNamed> waypoints = new ArrayList<>();
-    waypoints.add(start);
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, waypoints, rctx, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(300000);
-
-    Assert.assertNull("No error expected", re.errorMessage);
-    Assert.assertNotNull("Track should be produced", re.foundTrack);
-    Assert.assertTrue("Track should have distance > 0", re.foundTrack.distance > 0);
-  }
-
-  @Test
-  public void deterministic() {
-    Assume.assumeTrue("Segment data required", hasSegmentData());
-
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((7.5878 + 180) * 1e6);
-    start.ilat = (int) ((47.5581 + 90) * 1e6);
-    start.name = "start";
-
-    RoutingContext rctx1 = new RoutingContext();
-    rctx1.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx1.roundTripDistance = 5000;
-    rctx1.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
-    rctx1.startDirection = 90; // East
-
-    List<OsmNodeNamed> wp1 = new ArrayList<>();
-    wp1.add(start);
-    RoutingEngine re1 = new RoutingEngine(null, null, segmentDir, wp1, rctx1, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re1.quite = true;
-    re1.doRun(300000);
-
-    RoutingContext rctx2 = new RoutingContext();
-    rctx2.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx2.roundTripDistance = 5000;
-    rctx2.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
-    rctx2.startDirection = 90;
-
-    OsmNodeNamed start2 = new OsmNodeNamed();
-    start2.ilon = start.ilon;
-    start2.ilat = start.ilat;
-    start2.name = "start";
-    List<OsmNodeNamed> wp2 = new ArrayList<>();
-    wp2.add(start2);
-    RoutingEngine re2 = new RoutingEngine(null, null, segmentDir, wp2, rctx2, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re2.quite = true;
-    re2.doRun(300000);
-
-    if (re1.foundTrack != null && re2.foundTrack != null) {
-      Assert.assertEquals("Deterministic: same distance",
-        re1.foundTrack.distance, re2.foundTrack.distance);
-    }
   }
 
   // ---- Boundary-proximity weighting for back-and-forth penalty ----
