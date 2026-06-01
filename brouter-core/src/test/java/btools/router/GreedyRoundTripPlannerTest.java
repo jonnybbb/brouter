@@ -31,6 +31,9 @@ public class GreedyRoundTripPlannerTest {
     if (!profileDir.exists()) {
       profileDir = new File("../misc/profiles2");
     }
+    // Classification now comes from the cost-model probe (PavedProfileProbeTest),
+    // not the profile name; seed "fastbike" as paved for the gate-delegation case.
+    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
   }
 
   private boolean hasSegmentData() {

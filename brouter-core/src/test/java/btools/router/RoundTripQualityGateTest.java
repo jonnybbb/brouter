@@ -2,6 +2,7 @@ package btools.router;
 
 import java.util.ArrayList;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import btools.mapaccess.MatchedWaypoint;
@@ -17,28 +18,33 @@ import static org.junit.Assert.assertTrue;
  * and rejects every hard-fail case named in the production-safety spec. */
 public class RoundTripQualityGateTest {
 
-  // ---- Algorithm aliases sanity (also covered by RoundTripAlgorithmTest) ----
+  /**
+   * Mark the profiles these gate tests use, since classification now comes from
+   * the cost-model probe (see {@link PavedProfileProbeTest}) rather than the
+   * profile name. The hostile-surface checks read this via
+   * {@link RoundTripQualityGate#isPavedProfile}.
+   */
+  @Before
+  public void seedPavedClassification() {
+    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
+    RoundTripQualityGate.putPavedClassificationForTest("gravel", false);
+    RoundTripQualityGate.putPavedClassificationForTest("mtb", false);
+  }
+
+  // ---- Classification is memoised, name-independent --------------------------
 
   @Test
-  public void pavedProfileRecognition() {
-    assertTrue(RoundTripQualityGate.isPavedProfile("fastbike"));
-    assertTrue(RoundTripQualityGate.isPavedProfile("road"));
-    assertTrue(RoundTripQualityGate.isPavedProfile("racing"));
-    assertFalse(RoundTripQualityGate.isPavedProfile("gravel"));
-    assertFalse(RoundTripQualityGate.isPavedProfile("mtb"));
-    assertFalse(RoundTripQualityGate.isPavedProfile("trekking"));
+  public void pavedClassificationIsMemoisedAndNameIndependent() {
+    RoundTripQualityGate.putPavedClassificationForTest("seed-paved", true);
+    RoundTripQualityGate.putPavedClassificationForTest("seed-unpaved", false);
+    assertTrue(RoundTripQualityGate.isPavedProfile("seed-paved"));
+    assertFalse(RoundTripQualityGate.isPavedProfile("seed-unpaved"));
+
+    // No name-based guessing any more: an unclassified profile is treated as
+    // not-paved even when its name contains "fastbike" / "road" tokens. Real
+    // classification comes from the cost-model probe (PavedProfileProbeTest).
+    assertFalse(RoundTripQualityGate.isPavedProfile("unclassified-fastbike-road"));
     assertFalse(RoundTripQualityGate.isPavedProfile(null));
-
-    // Paved-profile families must still match as whole tokens regardless of
-    // case or "-"/"_" decoration (the standard upstream variants).
-    assertTrue(RoundTripQualityGate.isPavedProfile("Fastbike-lowtraffic"));
-    assertTrue(RoundTripQualityGate.isPavedProfile("road-cycling"));
-
-    // Regression: "smallroads" CONTAINS the substring "road" but is a trekking
-    // profile — a plain contains("road") wrongly applied the road-bike hostile
-    // gate to it, rejecting the paths/tracks the profile exists to use.
-    assertFalse(RoundTripQualityGate.isPavedProfile("Trekking-SmallRoads"));
-    assertFalse(RoundTripQualityGate.isPavedProfile("trekking-smallroads"));
   }
 
   // ---- Happy path ---------------------------------------------------------

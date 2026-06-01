@@ -646,6 +646,10 @@ public class RoutingEngine extends Thread {
       long startTime = System.currentTimeMillis();
 
       routingContext.useDynamicDistance = true;
+      // Classify the profile's surface policy once, from its cost model (not its
+      // name), so the quality gate and planner hostility checks use a consistent,
+      // name-independent verdict for the rest of this request.
+      RoundTripQualityGate.classifyPavedProfile(routingContext.expctxWay, routingContext.getProfileName());
       double searchRadius;
       if (routingContext.roundTripLength != null) {
         // roundTripLength is the desired total loop distance — convert to internal search radius.
