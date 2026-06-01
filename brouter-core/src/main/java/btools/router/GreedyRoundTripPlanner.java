@@ -760,12 +760,6 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Returns {@code null} if {@code track} meets quality bars (distance ratio,
-   * reuse, closure); otherwise returns a short human-readable reason. Used to
-   * tag fallback / forced-closure results so the caller can choose to demote
-   * them rather than ship as success.
-   */
-  /**
    * Delegate the planner's internal fallback-quality check to the
    * production gate ({@link RoundTripQualityGate#evaluate}). Pre-Phase 1.5
    * this used independent {@code FALLBACK_MIN_RATIO} / {@code FALLBACK_MAX_RATIO}
@@ -933,6 +927,12 @@ public class GreedyRoundTripPlanner {
       engine.maxRunningTime = budget;
       return engine.findTrack(name, from, to, null, refTrack, false);
     } catch (IllegalArgumentException | RoutingIslandException e) {
+      // A watchdog kill surfaces as IllegalArgumentException; propagate it so
+      // plan() aborts immediately instead of burning the remaining attempts
+      // re-throwing-and-swallowing the same kill on every subsequent leg.
+      if (engine.isTerminated()) {
+        throw e;
+      }
       // Treat an islanded / unroutable leg as "no track for this leg" (same as
       // retrackForDetail does) so the planner falls back to its best-so-far loop
       // instead of letting the exception abort plan() and discard all telemetry.

@@ -107,7 +107,12 @@ public class FormatGpx extends Formatter {
         first.append("    <offset>0</offset>\n  </extensions>\n </rtept>\n");
       }
       if (turnInstructionMode == 8) {
-        if (t.matchedWaypoints.get(0).wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && t.voiceHints.list.get(0).indexInTrack == 0) {
+        // Round-trip tracks can reach here with unpopulated matchedWaypoints /
+        // voiceHints (e.g. a finalized loop whose waypoints were never set);
+        // guard the get(0) derefs rather than NPE on the GPX export.
+        if (t.matchedWaypoints != null && !t.matchedWaypoints.isEmpty()
+            && t.voiceHints != null && !t.voiceHints.list.isEmpty()
+            && t.matchedWaypoints.get(0).wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && t.voiceHints.list.get(0).indexInTrack == 0) {
           // has a voice hint do nothing, voice hint will do
         } else {
           sb.append(first.toString());

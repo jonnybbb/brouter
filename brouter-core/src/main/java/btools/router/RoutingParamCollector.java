@@ -221,6 +221,12 @@ public class RoutingParamCollector {
         } else if (key.equals("roundTripPoints")) {
           rctx.roundTripPoints = parseIntParamOrNull(key, value);
           if (rctx.roundTripPoints == null || rctx.roundTripPoints < 3 || rctx.roundTripPoints > 20) {
+            // parseIntParamOrNull already logs non-integer input; log the
+            // out-of-range case too so a silently-ignored value is visible.
+            if (rctx.roundTripPoints != null) {
+              System.err.println("ignoring out-of-range parameter roundTripPoints=" + value
+                + " (valid range [3,20]); using default 5");
+            }
             rctx.roundTripPoints = 5;
           }
         } else if (key.equals("allowSamewayback")) {

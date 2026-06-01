@@ -163,8 +163,15 @@ public class RoutingEngine extends Thread {
 
   private OsmPathElement matchPath;
 
-  long startTime;
-  long maxRunningTime;
+  // Read by the watchdog thread (via terminate()/timeout arithmetic) while the
+  // planner thread save/restores them in timedFindTrack — volatile makes the
+  // 64-bit reads/writes atomic and visible across threads.
+  volatile long startTime;
+  volatile long maxRunningTime;
+  // Cached once at class load (mirrors GreedyRoundTripPlanner's DIAGNOSTIC flag);
+  // -Dgreedy.diagnostic=true enables per-request stderr diagnostics.
+  private static final boolean GREEDY_DIAGNOSTIC =
+    Boolean.parseBoolean(System.getProperty("greedy.diagnostic", "false"));
   // Wall-clock budget (ms) for the routing legs of a round trip, captured from
   // doRun() so the WAYPOINT/ISOCHRONE/greedy-fallthrough doRouting() calls are
   // bounded. 0 (the CLI default) keeps the legacy no-timeout behaviour.
@@ -778,7 +785,7 @@ public class RoutingEngine extends Thread {
       // Explicit-via mode treats the requested distance as advisory only —
       // the user-supplied skeleton defines the route, not the distance target.
       // The gate still enforces beeline / closure / profile-hostility checks.
-      if (Boolean.getBoolean("greedy.diagnostic") && RoundTripQualityGate.isPavedProfile(profileName)) {
+      if (GREEDY_DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
         System.err.printf("[greedy-diag] PRE-GATE foundTrack.distance=%d nodes=%d worstHost=%d%n",
           foundTrack.distance, foundTrack.nodes == null ? 0 : foundTrack.nodes.size(),
           RoundTripQualityGate.worstContiguousHostileMetersPaved(foundTrack));
@@ -1218,11 +1225,14 @@ public class RoutingEngine extends Thread {
       // never sets it); without this the back-and-forth removal silently skips
       // every waypoint and is a no-op. Indices are refreshed below after the
       // removals shift the node list.
+      // removeBackAndForthSegments / removeMicroDetours iterate mwps and would
+      // NPE on a null list (the spur-removal is a no-op without waypoints), so
+      // keep all three consumers under the same haveMwps guard.
       if (haveMwps) {
         assignMatchedWaypointIndexes(track, mwps);
+        removeBackAndForthSegments(track, mwps);
+        removeMicroDetours(track, 1500, mwps);
       }
-      removeBackAndForthSegments(track, mwps);
-      removeMicroDetours(track, 1500, mwps);
     }
     rebuildOriginChain(track);
     recalcTrack(track);
@@ -1612,7 +1622,7 @@ public class RoutingEngine extends Thread {
             matchedWaypoints = result.getMatchedWaypoints();
           }
           finalizeAdoptedRoundTripTrack(foundTrack, matchedWaypoints);
-          if (Boolean.getBoolean("greedy.diagnostic")) {
+          if (GREEDY_DIAGNOSTIC) {
             System.err.printf("[greedy-diag] bypass-OK plannerDist=%d nodes=%d matched=%d worstHost=%d%n",
               foundTrack.distance, foundTrack.nodes.size(),
               matchedWaypoints == null ? 0 : matchedWaypoints.size(),
@@ -2054,9 +2064,13 @@ public class RoutingEngine extends Thread {
       for (MatchedWaypoint mwp : group) {
         if (mwp.crosspoint == null) continue;
 
+        // node1/node2 are dereferenced just below for the road bearing; skip any
+        // match missing either endpoint rather than NPE.
+        if (mwp.node1 == null || mwp.node2 == null) continue;
+
         // Skip matches to ferry-like segments (very long edges between node1/node2).
         // Ferry routes have sparse nodes spanning several km over water; road edges are < 1km.
-        if (mwp.node1 != null && mwp.node2 != null && mwp.node1.calcDistance(mwp.node2) > 1500) {
+        if (mwp.node1.calcDistance(mwp.node2) > 1500) {
           continue;
         }
 
@@ -4097,11 +4111,11 @@ public class RoutingEngine extends Thread {
             seg = null;
           }
           if (seg == null) {
-            if (Boolean.getBoolean("greedy.diagnostic")) {
+            if (GREEDY_DIAGNOSTIC) {
               System.err.printf("[greedy-diag] leg %d: corridor failed, falling back to unconstrained%n", i);
             }
             seg = searchTrack(matchedWaypoints.get(i), matchedWaypoints.get(i + 1), null, effectiveRefTrack);
-          } else if (Boolean.getBoolean("greedy.diagnostic")) {
+          } else if (GREEDY_DIAGNOSTIC) {
             int legHost = RoundTripQualityGate.worstContiguousHostileMetersPaved(seg);
             int plannerHost = RoundTripQualityGate.worstContiguousHostileMetersPaved(legNearbyTrack);
             if (legHost != plannerHost) {
