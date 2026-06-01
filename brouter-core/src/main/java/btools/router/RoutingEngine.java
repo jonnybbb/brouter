@@ -163,9 +163,11 @@ public class RoutingEngine extends Thread {
 
   private OsmPathElement matchPath;
 
-  // Read by the watchdog thread (via terminate()/timeout arithmetic) while the
-  // planner thread save/restores them in timedFindTrack — volatile makes the
-  // 64-bit reads/writes atomic and visible across threads.
+  // Saved/restored across leg attempts by GreedyRoundTripPlanner.timedFindTrack
+  // and read by the _findTrack timeout arithmetic — all on the same worker
+  // thread (the cross-thread watchdog channel is the `terminated` flag, not
+  // these fields). volatile is defensive: it keeps the 64-bit reads/writes
+  // atomic should a watchdog ever read them, and is harmless otherwise.
   volatile long startTime;
   volatile long maxRunningTime;
   // Cached once at class load (mirrors GreedyRoundTripPlanner's DIAGNOSTIC flag);

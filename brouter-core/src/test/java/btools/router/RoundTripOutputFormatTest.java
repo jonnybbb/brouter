@@ -108,7 +108,10 @@ public class RoundTripOutputFormatTest {
     // timode 9 (BRouter style) reads messageList.get(0) for <brouter:info>;
     // every other mode iterates the whole messageList for the comment header.
     // Both reads NPE'd pre-fix. ISO_GREEDY guarantees the merged-track path.
-    for (int timode : new int[]{0, 2, 3, 4, 5, 6, 7, 9}) {
+    // Cover every turn-instruction mode, including 8 (cruiser) whose <rte> block
+    // dereferences t.matchedWaypoints.get(0) / t.voiceHints.list.get(0) — a merged
+    // round-trip track must export it without NPE.
+    for (int timode : new int[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) {
       Result r = route(RoundTripAlgorithm.ISO_GREEDY, EAST, RADIUS, PROFILE, timode);
       String label = "ISO_GREEDY timode=" + timode;
       assertProduced(r, label);

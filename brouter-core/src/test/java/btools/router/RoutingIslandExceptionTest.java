@@ -66,4 +66,27 @@ public class RoutingIslandExceptionTest {
     OsmTrack leg = routeOneLeg(engineThrowing(new IllegalArgumentException("no path")));
     Assert.assertNull("IllegalArgumentException leg must map to null", leg);
   }
+
+  @Test
+  public void terminatedEngineRethrowsLegExceptionInsteadOfSwallowing() {
+    // Termination responsiveness: once the engine is terminated (watchdog kill /
+    // request timeout), a failing leg must PROPAGATE so plan() aborts promptly,
+    // rather than being swallowed to null and burning the rest of the budget
+    // re-attempting and re-swallowing the same kill on every subsequent leg.
+    RoutingEngine engine = engineThrowing(new IllegalArgumentException("killed by watchdog"));
+    engine.startTime = 11111L;
+    engine.maxRunningTime = 22222L;
+    engine.terminate();
+
+    try {
+      routeOneLeg(engine);
+      Assert.fail("a terminated engine must re-throw the leg exception, not return null");
+    } catch (IllegalArgumentException expected) {
+      // expected — the catch re-throws when engine.isTerminated()
+    }
+    // The finally block must still restore the engine's timing state even when
+    // the exception propagates.
+    Assert.assertEquals("startTime restored after a propagated leg exception", 11111L, engine.startTime);
+    Assert.assertEquals("maxRunningTime restored after a propagated leg exception", 22222L, engine.maxRunningTime);
+  }
 }

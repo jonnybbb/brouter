@@ -75,10 +75,15 @@ public class RoundTripRobustnessFixtureTest {
   @Test
   public void malformedAlgorithmParamFallsBackToAutoAndStillRoutes() {
     RoutingEngine re = RoundTripFixture.engine(GRAVEL, 90, 1000, rc -> {
+      // Seed a non-default value so the assertion proves the parser actually
+      // reset the malformed input — rc.roundTripAlgorithm defaults to AUTO, so
+      // without this seed the assertEquals would pass even if the parser ignored
+      // the param entirely (the original tautology).
+      rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
       Map<String, String> params = new LinkedHashMap<>();
       params.put("roundTripAlgorithm", "definitely-not-an-algorithm");
       new RoutingParamCollector().setParams(rc, null, params);
-      Assert.assertEquals("unknown algorithm must fall back to AUTO",
+      Assert.assertEquals("unknown algorithm must reset to AUTO",
         RoundTripAlgorithm.AUTO, rc.roundTripAlgorithm);
     });
     Assert.assertNull("AUTO must complete: " + re.getErrorMessage(), re.getErrorMessage());

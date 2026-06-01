@@ -107,11 +107,13 @@ public class FormatGpx extends Formatter {
         first.append("    <offset>0</offset>\n  </extensions>\n </rtept>\n");
       }
       if (turnInstructionMode == 8) {
-        // Round-trip tracks can reach here with unpopulated matchedWaypoints /
-        // voiceHints (e.g. a finalized loop whose waypoints were never set);
-        // guard the get(0) derefs rather than NPE on the GPX export.
+        // A merged round-trip track can reach here with matchedWaypoints unset
+        // (it is populated only on some finalize paths), and its voiceHints.list
+        // may be empty; guard those get(0) derefs rather than NPE on the GPX
+        // export. (voiceHints itself is necessarily non-null here —
+        // turnInstructionMode is derived from it at the top of this method.)
         if (t.matchedWaypoints != null && !t.matchedWaypoints.isEmpty()
-            && t.voiceHints != null && !t.voiceHints.list.isEmpty()
+            && !t.voiceHints.list.isEmpty()
             && t.matchedWaypoints.get(0).wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && t.voiceHints.list.get(0).indexInTrack == 0) {
           // has a voice hint do nothing, voice hint will do
         } else {
