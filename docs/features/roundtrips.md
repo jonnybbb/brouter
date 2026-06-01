@@ -25,7 +25,7 @@ You control the loop with a few request parameters:
 | `roundTripPoints` | target number of intermediate waypoints (3–20, default 5) |
 | `startDirection` / `heading` | compass bearing to bias the direction the loop heads out |
 | `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing |
-| `roundTripAlgorithm` | planning strategy: `AUTO`, `FAST`, `BALANCED`, `QUALITY` |
+| `roundTripAlgorithm` | planning strategy: `AUTO`, `FAST`, `BALANCED`, `QUALITY` (the internal engine names `WAYPOINT`, `GREEDY`, `ISO_GREEDY`, `ISOCHRONE` are also accepted — see below) |
 
 If you instead supply more than one waypoint, BRouter treats those as explicit
 [via-points](vianogo.md) the loop must pass through in order, and the generated
@@ -51,6 +51,13 @@ closed loop. BRouter offers several strategies that trade speed for quality:
 - **AUTO** — lets BRouter pick. It tries the higher-quality strategies first and
   falls back to a faster one only when the better result is not worth the extra
   effort.
+
+The four names above are the recommended values. For parity with the engine, the
+parser also accepts the internal algorithm names directly: `FAST` = `WAYPOINT`,
+`BALANCED` = `GREEDY`, `QUALITY` = `ISO_GREEDY`, plus `ISOCHRONE` (direct
+isochrone-frontier waypoint placement, also selectable with `roundTripIsochrone=1`
+and AUTO-selected for small loops). Matching is case-insensitive and any
+unrecognised value falls back to `AUTO`.
 
 ## Loop quality
 

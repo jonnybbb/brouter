@@ -81,9 +81,14 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
    * drop too-close-to-start, drop sparse buckets when alternatives exist, dedupe
    * near-identical positions, ensure angular diversity, cap at {@link #POOL_CAP}.
    *
-   * @param startDirection user-requested start bearing in degrees [0,360); used
-   *                       to anchor the angular-stride pick so the pool spans
-   *                       the full circle starting at the user's direction.
+   * @param startDirection start bearing in degrees used to anchor the
+   *                       angular-stride pick so the pool spans the full circle
+   *                       starting at the user's direction. Need not be
+   *                       normalized: any value (including a negative
+   *                       no-preference sentinel such as {@code -1}) is floored
+   *                       into its containing bucket modulo {@link #TOTAL_BUCKETS}
+   *                       (negative results wrap), so {@code -1} anchors at
+   *                       bucket 0 (North).
    */
   static IsochroneCandidateProvider fromPool(double searchRadius, double startDirection,
                                              List<IsoCandidate> rawPool) {

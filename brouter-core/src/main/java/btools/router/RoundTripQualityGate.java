@@ -34,8 +34,11 @@ import btools.util.CheapAngleMeter;
  * {@code paving_stones}, {@code concrete}, {@code chipseal}) is treated as
  * paved cycleway infrastructure, NOT as off-road. OSM data routinely uses
  * {@code highway=path} for paved cycleways, and the {@code surface=} tag is
- * the more reliable signal. {@code highway=track} and {@code highway=steps}
- * stay hostile regardless of surface.
+ * the more reliable signal. {@code highway=steps} stays hostile regardless of
+ * surface. {@code highway=track} is hostile <em>unless</em> it carries an
+ * explicit hard surface (and is not {@code tracktype=grade2..5}), or is a
+ * {@code tracktype=grade1} track on an OSM cycle network — see
+ * {@link #isRoadBikeSuitablePavedTrack(String)}.
  *
  * <p>On top of those hard checks the gate runs a <em>semantic reuse
  * classifier</em> ({@link ReuseClassifier}) that distinguishes:

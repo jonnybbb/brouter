@@ -2426,8 +2426,9 @@ public class RoutingEngine extends Thread {
    * Probe the surrounding area for road reachability in all directions.
    * Sends probes at 15° intervals (24 directions) at three distances
    * (0.7R, 1.0R, 1.3R) and snaps each to the road network. Returns the
-   * viable bearings plus per-direction scoring (FAST tier consumes the
-   * scoring via {@link #filterByProbeConfidence} to drop one-shot weak picks).
+   * viable bearings plus a per-direction successful-probe count (the FAST tier
+   * consumes that count via {@link #filterByProbeConfidence} to drop one-shot
+   * weak picks).
    *
    * @param start        the start waypoint
    * @param searchRadius the round-trip search radius in meters
@@ -2472,26 +2473,15 @@ public class RoutingEngine extends Thread {
     List<ProbeDirection> scored = new ArrayList<>();
     for (int d = 0; d < probeCount; d++) {
       double dir = d * angleStep;
-      double sumMatchedDist = 0;
-      double minSnapDist = Double.POSITIVE_INFINITY;
       int successCount = 0;
       for (int f = 0; f < probesPerDirection; f++) {
         MatchedWaypoint mwp = allProbes.get(probeOffset + d * probesPerDirection + f);
         if (mwp.crosspoint == null || mwp.radius > maxSnapDist) continue;
         successCount++;
-        sumMatchedDist += CheapRuler.distance(
-          start.ilon, start.ilat, mwp.crosspoint.getILon(), mwp.crosspoint.getILat());
-        if (mwp.radius < minSnapDist) minSnapDist = mwp.radius;
       }
       if (successCount == 0) continue;
       viable[viableCount++] = dir;
-      // Confidence: heavier weight on multi-probe success (3/3 is much more
-      // reliable than 1/3) plus a snap-distance bonus.
-      double countTerm = successCount / (double) probesPerDirection;
-      double snapTerm = Math.max(0, 1.0 - minSnapDist / maxSnapDist);
-      double confidence = 0.7 * countTerm + 0.3 * snapTerm;
-      scored.add(new ProbeDirection(dir, sumMatchedDist / successCount, minSnapDist,
-        successCount, confidence));
+      scored.add(new ProbeDirection(dir, successCount));
     }
 
     logInfo("reachability probe: " + viableCount + "/" + probeCount + " directions viable");
