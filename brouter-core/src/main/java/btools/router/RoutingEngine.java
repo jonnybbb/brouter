@@ -163,8 +163,21 @@ public class RoutingEngine extends Thread {
 
   private OsmPathElement matchPath;
 
-  long startTime;
-  long maxRunningTime;
+  // Saved/restored across leg attempts by GreedyRoundTripPlanner.timedFindTrack
+  // and read by the _findTrack timeout arithmetic — all on the same worker
+  // thread (the cross-thread watchdog channel is the `terminated` flag, not
+  // these fields). volatile is defensive: it keeps the 64-bit reads/writes
+  // atomic should a watchdog ever read them, and is harmless otherwise.
+  volatile long startTime;
+  volatile long maxRunningTime;
+  // Cached once at class load (mirrors GreedyRoundTripPlanner's DIAGNOSTIC flag);
+  // -Dgreedy.diagnostic=true enables per-request stderr diagnostics.
+  private static final boolean GREEDY_DIAGNOSTIC =
+    Boolean.parseBoolean(System.getProperty("greedy.diagnostic", "false"));
+  // Wall-clock budget (ms) for the routing legs of a round trip, captured from
+  // doRun() so the WAYPOINT/ISOCHRONE/greedy-fallthrough doRouting() calls are
+  // bounded. 0 (the CLI default) keeps the legacy no-timeout behaviour.
+  private long roundTripRoutingBudgetMs;
   public SearchBoundary boundary;
 
   public boolean quite = false;
@@ -183,6 +196,14 @@ public class RoutingEngine extends Thread {
    * considering the legacy WAYPOINT fallback.
    */
   private static final double CLEAR_ACCEPT_THRESHOLD = 0.85;
+
+  // AUTO competition runs its candidates sequentially in the calling thread and
+  // cannot interrupt a child mid-run, so it shares one wall-clock budget across
+  // all candidates instead of giving each the full timeout. DEFAULT applies when
+  // the caller passes no timeout (maxRunningTime <= 0); MIN_CHILD guarantees a
+  // spawned candidate still gets a usable slice.
+  private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
+  private static final long MIN_CHILD_BUDGET_MS = 5_000;
   /**
    * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
    * via points in round-trip mode. Routing-time micro-detour and back-and-forth
@@ -298,8 +319,9 @@ public class RoutingEngine extends Thread {
   }
 
   public void doRun(long maxRunningTime) {
-    this.maxRunningTime = maxRunningTime;
-
+    // Note: this.maxRunningTime is set by the branches that route (doRouting
+    // sets it; the round-trip branch sets it for the competition). GETINFO/
+    // GETELEV deliberately leave it at its default so they stay untimed.
     switch (engineMode) {
       case BROUTER_ENGINEMODE_ROUTING:
         if (waypoints.size() < 2) {
@@ -319,6 +341,12 @@ public class RoutingEngine extends Thread {
       case BROUTER_ENGINEMODE_ROUNDTRIP:
         if (waypoints.size() < 1)
           throw new IllegalArgumentException("we need one lat/lon point at least!");
+        // Capture the request's wall-clock budget so the round-trip routing
+        // legs (WAYPOINT/ISOCHRONE/greedy fallthrough) honour it instead of
+        // running untimed, and so the AUTO competition can share it. 0 keeps
+        // the legacy unbounded behaviour for the CLI.
+        this.maxRunningTime = maxRunningTime;
+        roundTripRoutingBudgetMs = maxRunningTime;
         doRoundTrip();
         break;
       default:
@@ -620,6 +648,10 @@ public class RoutingEngine extends Thread {
       long startTime = System.currentTimeMillis();
 
       routingContext.useDynamicDistance = true;
+      // Classify the profile's surface policy once, from its cost model (not its
+      // name), so the quality gate and planner hostility checks use a consistent,
+      // name-independent verdict for the rest of this request.
+      RoundTripQualityGate.classifyPavedProfile(routingContext.expctxWay, routingContext.getProfileName());
       double searchRadius;
       if (routingContext.roundTripLength != null) {
         // roundTripLength is the desired total loop distance — convert to internal search radius.
@@ -657,13 +689,16 @@ public class RoutingEngine extends Thread {
         logInfo("round trip: explicit-via mode (" + (waypoints.size() - 1) + " user via points)");
         doExplicitViaRoundTrip(searchRadius, direction);
       } else {
-        // Resolve effective algorithm
-        RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
-        // roundTripIsochrone is a boolean shortcut for setting algorithm to ISOCHRONE;
-        // honour it only when no explicit algorithm was chosen.
-        if (algo == RoundTripAlgorithm.AUTO && routingContext.roundTripIsochrone) {
-          algo = RoundTripAlgorithm.ISOCHRONE;
+        // Resolve the roundTripIsochrone shortcut into the canonical
+        // roundTripAlgorithm ONCE, so the algorithm is the single source of
+        // truth from here down and the boolean never has to propagate to child
+        // contexts. Honoured only when no explicit algorithm was chosen — an
+        // explicit algorithm always wins.
+        if (routingContext.roundTripAlgorithm == RoundTripAlgorithm.AUTO
+            && routingContext.roundTripIsochrone) {
+          routingContext.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
         }
+        RoundTripAlgorithm algo = routingContext.roundTripAlgorithm;
 
         // AUTO candidate competition.
         //
@@ -759,7 +794,7 @@ public class RoutingEngine extends Thread {
       // Explicit-via mode treats the requested distance as advisory only —
       // the user-supplied skeleton defines the route, not the distance target.
       // The gate still enforces beeline / closure / profile-hostility checks.
-      if (Boolean.getBoolean("greedy.diagnostic") && RoundTripQualityGate.isPavedProfile(profileName)) {
+      if (GREEDY_DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
         System.err.printf("[greedy-diag] PRE-GATE foundTrack.distance=%d nodes=%d worstHost=%d%n",
           foundTrack.distance, foundTrack.nodes == null ? 0 : foundTrack.nodes.size(),
           RoundTripQualityGate.worstContiguousHostileMetersPaved(foundTrack));
@@ -897,11 +932,16 @@ public class RoutingEngine extends Thread {
    */
   private void runAutoCandidateCompetition(double searchRadius, double direction) {
     long t0 = System.currentTimeMillis();
+    // One wall-clock budget shared across the sequentially-run candidates, so
+    // the competition cannot run ~Nx the requested timeout. Each child gets the
+    // remaining slice (see runChildCandidate); once it is exhausted we stop
+    // spawning further candidates.
+    long deadline = t0 + (maxRunningTime > 0 ? maxRunningTime : DEFAULT_AUTO_BUDGET_MS);
     List<RoundTripCandidateResult> results = new ArrayList<>(3);
 
     // 1. ISO_GREEDY.
     RoundTripCandidateResult isoGreedyR = runChildCandidate(
-      RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction);
+      RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
     results.add(isoGreedyR);
     logInfo("AUTO candidate: " + isoGreedyR);
 
@@ -910,9 +950,9 @@ public class RoutingEngine extends Thread {
     //    is weak — we use the same single threshold for both signals.
     boolean isoGreedyWeak = !isoGreedyR.accepted()
       || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;
-    if (isoGreedyWeak) {
+    if (isoGreedyWeak && System.currentTimeMillis() < deadline) {
       RoundTripCandidateResult greedyR = runChildCandidate(
-        RoundTripAlgorithm.GREEDY, searchRadius, direction);
+        RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
       results.add(greedyR);
       logInfo("AUTO candidate: " + greedyR);
     }
@@ -926,10 +966,11 @@ public class RoutingEngine extends Thread {
       }
     }
 
-    // 4. Legacy fallback only if both greedy variants failed hard validation.
-    if (winner == null) {
+    // 4. Legacy fallback only if both greedy variants failed hard validation
+    //    and budget remains.
+    if (winner == null && System.currentTimeMillis() < deadline) {
       RoundTripCandidateResult waypointR = runChildCandidate(
-        RoundTripAlgorithm.WAYPOINT, searchRadius, direction);
+        RoundTripAlgorithm.WAYPOINT, searchRadius, direction, deadline);
       results.add(waypointR);
       logInfo("AUTO candidate: " + waypointR);
       if (waypointR.accepted()) {
@@ -943,9 +984,9 @@ public class RoutingEngine extends Thread {
     //    form a loop in the requested direction, or only finds a chaotic
     //    one). Purely additive: only runs when ISO_GREEDY, GREEDY and
     //    WAYPOINT have all already failed, so it cannot displace a winner.
-    if (winner == null) {
+    if (winner == null && System.currentTimeMillis() < deadline) {
       RoundTripCandidateResult isochroneR = runChildCandidate(
-        RoundTripAlgorithm.ISOCHRONE, searchRadius, direction);
+        RoundTripAlgorithm.ISOCHRONE, searchRadius, direction, deadline);
       results.add(isochroneR);
       logInfo("AUTO candidate: " + isochroneR);
       if (isochroneR.accepted()) {
@@ -971,12 +1012,22 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Budget (ms) for the next sequential AUTO candidate: the time remaining to
+   * the shared competition deadline, floored at {@link #MIN_CHILD_BUDGET_MS} so
+   * a candidate that is still spawned gets a usable slice rather than ~0.
+   */
+  static long childCandidateBudgetMs(long deadline, long now) {
+    return Math.max(MIN_CHILD_BUDGET_MS, deadline - now);
+  }
+
+  /**
    * Run one AUTO candidate in an isolated child engine, score the result,
    * and return the wrapper. Never throws — failures land in
    * {@link RoundTripCandidateResult#errorMessage}.
    */
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
-                                                     double searchRadius, double direction) {
+                                                     double searchRadius, double direction,
+                                                     long deadline) {
     long t0 = System.currentTimeMillis();
     RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
     try {
@@ -1003,7 +1054,9 @@ public class RoutingEngine extends Thread {
       RoutingEngine child = new RoutingEngine(null, null, segmentDir, childWps, childCtx,
         BROUTER_ENGINEMODE_ROUNDTRIP);
       child.quite = true;
-      long budget = maxRunningTime > 0 ? maxRunningTime : 60_000;
+      // Give the child only the remaining shared budget (floored so a spawned
+      // candidate still gets a usable slice), not the full request timeout.
+      long budget = childCandidateBudgetMs(deadline, System.currentTimeMillis());
       child.doRun(budget);
       r.track = child.foundTrack;
       r.errorMessage = child.errorMessage;
@@ -1031,7 +1084,10 @@ public class RoutingEngine extends Thread {
         }
       }
     } catch (RuntimeException e) {
-      r.errorMessage = "candidate " + algo + " threw: " + e.getMessage();
+      // Preserve the exception type: e.getMessage() is null for NPE/AIOOBE/CCE,
+      // which otherwise surfaces an undiagnosable "threw: null" to the operator.
+      r.errorMessage = "candidate " + algo + " threw: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage());
       r.runtimeMillis = System.currentTimeMillis() - t0;
     }
     return r;
@@ -1064,6 +1120,9 @@ public class RoutingEngine extends Thread {
     } else {
       foundTrack.message += " " + summary.toString();
     }
+    // Keep messageList.get(0) in sync with the just-extended message so the
+    // GPX <brouter:info> / comment block reflects the AUTO summary too.
+    ensureInfoMessage(foundTrack);
     logInfo(summary.toString());
     if (winner.score != null) {
       logInfo("AUTO winner score breakdown:\n" + winner.score.describe());
@@ -1120,7 +1179,41 @@ public class RoutingEngine extends Thread {
       outfile = filename;
       alternativeIndex = 0;
     } catch (Exception e) {
-      logInfo("AUTO: failed to write adopted track: " + e.getMessage());
+      logInfo("AUTO: failed to write adopted track: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+    }
+  }
+
+  /**
+   * Guarantee the track carries the standard one-line info message and a
+   * matching {@code messageList}, mirroring the direct-routing output path in
+   * {@link #doRouting} (lines that set {@code track.message} /
+   * {@code track.messageList}). Round-trip result tracks are assembled from
+   * merged segments via {@code new OsmTrack()} and otherwise reach the
+   * formatters with {@code messageList == null}, which made
+   * {@link FormatGpx#formatAsGpx} throw a NullPointerException on export.
+   * Idempotent: re-running it keeps {@code messageList.get(0)} in sync with
+   * any later additions to {@code track.message} (e.g. the AUTO summary).
+   */
+  private void ensureInfoMessage(OsmTrack track) {
+    if (track == null) {
+      return;
+    }
+    if (track.message == null || track.message.isEmpty()) {
+      track.message = "track-length = " + track.distance + " filtered ascend = " + track.ascend
+        + " plain-ascend = " + track.plainAscend + " cost=" + track.cost;
+      if (track.energy != 0) {
+        track.message += " energy=" + Formatter.getFormattedEnergy(track.energy)
+          + " time=" + Formatter.getFormattedTime2(track.getTotalSeconds());
+      }
+    }
+    if (track.messageList == null) {
+      track.messageList = new ArrayList<>();
+    }
+    if (track.messageList.isEmpty()) {
+      track.messageList.add(track.message);
+    } else {
+      track.messageList.set(0, track.message);
     }
   }
 
@@ -1132,14 +1225,28 @@ public class RoutingEngine extends Thread {
    */
   private void finalizeAdoptedRoundTripTrack(OsmTrack track, List<MatchedWaypoint> mwps) {
     if (track == null || track.nodes == null || track.nodes.isEmpty()) return;
+    boolean haveMwps = mwps != null && !mwps.isEmpty();
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP
         && !routingContext.allowSamewayback && !explicitViaRoundTrip) {
-      removeBackAndForthSegments(track, mwps);
-      removeMicroDetours(track, 1500, mwps);
+      // removeBackAndForthSegments locates each waypoint's spur via its
+      // indexInTrack, so populate those indices first. The direct greedy-bypass
+      // path supplies matchedWaypoints with indexInTrack still 0 (the planner
+      // never sets it); without this the back-and-forth removal silently skips
+      // every waypoint and is a no-op. Indices are refreshed below after the
+      // removals shift the node list.
+      // removeBackAndForthSegments / removeMicroDetours iterate mwps and would
+      // NPE on a null list (the spur-removal is a no-op without waypoints), so
+      // keep all three consumers under the same haveMwps guard.
+      if (haveMwps) {
+        assignMatchedWaypointIndexes(track, mwps);
+        removeBackAndForthSegments(track, mwps);
+        removeMicroDetours(track, 1500, mwps);
+      }
     }
     rebuildOriginChain(track);
     recalcTrack(track);
-    if (mwps != null && !mwps.isEmpty()) {
+    ensureInfoMessage(track);
+    if (haveMwps) {
       assignMatchedWaypointIndexes(track, mwps);
       matchedWaypoints = mwps;
       track.matchedWaypoints = mwps;
@@ -1275,7 +1382,7 @@ public class RoutingEngine extends Thread {
     logInfo("explicit-via round-trip: " + userVias.size() + " user via(s), "
       + "allowSamewayback=" + routingContext.allowSamewayback
       + ", direction=" + (int) direction + " (advisory only)");
-    doRouting(0);
+    doRouting(roundTripRoutingBudgetMs);
   }
 
   private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
@@ -1285,7 +1392,12 @@ public class RoutingEngine extends Thread {
       onn.name = "rt1";
       waypoints.add(onn);
       // No-beeline invariant: snap the tip before final matchWaypointsToNodes.
-      snapWaypointToRoad(onn, Math.min(searchRadius * 0.3, 2000), "snapSamewaybackTip");
+      // On snap failure the tip stays at the raw geometric point and the return
+      // leg can degrade to a straight-line beeline — surface it rather than
+      // silently discarding the result (cf. snapWaypointsToRoad for user vias).
+      if (!snapWaypointToRoad(onn, Math.min(searchRadius * 0.3, 2000), "snapSamewaybackTip")) {
+        logInfo("snapSamewaybackTip: no road within snap range; samewayback return leg may include a beeline");
+      }
     } else {
       List<OsmNodeNamed> userViaPoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
       waypoints.subList(1, waypoints.size()).clear();
@@ -1348,7 +1460,7 @@ public class RoutingEngine extends Thread {
 
     routingContext.waypointCatchingRange = 250;
     roundTripSearchRadius = searchRadius;
-    doRouting(0);
+    doRouting(roundTripRoutingBudgetMs);
   }
 
   void doGreedyRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
@@ -1519,7 +1631,7 @@ public class RoutingEngine extends Thread {
             matchedWaypoints = result.getMatchedWaypoints();
           }
           finalizeAdoptedRoundTripTrack(foundTrack, matchedWaypoints);
-          if (Boolean.getBoolean("greedy.diagnostic")) {
+          if (GREEDY_DIAGNOSTIC) {
             System.err.printf("[greedy-diag] bypass-OK plannerDist=%d nodes=%d matched=%d worstHost=%d%n",
               foundTrack.distance, foundTrack.nodes.size(),
               matchedWaypoints == null ? 0 : matchedWaypoints.size(),
@@ -1534,7 +1646,7 @@ public class RoutingEngine extends Thread {
         routingContext.waypointCatchingRange = 250;
         roundTripSearchRadius = searchRadius;
         try {
-          doRouting(0);
+          doRouting(roundTripRoutingBudgetMs);
         } catch (Exception e) {
           logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
           throw e;
@@ -1961,9 +2073,13 @@ public class RoutingEngine extends Thread {
       for (MatchedWaypoint mwp : group) {
         if (mwp.crosspoint == null) continue;
 
+        // node1/node2 are dereferenced just below for the road bearing; skip any
+        // match missing either endpoint rather than NPE.
+        if (mwp.node1 == null || mwp.node2 == null) continue;
+
         // Skip matches to ferry-like segments (very long edges between node1/node2).
         // Ferry routes have sparse nodes spanning several km over water; road edges are < 1km.
-        if (mwp.node1 != null && mwp.node2 != null && mwp.node1.calcDistance(mwp.node2) > 1500) {
+        if (mwp.node1.calcDistance(mwp.node2) > 1500) {
           continue;
         }
 
@@ -2333,8 +2449,9 @@ public class RoutingEngine extends Thread {
    * Probe the surrounding area for road reachability in all directions.
    * Sends probes at 15° intervals (24 directions) at three distances
    * (0.7R, 1.0R, 1.3R) and snaps each to the road network. Returns the
-   * viable bearings plus per-direction scoring (FAST tier consumes the
-   * scoring via {@link #filterByProbeConfidence} to drop one-shot weak picks).
+   * viable bearings plus a per-direction successful-probe count (the FAST tier
+   * consumes that count via {@link #filterByProbeConfidence} to drop one-shot
+   * weak picks).
    *
    * @param start        the start waypoint
    * @param searchRadius the round-trip search radius in meters
@@ -2379,26 +2496,15 @@ public class RoutingEngine extends Thread {
     List<ProbeDirection> scored = new ArrayList<>();
     for (int d = 0; d < probeCount; d++) {
       double dir = d * angleStep;
-      double sumMatchedDist = 0;
-      double minSnapDist = Double.POSITIVE_INFINITY;
       int successCount = 0;
       for (int f = 0; f < probesPerDirection; f++) {
         MatchedWaypoint mwp = allProbes.get(probeOffset + d * probesPerDirection + f);
         if (mwp.crosspoint == null || mwp.radius > maxSnapDist) continue;
         successCount++;
-        sumMatchedDist += CheapRuler.distance(
-          start.ilon, start.ilat, mwp.crosspoint.getILon(), mwp.crosspoint.getILat());
-        if (mwp.radius < minSnapDist) minSnapDist = mwp.radius;
       }
       if (successCount == 0) continue;
       viable[viableCount++] = dir;
-      // Confidence: heavier weight on multi-probe success (3/3 is much more
-      // reliable than 1/3) plus a snap-distance bonus.
-      double countTerm = successCount / (double) probesPerDirection;
-      double snapTerm = Math.max(0, 1.0 - minSnapDist / maxSnapDist);
-      double confidence = 0.7 * countTerm + 0.3 * snapTerm;
-      scored.add(new ProbeDirection(dir, sumMatchedDist / successCount, minSnapDist,
-        successCount, confidence));
+      scored.add(new ProbeDirection(dir, successCount));
     }
 
     logInfo("reachability probe: " + viableCount + "/" + probeCount + " directions viable");
@@ -4014,11 +4120,11 @@ public class RoutingEngine extends Thread {
             seg = null;
           }
           if (seg == null) {
-            if (Boolean.getBoolean("greedy.diagnostic")) {
+            if (GREEDY_DIAGNOSTIC) {
               System.err.printf("[greedy-diag] leg %d: corridor failed, falling back to unconstrained%n", i);
             }
             seg = searchTrack(matchedWaypoints.get(i), matchedWaypoints.get(i + 1), null, effectiveRefTrack);
-          } else if (Boolean.getBoolean("greedy.diagnostic")) {
+          } else if (GREEDY_DIAGNOSTIC) {
             int legHost = RoundTripQualityGate.worstContiguousHostileMetersPaved(seg);
             int plannerHost = RoundTripQualityGate.worstContiguousHostileMetersPaved(legNearbyTrack);
             if (legHost != plannerHost) {

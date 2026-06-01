@@ -75,8 +75,17 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     List<IsoCandidate> pool;
     if (refTrack == null || refTrack.nodes == null || refTrack.nodes.isEmpty()) {
       CacheKey key = new CacheKey(fromIlon, fromIlat, expansionRadius);
-      pool = expansionCache.computeIfAbsent(key,
-        k -> runExpansion(fromIlon, fromIlat, expansionRadius, null));
+      pool = expansionCache.get(key);
+      if (pool == null) {
+        pool = runExpansion(fromIlon, fromIlat, expansionRadius, null);
+        // Cache only non-empty expansions. Caching an empty/failed result would
+        // silently serve "no candidates" to every later attempt at the same
+        // radius without re-running the expansion (a transient failure becomes
+        // permanent for that step).
+        if (!pool.isEmpty()) {
+          expansionCache.put(key, pool);
+        }
+      }
     } else {
       // Poisoning depends on the already-accepted route, so do not reuse the
       // no-ref cache when a reference track is present.

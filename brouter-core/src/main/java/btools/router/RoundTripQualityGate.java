@@ -3,7 +3,10 @@ package btools.router;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
+import btools.expressions.BExpressionContextWay;
 import btools.mapaccess.MatchedWaypoint;
 import btools.util.CheapAngleMeter;
 
@@ -34,8 +37,11 @@ import btools.util.CheapAngleMeter;
  * {@code paving_stones}, {@code concrete}, {@code chipseal}) is treated as
  * paved cycleway infrastructure, NOT as off-road. OSM data routinely uses
  * {@code highway=path} for paved cycleways, and the {@code surface=} tag is
- * the more reliable signal. {@code highway=track} and {@code highway=steps}
- * stay hostile regardless of surface.
+ * the more reliable signal. {@code highway=steps} stays hostile regardless of
+ * surface. {@code highway=track} is hostile <em>unless</em> it carries an
+ * explicit hard surface (and is not {@code tracktype=grade2..5}), or is a
+ * {@code tracktype=grade1} track on an OSM cycle network — see
+ * {@link #isRoadBikeSuitablePavedTrack(String)}.
  *
  * <p>On top of those hard checks the gate runs a <em>semantic reuse
  * classifier</em> ({@link ReuseClassifier}) that distinguishes:
@@ -124,6 +130,18 @@ public final class RoundTripQualityGate {
    * inheritance.
    */
   public static final double MAX_HOSTILE_FRACTION = 0.10;
+
+  /**
+   * Maximum combined share of distance that is either confirmed-hostile OR
+   * unverifiable (missing/unknown metadata). The hostile and suspect fractions
+   * each have their own {@link #MAX_HOSTILE_FRACTION} ceiling, but a route that
+   * sits just under both (e.g. 9% hostile + 9% suspect = 18% non-confirmed-paved)
+   * would otherwise pass while delivering far more questionable surface than a
+   * road-bike rider should get. This ceiling is the aggregate backstop; it sits
+   * above each individual ceiling so the more specific single-bucket messages
+   * fire first.
+   */
+  public static final double MAX_QUESTIONABLE_FRACTION = 0.15;
 
   /**
    * Maximum length of a single unbroken hostile stretch on a paved
@@ -340,7 +358,8 @@ public final class RoundTripQualityGate {
         .build();
     }
 
-    // 2. Distance ratio: not 1/3 of the requested length, not 2× either.
+    // 2. Distance ratio: not below half (MIN_DISTANCE_RATIO=0.5) of the
+    //    requested length, not above MAX_DISTANCE_RATIO=1.8× either.
     //    Same-way-back routes go out half the loop length then come back,
     //    so their total distance ≈ desired (out is half, back is half).
     //    Use the full-loop band either way; same-way-back doesn't change
@@ -591,9 +610,10 @@ public final class RoundTripQualityGate {
    *       {@link #MAX_HOSTILE_FRACTION}.</li>
    * </ul>
    * Missing metadata is treated as suspect, never as proof of quality.
-   * Suspect edges in the middle of a hostile run <em>do not</em> reset the
-   * contiguous-hostile counter nor extend it — they're unknown spans, so
-   * we neither break nor lengthen the hostile stretch across them.
+   * Suspect edges <em>break</em> the contiguous-hostile run (reset to 0): an
+   * unknown span is conservatively assumed to interrupt the hostile stretch, so
+   * the worst contiguous hostile length is under-reported rather than spanned
+   * across unknown gaps (see {@link #worstContiguousHostileMetersPaved}).
    */
   private static String checkHostileSegmentsPaved(OsmTrack track) {
     double total = 0;
@@ -608,8 +628,26 @@ public final class RoundTripQualityGate {
       total += segLen;
 
       MessageData m = b.message;
-      if (m == null || m.wayKeyValues == null) {
+      if (m == null) {
         suspect += segLen;
+        continue;
+      }
+      if (m.wayKeyValues == null) {
+        // No tags to classify by. A router-confirmed expensive edge (cost above
+        // the hostile threshold) is treated as hostile even without tags —
+        // consistent with isHostileForPavedProfile's costfactor rule, which is
+        // otherwise unreachable here because the null-tag edge would short-
+        // circuit to suspect. A low-cost untagged edge stays genuinely
+        // unverifiable (suspect). NOTE: this cost-based reclassification applies
+        // to the fraction tally only; the contiguous-stretch metric stays purely
+        // tag-based (see worstHostileStretchPaved) — the scorer's
+        // worstContiguousMetersAboveCostfactor already covers cost-contiguity
+        // during candidate selection.
+        if (m.costfactor > HOSTILE_COSTFACTOR_THRESHOLD) {
+          hostile += segLen;
+        } else {
+          suspect += segLen;
+        }
         continue;
       }
       if (isHostileForPavedProfile(m)) {
@@ -643,6 +681,16 @@ public final class RoundTripQualityGate {
       return String.format(Locale.US,
         "%.0f%% of distance on edges with missing/unknown metadata — cannot verify paved-ness for road-bike profile",
         suspectFrac * 100.0);
+    }
+
+    // Combined backstop: neither bucket alone crossed its ceiling, but their
+    // sum (confirmed-hostile + unverifiable) is too high a share of
+    // non-confirmed-paved surface to ship to a road-bike rider.
+    double questionableFrac = (hostile + suspect) / total;
+    if (questionableFrac > MAX_QUESTIONABLE_FRACTION) {
+      return String.format(Locale.US,
+        "%.0f%% of distance on profile-hostile or unverifiable surface (max %.0f%%) — too much non-confirmed-paved surface for a road-bike profile",
+        questionableFrac * 100.0, MAX_QUESTIONABLE_FRACTION * 100.0);
     }
 
     return null;
@@ -1028,15 +1076,151 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * A profile is "paved-only" if its name matches the known road-bike
-   * profile family. These profiles assume the cyclist is on a road bike
-   * with narrow tyres and cannot safely ride dirt, gravel, or singletrack.
-   * Gravel and MTB profiles deliberately use unpaved surfaces — the gate
-   * is bypassed for them.
+   * Lower bound on cf(grade3 gravel track) / cf(paved residential) at or above
+   * which a profile is classified paved-only — i.e. it treats loose unpaved
+   * surface as effectively off-limits, so a round-trip routed onto it should be
+   * rejected. Validated against every profile whose vehicle cannot ride loose
+   * unpaved (all well above 5.0): fastbike 8.3, skating 9523, moped 5015,
+   * car-vario 10000, velomobil 23.5; versus the unpaved-tolerant bikes well
+   * below it: trekking 2.65, gravel 0.79, mtb 0.57. The ratio (not the absolute
+   * cost) is the discriminator: mtb penalises unpaved heavily too (abs 7.5) but
+   * penalises paved even harder (13.6), giving 0.55.
+   */
+  static final double PAVED_PROBE_RATIO = 5.0;
+
+  /**
+   * Memoised paved/road-bike classification, keyed by profile name. Populated by
+   * {@link #classifyPavedProfile} (which has the expression context) and read by
+   * {@link #isPavedProfile} (which only has the name). A single routing JVM
+   * serves a stable set of profiles, so name is an adequate cache key.
+   */
+  private static final Map<String, Boolean> PAVED_CLASSIFICATION = new ConcurrentHashMap<>();
+
+  /**
+   * Classify whether a profile is paved/road-bike by what its cost model
+   * actually charges for an unpaved way — independent of the profile's name.
+   * The result is memoised by {@code profileName} and subsequently returned by
+   * {@link #isPavedProfile}. Call this once per request at round-trip setup,
+   * while the way-expression context is available.
+   *
+   * <p>Resolution order:
+   * <ol>
+   *   <li>explicit author override global {@code roadbikeSurfaceGate}
+   *       ({@code 1} = paved-only, {@code 0} = not) — lets a profile force the
+   *       classification when the probe would be ambiguous;</li>
+   *   <li>cost-model probe: {@code cf(gravel track) / cf(paved residential)} at
+   *       or above {@link #PAVED_PROBE_RATIO}.</li>
+   * </ol>
+   *
+   * <p>When no way context is available to probe (only the case in isolated
+   * unit tests — production always parses a profile), the profile is treated as
+   * not-paved so the hostile-surface gate is simply not imposed.
+   */
+  public static boolean classifyPavedProfile(BExpressionContextWay expctxWay, String profileName) {
+    boolean paved;
+    if (expctxWay == null) {
+      paved = false;
+    } else {
+      float override = expctxWay.getVariableValue("roadbikeSurfaceGate", -1f);
+      if (override >= 0f) {
+        paved = override >= 0.5f;
+      } else {
+        paved = probePavedFromCostModel(expctxWay);
+      }
+    }
+    // Only cache a real verdict. A null context (e.g. an AUTO-competition child
+    // engine built via copyRequestFields(), which omits expctxWay) cannot probe
+    // and returns the safe `false` default for its own immediate use — but it
+    // must NOT overwrite the parent's correct probed entry for this profile in
+    // the shared static cache, or every later isPavedProfile() lookup would wrongly
+    // bypass the hostile-surface gate.
+    if (profileName != null && expctxWay != null) {
+      PAVED_CLASSIFICATION.put(profileName, paved);
+    }
+    return paved;
+  }
+
+  /**
+   * Probe the profile's surface policy: a profile is paved-only if it makes a
+   * representative loose-unpaved way (grade3 gravel track) far costlier than a
+   * paved residential road. Returns false if the context cannot be probed.
+   *
+   * <p>Measured ratio cf(grade3-gravel-track)/cf(paved-residential):
+   * <pre>
+   *   fastbike                  8.33    paved
+   *   fastbike-verylowtraffic   8.33    paved
+   *   skating                  ~9523    paved (rollerblades — forbids tracks)
+   *   moped                    ~5015    paved
+   *   car-vario               ~10000    paved
+   *   vm-velomobil             23.53    paved (faired road vehicle — cannot ride gravel)
+   *   trekking                  2.65    NOT paved (tolerates loose surface)
+   *   gravel                    0.79    NOT paved
+   *   mtb                       0.57    NOT paved (penalises paved even harder)
+   *   shortest                  1.00    NOT paved
+   * </pre>
+   * Every vehicle that cannot ride loose unpaved scores well above 5.0; the
+   * unpaved-tolerant bikes sit at or below 2.65 — a wide, robust margin. The
+   * verdict is a ratio against the paved reference, so it is invariant to a
+   * global scaling of the profile's costfactors (cost is relative — scaling
+   * every costfactor by a constant changes neither the chosen route nor the
+   * classification).
+   *
+   * <p>grade3 is the probe point because grade1 does not discriminate: a road
+   * bike rides a well-graded grade1 track cheaply (fastbike 1.0x paved) but
+   * skating/moped/car penalise even grade1 — so "rides grade1 cheaply" is NOT a
+   * universal paved-only trait, and a profile the grade3 probe misjudges can set
+   * the {@code roadbikeSurfaceGate} override.
+   */
+  static boolean probePavedFromCostModel(BExpressionContextWay expctxWay) {
+    float unpaved = wayCostFactor(expctxWay, "highway=track", "tracktype=grade3", "surface=gravel");
+    float paved = wayCostFactor(expctxWay, "highway=residential", "surface=asphalt");
+    if (Float.isNaN(unpaved) || Float.isNaN(paved)) {
+      return false;
+    }
+    // costfactor is always >= 1.0, but guard the divides defensively.
+    // costfactor is always >= 1.0, but guard the divide defensively.
+    double ratio = unpaved / Math.max(paved, 1.0f);
+    return ratio >= PAVED_PROBE_RATIO;
+  }
+
+  /** Evaluate the profile's costfactor for a synthetic way described by tags. */
+  private static float wayCostFactor(BExpressionContextWay expctxWay, String... tags) {
+    int[] lookupData = expctxWay.createNewLookupData();
+    if (lookupData == null) {
+      return Float.NaN; // lookup table not frozen / context unusable
+    }
+    for (String tag : tags) {
+      int i = tag.indexOf('=');
+      if (i > 0) {
+        expctxWay.addLookupValue(tag.substring(0, i), tag.substring(i + 1), lookupData);
+      }
+    }
+    byte[] description = expctxWay.encode(lookupData);
+    expctxWay.evaluate(false, description); // forward direction
+    return expctxWay.getCostfactor();
+  }
+
+  /**
+   * Paved/road-bike classification for a profile, by name.
+   *
+   * <p>Returns the cost-model-probe result recorded by {@link #classifyPavedProfile}
+   * (the round-trip path warms it once at setup). A profile that has not been
+   * classified is treated as not-paved — there is no name-based guess.
    */
   public static boolean isPavedProfile(String profileName) {
-    if (profileName == null) return false;
-    String n = profileName.toLowerCase(Locale.ROOT);
-    return n.contains("fastbike") || n.contains("road") || n.contains("racing");
+    if (profileName == null) {
+      return false;
+    }
+    Boolean classified = PAVED_CLASSIFICATION.get(profileName);
+    return classified != null && classified;
+  }
+
+  /**
+   * Test-only seam: seed the classification cache directly, so unit tests that
+   * exercise the gate's paved-surface behaviour can mark a profile name as
+   * paved/not-paved without parsing a real profile to run the probe.
+   */
+  static void putPavedClassificationForTest(String profileName, boolean paved) {
+    PAVED_CLASSIFICATION.put(profileName, paved);
   }
 }

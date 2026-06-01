@@ -7,7 +7,9 @@ import org.junit.Test;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmNode;
@@ -29,6 +31,9 @@ public class GreedyRoundTripPlannerTest {
     if (!profileDir.exists()) {
       profileDir = new File("../misc/profiles2");
     }
+    // Classification now comes from the cost-model probe (PavedProfileProbeTest),
+    // not the profile name; seed "fastbike" as paved for the gate-delegation case.
+    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
   }
 
   private boolean hasSegmentData() {
@@ -140,14 +145,98 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
-  public void legacyRoundTripIsochroneParam() {
+  public void legacyRoundTripIsochroneParamMapsToIsochrone() {
+    // Drive the real parser: roundTripIsochrone=1 promotes AUTO -> ISOCHRONE.
     RoutingContext rctx = new RoutingContext();
     Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
-
-    // Legacy compat: setting roundTripIsochrone should map to ISOCHRONE algorithm
-    rctx.roundTripIsochrone = true;
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("roundTripIsochrone", "1");
+    new RoutingParamCollector().setParams(rctx, null, params);
     Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, rctx.roundTripAlgorithm);
+    Assert.assertTrue(rctx.roundTripIsochrone);
+  }
+
+  @Test
+  public void explicitRoundTripAlgorithmWinsOverIsochroneShortcut() {
+    // An explicit roundTripAlgorithm beats the roundTripIsochrone=1 shortcut,
+    // regardless of parameter order (the parser only promotes when AUTO).
+    for (boolean algoFirst : new boolean[]{true, false}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> params = new LinkedHashMap<>();
+      if (algoFirst) {
+        params.put("roundTripAlgorithm", "GREEDY");
+        params.put("roundTripIsochrone", "1");
+      } else {
+        params.put("roundTripIsochrone", "1");
+        params.put("roundTripAlgorithm", "GREEDY");
+      }
+      new RoutingParamCollector().setParams(rctx, null, params);
+      Assert.assertEquals("explicit algorithm must win (algoFirst=" + algoFirst + ")",
+        RoundTripAlgorithm.GREEDY, rctx.roundTripAlgorithm);
+    }
+  }
+
+  @Test
+  public void nonPositiveRoundTripLengthIsNulled() {
+    // roundTripLength <= 0 must be discarded (null), not passed through.
+    for (String v : new String[]{"0", "-5"}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> params = new LinkedHashMap<>();
+      params.put("roundTripLength", v);
+      new RoutingParamCollector().setParams(rctx, null, params);
+      Assert.assertNull("roundTripLength=" + v + " must null out", rctx.roundTripLength);
+    }
+  }
+
+  @Test
+  public void malformedRoundTripParamsDoNotThrow() {
+    // A non-integer value on a round-trip URL parameter is untrusted client input;
+    // it must be ignored (logged) rather than thrown as NumberFormatException, which
+    // the server surfaces as an opaque HTTP 500 indistinguishable from a real crash.
+    String[] intParams = {
+      "roundTripLength", "roundTripDistance", "roundTripDirectionAdd",
+      "roundTripPoints", "roundTripIsochrone", "allowSamewayback"};
+    for (String key : intParams) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> params = new LinkedHashMap<>();
+      params.put(key, "not-a-number");
+      // Must not throw.
+      new RoutingParamCollector().setParams(rctx, null, params);
+    }
+    // The malformed value must leave the field at its safe default.
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("roundTripLength", "12km");
+    new RoutingParamCollector().setParams(rctx, null, params);
+    Assert.assertNull("malformed roundTripLength must not be set", rctx.roundTripLength);
+  }
+
+  // --- fallback-selection rule (gate-accept-aware) ---
+
+  @Test
+  public void betterFallbackPrefersGateAcceptedOverRejected() {
+    // A gate-accepted loop beats a gate-rejected one regardless of error — this
+    // is the core of the fix: don't latch a rejected low-error loop and discard
+    // a usable accepted higher-error one.
+    Assert.assertTrue("accepted (worse error) beats rejected (better error)",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.90, false, 0.10));
+    Assert.assertFalse("rejected (better error) does not beat accepted (worse error)",
+      GreedyRoundTripPlanner.isBetterFallback(false, 0.10, true, 0.90));
+  }
+
+  @Test
+  public void betterFallbackBreaksTiesByLowerError() {
+    // Same gate verdict → lower geometric error wins; equal error is not "better".
+    Assert.assertTrue("accepted: lower error wins",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.10, true, 0.20));
+    Assert.assertFalse("accepted: higher error loses",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.30, true, 0.20));
+    Assert.assertTrue("rejected: lower error wins",
+      GreedyRoundTripPlanner.isBetterFallback(false, 0.10, false, 0.20));
+    Assert.assertFalse("rejected: higher error loses",
+      GreedyRoundTripPlanner.isBetterFallback(false, 0.30, false, 0.20));
+    Assert.assertFalse("equal error + same verdict is not strictly better",
+      GreedyRoundTripPlanner.isBetterFallback(true, 0.20, true, 0.20));
   }
 
   @Test

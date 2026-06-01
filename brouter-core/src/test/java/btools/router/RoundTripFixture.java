@@ -162,4 +162,47 @@ final class RoundTripFixture {
       }
     }
   }
+
+  /**
+   * Count self-intersections of the routed polyline (non-adjacent segment pairs
+   * that geometrically cross, ignoring shared endpoints). A clean loop has very
+   * few; the probe-spike chaos pattern the AUTO redesign replaced had many. Used
+   * as a geometric-quality regression guard. O(n²), fine for fixture-sized tracks.
+   */
+  static int countSelfCrossings(OsmTrack track) {
+    List<OsmPathElement> n = track.nodes;
+    int crossings = 0;
+    for (int i = 0; i < n.size() - 1; i++) {
+      for (int j = i + 2; j < n.size() - 1; j++) {
+        if (segmentsCross(n.get(i), n.get(i + 1), n.get(j), n.get(j + 1))) {
+          crossings++;
+        }
+      }
+    }
+    return crossings;
+  }
+
+  private static boolean segmentsCross(OsmPathElement p1, OsmPathElement p2,
+                                       OsmPathElement p3, OsmPathElement p4) {
+    if ((p1.getILon() == p3.getILon() && p1.getILat() == p3.getILat())
+        || (p1.getILon() == p4.getILon() && p1.getILat() == p4.getILat())
+        || (p2.getILon() == p3.getILon() && p2.getILat() == p3.getILat())
+        || (p2.getILon() == p4.getILon() && p2.getILat() == p4.getILat())) {
+      return false; // shared endpoints are not self-crossings
+    }
+    boolean d1 = ccw(p1, p3, p4) > 0;
+    boolean d2 = ccw(p2, p3, p4) > 0;
+    boolean d3 = ccw(p1, p2, p3) > 0;
+    boolean d4 = ccw(p1, p2, p4) > 0;
+    return d1 != d2 && d3 != d4;
+  }
+
+  /** Cross-product sign; long arithmetic to avoid overflow at routing-scale coords. */
+  private static long ccw(OsmPathElement a, OsmPathElement b, OsmPathElement c) {
+    long dx1 = (long) b.getILon() - a.getILon();
+    long dy1 = (long) b.getILat() - a.getILat();
+    long dx2 = (long) c.getILon() - a.getILon();
+    long dy2 = (long) c.getILat() - a.getILat();
+    return dx1 * dy2 - dy1 * dx2;
+  }
 }

@@ -7,12 +7,21 @@ import btools.util.CheapAngleMeter;
  * Lower score = better candidate.
  *
  * Scoring formula:
- *   score = w_dist   * |candidateDistance - subRouteTarget| / subRouteTarget
- *         + w_loop   * |total + candidateDist + returnDist - desiredTotal| / desiredTotal
- *         + w_dir    * directionPenalty * directionFade(step)
- *         + w_reuse  * visitedEdgeRatio
- *         + w_spread * spreadPenalty(distFromStart, step, totalSteps)
- *         + w_prev   * ((distFromPrevious - subRouteTarget) / subRouteTarget)²
+ *   score = w_dist        * |candidateDistance - subRouteTarget| / subRouteTarget
+ *         + w_loop        * |total + candidateDist + returnDist - desiredTotal| / desiredTotal
+ *         + w_dir         * directionPenalty * directionFade(step)
+ *         + w_reuse       * visitedEdgeRatio
+ *         + w_spread      * spreadPenalty(distFromStart, step, totalSteps)
+ *         + w_prev        * ((distFromPrevious - subRouteTarget) / subRouteTarget)²
+ *         - w_isoBonus    * isoValidatedBonus(costFromStart, bucketHits)
+ *         + w_isoHostility * hostility            // 0 unless hostilityActive (paved profiles)
+ *         + w_isoBonus    * isoContourDepthMismatch(sourceContour, step, totalSteps)
+ *
+ * The last three terms are the ISO-aware contribution: a bonus (lower score) for
+ * candidates validated by the isochrone Dijkstra, a hostility penalty applied only
+ * when {@link #setHostilityActive(boolean)} is on, and a contour-depth-mismatch
+ * penalty. {@code hostility} is the contiguous-hostile-meters penalty when routed
+ * leg data is available, else the cost-per-airmeter penalty.
  */
 public class CandidateScorer {
 

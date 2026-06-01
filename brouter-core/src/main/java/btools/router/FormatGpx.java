@@ -34,7 +34,7 @@ public class FormatGpx extends Formatter {
     int turnInstructionMode = t.voiceHints != null ? t.voiceHints.turnInstructionMode : 0;
 
     sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    if (turnInstructionMode != 9) {
+    if (turnInstructionMode != 9 && t.messageList != null) {
       for (int i = t.messageList.size() - 1; i >= 0; i--) {
         String message = t.messageList.get(i);
         if (i < t.messageList.size() - 1)
@@ -74,7 +74,7 @@ public class FormatGpx extends Formatter {
       sb.append(" <metadata>\n");
       sb.append("  <name>").append(t.name).append("</name>\n");
       sb.append("  <extensions>\n");
-      sb.append("   <brouter:info>").append(t.messageList.get(0)).append("</brouter:info>\n");
+      sb.append("   <brouter:info>").append(t.messageList != null && !t.messageList.isEmpty() ? t.messageList.get(0) : "").append("</brouter:info>\n");
       if (t.params != null && t.params.size() > 0) {
         sb.append("   <brouter:params><![CDATA[");
         int i = 0;
@@ -107,7 +107,14 @@ public class FormatGpx extends Formatter {
         first.append("    <offset>0</offset>\n  </extensions>\n </rtept>\n");
       }
       if (turnInstructionMode == 8) {
-        if (t.matchedWaypoints.get(0).wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && t.voiceHints.list.get(0).indexInTrack == 0) {
+        // A merged round-trip track can reach here with matchedWaypoints unset
+        // (it is populated only on some finalize paths), and its voiceHints.list
+        // may be empty; guard those get(0) derefs rather than NPE on the GPX
+        // export. (voiceHints itself is necessarily non-null here —
+        // turnInstructionMode is derived from it at the top of this method.)
+        if (t.matchedWaypoints != null && !t.matchedWaypoints.isEmpty()
+            && !t.voiceHints.list.isEmpty()
+            && t.matchedWaypoints.get(0).wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && t.voiceHints.list.get(0).indexInTrack == 0) {
           // has a voice hint do nothing, voice hint will do
         } else {
           sb.append(first.toString());

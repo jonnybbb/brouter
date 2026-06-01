@@ -147,21 +147,33 @@ public class IsochroneCandidateProviderTest {
 
   @Test
   public void prefersFrontierMaxOverInnerContoursWithinBucket() {
-    // Same bucket, three contour candidates. Per-bucket cap=2 → only 2 survive.
-    // Sort prefers higher contour (100 > 75 > 50 > 25).
+    // Same bucket, four contour candidates at increasing air-distance. The
+    // per-bucket cap (2) keeps the two with the highest source contour
+    // (100 > 75), dropping 25 and 50.
     List<IsoCandidate> raw = new ArrayList<>();
     raw.add(at(0, 1000, 5, 25));   // worst — should drop
-    raw.add(at(0, 1500, 5, 50));   // second-worst
+    raw.add(at(0, 1500, 5, 50));   // dropped
     raw.add(at(0, 2000, 5, 75));   // second-best — kept
     raw.add(at(0, 2500, 5, 100));  // best — kept
     // Need diversity for the provider to be useful — add stuff in other buckets.
     for (int b = 9; b < 30; b += 3) raw.add(at(b, 2000, 5, 100));
     IsochroneCandidateProvider p = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 0.0, raw);
-    // Bucket 0 should contribute its 100 + 75 contour entries, not 25 or 50.
-    int bucket0Count = 0;
-    int bucket0MinContour = Integer.MAX_VALUE;
-    // We can't inspect the pool directly (private), so verify diversity stays correct.
-    assertTrue("provider diverse", p.isDiverse());
+
+    // Inspect the surviving bucket-0 candidates via candidatesForStep (its
+    // window is [0.5R, 1.6R]; R=2000 → [1000, 3200] covers the 2000 m/2500 m
+    // survivors). Bucket-0 candidates sit at bearing ~5° from start; the
+    // cross-bucket fillers are at >= 95°, so filter by bearing.
+    List<RoundTripCandidateProvider.CandidatePoint> step = p.candidatesForStep(
+      START_ILON, START_ILAT, 2000, 1, 5, START_ILON, START_ILAT, 0.0, null);
+    Set<Integer> bucket0Contours = new HashSet<>();
+    for (RoundTripCandidateProvider.CandidatePoint cp : step) {
+      double bearing = CheapRuler.getScaledBearing(START_ILON, START_ILAT, cp.ilon, cp.ilat);
+      if (bearing < 45 || bearing > 315) bucket0Contours.add(cp.sourceContour);
+    }
+    assertTrue("bucket 0 must keep the frontier-max (100) contour", bucket0Contours.contains(100));
+    assertTrue("bucket 0 must keep the next contour (75)", bucket0Contours.contains(75));
+    assertFalse("bucket 0 must drop the 25 contour", bucket0Contours.contains(25));
+    assertFalse("bucket 0 must drop the 50 contour", bucket0Contours.contains(50));
   }
 
   // ----- diversity guard -----
@@ -273,10 +285,12 @@ public class IsochroneCandidateProviderTest {
     for (int b : new int[]{9, 18, 27}) raw.add(at(b, 2000, 5, 100));
 
     IsochroneCandidateProvider p = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 0.0, raw);
-    // Bucket 0 contributes ≤2 entries (initial pass). The remaining 6 candidates
-    // in bucket 0 get padded onto the end if pool < 24, so the assertion is:
-    // not all candidates make it in.
+    // 11 raw candidates (8 in bucket 0, 3 cross-bucket). The per-bucket cap (2)
+    // must prune bucket 0, so the pool is far smaller than 11 yet keeps all 4
+    // distinct buckets. Asserting the exact size catches a cap regression that
+    // admitted 3+ per bucket (which the old isDiverse()-only check could not).
     assertTrue("pool diversity preserved", p.isDiverse());
+    assertEquals("per-bucket cap must prune bucket 0", 5, p.poolSize());
   }
 
   // ----- F8: start-anchored angular stride selection -----

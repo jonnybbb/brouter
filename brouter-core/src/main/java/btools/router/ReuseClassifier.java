@@ -92,13 +92,6 @@ public final class ReuseClassifier {
   public static final double SCENIC_OUT_AND_BACK_REUSE_RATIO = 0.85;
 
   /**
-   * Below this reuse ratio (and with no long mid-route stretch) a route is
-   * a clean loop — the short stem allowance covers small unavoidable
-   * shared sections. We don't classify a 0.1% reused loop as a lollipop.
-   */
-  public static final double STRICT_LOOP_MAX_REUSE_RATIO = 0.05;
-
-  /**
    * Per-stretch "near boundary" threshold: a stretch touches a boundary if
    * its start cumDist is within this fraction of total OR its end cumDist
    * is within this fraction of total from the end. 8% is generous enough

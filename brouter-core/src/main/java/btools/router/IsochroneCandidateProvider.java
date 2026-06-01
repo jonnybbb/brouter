@@ -81,9 +81,14 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
    * drop too-close-to-start, drop sparse buckets when alternatives exist, dedupe
    * near-identical positions, ensure angular diversity, cap at {@link #POOL_CAP}.
    *
-   * @param startDirection user-requested start bearing in degrees [0,360); used
-   *                       to anchor the angular-stride pick so the pool spans
-   *                       the full circle starting at the user's direction.
+   * @param startDirection start bearing in degrees used to anchor the
+   *                       angular-stride pick so the pool spans the full circle
+   *                       starting at the user's direction. Need not be
+   *                       normalized: any value (including a negative
+   *                       no-preference sentinel such as {@code -1}) is floored
+   *                       into its containing bucket modulo {@link #TOTAL_BUCKETS}
+   *                       (negative results wrap), so {@code -1} anchors at
+   *                       bucket 0 (North).
    */
   static IsochroneCandidateProvider fromPool(double searchRadius, double startDirection,
                                              List<IsoCandidate> rawPool) {
@@ -154,7 +159,11 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
     //    up to POOL_CAP from this sequence (skipping empties) yields an evenly-
     //    distributed pool — not the leading-buckets-clustered set the
     //    contour-then-bucket sort used to produce.
-    int startBucket = ((int) Math.round(startDirection / (360.0 / TOTAL_BUCKETS))) % TOTAL_BUCKETS;
+    // Floor (not round) into the containing bucket, matching how
+    // runIsochroneExpansion buckets bearings; round-to-nearest would anchor a
+    // direction in the outer half of a bucket (or near the 360° wrap) one
+    // bucket off.
+    int startBucket = ((int) (startDirection / (360.0 / TOTAL_BUCKETS))) % TOTAL_BUCKETS;
     if (startBucket < 0) startBucket += TOTAL_BUCKETS;
     int[] visitOrder = startAnchoredStrideOrder(startBucket, TOTAL_BUCKETS);
 

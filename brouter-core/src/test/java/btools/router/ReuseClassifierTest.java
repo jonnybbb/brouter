@@ -2,6 +2,7 @@ package btools.router;
 
 import java.util.ArrayList;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -32,6 +33,16 @@ import static org.junit.Assert.assertTrue;
  * otherwise loop-like route.
  */
 public class ReuseClassifierTest {
+
+  /**
+   * Mark "fastbike" as paved: classification now comes from the cost-model probe
+   * ({@link PavedProfileProbeTest}), not the profile name, so the hostile-spur
+   * cases must seed it explicitly.
+   */
+  @Before
+  public void seedPavedClassification() {
+    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
+  }
 
   // ============ Helpers ====================================================
 

@@ -232,6 +232,11 @@ public final class RoutingContext {
    * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
    * settable via the URL parameter {@code roundTripIsochrone=1}. Honoured only when
    * {@link #roundTripAlgorithm} is left at AUTO — an explicit algorithm always wins.
+   *
+   * <p>This is a request-input shortcut only: {@code doRoundTrip()} resolves it
+   * into {@link #roundTripAlgorithm} once, up front, after which the algorithm
+   * field is the single source of truth (this boolean is no longer read and is
+   * not copied into child contexts by {@link #copyRequestFields()}).
    */
   public boolean roundTripIsochrone;
 
@@ -632,13 +637,19 @@ public final class RoutingContext {
     c.roundTripPoints = this.roundTripPoints;
     c.allowSamewayback = this.allowSamewayback;
     c.roundTripAlgorithm = this.roundTripAlgorithm;
-    c.roundTripIsochrone = this.roundTripIsochrone;
+    // roundTripIsochrone is intentionally NOT copied: doRoundTrip() resolves it
+    // into roundTripAlgorithm before any child is spawned, so the algorithm
+    // (copied above) is the single source of truth in child contexts.
     c.outputFormat = this.outputFormat;
     c.waypointCatchingRange = this.waypointCatchingRange;
     c.exportWaypoints = this.exportWaypoints;
     c.exportCorrectedWaypoints = this.exportCorrectedWaypoints;
     c.poipoints = this.poipoints;
-    c.nogopoints = this.nogopoints; // shared read-only nogo list is safe to alias
+    // Defensive copy: the child engine's doRouting() appends synthetic nogo
+    // points (continueStraight handling) to its nogopoints list. Aliasing the
+    // parent's list would leak those child-only nogos back into the parent and
+    // contaminate every subsequent AUTO candidate and the final adopted route.
+    c.nogopoints = this.nogopoints == null ? null : new ArrayList<>(this.nogopoints);
     c.inverseRouting = this.inverseRouting;
     c.turnInstructionMode = this.turnInstructionMode;
     c.turnInstructionCatchingRange = this.turnInstructionCatchingRange;

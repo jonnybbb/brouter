@@ -132,10 +132,15 @@ public final class LoopQualityMetrics {
       int segDist = a.calcDistance(b);
       totalDistance += segDist;
 
-      // Create undirected edge key: sort the two position IDs
+      // Mixed undirected edge key (matches GreedyRoundTripPlanner.edgeKey). The
+      // old `lo*31 + hi` form is a trivially-collidable linear combination of
+      // packed (ilon<<32)|ilat ids, which could fold a genuinely-new edge into
+      // an existing bucket and inflate the reuse percentage.
       long idA = a.getIdFromPos();
       long idB = b.getIdFromPos();
-      long edgeKey = (idA <= idB) ? (idA * 31 + idB) : (idB * 31 + idA);
+      long lo = Math.min(idA, idB);
+      long hi = Math.max(idA, idB);
+      long edgeKey = lo ^ (hi * 0x9E3779B97F4A7C15L);
 
       int[] entry = edgeCounts.get(edgeKey);
       if (entry == null) {
