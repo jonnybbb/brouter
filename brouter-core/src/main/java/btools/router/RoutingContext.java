@@ -638,7 +638,11 @@ public final class RoutingContext {
     c.exportWaypoints = this.exportWaypoints;
     c.exportCorrectedWaypoints = this.exportCorrectedWaypoints;
     c.poipoints = this.poipoints;
-    c.nogopoints = this.nogopoints; // shared read-only nogo list is safe to alias
+    // Defensive copy: the child engine's doRouting() appends synthetic nogo
+    // points (continueStraight handling) to its nogopoints list. Aliasing the
+    // parent's list would leak those child-only nogos back into the parent and
+    // contaminate every subsequent AUTO candidate and the final adopted route.
+    c.nogopoints = this.nogopoints == null ? null : new ArrayList<>(this.nogopoints);
     c.inverseRouting = this.inverseRouting;
     c.turnInstructionMode = this.turnInstructionMode;
     c.turnInstructionCatchingRange = this.turnInstructionCatchingRange;

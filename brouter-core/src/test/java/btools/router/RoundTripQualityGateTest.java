@@ -28,6 +28,17 @@ public class RoundTripQualityGateTest {
     assertFalse(RoundTripQualityGate.isPavedProfile("mtb"));
     assertFalse(RoundTripQualityGate.isPavedProfile("trekking"));
     assertFalse(RoundTripQualityGate.isPavedProfile(null));
+
+    // Paved-profile families must still match as whole tokens regardless of
+    // case or "-"/"_" decoration (the standard upstream variants).
+    assertTrue(RoundTripQualityGate.isPavedProfile("Fastbike-lowtraffic"));
+    assertTrue(RoundTripQualityGate.isPavedProfile("road-cycling"));
+
+    // Regression: "smallroads" CONTAINS the substring "road" but is a trekking
+    // profile — a plain contains("road") wrongly applied the road-bike hostile
+    // gate to it, rejecting the paths/tracks the profile exists to use.
+    assertFalse(RoundTripQualityGate.isPavedProfile("Trekking-SmallRoads"));
+    assertFalse(RoundTripQualityGate.isPavedProfile("trekking-smallroads"));
   }
 
   // ---- Happy path ---------------------------------------------------------

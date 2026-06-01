@@ -1068,7 +1068,10 @@ public class RoutingEngine extends Thread {
         }
       }
     } catch (RuntimeException e) {
-      r.errorMessage = "candidate " + algo + " threw: " + e.getMessage();
+      // Preserve the exception type: e.getMessage() is null for NPE/AIOOBE/CCE,
+      // which otherwise surfaces an undiagnosable "threw: null" to the operator.
+      r.errorMessage = "candidate " + algo + " threw: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage());
       r.runtimeMillis = System.currentTimeMillis() - t0;
     }
     return r;
@@ -1160,7 +1163,8 @@ public class RoutingEngine extends Thread {
       outfile = filename;
       alternativeIndex = 0;
     } catch (Exception e) {
-      logInfo("AUTO: failed to write adopted track: " + e.getMessage());
+      logInfo("AUTO: failed to write adopted track: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
     }
   }
 
@@ -1369,7 +1373,12 @@ public class RoutingEngine extends Thread {
       onn.name = "rt1";
       waypoints.add(onn);
       // No-beeline invariant: snap the tip before final matchWaypointsToNodes.
-      snapWaypointToRoad(onn, Math.min(searchRadius * 0.3, 2000), "snapSamewaybackTip");
+      // On snap failure the tip stays at the raw geometric point and the return
+      // leg can degrade to a straight-line beeline — surface it rather than
+      // silently discarding the result (cf. snapWaypointsToRoad for user vias).
+      if (!snapWaypointToRoad(onn, Math.min(searchRadius * 0.3, 2000), "snapSamewaybackTip")) {
+        logInfo("snapSamewaybackTip: no road within snap range; samewayback return leg may include a beeline");
+      }
     } else {
       List<OsmNodeNamed> userViaPoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
       waypoints.subList(1, waypoints.size()).clear();

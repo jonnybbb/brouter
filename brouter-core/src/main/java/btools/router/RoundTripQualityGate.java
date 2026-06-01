@@ -1039,6 +1039,13 @@ public final class RoundTripQualityGate {
   public static boolean isPavedProfile(String profileName) {
     if (profileName == null) return false;
     String n = profileName.toLowerCase(Locale.ROOT);
-    return n.contains("fastbike") || n.contains("road") || n.contains("racing");
+    if (n.contains("fastbike") || n.contains("racing")) return true;
+    // "road" must match as a whole token, not as a substring: "smallroads"
+    // (Trekking-SmallRoads) contains "road" but is a trekking profile, so a
+    // plain contains("road") wrongly applied the road-bike hostile gate to it.
+    for (String token : n.split("[^a-z0-9]+")) {
+      if (token.equals("road")) return true;
+    }
+    return false;
   }
 }

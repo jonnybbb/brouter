@@ -208,29 +208,31 @@ public class RoutingParamCollector {
         } else if (key.equals("direction")) {
           rctx.startDirection = Integer.valueOf(value);
         } else if (key.equals("roundTripLength")) {
-          rctx.roundTripLength = Integer.valueOf(value);
+          rctx.roundTripLength = parseIntParamOrNull(key, value);
           // A non-positive length would yield a zero/negative searchRadius
           // (length / 2π); invalidate it so the roundTripDistance path is used.
-          if (rctx.roundTripLength <= 0) {
+          if (rctx.roundTripLength != null && rctx.roundTripLength <= 0) {
             rctx.roundTripLength = null;
           }
         } else if (key.equals("roundTripDistance")) {
-          rctx.roundTripDistance = Integer.valueOf(value);
+          rctx.roundTripDistance = parseIntParamOrNull(key, value);
         } else if (key.equals("roundTripDirectionAdd")) {
-          rctx.roundTripDirectionAdd = Integer.valueOf(value);
+          rctx.roundTripDirectionAdd = parseIntParamOrNull(key, value);
         } else if (key.equals("roundTripPoints")) {
-          rctx.roundTripPoints = Integer.valueOf(value);
+          rctx.roundTripPoints = parseIntParamOrNull(key, value);
           if (rctx.roundTripPoints == null || rctx.roundTripPoints < 3 || rctx.roundTripPoints > 20) {
             rctx.roundTripPoints = 5;
           }
         } else if (key.equals("allowSamewayback")) {
-          rctx.allowSamewayback = Integer.parseInt(value)==1;
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.allowSamewayback = v != null && v == 1;
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
         } else if (key.equals("roundTripIsochrone")) {
           // roundTripIsochrone=1 is a shortcut for roundTripAlgorithm=ISOCHRONE.
           // An explicit roundTripAlgorithm always wins, regardless of parameter order.
-          rctx.roundTripIsochrone = Integer.parseInt(value)==1;
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripIsochrone = v != null && v == 1;
           if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
           }
@@ -260,6 +262,21 @@ public class RoutingParamCollector {
         }
         // ignore other params
       }
+    }
+  }
+
+  /**
+   * Parse an integer round-trip parameter, returning {@code null} (and logging)
+   * on malformed input instead of throwing. The values come from untrusted URL
+   * query parameters; an unchecked {@link NumberFormatException} would surface
+   * as an opaque HTTP 500 indistinguishable from a real server crash.
+   */
+  private static Integer parseIntParamOrNull(String key, String value) {
+    try {
+      return Integer.valueOf(value);
+    } catch (NumberFormatException ex) {
+      System.err.println("ignoring non-integer parameter " + key + "=" + value);
+      return null;
     }
   }
 

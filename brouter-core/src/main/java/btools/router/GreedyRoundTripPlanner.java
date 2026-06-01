@@ -915,7 +915,9 @@ public class GreedyRoundTripPlanner {
    * Routes from→to with a per-call timeout = min(SUB_ROUTE_TIMEOUT_MS, deadline - now).
    * Returns {@code null} if the remaining budget is below {@link #MIN_FIND_TRACK_MS}.
    */
-  private OsmTrack timedFindTrack(String name, MatchedWaypoint from, MatchedWaypoint to,
+  // Package-private (not private) so RoutingIslandExceptionTest can drive the
+  // unroutable-leg path directly via a RoutingEngine test double.
+  OsmTrack timedFindTrack(String name, MatchedWaypoint from, MatchedWaypoint to,
                                   OsmTrack refTrack, long deadline) {
     long now = System.currentTimeMillis();
     long remaining = deadline - now;
@@ -930,8 +932,12 @@ public class GreedyRoundTripPlanner {
       engine.startTime = now;
       engine.maxRunningTime = budget;
       return engine.findTrack(name, from, to, null, refTrack, false);
-    } catch (IllegalArgumentException e) {
-      engine.logInfo(name + ": no track (" + e.getMessage() + ")");
+    } catch (IllegalArgumentException | RoutingIslandException e) {
+      // Treat an islanded / unroutable leg as "no track for this leg" (same as
+      // retrackForDetail does) so the planner falls back to its best-so-far loop
+      // instead of letting the exception abort plan() and discard all telemetry.
+      engine.logInfo(name + ": no track (" + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage()) + ")");
       return null;
     } finally {
       engine.startTime = savedStartTime;
@@ -984,7 +990,8 @@ public class GreedyRoundTripPlanner {
       }
       return mwp;
     } catch (Exception e) {
-      engine.logInfo("matchPoint(" + name + ") failed: " + e.getMessage());
+      engine.logInfo("matchPoint(" + name + ") failed: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
       return null;
     }
   }
