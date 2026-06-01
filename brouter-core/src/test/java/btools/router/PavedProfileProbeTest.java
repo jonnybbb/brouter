@@ -200,4 +200,21 @@ public class PavedProfileProbeTest {
     RoundTripQualityGate.classifyPavedProfile(roadShaped, name);
     assertEquals(Boolean.TRUE, RoundTripQualityGate.isPavedProfile(name));
   }
+
+  /**
+   * A null-context classification (an AUTO-competition child engine built via
+   * copyRequestFields, which omits expctxWay) must NOT overwrite a real probed
+   * verdict in the shared static cache — otherwise every later isPavedProfile()
+   * lookup would wrongly bypass the hostile-surface gate for the whole competition.
+   */
+  @Test
+  public void nullContextDoesNotPoisonCachedClassification() {
+    String name = "poison-test";
+    RoundTripQualityGate.classifyPavedProfile(parse("fastbike"), name); // parent probes -> paved
+    assertTrue(RoundTripQualityGate.isPavedProfile(name));
+    // child with no context: returns the safe `false` for its own use, but must not cache it
+    assertFalse(RoundTripQualityGate.classifyPavedProfile(null, name));
+    assertTrue("null-context classify must not poison the cached verdict",
+      RoundTripQualityGate.isPavedProfile(name));
+  }
 }

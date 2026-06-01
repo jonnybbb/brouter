@@ -203,10 +203,14 @@ public class RoutingParamCollector {
         } else if (key.equals("pois")) {
           rctx.poipoints = readPoisList(value);
         } else if (key.equals("heading")) {
-          rctx.startDirection = Integer.valueOf(value);
-          rctx.forceUseStartDirection = true;
+          Integer v = parseIntParamOrNull(key, value);
+          if (v != null) {
+            rctx.startDirection = v;
+            rctx.forceUseStartDirection = true;
+          }
         } else if (key.equals("direction")) {
-          rctx.startDirection = Integer.valueOf(value);
+          Integer v = parseIntParamOrNull(key, value);
+          if (v != null) rctx.startDirection = v;
         } else if (key.equals("roundTripLength")) {
           rctx.roundTripLength = parseIntParamOrNull(key, value);
           // A non-positive length would yield a zero/negative searchRadius
@@ -243,11 +247,14 @@ public class RoutingParamCollector {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
           }
         } else if (key.equals("alternativeidx")) {
-          rctx.setAlternativeIdx(Integer.parseInt(value));
+          Integer v = parseIntParamOrNull(key, value);
+          if (v != null) rctx.setAlternativeIdx(v);
         } else if (key.equals("turnInstructionMode")) {
-          rctx.turnInstructionMode = Integer.parseInt(value);
+          Integer v = parseIntParamOrNull(key, value);
+          if (v != null) rctx.turnInstructionMode = v;
         } else if (key.equals("timode")) {
-          rctx.turnInstructionMode = Integer.parseInt(value);
+          Integer v = parseIntParamOrNull(key, value);
+          if (v != null) rctx.turnInstructionMode = v;
         } else if (key.equals("turnInstructionFormat")) {
           if ("osmand".equalsIgnoreCase(value)) {
             rctx.turnInstructionMode = 3;
@@ -255,9 +262,11 @@ public class RoutingParamCollector {
             rctx.turnInstructionMode = 2;
           }
         } else if (key.equals("exportWaypoints")) {
-          rctx.exportWaypoints = (Integer.parseInt(value) == 1);
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.exportWaypoints = v != null && v == 1;
         } else if (key.equals("exportCorrectedWaypoints")) {
-          rctx.exportCorrectedWaypoints = (Integer.parseInt(value) == 1);
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.exportCorrectedWaypoints = v != null && v == 1;
         } else if (key.equals("format")) {
           rctx.outputFormat = ((String) value).toLowerCase();
         } else if (key.equals("trackFormat")) {

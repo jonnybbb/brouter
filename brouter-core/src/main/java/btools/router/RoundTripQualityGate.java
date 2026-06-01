@@ -1128,7 +1128,13 @@ public final class RoundTripQualityGate {
         paved = probePavedFromCostModel(expctxWay);
       }
     }
-    if (profileName != null) {
+    // Only cache a real verdict. A null context (e.g. an AUTO-competition child
+    // engine built via copyRequestFields(), which omits expctxWay) cannot probe
+    // and returns the safe `false` default for its own immediate use — but it
+    // must NOT overwrite the parent's correct probed entry for this profile in
+    // the shared static cache, or every later isPavedProfile() lookup would wrongly
+    // bypass the hostile-surface gate.
+    if (profileName != null && expctxWay != null) {
       PAVED_CLASSIFICATION.put(profileName, paved);
     }
     return paved;
