@@ -129,6 +129,18 @@ public final class RoundTripQualityGate {
   public static final double MAX_HOSTILE_FRACTION = 0.10;
 
   /**
+   * Maximum combined share of distance that is either confirmed-hostile OR
+   * unverifiable (missing/unknown metadata). The hostile and suspect fractions
+   * each have their own {@link #MAX_HOSTILE_FRACTION} ceiling, but a route that
+   * sits just under both (e.g. 9% hostile + 9% suspect = 18% non-confirmed-paved)
+   * would otherwise pass while delivering far more questionable surface than a
+   * road-bike rider should get. This ceiling is the aggregate backstop; it sits
+   * above each individual ceiling so the more specific single-bucket messages
+   * fire first.
+   */
+  public static final double MAX_QUESTIONABLE_FRACTION = 0.15;
+
+  /**
    * Maximum length of a single unbroken hostile stretch on a paved
    * profile, regardless of total share. Routes pass the total-fraction
    * check but trip this one when they contain one long off-road section
@@ -613,8 +625,26 @@ public final class RoundTripQualityGate {
       total += segLen;
 
       MessageData m = b.message;
-      if (m == null || m.wayKeyValues == null) {
+      if (m == null) {
         suspect += segLen;
+        continue;
+      }
+      if (m.wayKeyValues == null) {
+        // No tags to classify by. A router-confirmed expensive edge (cost above
+        // the hostile threshold) is treated as hostile even without tags —
+        // consistent with isHostileForPavedProfile's costfactor rule, which is
+        // otherwise unreachable here because the null-tag edge would short-
+        // circuit to suspect. A low-cost untagged edge stays genuinely
+        // unverifiable (suspect). NOTE: this cost-based reclassification applies
+        // to the fraction tally only; the contiguous-stretch metric stays purely
+        // tag-based (see worstHostileStretchPaved) — the scorer's
+        // worstContiguousMetersAboveCostfactor already covers cost-contiguity
+        // during candidate selection.
+        if (m.costfactor > HOSTILE_COSTFACTOR_THRESHOLD) {
+          hostile += segLen;
+        } else {
+          suspect += segLen;
+        }
         continue;
       }
       if (isHostileForPavedProfile(m)) {
@@ -648,6 +678,16 @@ public final class RoundTripQualityGate {
       return String.format(Locale.US,
         "%.0f%% of distance on edges with missing/unknown metadata — cannot verify paved-ness for road-bike profile",
         suspectFrac * 100.0);
+    }
+
+    // Combined backstop: neither bucket alone crossed its ceiling, but their
+    // sum (confirmed-hostile + unverifiable) is too high a share of
+    // non-confirmed-paved surface to ship to a road-bike rider.
+    double questionableFrac = (hostile + suspect) / total;
+    if (questionableFrac > MAX_QUESTIONABLE_FRACTION) {
+      return String.format(Locale.US,
+        "%.0f%% of distance on profile-hostile or unverifiable surface (max %.0f%%) — too much non-confirmed-paved surface for a road-bike profile",
+        questionableFrac * 100.0, MAX_QUESTIONABLE_FRACTION * 100.0);
     }
 
     return null;

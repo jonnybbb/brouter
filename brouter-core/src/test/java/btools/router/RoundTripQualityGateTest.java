@@ -556,6 +556,54 @@ public class RoundTripQualityGateTest {
       reason.contains("of distance on profile-hostile ways"));
   }
 
+  // ---- Combined questionable-surface ceiling (hostile + suspect) ----------
+
+  @Test
+  public void rejectsCombinedHostilePlusSuspectAboveCombinedCap() {
+    // ~9% confirmed-hostile + ~9% unverifiable = ~18% non-confirmed-paved.
+    // Each individual bucket is below the 10% ceiling, but the combined
+    // questionable fraction exceeds MAX_QUESTIONABLE_FRACTION (15%) and must
+    // be rejected. Edges are scattered so the contiguous sub-cap never fires.
+    OsmTrack t = loopWithScatteredKinds(40000, 36, 36, msgNoMetadata());
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertNotNull("9%+9% questionable surface must be rejected by the combined cap", reason);
+    assertTrue("expected combined questionable-surface message, got: " + reason,
+      reason.contains("hostile or unverifiable") || reason.contains("questionable"));
+  }
+
+  @Test
+  public void acceptsModerateHostilePlusSuspectBelowCombinedCap() {
+    // ~6% + ~6% = ~12% < 15% combined cap, each well under 10% — still accepted,
+    // so the new ceiling does not over-tighten ordinary data-sparse loops.
+    OsmTrack t = loopWithScatteredKinds(40000, 24, 24, msgNoMetadata());
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertNull("12% combined questionable surface should still pass: " + reason, reason);
+  }
+
+  @Test
+  public void nullTagHighCostEdgesCountAsHostileNotSuspect() {
+    // ~12% of distance on edges with no tags but a router cost above the hostile
+    // threshold (4.0). These are confirmed-expensive by the router, so the gate
+    // must count them as hostile ("profile-hostile ways") rather than merely
+    // unverifiable ("missing/unknown metadata"). Scattered: contiguous cap N/A.
+    OsmTrack t = loopWithScatteredKinds(40000, 0, 48, msgSinglePass(5.0f));
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertNotNull("12% confirmed-expensive surface must be rejected", reason);
+    assertTrue("expected hostile (not metadata) rejection, got: " + reason,
+      reason.contains("profile-hostile ways"));
+  }
+
+  @Test
+  public void nullTagLowCostEdgesStaySuspect() {
+    // No tags AND low router cost = genuinely unverifiable, must stay suspect.
+    // ~12% suspect alone trips the suspect ceiling with the metadata message.
+    OsmTrack t = loopWithScatteredKinds(40000, 0, 48, msgSinglePass(1.2f));
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertNotNull("12% unverifiable surface must be rejected", reason);
+    assertTrue("expected missing-metadata rejection, got: " + reason,
+      reason.contains("missing/unknown metadata"));
+  }
+
   // ---- helpers ------------------------------------------------------------
 
   /** Square loop with 4 edges of {@code side} meters each — total ~4×side.
@@ -673,6 +721,32 @@ public class RoundTripQualityGateTest {
         ? msgWayTags("highway=path")
         : msgCostfactor(1.5f, "highway=residential");
       t.nodes.get(i).message = m;
+    }
+    return t;
+  }
+
+  /**
+   * Chunked clean square loop with {@code hostileEdges} edges tagged
+   * profile-hostile (highway=path surface=ground) and {@code suspectEdges} edges
+   * carrying {@code suspectMsg}, scattered (every 3rd edge) so no contiguous
+   * hostile run approaches the 1500m sub-cap. All other edges are clean
+   * residential. Equal-length chunks, so edge counts map directly to distance
+   * fractions. Used to exercise the combined and per-bucket surface ceilings.
+   */
+  private static OsmTrack loopWithScatteredKinds(int totalMeters, int hostileEdges,
+                                                 int suspectEdges, MessageData suspectMsg) {
+    OsmTrack t = trackWithContiguousHostile(totalMeters, 0, 0); // all-clean chunked loop
+    int h = 0;
+    int s = 0;
+    for (int i = 1; i < t.nodes.size() && (h < hostileEdges || s < suspectEdges); i++) {
+      int mod = i % 3;
+      if (mod == 1 && h < hostileEdges) {
+        t.nodes.get(i).message = msgWayTags("highway=path surface=ground");
+        h++;
+      } else if (mod == 2 && s < suspectEdges) {
+        t.nodes.get(i).message = clone(suspectMsg);
+        s++;
+      }
     }
     return t;
   }
