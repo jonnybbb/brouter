@@ -131,13 +131,12 @@ public class LoopQualityTest {
         + " (no plausible route exists for this terrain × profile combination)",
       region.supportedProfiles.contains(profileName));
 
-    // Run probe strategy (default)
+    // Run all four strategies. greedy and iso_greedy — the primary algorithms
+    // the AUTO competition ships — are quality-gated below; probe (legacy
+    // WAYPOINT) and isochrone are run for the comparison report only.
     LoopQualityResult probeResult = runVariant("probe", RoundTripAlgorithm.WAYPOINT, segDir, profileFile);
-    // Run isochrone strategy for comparison (best-effort, no assertions)
     LoopQualityResult isoResult = runVariant("isochrone", RoundTripAlgorithm.ISOCHRONE, segDir, profileFile);
-    // Run greedy sub-route strategy for comparison (best-effort, no assertions)
     LoopQualityResult greedyResult = runVariant("greedy", RoundTripAlgorithm.GREEDY, segDir, profileFile);
-    // Run QUALITY tier (isochrone-derived candidate pool through greedy planner)
     LoopQualityResult isoGreedyResult = runVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY, segDir, profileFile);
 
     synchronized (results) {
@@ -159,55 +158,76 @@ public class LoopQualityTest {
     logVariantMetrics(greedyResult);
     logVariantMetrics(isoGreedyResult);
 
-    if (probeResult == null || probeResult.metrics == null) {
-      Assume.assumeTrue("routing could not produce track for " + testLabel, false);
+    // Gate the production round-trip strategies. greedy and iso_greedy are the
+    // primary algorithms AUTO ships; assert the quality bars on each that
+    // produced a track. A soft-assert collector reports every miss across both
+    // variants (not just the first), so one case can surface e.g. both a greedy
+    // cost/m miss and an iso_greedy overshoot. The case is skipped only when
+    // neither could form a loop at all; probe (legacy WAYPOINT) and isochrone
+    // were run above for the comparison report but are no longer gated.
+    List<String> failures = new ArrayList<>();
+    boolean anyTrack = false;
+    if (greedyResult != null && greedyResult.metrics != null) {
+      anyTrack = true;
+      checkVariantQuality("greedy", greedyResult.metrics, failures);
+    }
+    if (isoGreedyResult != null && isoGreedyResult.metrics != null) {
+      anyTrack = true;
+      checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
+    }
+    if (!anyTrack) {
+      Assume.assumeTrue("neither greedy nor iso_greedy produced a track for " + testLabel, false);
       return;
     }
-
-    LoopQualityMetrics metrics = probeResult.metrics;
-    assertTrue(
-      String.format("%s: road reuse %.1f%% exceeds max %.1f%% for %s terrain",
-        testLabel, metrics.getRoadReusePercent(), region.maxReusePercent, region.name()),
-      metrics.getRoadReusePercent() <= region.maxReusePercent);
-    assertTrue(
-      String.format("%s: distance ratio %.2f below min %.2f",
-        testLabel, metrics.getDistanceRatio(), region.minDistanceRatio),
-      metrics.getDistanceRatio() >= region.minDistanceRatio);
-    assertTrue(
-      String.format("%s: distance ratio %.2f exceeds max %.2f",
-        testLabel, metrics.getDistanceRatio(), region.maxDistanceRatio),
-      metrics.getDistanceRatio() <= region.maxDistanceRatio);
-    assertTrue(
-      String.format("%s: direction delta %.1f° exceeds max %.1f°",
-        testLabel, metrics.getDirectionDeltaDegrees(), region.maxDirectionDelta),
-      metrics.getDirectionDeltaDegrees() <= region.maxDirectionDelta);
-    // Profile-match gate: cost/m measures how well the route uses
-    // profile-preferred roads. For fastbike a route with cost/m > 3.5 is on
-    // roads the profile dislikes; gravel/mtb allow higher because their
-    // preferred surfaces have higher base cost.
-    double costPerM = metrics.getAverageCostPerMeter();
-    double maxCostPerM = maxCostPerMeterForProfile(profileName);
-    assertTrue(
-      String.format("%s: cost/m %.2f exceeds max %.2f for %s profile",
-        testLabel, costPerM, maxCostPerM, profileName),
-      costPerM <= maxCostPerM);
-    // Composite floor: a route with composite < MIN_COMPOSITE_PASS is bad
-    // along multiple dimensions even if individual thresholds pass. This is
-    // the catch-all that catches the "1.99x overshoot + low compactness +
-    // bad cost/m + bad direction" combinations that any single threshold
-    // misses but together signal an unusable loop.
-    double composite = metrics.compositeScore();
-    assertTrue(
-      String.format("%s: composite %.2f below floor %.2f (route fails on multiple dimensions)",
-        testLabel, composite, MIN_COMPOSITE_PASS),
-      composite >= MIN_COMPOSITE_PASS);
+    assertTrue("quality-gate failures for " + testLabel + ":\n  " + String.join("\n  ", failures),
+      failures.isEmpty());
   }
 
   /**
-   * Composite-score floor for the WAYPOINT/probe variant assertion. A route below
-   * this is bad along multiple dimensions — the per-dimension thresholds in
-   * {@link LoopTestRegion} catch grossly-broken loops; this catches the more
-   * insidious "ratio 1.5 × low compactness × bad cost/m" combinations.
+   * Soft-assert every production quality bar the variant misses — road reuse,
+   * distance-ratio band, direction delta, profile cost/m ceiling, composite
+   * floor — appending one human-readable line per miss to {@code failures} so a
+   * case reports all failures across all gated variants rather than only the
+   * first. cost/m measures how well the route uses profile-preferred roads
+   * (fastbike penalises tracks/unpaved heavily, gravel/mtb tolerate higher);
+   * the composite floor catches loops that are mediocre on several dimensions
+   * at once without grossly violating any single threshold.
+   */
+  private void checkVariantQuality(String variant, LoopQualityMetrics m, List<String> failures) {
+    String tag = testLabel + " [" + variant + "]";
+    if (m.getRoadReusePercent() > region.maxReusePercent) {
+      failures.add(String.format("%s: road reuse %.1f%% exceeds max %.1f%% for %s terrain",
+        tag, m.getRoadReusePercent(), region.maxReusePercent, region.name()));
+    }
+    if (m.getDistanceRatio() < region.minDistanceRatio) {
+      failures.add(String.format("%s: distance ratio %.2f below min %.2f",
+        tag, m.getDistanceRatio(), region.minDistanceRatio));
+    }
+    if (m.getDistanceRatio() > region.maxDistanceRatio) {
+      failures.add(String.format("%s: distance ratio %.2f exceeds max %.2f",
+        tag, m.getDistanceRatio(), region.maxDistanceRatio));
+    }
+    if (m.getDirectionDeltaDegrees() > region.maxDirectionDelta) {
+      failures.add(String.format("%s: direction delta %.1f° exceeds max %.1f°",
+        tag, m.getDirectionDeltaDegrees(), region.maxDirectionDelta));
+    }
+    double maxCostPerM = maxCostPerMeterForProfile(profileName);
+    if (m.getAverageCostPerMeter() > maxCostPerM) {
+      failures.add(String.format("%s: cost/m %.2f exceeds max %.2f for %s profile",
+        tag, m.getAverageCostPerMeter(), maxCostPerM, profileName));
+    }
+    if (m.compositeScore() < MIN_COMPOSITE_PASS) {
+      failures.add(String.format("%s: composite %.2f below floor %.2f (route fails on multiple dimensions)",
+        tag, m.compositeScore(), MIN_COMPOSITE_PASS));
+    }
+  }
+
+  /**
+   * Composite-score floor applied to each gated variant (greedy, iso_greedy). A
+   * route below this is bad along multiple dimensions — the per-dimension
+   * thresholds in {@link LoopTestRegion} catch grossly-broken loops; this
+   * catches the more insidious "ratio 1.5 × low compactness × bad cost/m"
+   * combinations.
    */
   private static final double MIN_COMPOSITE_PASS = 0.50;
 
