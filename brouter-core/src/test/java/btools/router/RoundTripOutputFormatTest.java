@@ -209,6 +209,31 @@ public class RoundTripOutputFormatTest {
   }
 
   // -------------------------------------------------------------------------
+  // Foot-profile guard. afischerdev's reported empty-voicehint round trip used
+  // a FOOT profile (hiking-mountain, timode=4) — a different code path from the
+  // gravel/bike guards above: foot routing builds its own detourMap, and the
+  // merged-loop path must carry it onto the closed loop or processVoiceHints
+  // emits nothing. The bike guards would not have caught a foot-only regression,
+  // so pin the foot profile explicitly on the bundled fixture (CI, not skipped).
+  // -------------------------------------------------------------------------
+
+  @Test
+  public void footProfileMergedLoopEmitsVoiceHints() {
+    for (RoundTripAlgorithm algo : new RoundTripAlgorithm[]{
+        RoundTripAlgorithm.AUTO, RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY}) {
+      Result r = route(algo, EAST, RADIUS, "hiking-mountain", 4);
+      String label = "hiking-mountain " + algo;
+      assertProduced(r, label);
+      assertMessageList(r.track, label);
+      Assert.assertNotNull(label + ": foot loop must carry a voice-hint list", r.track.voiceHints);
+      Assert.assertFalse(label + ": foot loop (timode=4) must emit voice hints — the reported"
+        + " empty-voicehint regression", r.track.voiceHints.list.isEmpty());
+      // The merged foot loop must also format without the messageList/voiceHints NPE.
+      assertWellFormedGpx(new FormatGpx(r.rc).format(r.track), label);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // helpers
   // -------------------------------------------------------------------------
 

@@ -40,6 +40,13 @@ public enum LoopTestRegion {
   // test radii), the strict threshold for MTB triggers everywhere. Add MTB
   // back to a region's profile set only after confirming that region has
   // the path network density to support MTB routing.
+  //
+  // Re-verified 2026-06 against the current planner+gate (all 6 regions,
+  // GREEDY+ISO_GREEDY at 30/50 km, dir 0/180): in the track/mountain regions
+  // (Innsbruck, Lozère, Mallorca, Nice) mtb forms no acceptable loop at all,
+  // and where it does close (Dreieich, Berlin) the route runs at cost/m
+  // 6.5–12.3 — far over the 5.0 mtb ceiling. The exclusion is empirical, not
+  // arbitrary; the round-trip fixes in this PR do not change it.
   DREIEICH(8.720, 50.000, "E5_N50.rd5", 25.0, 0.5, 1.6, 180,
     profiles("fastbike", "gravel")),
   URBAN_BERLIN(13.400, 52.520, "E10_N50.rd5", 25.0, 0.5, 1.6, 180,
