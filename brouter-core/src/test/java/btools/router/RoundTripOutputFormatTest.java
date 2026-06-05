@@ -5,7 +5,9 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -231,6 +233,71 @@ public class RoundTripOutputFormatTest {
       // The merged foot loop must also format without the messageList/voiceHints NPE.
       assertWellFormedGpx(new FormatGpx(r.rc).format(r.track), label);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-tier alias end-to-end: the QUALITY alias must resolve through setParams
+  // (RoutingParamCollector → fromString) AND drive a real route to a loop — the
+  // full param-string-to-route path, not just the fromString unit mapping.
+  // QUALITY (→ ISO_GREEDY) reliably forms a loop on the fixture.
+  // -------------------------------------------------------------------------
+
+  @Test
+  public void qualityTierAliasRoutesEndToEnd() {
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    wps.add(RoundTripFixture.node("from", 8.72, 50.0));
+
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = RoundTripFixture.profileFile(PROFILE).getAbsolutePath();
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("roundTripAlgorithm", "QUALITY");
+    params.put("roundTripDistance", String.valueOf(RADIUS));
+    params.put("direction", String.valueOf(EAST));
+    new RoutingParamCollector().setParams(rc, null, params);
+    Assert.assertEquals("QUALITY alias must resolve to ISO_GREEDY",
+      RoundTripAlgorithm.ISO_GREEDY, rc.roundTripAlgorithm);
+
+    RoutingEngine re = new RoutingEngine(null, null, RoundTripFixture.segmentDir(), wps, rc,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.quite = true;
+    re.doRun(60_000);
+    Assert.assertNull("QUALITY alias route error: " + re.getErrorMessage(), re.getErrorMessage());
+    Assert.assertNotNull("QUALITY alias must produce a loop", re.getFoundTrack());
+    Assert.assertTrue("QUALITY alias loop must be non-degenerate",
+      re.getFoundTrack().nodes.size() > 2);
+  }
+
+  // -------------------------------------------------------------------------
+  // WAYPOINT (FAST) and ISOCHRONE take the non-merged doWaypointBasedRoundTrip
+  // path — a different track shape from the greedy-merged tiers (AUTO/GREEDY/
+  // ISO_GREEDY) the format guards above cover. They are marginal on the tiny
+  // fixture, so skip-tolerate loop formation but assert clean GPX + JSON +
+  // messageList whenever a track IS produced.
+  // -------------------------------------------------------------------------
+
+  @Test
+  public void waypointAndIsochroneTracksFormatCleanlyWhenProduced() {
+    boolean any = false;
+    for (RoundTripAlgorithm algo : new RoundTripAlgorithm[]{
+        RoundTripAlgorithm.WAYPOINT, RoundTripAlgorithm.ISOCHRONE}) {
+      for (int dir : DIRECTIONS) {
+        Result r = route(algo, dir, RADIUS, PROFILE, 4);
+        if (r.engine.getErrorMessage() != null || r.track == null
+            || r.track.nodes.size() <= 2) {
+          continue; // marginal tier × tiny fixture — nothing to format here
+        }
+        any = true;
+        String label = algo + " dir=" + dir;
+        assertMessageList(r.track, label);
+        assertWellFormedGpx(new FormatGpx(r.rc).format(r.track), label);
+        String json = new FormatJson(r.rc).format(r.track);
+        Assert.assertNotNull(label + ": JSON is null", json);
+        Assert.assertTrue(label + ": JSON must carry coordinates", json.contains("coordinates"));
+      }
+    }
+    org.junit.Assume.assumeTrue(
+      "neither WAYPOINT nor ISOCHRONE formed a loop on the fixture — nothing to format-check",
+      any);
   }
 
   // -------------------------------------------------------------------------

@@ -220,6 +220,12 @@ public class RoutingParamCollector {
           }
         } else if (key.equals("roundTripDistance")) {
           rctx.roundTripDistance = parseIntParamOrNull(key, value);
+          // Symmetric with roundTripLength: a non-positive distance would yield a
+          // zero/negative searchRadius (and silently disable the distance gate),
+          // so invalidate it and let the default radius apply.
+          if (rctx.roundTripDistance != null && rctx.roundTripDistance <= 0) {
+            rctx.roundTripDistance = null;
+          }
         } else if (key.equals("roundTripDirectionAdd")) {
           rctx.roundTripDirectionAdd = parseIntParamOrNull(key, value);
         } else if (key.equals("roundTripPoints")) {
@@ -236,6 +242,17 @@ public class RoutingParamCollector {
         } else if (key.equals("allowSamewayback")) {
           Integer v = parseIntParamOrNull(key, value);
           rctx.allowSamewayback = v != null && v == 1;
+        } else if (key.equals("roundTripStrictQuality")) {
+          // Opt back into hard-rejecting QUALITY-tier failures (distance/chaos/
+          // hostile-surface/retrace). Default lenient: such routes are returned
+          // with a Warning: advisory so the user decides whether to ride them.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripStrictQuality = v != null && v == 1;
+        } else if (key.equals("roundTripDensify")) {
+          // Opt into "length-honoring" explicit-via densification (arc bulges between user
+          // vias). Off by default; engine still gates it to non-paved profiles. 0 forces off.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.explicitViaDensifyOverride = v != null && v == 1;
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
         } else if (key.equals("roundTripIsochrone")) {

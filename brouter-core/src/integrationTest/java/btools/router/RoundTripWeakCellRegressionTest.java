@@ -111,6 +111,9 @@ public class RoundTripWeakCellRegressionTest {
     rctx.startDirection = directionDeg;
     rctx.roundTripDistance = searchRadius;
     rctx.roundTripAlgorithm = algo;
+    // Regression matrix asserts the planner's clean-loop envelopes; grade only
+    // gate-accepted loops (engine defaults to lenient-warn).
+    rctx.roundTripStrictQuality = true;
 
     RoutingEngine engine = new RoutingEngine(null, null, segDir, wplist, rctx,
       RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);

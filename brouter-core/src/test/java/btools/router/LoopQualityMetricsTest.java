@@ -409,4 +409,50 @@ public class LoopQualityMetricsTest {
     LoopQualityMetrics m = LoopQualityMetrics.compute(track, 1000, 0);
     Assert.assertEquals("cost/m should be 3.0", 3.0, m.getAverageCostPerMeter(), 0.01);
   }
+
+  // ---- computeCostMatchScore (pure, was untested) -------------------------
+
+  @Test
+  public void computeCostMatchScore_plateauFloorAndLinearMidpoint() {
+    // ≤ 0 → 0.0 (missing cost data is NOT scored as a perfect match).
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(0.0), 1e-9);
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(-1.0), 1e-9);
+    // Plateau at/below IDEAL (1.5) → 1.0.
+    Assert.assertEquals(1.0, LoopQualityMetrics.computeCostMatchScore(1.0), 1e-9);
+    Assert.assertEquals(1.0, LoopQualityMetrics.computeCostMatchScore(1.5), 1e-9);
+    // Floor at/above ZERO (4.0) → 0.0.
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(4.0), 1e-9);
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(5.0), 1e-9);
+    // Linear between: (4.0 - 2.75) / (4.0 - 1.5) = 0.5.
+    Assert.assertEquals(0.5, LoopQualityMetrics.computeCostMatchScore(2.75), 1e-9);
+  }
+
+  // ---- fromFields rehydration (field-order transposition guard) -----------
+
+  @Test
+  public void fromFields_roundTripsEveryGetter() {
+    LoopQualityMetrics m = LoopQualityMetrics.fromFields(
+      12.5,   // roadReusePercent
+      1.05,   // distanceRatio
+      33.0,   // directionDeltaDegrees
+      21000,  // actualDistanceMeters
+      20000,  // requestedDistanceMeters
+      0.97,   // continuityScore
+      250,    // maxGapMeters
+      600,    // totalGapMeters
+      0.8,    // compactnessScore
+      1.4,    // averageCostPerMeter
+      120);   // closureDistanceMeters
+    Assert.assertEquals(12.5, m.getRoadReusePercent(), 1e-9);
+    Assert.assertEquals(1.05, m.getDistanceRatio(), 1e-9);
+    Assert.assertEquals(33.0, m.getDirectionDeltaDegrees(), 1e-9);
+    Assert.assertEquals(21000, m.getActualDistanceMeters());
+    Assert.assertEquals(20000, m.getRequestedDistanceMeters());
+    Assert.assertEquals(0.97, m.getContinuityScore(), 1e-9);
+    Assert.assertEquals(250, m.getMaxGapMeters());
+    Assert.assertEquals(600, m.getTotalGapMeters());
+    Assert.assertEquals(0.8, m.getCompactnessScore(), 1e-9);
+    Assert.assertEquals(1.4, m.getAverageCostPerMeter(), 1e-9);
+    Assert.assertEquals(120, m.getClosureDistanceMeters());
+  }
 }

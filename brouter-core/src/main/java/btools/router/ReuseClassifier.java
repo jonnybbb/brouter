@@ -221,8 +221,8 @@ public final class ReuseClassifier {
     RoundTripQualityResult.Builder b = RoundTripQualityResult.builder();
 
     if (profile.totalDistance <= 0) {
-      return b.accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("empty track").build();
+      return b.shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, "empty track").build();
     }
 
     double totalReuse = 0;
@@ -268,8 +268,8 @@ public final class ReuseClassifier {
 
     // 1. Reject on long unclassified mid-route retrace (single stretch).
     if (midRouteUnclassifiedMaxMeters > midCap) {
-      return b.accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason(String.format(Locale.US,
+      return b.shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
           "mid-route retrace %dm exceeds %dm — accidental backtracking",
           midRouteUnclassifiedMaxMeters, midCap))
         .build();
@@ -281,8 +281,8 @@ public final class ReuseClassifier {
     //    single-stretch one: 2km/8% of cumulative mid-route reuse is plenty
     //    to mark the route as accidentally retracey.
     if (midRouteUnclassifiedTotalMeters > midCap) {
-      return b.accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason(String.format(Locale.US,
+      return b.shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
           "cumulative mid-route retrace %dm exceeds %dm — route zig-zags",
           midRouteUnclassifiedTotalMeters, midCap))
         .build();
@@ -294,8 +294,8 @@ public final class ReuseClassifier {
     if (reuseRatio >= SCENIC_OUT_AND_BACK_REUSE_RATIO) {
       RouteShape shape = RouteShape.SCENIC_OUT_AND_BACK;
       if (!allowSamewayback) {
-        return b.accepted(false).shape(shape)
-          .rejectionReason(String.format(Locale.US,
+        return b.shape(shape)
+          .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
             "route is %.0f%% retraced — out-and-back not allowed (allowSamewayback=0)",
             reuseRatio * 100))
           .build();
@@ -347,8 +347,8 @@ public final class ReuseClassifier {
           : String.format(Locale.US,
               "route is %.0f%% retraced same-way-back to extremity — allowSamewayback=0",
               reuseRatio * 100);
-        return b.accepted(false).shape(RouteShape.SCENIC_OUT_AND_BACK)
-          .rejectionReason(why)
+        return b.shape(RouteShape.SCENIC_OUT_AND_BACK)
+          .reject(RoundTripQualityResult.RejectionTier.QUALITY, why)
           .build();
       }
       String disclosure = structuralLollipop

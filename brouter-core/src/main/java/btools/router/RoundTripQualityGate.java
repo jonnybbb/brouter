@@ -99,8 +99,19 @@ public final class RoundTripQualityGate {
   public static final int MAX_SELF_INTERSECTIONS = 5;
   /** Maximum hairpin-like turns allowed before a route is considered chaotic. */
   public static final int MAX_HAIRPIN_TURNS = 20;
-  /** Maximum number of nodes used for O(n²) shape scanning. */
-  private static final int MAX_SHAPE_SCAN_NODES = 1500;
+  /**
+   * Node cap above which the self-intersection scan falls back to stride
+   * decimation. Set high enough that it is only ever a degenerate-input guard:
+   * a 100km loop is ~3300 nodes, 250km ~8000, and the O(n²) scan with the
+   * {@link #countSelfIntersections} early-exit ceiling runs sub-second at this
+   * size. Decimation is NOT shape-preserving — stride sampling replaces curved
+   * sub-paths with straight chords, fabricating crossings on dense switchback
+   * tracks (gate=21 where the full-resolution count is 0; measured on the
+   * alpine/coastal 100km loops). It under-counts on other geometries. So the
+   * scan must run at full node resolution for any realistic loop and only
+   * decimate as a last-resort cost guard on pathological input.
+   */
+  private static final int MAX_SHAPE_SCAN_NODES = 10000;
   /** Ignore tiny digitization jitter when counting U-turns. */
   private static final int MIN_HAIRPIN_SEGMENT_METERS = 25;
 
@@ -227,6 +238,13 @@ public final class RoundTripQualityGate {
     "surface=concrete:plates",
     "surface=concrete:lanes",
     "surface=chipseal",
+    // Constructed stone paving — rough and slow but a road bike CAN ride it
+    // (cf. the cobbled sectors of Paris-Roubaix / the Tour of Flanders). These
+    // are bona fide paved infrastructure, not loose off-road surface, so they
+    // must not trip the hostile-stretch gate. The cost function may still mildly
+    // penalise them for comfort; rideability and routing-preference are separate.
+    "surface=pebblestone",
+    "surface=cobblestone",
   };
 
   /**
@@ -338,14 +356,15 @@ public final class RoundTripQualityGate {
                                                 boolean explicitViaMode, boolean allowFerries) {
     if (track == null || track.nodes == null) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("no track").build();
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, "no track").build();
     }
     int n = track.nodes.size();
     if (n < MIN_NODES) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("too few nodes (" + n + ", need ≥ " + MIN_NODES + ")")
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL,
+          "too few nodes (" + n + ", need ≥ " + MIN_NODES + ")")
         .build();
     }
 
@@ -353,8 +372,9 @@ public final class RoundTripQualityGate {
     int closure = track.nodes.get(0).calcDistance(track.nodes.get(n - 1));
     if (closure > MAX_CLOSURE_METERS) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("closure=" + closure + "m exceeds " + MAX_CLOSURE_METERS + "m")
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL,
+          "closure=" + closure + "m exceeds " + MAX_CLOSURE_METERS + "m")
         .build();
     }
 
@@ -376,9 +396,10 @@ public final class RoundTripQualityGate {
       if (ratio < MIN_DISTANCE_RATIO || ratio > MAX_DISTANCE_RATIO) {
         if (!explicitViaMode) {
           return RoundTripQualityResult.builder()
-            .accepted(false).shape(RouteShape.INVALID_RETRACE)
-            .rejectionReason(String.format(Locale.US, "distance ratio %.2f outside [%.1f, %.1f]",
-              ratio, MIN_DISTANCE_RATIO, MAX_DISTANCE_RATIO))
+            .shape(RouteShape.INVALID_RETRACE)
+            .reject(RoundTripQualityResult.RejectionTier.QUALITY,
+              String.format(Locale.US, "distance ratio %.2f outside [%.1f, %.1f]",
+                ratio, MIN_DISTANCE_RATIO, MAX_DISTANCE_RATIO))
             .build();
         }
         explicitViaDistanceRatioMismatch = ratio;
@@ -393,8 +414,9 @@ public final class RoundTripQualityGate {
       for (MatchedWaypoint mwp : mwps) {
         if (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT) {
           return RoundTripQualityResult.builder()
-            .accepted(false).shape(RouteShape.INVALID_RETRACE)
-            .rejectionReason("track contains beeline (waypoint marked DIRECT)")
+            .shape(RouteShape.INVALID_RETRACE)
+            .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL,
+              "track contains beeline (waypoint marked DIRECT)")
             .build();
         }
       }
@@ -406,8 +428,8 @@ public final class RoundTripQualityGate {
     String synthetic = checkSyntheticSegments(track, allowFerries);
     if (synthetic != null) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason(synthetic)
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, synthetic)
         .build();
     }
 
@@ -416,8 +438,8 @@ public final class RoundTripQualityGate {
     String chaos = checkShapeChaos(track);
     if (chaos != null) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason(chaos)
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.QUALITY, chaos)
         .build();
     }
 
@@ -429,8 +451,8 @@ public final class RoundTripQualityGate {
       String hostile = checkHostileSegmentsPaved(track);
       if (hostile != null) {
         return RoundTripQualityResult.builder()
-          .accepted(false).shape(RouteShape.INVALID_RETRACE)
-          .rejectionReason(hostile)
+          .shape(RouteShape.INVALID_RETRACE)
+          .reject(RoundTripQualityResult.RejectionTier.QUALITY, hostile)
           .build();
       }
     }
@@ -944,7 +966,28 @@ public final class RoundTripQualityGate {
 
   static boolean isHostileForPavedProfile(MessageData m) {
     String tags = m.wayKeyValues;
-    if (tags != null && isRoadBikeSuitablePavedTrack(tags)) return false;
+    if (tags != null) {
+      if (isRoadBikeSuitablePavedTrack(tags)) return false;
+      // A soft highway (path/footway/bridleway) carrying an explicit hard
+      // surface is paved cycleway infrastructure, rideable on a road bike — even
+      // when the cost function scores the surface as "unpaved" and pushes the
+      // costfactor over the threshold (fastbike treats surface=pebblestone like
+      // gravel, so a cobbled cycleway lands at costfactor ~15). The explicit
+      // surface tag is the more reliable rideability signal, so honour it BEFORE
+      // the costfactor check, which would otherwise reject it as hostile.
+      //
+      // The cost is intentionally NOT bounded here — cobbled cycleways are a
+      // deliberately high-cost-but-rideable case, and the cost function still
+      // penalises them for comfort. But a poor tracktype (grade2-5) is a
+      // stronger surface-quality signal than the surface tag and overrides it
+      // (e.g. a broken-asphalt grade3 forest path), exactly as the sibling
+      // isRoadBikeSuitablePavedTrack guards — so a rough-graded path does not
+      // get the rideability pass even if it carries an incidental hard surface.
+      if (hasSoftOverridableHighway(tags) && hasHardSurface(tags)
+          && !hasExplicitBicycleRestriction(tags) && !hasPoorTracktype(tags)) {
+        return false;
+      }
+    }
     if (m.costfactor > HOSTILE_COSTFACTOR_THRESHOLD) return true;
     if (tags == null) return false;
     for (String fragment : PAVED_PROFILE_HOSTILE_TAG_FRAGMENTS) {
@@ -952,8 +995,13 @@ public final class RoundTripQualityGate {
         // Soft-highway fragments (path/footway/bridleway) are overridden
         // when the surface is hard: a path tagged surface=asphalt is paved
         // cycleway infrastructure, rideable on a road bike. Tracks /
-        // steps / surface=gravel and friends are NOT overridable.
-        if (isOverridableHostileTag(fragment) && hasHardSurface(tags)) {
+        // steps / surface=gravel and friends are NOT overridable. A poor
+        // tracktype (grade2-5) vetoes the override here too, symmetric with the
+        // pre-costfactor override above and the track case — so a rough-graded
+        // path stays hostile regardless of whether it lands on this low-cost
+        // branch or the costfactor branch.
+        if (isOverridableHostileTag(fragment) && hasHardSurface(tags)
+            && !hasPoorTracktype(tags)) {
           continue;
         }
         return true;
@@ -967,6 +1015,25 @@ public final class RoundTripQualityGate {
       if (s.equals(fragment)) return true;
     }
     return false;
+  }
+
+  private static boolean hasSoftOverridableHighway(String tags) {
+    for (String s : SOFT_HIGHWAY_OVERRIDABLE) {
+      if (tags.contains(s)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether the way carries a poor tracktype (grade2-5), a stronger
+   * surface-quality signal than the surface tag. Used to veto the
+   * "hard surface ⇒ rideable" overrides for both tracks and soft highways.
+   */
+  private static boolean hasPoorTracktype(String tags) {
+    return tags.contains("tracktype=grade2")
+      || tags.contains("tracktype=grade3")
+      || tags.contains("tracktype=grade4")
+      || tags.contains("tracktype=grade5");
   }
 
   private static boolean hasHardSurface(String tags) {
@@ -1014,11 +1081,7 @@ public final class RoundTripQualityGate {
     // tracktype=grade2|3|4|5 is a more-specific signal of poor riding
     // surface that overrides the surface tag (e.g. broken asphalt on a
     // grade2 forest road). Don't activate the cascade if those are set.
-    boolean poorTracktype = tags.contains("tracktype=grade2")
-      || tags.contains("tracktype=grade3")
-      || tags.contains("tracktype=grade4")
-      || tags.contains("tracktype=grade5");
-    if (poorTracktype) return false;
+    if (hasPoorTracktype(tags)) return false;
     boolean hardSurface = hasHardSurface(tags);
     boolean cycleNetwork = hasCycleNetworkTag(tags);
     return hardSurface

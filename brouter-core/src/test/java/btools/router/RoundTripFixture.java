@@ -77,6 +77,10 @@ final class RoundTripFixture {
     rc.startDirection = direction;
     rc.roundTripDistance = radius;
     rc.turnInstructionMode = 2; // generate voice hints so they can be validated
+    // These suites assert the gate's HARD-reject behaviour; the engine now
+    // defaults to lenient (return quality-failed routes with a warning), so opt
+    // into strict here. A test wanting the lenient path overrides it via tweak.
+    rc.roundTripStrictQuality = true;
     tweak.accept(rc);
 
     RoutingEngine re = new RoutingEngine(null, null, segmentDir(), wps, rc,

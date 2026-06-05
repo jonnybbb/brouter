@@ -145,6 +145,12 @@ public class LoopGoldenSignatureTest {
       rctx.startDirection = s.direction;
       rctx.roundTripDistance = s.searchRadius;
       rctx.roundTripAlgorithm = s.algorithm;
+      // Sign only gate-accepted clean loops, matching the sibling quality
+      // matrices (LoopGoldStandardTest / LoopQualityTest / RoundTripWeakCell…).
+      // Without this the lenient default would adopt QUALITY-failed best-effort
+      // loops (err=null), freezing a degraded loop into the golden instead of
+      // surfacing it as a regression (NO_TRACK).
+      rctx.roundTripStrictQuality = true;
 
       RoutingEngine re = new RoutingEngine(
         null, null, segDir, wplist, rctx,

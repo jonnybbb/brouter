@@ -162,6 +162,107 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
+  public void tierAliasesResolveThroughSetParams() {
+    // fromString is unit-tested in RoundTripAlgorithmTest; this pins the parser
+    // wiring (RoutingParamCollector → RoundTripAlgorithm.fromString) so the
+    // user-facing tier aliases actually reach rctx.roundTripAlgorithm.
+    String[][] cases = {
+      {"FAST", "WAYPOINT"}, {"BALANCED", "GREEDY"}, {"QUALITY", "ISO_GREEDY"},
+      {"quality", "ISO_GREEDY"}, {"bogus", "AUTO"},
+    };
+    for (String[] c : cases) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> p = new LinkedHashMap<>();
+      p.put("roundTripAlgorithm", c[0]);
+      new RoutingParamCollector().setParams(rctx, null, p);
+      Assert.assertEquals("alias " + c[0] + " must resolve to " + c[1],
+        RoundTripAlgorithm.valueOf(c[1]), rctx.roundTripAlgorithm);
+    }
+  }
+
+  @Test
+  public void roundTripPointsOutOfRangeClampsToDefault() {
+    // Valid range is [3,20]; anything outside (or non-integer) falls back to 5.
+    for (String v : new String[]{"2", "0", "21", "100", "-3"}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> p = new LinkedHashMap<>();
+      p.put("roundTripPoints", v);
+      new RoutingParamCollector().setParams(rctx, null, p);
+      Integer expectedClamp = 5;
+      Assert.assertEquals("roundTripPoints=" + v + " clamps to 5",
+        expectedClamp, rctx.roundTripPoints);
+    }
+    // An in-range value is preserved unchanged.
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripPoints", "8");
+    new RoutingParamCollector().setParams(rctx, null, p);
+    Integer expectedPoints = 8;
+    Assert.assertEquals(expectedPoints, rctx.roundTripPoints);
+  }
+
+  @Test
+  public void roundTripStrictQualityParsesBooleanWithDefaultFalse() {
+    Assert.assertTrue(strictQualityFor("1"));
+    Assert.assertFalse(strictQualityFor("0"));
+    Assert.assertFalse("malformed → default false", strictQualityFor("yes"));
+    // Absent → default false.
+    RoutingContext rctx = new RoutingContext();
+    new RoutingParamCollector().setParams(rctx, null, new LinkedHashMap<>());
+    Assert.assertFalse(rctx.roundTripStrictQuality);
+  }
+
+  private static boolean strictQualityFor(String v) {
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripStrictQuality", v);
+    new RoutingParamCollector().setParams(rctx, null, p);
+    return rctx.roundTripStrictQuality;
+  }
+
+  @Test
+  public void roundTripDensifyOverrideIsTriState() {
+    // The override is a Boolean: 1 → TRUE (force on), 0 → FALSE (force off),
+    // absent → null (engine default decides).
+    Assert.assertEquals(Boolean.TRUE, densifyFor("1"));
+    Assert.assertEquals("0 forces off (FALSE, distinct from unset)",
+      Boolean.FALSE, densifyFor("0"));
+    RoutingContext rctx = new RoutingContext();
+    new RoutingParamCollector().setParams(rctx, null, new LinkedHashMap<>());
+    Assert.assertNull("absent → unset", rctx.explicitViaDensifyOverride);
+  }
+
+  private static Boolean densifyFor(String v) {
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripDensify", v);
+    new RoutingParamCollector().setParams(rctx, null, p);
+    return rctx.explicitViaDensifyOverride;
+  }
+
+  @Test
+  public void nonPositiveRoundTripDistanceIsNulled() {
+    // Symmetric with roundTripLength: a non-positive roundTripDistance would
+    // become a zero/negative searchRadius (which silently disables the distance
+    // gate and ships a wrong-scale loop), so the parser must invalidate it and
+    // let the default radius apply.
+    for (String v : new String[]{"0", "-100", "-5000"}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> p = new LinkedHashMap<>();
+      p.put("roundTripDistance", v);
+      new RoutingParamCollector().setParams(rctx, null, p);
+      Assert.assertNull("roundTripDistance=" + v + " must null out", rctx.roundTripDistance);
+    }
+    // A positive value is preserved unchanged.
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripDistance", "2500");
+    new RoutingParamCollector().setParams(rctx, null, p);
+    Integer expectedDistance = 2500;
+    Assert.assertEquals(expectedDistance, rctx.roundTripDistance);
+  }
+
+  @Test
   public void nonPositiveRoundTripLengthIsNulled() {
     // roundTripLength <= 0 must be discarded (null), not passed through.
     for (String v : new String[]{"0", "-5"}) {
@@ -521,6 +622,97 @@ public class GreedyRoundTripPlannerTest {
     m.wayKeyValues = src.wayKeyValues;
     m.costfactor = src.costfactor;
     return m;
+  }
+
+  // ======================================================================
+  // pickDiverseTopK — angular-diversity candidate selection (was untested).
+  // MIN_ANGULAR_SEPARATION_DEG = 30°, strict '<'. After the diversity pass
+  // culls near-bearing duplicates, a back-fill tops the result up to k.
+  // ======================================================================
+
+  private static RoundTripCandidateProvider.CandidatePoint cp(double bearing) {
+    RoundTripCandidateProvider.CandidatePoint p = new RoundTripCandidateProvider.CandidatePoint();
+    p.bearing = bearing;
+    return p;
+  }
+
+  private static List<RoundTripCandidateProvider.CandidatePoint> cps(double... bearings) {
+    List<RoundTripCandidateProvider.CandidatePoint> list = new ArrayList<>();
+    for (double b : bearings) list.add(cp(b));
+    return list;
+  }
+
+  @Test
+  public void pickDiverseTopK_cullsNearBearingCandidates() {
+    // 10° is within 30° of the already-picked 0° → culled; 200° is far → picked.
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 10, 200), 2);
+    Assert.assertEquals(2, picked.size());
+    Assert.assertEquals(0.0, picked.get(0).bearing, 1e-9);
+    Assert.assertEquals(200.0, picked.get(1).bearing, 1e-9);
+  }
+
+  @Test
+  public void pickDiverseTopK_backfillsWhenDiversityStarvesBelowK() {
+    // All three are within 30° of the first: only 0° survives the diversity
+    // pass, so the back-fill restores k by insertion order (adds 10°).
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 10, 20), 2);
+    Assert.assertEquals(2, picked.size());
+    Assert.assertEquals(0.0, picked.get(0).bearing, 1e-9);
+    Assert.assertEquals(10.0, picked.get(1).bearing, 1e-9);
+  }
+
+  @Test
+  public void pickDiverseTopK_diversityUsesAngularWraparound() {
+    // 350° and 10° are 20° apart across the 0/360 seam → 10° is culled even
+    // though its numeric distance from 350 is 340.
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(350, 10, 200), 2);
+    Assert.assertEquals(2, picked.size());
+    Assert.assertEquals(350.0, picked.get(0).bearing, 1e-9);
+    Assert.assertEquals(200.0, picked.get(1).bearing, 1e-9);
+  }
+
+  @Test
+  public void pickDiverseTopK_exactSeparationIsNotCulled() {
+    // Strict '<' separation: exactly 30° apart is kept (both survive).
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 30), 2);
+    Assert.assertEquals(2, picked.size());
+  }
+
+  @Test
+  public void pickDiverseTopK_returnsAllWhenKExceedsSize() {
+    Assert.assertEquals(3,
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 90, 180), 5).size());
+  }
+
+  @Test
+  public void pickDiverseTopK_emptyAndZeroKAreEmpty() {
+    Assert.assertTrue(GreedyRoundTripPlanner.pickDiverseTopK(
+      new ArrayList<>(), 3).isEmpty());
+    Assert.assertTrue(GreedyRoundTripPlanner.pickDiverseTopK(
+      cps(0, 90), 0).isEmpty());
+  }
+
+  // ---- boundaryProximityWeight guard + clamp (the desired<=0 and beyond-end
+  //      branches the existing near/mid tests don't reach) -------------------
+
+  @Test
+  public void boundaryProximityWeight_nonPositiveDesiredReturnsFull() {
+    Assert.assertEquals("desired==0 guard → full weight",
+      1.0, GreedyRoundTripPlanner.boundaryProximityWeight(3500, 6500, 0), 1e-9);
+    Assert.assertEquals("negative desired guard → full weight",
+      1.0, GreedyRoundTripPlanner.boundaryProximityWeight(3500, 6500, -5000), 1e-9);
+  }
+
+  @Test
+  public void boundaryProximityWeight_positionsBeyondDesiredClampToBoundary() {
+    // firstPos/currentPos past desiredDistance: the (1-frac) term goes negative
+    // and is clamped to 0, so a beyond-end position reads as on-boundary → 1.0.
+    Assert.assertEquals(1.0,
+      GreedyRoundTripPlanner.boundaryProximityWeight(12000, 11000, 10000), 1e-9);
   }
 
 }

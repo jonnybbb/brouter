@@ -15,16 +15,20 @@ import java.util.Locale;
  *
  * <p>{@link #ISOCHRONE} places waypoints directly from the isochrone frontier
  * (without routing real candidate legs the way the QUALITY tier does). It is
- * AUTO-selected only for small loops where its indirectness-compensated placement
- * yields reliable loops in constrained terrain; for larger loops or by explicit
- * choice it remains primarily a debug/comparison surface.
+ * <em>not</em> selected by loop size: from {@link #AUTO} it is reached only via
+ * the explicit {@code roundTripIsochrone=1} shortcut, or as the last-resort
+ * candidate in the AUTO competition (tried only after ISO_GREEDY, GREEDY, and
+ * WAYPOINT have all failed — see
+ * {@code RoutingEngine#runAutoCandidateCompetition}). Otherwise it is an explicit
+ * choice and primarily a debug/comparison surface.
  */
 public enum RoundTripAlgorithm {
   /** Pick a mode based on terrain, length, and request parameters. */
   AUTO,
   /** FAST tier: probe-based waypoint placement. */
   WAYPOINT,
-  /** Direct isochrone-frontier waypoint placement (AUTO-selected for small loops). */
+  /** Direct isochrone-frontier waypoint placement (from AUTO only via the
+   *  {@code roundTripIsochrone=1} shortcut or as the competition's last resort). */
   ISOCHRONE,
   /** BALANCED tier: iterative routed-leg planner with radial candidate provider. */
   GREEDY,

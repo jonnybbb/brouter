@@ -1,5 +1,6 @@
 package btools.router;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -315,6 +316,28 @@ public class IsochroneCandidateProviderTest {
     assertEquals("right of 18 is 19", 19, order[1]);
     assertEquals("left of 18 is 17", 17, order[2]);
     assertEquals("furthest is 36 - it should appear last", 0, order[order.length - 1]);
+  }
+
+  @Test
+  public void startAnchoredStrideOrderMatchesJavadocExample() {
+    // 4 buckets from 0: right (1), left (3), then the antipode (2) once → [0,1,3,2].
+    assertArrayEquals(new int[]{0, 1, 3, 2},
+      IsochroneCandidateProvider.startAnchoredStrideOrder(0, 4));
+  }
+
+  @Test
+  public void startAnchoredStrideOrderNonZeroStartEmitsAntipodeOnce() {
+    // From bucket 2 of 4: right (3), left (1), antipode (0) once → [2,3,1,0].
+    assertArrayEquals(new int[]{2, 3, 1, 0},
+      IsochroneCandidateProvider.startAnchoredStrideOrder(2, 4));
+  }
+
+  @Test
+  public void startAnchoredStrideOrderOddTotalHasNoAntipodeBranch() {
+    // Odd bucket count: right and left never coincide, so the order is a pure
+    // right/left interleave with no single-emit antipode step → [0,1,4,2,3].
+    assertArrayEquals(new int[]{0, 1, 4, 2, 3},
+      IsochroneCandidateProvider.startAnchoredStrideOrder(0, 5));
   }
 
   @Test

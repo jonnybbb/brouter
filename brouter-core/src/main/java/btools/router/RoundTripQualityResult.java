@@ -39,9 +39,29 @@ import java.util.List;
  */
 public final class RoundTripQualityResult {
 
+  /**
+   * Why a route was rejected, split into the two tiers the engine treats
+   * differently:
+   * <ul>
+   *   <li><b>STRUCTURAL</b> — the route is broken / not a rideable loop
+   *       (no track, too few nodes, un-routable beeline, ferry without opt-in,
+   *       didn't close back to start). The engine always hard-rejects these:
+   *       there is nothing usable to offer.</li>
+   *   <li><b>QUALITY</b> — the route is rideable but suboptimal (off the
+   *       distance target, self-crossing/hairpin chaos, profile-hostile
+   *       surface, mid-route backtracking). By default the engine returns
+   *       these with an advisory warning and lets the user decide; strict
+   *       mode ({@link RoutingContext#roundTripStrictQuality}) hard-rejects
+   *       them like before.</li>
+   * </ul>
+   * Only meaningful when {@link #isAccepted()} is false.
+   */
+  public enum RejectionTier { STRUCTURAL, QUALITY }
+
   private final boolean accepted;
   private final RouteShape shape;
   private final String rejectionReason;
+  private final RejectionTier rejectionTier;
   private final double totalReuseRatio;
   private final int maxContiguousReuseMeters;
   private final int terminalStemReuseMeters;
@@ -52,6 +72,7 @@ public final class RoundTripQualityResult {
     this.accepted = b.accepted;
     this.shape = b.shape;
     this.rejectionReason = b.rejectionReason;
+    this.rejectionTier = b.rejectionTier;
     this.totalReuseRatio = b.totalReuseRatio;
     this.maxContiguousReuseMeters = b.maxContiguousReuseMeters;
     this.terminalStemReuseMeters = b.terminalStemReuseMeters;
@@ -64,6 +85,8 @@ public final class RoundTripQualityResult {
   public boolean isAccepted() { return accepted; }
   public RouteShape getShape() { return shape; }
   public String getRejectionReason() { return rejectionReason; }
+  /** Rejection tier (STRUCTURAL vs QUALITY); only meaningful when not accepted. */
+  public RejectionTier getRejectionTier() { return rejectionTier; }
   public double getTotalReuseRatio() { return totalReuseRatio; }
   public int getMaxContiguousReuseMeters() { return maxContiguousReuseMeters; }
   public int getTerminalStemReuseMeters() { return terminalStemReuseMeters; }
@@ -90,6 +113,11 @@ public final class RoundTripQualityResult {
     private boolean accepted;
     private RouteShape shape = RouteShape.STRICT_LOOP;
     private String rejectionReason;
+    // STRUCTURAL is only a placeholder for accepted results (where the tier is
+    // never read). A rejected result MUST set the tier explicitly — build()
+    // enforces it — so a new reject site can't silently default to hard-reject.
+    private RejectionTier rejectionTier = RejectionTier.STRUCTURAL;
+    private boolean rejectionTierSet = false;
     private double totalReuseRatio;
     private int maxContiguousReuseMeters;
     private int terminalStemReuseMeters;
@@ -99,6 +127,22 @@ public final class RoundTripQualityResult {
     public Builder accepted(boolean v) { this.accepted = v; return this; }
     public Builder shape(RouteShape v) { this.shape = v; return this; }
     public Builder rejectionReason(String v) { this.rejectionReason = v; return this; }
+    public Builder rejectionTier(RejectionTier v) { this.rejectionTier = v; this.rejectionTierSet = true; return this; }
+
+    /**
+     * Reject with an explicit tier and reason in one call. Preferred over the
+     * separate {@link #accepted}/{@link #rejectionTier}/{@link #rejectionReason}
+     * setters: the tier cannot be forgotten (it is a required argument), so a
+     * QUALITY rejection can never silently fall back to a STRUCTURAL hard-reject.
+     * Set {@link #shape} separately.
+     */
+    public Builder reject(RejectionTier tier, String reason) {
+      this.accepted = false;
+      this.rejectionTier = tier;
+      this.rejectionTierSet = true;
+      this.rejectionReason = reason;
+      return this;
+    }
     public Builder totalReuseRatio(double v) { this.totalReuseRatio = v; return this; }
     public Builder maxContiguousReuseMeters(int v) { this.maxContiguousReuseMeters = v; return this; }
     public Builder terminalStemReuseMeters(int v) { this.terminalStemReuseMeters = v; return this; }
@@ -116,6 +160,13 @@ public final class RoundTripQualityResult {
       }
       if (accepted && rejectionReason != null) {
         throw new IllegalStateException("accepted result must not have a rejectionReason");
+      }
+      // A rejected result must state its tier explicitly (STRUCTURAL vs QUALITY)
+      // so the engine's lenient/strict policy is never decided by a forgotten
+      // default. Use reject(tier, reason) or rejectionTier(tier).
+      if (!accepted && !rejectionTierSet) {
+        throw new IllegalStateException("rejected result must set a rejectionTier "
+          + "(use reject(tier, reason) or rejectionTier(tier))");
       }
       return new RoundTripQualityResult(this);
     }

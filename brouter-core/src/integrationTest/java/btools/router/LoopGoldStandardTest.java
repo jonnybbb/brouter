@@ -176,6 +176,9 @@ public class LoopGoldStandardTest {
       rctx.startDirection = (int) direction;
       rctx.roundTripDistance = searchRadius;
       rctx.roundTripAlgorithm = algorithm;
+      // Quality-measurement matrix — grade only gate-accepted clean loops
+      // (engine defaults to lenient-warn; strict keeps the gate hard here).
+      rctx.roundTripStrictQuality = true;
 
       RoutingEngine re = new RoutingEngine(
         null, null, segDir, wplist, rctx,

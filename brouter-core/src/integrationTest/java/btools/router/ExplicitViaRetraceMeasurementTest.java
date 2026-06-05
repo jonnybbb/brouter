@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import btools.util.CheapRuler;
 import org.junit.Assume;
 import org.junit.Test;
 
@@ -22,15 +21,22 @@ import org.junit.Test;
  * planner change is warranted.
  *
  * <p>Opt-in (touches real {@code segments4/} tiles and routes ~dozens of loops):
- * <pre>./gradlew :brouter-core:test --tests '*ExplicitViaRetraceMeasurementTest' -Dvia.measure=true</pre>
+ * <pre>./gradlew :brouter-core:integrationTest --tests '*ExplicitViaRetraceMeasurementTest' -Dvia.measure=true</pre>
  *
- * <p>Method: for each region × supported profile × loop radius × via-count, place
- * {@code N} synthetic user vias evenly spread on a circle of the target radius
- * around the start (well-spread, i.e. the explicit-via path's <em>best</em> case),
- * route {@code start → via1 … viaN → start}, then classify the result with the
- * production {@link RoundTripQualityGate}. We record the canonical
- * {@link RouteShape}, the gate's total reuse ratio (the retrace metric), and the
- * distance ratio vs the requested {@code 2π·radius}.
+ * <p><b>Realistic vias.</b> Rather than scatter vias on a geometric circle (which
+ * lands points in the sea, on ferries, or on the only off-road track and thus
+ * measures placement artifacts), each case first generates a known-good AUTO loop
+ * with no vias, then samples {@code N} vias evenly <em>along that loop</em>. Those
+ * are on-road, reachable, loop-shaped points — what a real user picking spots on a
+ * route would choose. The explicit-via path is then asked to reproduce a good
+ * route through them. A failure here is therefore a genuine explicit-via
+ * deficiency, not a placement artifact. Cases where AUTO itself cannot produce a
+ * baseline loop are reported separately ({@code AUTO-UNAVAILABLE}) and excluded
+ * from the deficiency stats.
+ *
+ * <p>Each routed result is classified with the production
+ * {@link RoundTripQualityGate}: the canonical {@link RouteShape}, the gate's total
+ * reuse ratio (the retrace metric), and the distance ratio vs {@code 2π·radius}.
  */
 public class ExplicitViaRetraceMeasurementTest {
 
@@ -52,14 +58,22 @@ public class ExplicitViaRetraceMeasurementTest {
                          RouteShape shape, double reuseRatio, double distanceRatio,
                          int distanceM) {}
 
+  /** Baseline (plain explicit-via) vs densified (SPIKE A) result for one case. */
+  private record CaseResult(Case c, boolean baselineAvailable, Outcome base, Outcome dense) {}
+
   @Test
   public void measureExplicitViaRetraceAndUndershoot() throws Exception {
+
+    // Opt-in only (see class javadoc / build.gradle): this is a heavy,
+    // assertion-free measurement sweep over every region × profile × radius ×
+    // via-count, so it must not run as part of a normal integrationTest pass.
+    Assume.assumeTrue("opt-in: pass -Dvia.measure=true", Boolean.getBoolean("via.measure"));
 
     File projectDir = new File(".").getCanonicalFile().getParentFile();
     File segDir = new File(projectDir, "segments4");
     Assume.assumeTrue("segments4/ not found at " + segDir.getAbsolutePath(), segDir.isDirectory());
 
-    List<Outcome> outcomes = new ArrayList<>();
+    List<CaseResult> results = new ArrayList<>();
 
     for (LoopTestRegion region : LoopTestRegion.values()) {
       LoopTestSegments.ensureRegion(segDir, region);
@@ -70,32 +84,52 @@ public class ExplicitViaRetraceMeasurementTest {
         }
         for (int radius : RADII_M) {
           for (int viaCount : VIA_COUNTS) {
-            outcomes.add(runCase(new Case(region, profile, radius, viaCount), segDir, profileFile));
+            results.add(runCase(new Case(region, profile, radius, viaCount), segDir, profileFile));
           }
         }
       }
     }
 
-    report(outcomes);
+    report(results);
   }
 
-  private Outcome runCase(Case c, File segDir, File profileFile) {
+  private CaseResult runCase(Case c, File segDir, File profileFile) {
+    // 1. Generate a known-good AUTO loop (no vias) to source realistic on-road vias from.
+    OsmTrack baseline = autoLoop(c, segDir, profileFile);
+    if (baseline == null || baseline.nodes == null || baseline.nodes.size() < c.viaCount() + 2) {
+      return new CaseResult(c, false, null, null);
+    }
+
+    // 2. Sample N vias evenly ALONG the baseline loop (on-road, loop-shaped). Store as raw
+    //    coords because snapping mutates node positions — each route run builds fresh nodes.
+    List<int[]> viaCoords = new ArrayList<>();
+    int m = baseline.nodes.size();
+    for (int i = 0; i < c.viaCount(); i++) {
+      int idx = (int) Math.round((double) (i + 1) / (c.viaCount() + 1) * (m - 1));
+      idx = Math.max(1, Math.min(m - 2, idx));
+      OsmPathElement n = baseline.nodes.get(idx);
+      viaCoords.add(new int[] {n.getILon(), n.getILat()});
+    }
+
+    // 3. Route the SAME vias two ways: plain explicit-via (baseline) vs SPIKE-A densified.
+    Outcome base = routeVia(c, segDir, profileFile, viaCoords, false);
+    Outcome dense = routeVia(c, segDir, profileFile, viaCoords, true);
+    return new CaseResult(c, true, base, dense);
+  }
+
+  /** Route start -> vias -> start through the explicit-via path, optionally densified. */
+  private Outcome routeVia(Case c, File segDir, File profileFile, List<int[]> viaCoords, boolean densify) {
     List<OsmNodeNamed> wps = new ArrayList<>();
     OsmNodeNamed start = new OsmNodeNamed();
     start.name = "from";
     start.ilon = c.region().ilon;
     start.ilat = c.region().ilat;
     wps.add(start);
-
-    // Scatter N vias on the target-radius circle, evenly spread so the explicit-via
-    // path gets a loop-shaped skeleton (its best case, not a contrived collinear one).
-    for (int i = 0; i < c.viaCount(); i++) {
-      double bearing = (BASE_DIRECTION + 360.0 * i / c.viaCount()) % 360.0;
-      int[] p = CheapRuler.destination(start.ilon, start.ilat, c.radiusM(), bearing);
+    for (int k = 0; k < viaCoords.size(); k++) {
       OsmNodeNamed via = new OsmNodeNamed();
-      via.name = "via" + (i + 1);
-      via.ilon = p[0];
-      via.ilat = p[1];
+      via.name = "via" + (k + 1);
+      via.ilon = viaCoords.get(k)[0];
+      via.ilat = viaCoords.get(k)[1];
       wps.add(via);
     }
 
@@ -104,6 +138,7 @@ public class ExplicitViaRetraceMeasurementTest {
     rc.startDirection = BASE_DIRECTION;
     rc.roundTripDistance = c.radiusM();
     rc.turnInstructionMode = 0;
+    rc.explicitViaDensifyOverride = densify;
 
     double expected = 2 * Math.PI * c.radiusM();
     try {
@@ -123,70 +158,242 @@ public class ExplicitViaRetraceMeasurementTest {
       double ratio = expected > 0 ? track.distance / expected : 0;
       return new Outcome(c, true, null, q.getShape(), q.getTotalReuseRatio(), ratio, track.distance);
     } catch (Throwable t) {
-      // Unsnappable via, routing island, etc. — record as a non-route outcome.
       return new Outcome(c, false, t.getClass().getSimpleName() + ": " + t.getMessage(),
         null, 0, 0, 0);
     }
   }
 
-  private void report(List<Outcome> outcomes) {
-    System.out.println();
-    System.out.println("================ EXPLICIT-VIA RETRACE / UNDERSHOOT MEASUREMENT ================");
-    System.out.printf("%-16s %-9s %6s %4s  %-10s %14s  %8s %8s%n",
-      "region", "profile", "radius", "vias", "result", "shape", "reuse%", "dist/req");
-    System.out.println("-------------------------------------------------------------------------------");
+  /**
+   * Export one case (AUTO baseline + plain explicit-via + densified explicit-via) as GeoJSON
+   * for visual inspection. Opt-in:
+   * <pre>./gradlew :brouter-core:integrationTest --tests '*ExplicitViaRetraceMeasurementTest' \
+   *   -Dvia.export=true [-Dvia.export.case=DREIEICH:gravel:6000:2]</pre>
+   */
+  @Test
+  public void exportSampleRoute() throws Exception {
+    Assume.assumeTrue("opt-in: pass -Dvia.export=true", Boolean.getBoolean("via.export"));
 
-    for (Outcome o : outcomes) {
-      if (o.routed()) {
-        System.out.printf("%-16s %-9s %5dm %4d  %-10s %14s  %7.0f%% %8.2f%n",
-          o.c().region(), o.c().profile(), o.c().radiusM(), o.c().viaCount(),
-          "routed", o.shape(), o.reuseRatio() * 100, o.distanceRatio());
-      } else {
-        System.out.printf("%-16s %-9s %5dm %4d  %-10s %s%n",
-          o.c().region(), o.c().profile(), o.c().radiusM(), o.c().viaCount(),
-          "no-route", abbreviate(o.failure()));
+    File projectDir = new File(".").getCanonicalFile().getParentFile();
+    File segDir = new File(projectDir, "segments4");
+    Assume.assumeTrue("segments4/ not found", segDir.isDirectory());
+
+    String specs = System.getProperty("via.export.case", "");
+    if (specs.isBlank()) {
+      specs = "DREIEICH:gravel:6000:2";
+    }
+    File outDir = new File(projectDir, "brouter-core/build/via-export");
+    outDir.mkdirs();
+
+    for (String spec : specs.split(",")) {
+      spec = spec.trim();
+      if (spec.isEmpty()) {
+        continue;
+      }
+      String[] p = spec.split(":");
+      Case c = new Case(LoopTestRegion.valueOf(p[0]), p[1], Integer.parseInt(p[2]), Integer.parseInt(p[3]));
+      LoopTestSegments.ensureRegion(segDir, c.region());
+      File profileFile = new File(projectDir, "misc/profiles2/" + c.profile() + ".brf");
+
+      OsmTrack baseline = autoLoop(c, segDir, profileFile);
+      if (baseline == null || baseline.nodes == null || baseline.nodes.size() < c.viaCount() + 2) {
+        System.out.println("AUTO baseline unavailable for " + spec + " — skipped");
+        continue;
+      }
+
+      int m = baseline.nodes.size();
+      List<int[]> viaCoords = new ArrayList<>();
+      for (int i = 0; i < c.viaCount(); i++) {
+        int idx = Math.max(1, Math.min(m - 2, (int) Math.round((double) (i + 1) / (c.viaCount() + 1) * (m - 1))));
+        OsmPathElement n = baseline.nodes.get(idx);
+        viaCoords.add(new int[] {n.getILon(), n.getILat()});
+      }
+
+      OsmTrack baseTrack = routeViaTrack(c, segDir, profileFile, viaCoords, false);
+      OsmTrack denseTrack = routeViaTrack(c, segDir, profileFile, viaCoords, true);
+
+      String tag = spec.replace(':', '_');
+      writeGeoJson(new File(outDir, tag + "_0-auto-baseline.geojson"), baseline, profileFile);
+      writeGeoJson(new File(outDir, tag + "_1-explicit-via-baseline.geojson"), baseTrack, profileFile);
+      writeGeoJson(new File(outDir, tag + "_2-explicit-via-densified.geojson"), denseTrack, profileFile);
+      System.out.println("Exported " + spec);
+    }
+    System.out.println("GeoJSON written to " + outDir.getAbsolutePath());
+  }
+
+  /** Route variant of {@link #routeVia} that returns the OsmTrack (null on failure). */
+  private OsmTrack routeViaTrack(Case c, File segDir, File profileFile, List<int[]> viaCoords, boolean densify) {
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = c.region().ilon;
+    start.ilat = c.region().ilat;
+    wps.add(start);
+    for (int k = 0; k < viaCoords.size(); k++) {
+      OsmNodeNamed via = new OsmNodeNamed();
+      via.name = "via" + (k + 1);
+      via.ilon = viaCoords.get(k)[0];
+      via.ilat = viaCoords.get(k)[1];
+      wps.add(via);
+    }
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = profileFile.getAbsolutePath();
+    rc.startDirection = BASE_DIRECTION;
+    rc.roundTripDistance = c.radiusM();
+    rc.turnInstructionMode = 0;
+    rc.explicitViaDensifyOverride = densify;
+    try {
+      RoutingEngine re = new RoutingEngine(null, null, segDir, wps, rc,
+        RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+      re.quite = true;
+      re.doRun(0);
+      OsmTrack found = re.getFoundTrack();
+      if (found != null) {
+        return found;
+      }
+      // Gate-rejected: export the rejected geometry so the failure mode is visible.
+      OsmTrack rejected = re.getLastRejectedTrack();
+      if (rejected != null) {
+        System.out.println("  (densify REJECTED: " + re.getErrorMessage() + ")");
+      }
+      return rejected;
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  private void writeGeoJson(File file, OsmTrack track, File profileFile) throws Exception {
+    if (track == null) {
+      System.out.println("  (skipped " + file.getName() + " — no route)");
+      return;
+    }
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = profileFile.getAbsolutePath();
+    String geojson = new FormatJson(rc).format(track);
+    try (java.io.FileWriter w = new java.io.FileWriter(file)) {
+      w.write(geojson);
+    }
+    System.out.printf("  wrote %s (%d nodes, %dm)%n", file.getName(),
+      track.nodes == null ? 0 : track.nodes.size(), track.distance);
+  }
+
+  /** Generate a baseline AUTO round-trip loop (no vias) to sample realistic vias from. */
+  private OsmTrack autoLoop(Case c, File segDir, File profileFile) {
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = profileFile.getAbsolutePath();
+    rc.startDirection = BASE_DIRECTION;
+    rc.roundTripDistance = c.radiusM();
+    rc.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
+    rc.turnInstructionMode = 0;
+
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    OsmNodeNamed start = new OsmNodeNamed();
+    start.name = "from";
+    start.ilon = c.region().ilon;
+    start.ilat = c.region().ilat;
+    wps.add(start);
+
+    try {
+      RoutingEngine re = new RoutingEngine(null, null, segDir, wps, rc,
+        RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+      re.quite = true;
+      re.doRun(0);
+      return re.getFoundTrack();
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  private void report(List<CaseResult> results) {
+    System.out.println();
+    System.out.println("======== EXPLICIT-VIA: BASELINE vs SPIKE-A (via-arc densification) ========");
+    System.out.printf("%-16s %-9s %6s %4s | %-13s %6s %7s | %-13s %6s %7s | %s%n",
+      "region", "profile", "radius", "vias",
+      "base shape", "reuse%", "d/req", "dense shape", "reuse%", "d/req", "Δd/req");
+    System.out.println("---------------------------------------------------------------------------------------------");
+
+    List<CaseResult> usable = new ArrayList<>();
+    for (CaseResult r : results) {
+      if (!r.baselineAvailable()) {
+        System.out.printf("%-16s %-9s %5dm %4d | AUTO-UNAVAILABLE (no baseline loop)%n",
+          r.c().region(), r.c().profile(), r.c().radiusM(), r.c().viaCount());
+        continue;
+      }
+      String baseShape = r.base().routed() ? r.base().shape().toString() : "NO-ROUTE";
+      String denseShape = r.dense().routed() ? r.dense().shape().toString() : "NO-ROUTE";
+      String dDelta = (r.base().routed() && r.dense().routed())
+        ? String.format("%+.2f", r.dense().distanceRatio() - r.base().distanceRatio()) : "-";
+      System.out.printf("%-16s %-9s %5dm %4d | %-13s %5.0f%% %7.2f | %-13s %5.0f%% %7.2f | %s%n",
+        r.c().region(), r.c().profile(), r.c().radiusM(), r.c().viaCount(),
+        baseShape, r.base().reuseRatio() * 100, r.base().distanceRatio(),
+        denseShape, r.dense().reuseRatio() * 100, r.dense().distanceRatio(), dDelta);
+      if (r.base().routed() && r.dense().routed()) {
+        usable.add(r);
       }
     }
 
-    List<Outcome> routed = outcomes.stream().filter(Outcome::routed).toList();
-    System.out.println("-------------------------------------------------------------------------------");
-    System.out.printf("cases: %d total, %d routed, %d no-route%n",
-      outcomes.size(), routed.size(), outcomes.size() - routed.size());
-
-    if (routed.isEmpty()) {
-      System.out.println("No routed via-loops — cannot measure (check segment coverage).");
+    System.out.println("---------------------------------------------------------------------------------------------");
+    long autoUnavail = results.stream().filter(rr -> !rr.baselineAvailable()).count();
+    System.out.printf("cases: %d total | %d comparable (both routed) | %d AUTO-UNAVAILABLE%n",
+      results.size(), usable.size(), autoUnavail);
+    if (usable.isEmpty()) {
+      System.out.println("No comparable cases.");
       return;
     }
 
-    summariseGroup("ALL routed", routed);
+    summarisePair("ALL", usable);
     for (int viaCount : VIA_COUNTS) {
-      List<Outcome> g = routed.stream().filter(o -> o.c().viaCount() == viaCount).toList();
+      List<CaseResult> g = usable.stream().filter(rr -> rr.c().viaCount() == viaCount).toList();
       if (!g.isEmpty()) {
-        summariseGroup(viaCount + " via" + (viaCount == 1 ? " (out-and-back)" : "s"), g);
+        summarisePair(viaCount + "-via", g);
       }
     }
 
+    // Regression firewall: densification must not degrade clean cases (esp. dense urban).
     System.out.println();
-    System.out.println("Reading: high reuse% / shape≠STRICT_LOOP at LOW via counts, falling toward 0");
-    System.out.println("as vias increase, is the signature that greedy-with-vias helps only the");
-    System.out.println("near-out-and-back end — and that a retrace-aware CLOSING LEG would capture");
-    System.out.println("most of the benefit without a full planner rewrite.");
-    System.out.println("===============================================================================");
+    System.out.println("REGRESSION CHECK (densified made it worse):");
+    int regr = 0;
+    // (a) Lost a route entirely: base routed, dense did not. The most severe regression.
+    for (CaseResult r : results) {
+      if (r.baselineAvailable() && r.base().routed() && !r.dense().routed()) {
+        regr++;
+        System.out.printf("  %-16s %-9s %5dm %4dvia : [LOST-ROUTE] %s%n",
+          r.c().region(), r.c().profile(), r.c().radiusM(), r.c().viaCount(),
+          r.dense().failure() == null ? "" : r.dense().failure().replaceAll("\\s+", " ").trim());
+      }
+    }
+    for (CaseResult r : usable) {
+      boolean shorter = r.dense().distanceRatio() < r.base().distanceRatio() - 0.05;
+      boolean moreReuse = r.dense().reuseRatio() > r.base().reuseRatio() + 0.05;
+      boolean shapeDegraded = r.base().shape() == RouteShape.STRICT_LOOP
+        && r.dense().shape() != RouteShape.STRICT_LOOP;
+      if (shorter || moreReuse || shapeDegraded) {
+        regr++;
+        System.out.printf("  %-16s %-9s %5dm %4dvia : %s%s%s%n",
+          r.c().region(), r.c().profile(), r.c().radiusM(), r.c().viaCount(),
+          shorter ? "[shorter] " : "", moreReuse ? "[more-reuse] " : "", shapeDegraded ? "[shape↓]" : "");
+      }
+    }
+    long baselineRouted = results.stream().filter(r -> r.baselineAvailable() && r.base().routed()).count();
+    System.out.printf("  %d / %d baseline-routed cases regressed (incl. lost routes).%n", regr, baselineRouted);
+
+    System.out.println();
+    System.out.println("Vias sampled from a known-good AUTO loop. Success = densified median d/req up toward");
+    System.out.println("~0.95 and reuse not worse, with ~zero regressions (degrade-to-Dijkstra guard).");
+    System.out.println("==============================================================================================");
   }
 
-  private void summariseGroup(String label, List<Outcome> g) {
-    long retrace = g.stream().filter(o -> o.reuseRatio() > RETRACE_RATIO_THRESHOLD).count();
-    long notStrict = g.stream().filter(o -> o.shape() != RouteShape.STRICT_LOOP).count();
-    long undershoot = g.stream().filter(o -> o.distanceRatio() < UNDERSHOOT_RATIO).count();
-    int n = g.size();
-    System.out.printf(
-      "  %-22s n=%-3d  retrace>%.0f%%: %2d (%3.0f%%)   shape≠STRICT: %2d (%3.0f%%)   "
-        + "undershoot<%.2f: %2d (%3.0f%%)   median reuse=%.0f%%  median dist/req=%.2f%n",
-      label, n, RETRACE_RATIO_THRESHOLD * 100,
-      retrace, pct(retrace, n), notStrict, pct(notStrict, n),
-      UNDERSHOOT_RATIO, undershoot, pct(undershoot, n),
-      median(g.stream().map(o -> o.reuseRatio() * 100).sorted().toList()),
-      median(g.stream().map(Outcome::distanceRatio).sorted().toList()));
+  private void summarisePair(String label, List<CaseResult> g) {
+    System.out.printf("  %-7s n=%-3d  median d/req: base %.2f -> dense %.2f   undershoot<%.2f: base %2.0f%% -> dense %2.0f%%   "
+        + "retrace>%.0f%%: base %2.0f%% -> dense %2.0f%%%n",
+      label, g.size(),
+      median(g.stream().map(r -> r.base().distanceRatio()).sorted().toList()),
+      median(g.stream().map(r -> r.dense().distanceRatio()).sorted().toList()),
+      UNDERSHOOT_RATIO,
+      pct(g.stream().filter(r -> r.base().distanceRatio() < UNDERSHOOT_RATIO).count(), g.size()),
+      pct(g.stream().filter(r -> r.dense().distanceRatio() < UNDERSHOOT_RATIO).count(), g.size()),
+      RETRACE_RATIO_THRESHOLD * 100,
+      pct(g.stream().filter(r -> r.base().reuseRatio() > RETRACE_RATIO_THRESHOLD).count(), g.size()),
+      pct(g.stream().filter(r -> r.dense().reuseRatio() > RETRACE_RATIO_THRESHOLD).count(), g.size()));
   }
 
   private static double pct(long k, int n) {
@@ -201,13 +408,5 @@ public class ExplicitViaRetraceMeasurementTest {
     Collections.sort(s);
     int m = s.size() / 2;
     return s.size() % 2 == 1 ? s.get(m) : (s.get(m - 1) + s.get(m)) / 2.0;
-  }
-
-  private static String abbreviate(String s) {
-    if (s == null) {
-      return "";
-    }
-    String oneLine = s.replaceAll("\\s+", " ").trim();
-    return oneLine.length() <= 90 ? oneLine : oneLine.substring(0, 90) + "…";
   }
 }

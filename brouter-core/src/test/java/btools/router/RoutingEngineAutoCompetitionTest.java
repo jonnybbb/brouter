@@ -1,6 +1,9 @@
 package btools.router;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -93,8 +96,8 @@ public class RoutingEngineAutoCompetitionTest {
     // RouteChoiceScore a rejected verdict — it returns 0.
     OsmTrack t = cleanSquareLoop(5000);
     RoundTripQualityResult rejected = RoundTripQualityResult.builder()
-      .accepted(false).shape(RouteShape.INVALID_RETRACE)
-      .rejectionReason("synthetic rejection").build();
+      .shape(RouteShape.INVALID_RETRACE)
+      .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, "synthetic rejection").build();
     RouteChoiceScore.Verdict v = RouteChoiceScore.score(t, t.distance, "fastbike", rejected);
     Assert.assertEquals("rejected gate → zero score", 0.0, v.score(), 1e-9);
   }
@@ -168,7 +171,90 @@ public class RoutingEngineAutoCompetitionTest {
     Assert.assertTrue("scoreValue > 0", r.scoreValue() > 0);
   }
 
+  // ---- best-effort (lenient) candidate selection — Option C ----------------
+  // When no candidate passes the gate, AUTO adopts the least-bad QUALITY-tier
+  // best-effort loop, ranked by the same multi-factor RouteChoiceScore used for
+  // accepted winners. These pin that both axes the rider cares about drive the
+  // choice: distance closeness (primary) and profile-surface ("ground") match.
+
+  @Test
+  public void bestEffortSelectionPrefersCloserDistance() {
+    // Two profile-friendly loops differing only in distance. The on-target one
+    // must win even though the off-target one is earlier in algorithm order.
+    OsmTrack onTarget = loopWithCostPerMeter(5000, 1.0);
+    OsmTrack tooShort = loopWithCostPerMeter(2000, 1.0); // ~40% of the distance
+    List<RoundTripCandidateResult> candidates = Arrays.asList(
+      candidate(RoundTripAlgorithm.ISO_GREEDY, tooShort),  // earlier in order…
+      candidate(RoundTripAlgorithm.GREEDY, onTarget));     // …but closer to target
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      candidates, onTarget.distance, "fastbike", 0);
+    Assert.assertSame("closer-distance best-effort wins despite later order",
+      onTarget, best.track);
+  }
+
+  @Test
+  public void bestEffortSelectionPrefersProfileFriendlySurface() {
+    // Two loops at the same (on-target) distance, differing only in cost/m: one
+    // on roads the profile likes, one profile-hostile. Ground match must decide.
+    OsmTrack friendly = loopWithCostPerMeter(5000, 1.0); // within fastbike band
+    OsmTrack hostile = loopWithCostPerMeter(5000, 8.0);  // well above the band
+    List<RoundTripCandidateResult> candidates = Arrays.asList(
+      candidate(RoundTripAlgorithm.ISO_GREEDY, hostile),   // earlier in order…
+      candidate(RoundTripAlgorithm.GREEDY, friendly));     // …but rideable surface
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      candidates, friendly.distance, "fastbike", 0);
+    Assert.assertSame("profile-friendly surface best-effort wins despite later order",
+      friendly, best.track);
+  }
+
+  @Test
+  public void bestEffortSelectionPicksHighestCompositeAcrossAxes() {
+    // Cross-axis: an off-distance friendly loop vs an on-distance hostile loop.
+    // The winner is whichever the multi-factor score ranks higher overall — assert
+    // the selection matches the directly-computed argmax (no hand-picked axis).
+    OsmTrack offDistanceFriendly = loopWithCostPerMeter(2000, 1.0);
+    OsmTrack onDistanceHostile = loopWithCostPerMeter(5000, 8.0);
+    double expected = onDistanceHostile.distance;
+    double sFriendly = RouteChoiceScore.score(offDistanceFriendly, expected, "fastbike", null, 0).score();
+    double sHostile = RouteChoiceScore.score(onDistanceHostile, expected, "fastbike", null, 0).score();
+    OsmTrack expectedWinner = sHostile > sFriendly ? onDistanceHostile : offDistanceFriendly;
+    List<RoundTripCandidateResult> candidates = Arrays.asList(
+      candidate(RoundTripAlgorithm.ISO_GREEDY, offDistanceFriendly),
+      candidate(RoundTripAlgorithm.GREEDY, onDistanceHostile));
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      candidates, expected, "fastbike", 0);
+    Assert.assertSame("selection picks the highest-composite candidate",
+      expectedWinner, best.track);
+  }
+
+  @Test
+  public void bestEffortSelectionHandlesEmptyAndNullTracks() {
+    Assert.assertNull("no candidates → null",
+      RoutingEngine.selectBestEffortCandidate(Collections.emptyList(), 10000, "fastbike", 0));
+    RoundTripCandidateResult noTrack = new RoundTripCandidateResult(RoundTripAlgorithm.WAYPOINT);
+    Assert.assertNull("only null-track candidates → null",
+      RoutingEngine.selectBestEffortCandidate(
+        Collections.singletonList(noTrack), 10000, "fastbike", 0));
+  }
+
   // ------------- helpers -----------------------------------------------------
+
+  private static RoundTripCandidateResult candidate(RoundTripAlgorithm algo, OsmTrack track) {
+    RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
+    r.track = track;
+    return r;
+  }
+
+  /**
+   * A clean rectangular loop with a chosen average cost-per-meter. cleanSquareLoop
+   * leaves track.cost at 0 (cost/m 0 → always in-band); set it explicitly so the
+   * RouteChoiceScore cost/m component (= track.cost / track.distance) is exercised.
+   */
+  private static OsmTrack loopWithCostPerMeter(int sideMeters, double costPerMeter) {
+    OsmTrack t = cleanSquareLoop(sideMeters);
+    t.cost = (int) Math.round(costPerMeter * t.distance);
+    return t;
+  }
 
   /** A clean rectangular loop with proper paved metadata. */
   private static OsmTrack cleanSquareLoop(int sideMeters) {
@@ -196,5 +282,31 @@ public class RoutingEngineAutoCompetitionTest {
 
   private static void addNode(OsmTrack t, int ilon, int ilat) {
     t.nodes.add(OsmPathElement.create(ilon, ilat, (short) 0, null));
+  }
+
+  // ---- RouteChoiceScore.costMBand profile dispatch ------------------------
+  // The existing score() tests all use "fastbike"; this pins the per-profile
+  // cost-band table (a substring typo here would silently mis-band a profile).
+
+  @Test
+  public void costMBand_dispatchesByProfileFamily() {
+    Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("fastbike"), 1e-9);
+    Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("road"), 1e-9);
+    Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("racing"), 1e-9);
+    Assert.assertArrayEquals(new double[]{2.0, 5.0}, RouteChoiceScore.costMBand("gravel"), 1e-9);
+    Assert.assertArrayEquals(new double[]{4.0, 9.0}, RouteChoiceScore.costMBand("mtb"), 1e-9);
+    Assert.assertArrayEquals(new double[]{1.5, 4.0}, RouteChoiceScore.costMBand("trekking"), 1e-9);
+    Assert.assertArrayEquals("unknown profile → default band",
+      new double[]{1.5, 4.0}, RouteChoiceScore.costMBand("shortest"), 1e-9);
+    Assert.assertArrayEquals("null profile → default band",
+      new double[]{1.5, 4.0}, RouteChoiceScore.costMBand(null), 1e-9);
+  }
+
+  @Test
+  public void costMBand_isCaseInsensitive() {
+    Assert.assertArrayEquals(RouteChoiceScore.costMBand("fastbike"),
+      RouteChoiceScore.costMBand("FastBike"), 1e-9);
+    Assert.assertArrayEquals(RouteChoiceScore.costMBand("gravel"),
+      RouteChoiceScore.costMBand("GRAVEL"), 1e-9);
   }
 }

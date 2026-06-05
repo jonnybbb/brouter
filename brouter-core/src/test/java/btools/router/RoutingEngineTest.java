@@ -116,6 +116,9 @@ public class RoutingEngineTest {
     RoutingContext rctx = new RoutingContext();
     rctx.startDirection = 90; // east, dreieich data runs out quickly
     rctx.roundTripDistance = 5000;
+    // This test asserts the HARD-reject contract at the data edge; the engine
+    // now defaults to lenient (return quality-failed routes with a warning).
+    rctx.roundTripStrictQuality = true;
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtEdge", rctx);
 

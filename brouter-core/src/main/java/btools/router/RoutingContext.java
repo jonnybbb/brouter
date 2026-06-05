@@ -227,6 +227,49 @@ public final class RoutingContext {
   public Integer roundTripPoints;
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
+  /**
+   * Quality-gate strictness for generated round-trips. When {@code false}
+   * (the default), a route that fails only a QUALITY check
+   * ({@link RoundTripQualityResult.RejectionTier#QUALITY}: distance off-target,
+   * self-crossing/hairpin chaos, profile-hostile surface, mid-route
+   * backtracking) is returned anyway with an advisory {@code Warning:} message
+   * so the user can decide whether to ride it. STRUCTURAL failures (broken /
+   * un-routable / not-a-loop) are always hard-rejected. When {@code true},
+   * QUALITY failures are hard-rejected too (the pre-existing behaviour), e.g.
+   * for the quality-measurement test matrices that must only grade clean loops.
+   * Settable via the request parameter {@code roundTripStrictQuality=1}.
+   */
+  public boolean roundTripStrictQuality;
+
+  /**
+   * Via-arc densification (see docs/features/roundtrip-via-loop-failure-analysis.md):
+   * when on, the explicit-via round-trip inserts generated "bulge" waypoints between
+   * consecutive user anchors, offset outward from the anchor centroid, so each leg follows
+   * the loop perimeter instead of cutting the chord. Opt-in; off by default.
+   * {@link #explicitViaDensifyAlpha} is the bulge offset as a fraction of the leg chord length.
+   *
+   * <p>This is the effective per-request flag, computed by {@code doExplicitViaRoundTrip}
+   * from {@link #explicitViaDensifyOverride}; callers normally set the override, not this.
+   */
+  public boolean explicitViaDensify;
+  /**
+   * Force densification on ({@code TRUE}) or off ({@code FALSE}), bypassing the auto-gate.
+   * {@code null} (default) → auto-gate: densify only for non-paved profiles, where it is a
+   * low-risk win. Paved profiles (road bike) keep the plain explicit-via route, because in
+   * sparse terrain a retracing paved lollipop beats a one-way track loop the gate would reject.
+   * Used by tests/measurement to compare both modes deterministically.
+   */
+  public Boolean explicitViaDensifyOverride;
+  public double explicitViaDensifyAlpha = 0.5;
+  /**
+   * Max profile cost-factor a densification "bulge" point may snap to. A bulge is an
+   * optional nicety, so it is placed ONLY on a road the profile genuinely likes (near-ideal),
+   * not merely an accessible one — keeping it well below the lenient user-snap reject
+   * threshold. Where the only road outward is profile-hostile (e.g. a road bike facing a
+   * track), the bulge is dropped and that leg reverts to its baseline form. Profile-relative
+   * (cost-factor is per-profile), so gravel still accepts tracks it likes while fastbike does not.
+   */
+  public double explicitViaDensifyMaxCostFactor = 1.8;
 
   /**
    * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
@@ -637,6 +680,18 @@ public final class RoutingContext {
     c.roundTripPoints = this.roundTripPoints;
     c.allowSamewayback = this.allowSamewayback;
     c.roundTripAlgorithm = this.roundTripAlgorithm;
+    // Strictness must follow the parent into AUTO children: otherwise a strict
+    // request runs lenient children that adopt QUALITY best-effort tracks and
+    // report no errorMessage, so the parent's strict re-gate finds no winner
+    // but can only surface "unknown" instead of the child's real reason.
+    c.roundTripStrictQuality = this.roundTripStrictQuality;
+    // Densification request inputs (the effective explicitViaDensify flag is
+    // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
+    // AUTO children currently route a single waypoint and never densify, but
+    // copying these keeps a child consistent with the parent if that changes.
+    c.explicitViaDensifyOverride = this.explicitViaDensifyOverride;
+    c.explicitViaDensifyAlpha = this.explicitViaDensifyAlpha;
+    c.explicitViaDensifyMaxCostFactor = this.explicitViaDensifyMaxCostFactor;
     // roundTripIsochrone is intentionally NOT copied: doRoundTrip() resolves it
     // into roundTripAlgorithm before any child is spawned, so the algorithm
     // (copied above) is the single source of truth in child contexts.
