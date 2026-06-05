@@ -36,6 +36,15 @@ import static org.junit.Assert.assertTrue;
 @RunWith(Parameterized.class)
 public class LoopQualityTest {
 
+  // Fail a pathological/non-terminating routing case fast instead of hanging
+  // the whole suite. Normal cases finish in seconds-to-low-minutes; 5 min is a
+  // generous ceiling. withLookingForStuckThread dumps the stuck stack on timeout.
+  @Rule
+  public org.junit.rules.Timeout perTestTimeout = org.junit.rules.Timeout.builder()
+    .withTimeout(5, java.util.concurrent.TimeUnit.MINUTES)
+    .withLookingForStuckThread(true)
+    .build();
+
   // Profiles under test
   private static final String[] PROFILES = {"fastbike", "gravel", "mtb"};
   // Target total loop distances in meters, and their corresponding search radii.

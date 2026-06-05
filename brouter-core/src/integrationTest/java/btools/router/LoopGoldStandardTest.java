@@ -2,6 +2,7 @@ package btools.router;
 
 import org.junit.AfterClass;
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -41,6 +42,15 @@ import static org.junit.Assert.assertTrue;
  */
 @RunWith(Parameterized.class)
 public class LoopGoldStandardTest {
+
+  // Fail a pathological/non-terminating routing case fast instead of hanging
+  // the whole suite. Normal cases finish in seconds-to-low-minutes; 5 min is a
+  // generous ceiling. withLookingForStuckThread dumps the stuck stack on timeout.
+  @Rule
+  public org.junit.rules.Timeout perTestTimeout = org.junit.rules.Timeout.builder()
+    .withTimeout(5, java.util.concurrent.TimeUnit.MINUTES)
+    .withLookingForStuckThread(true)
+    .build();
 
   private static final String[] DEFAULT_PROFILES = {"fastbike"};
   private static final int[] TARGET_DISTANCES = {50000, 100000};

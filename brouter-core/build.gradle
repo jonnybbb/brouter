@@ -59,13 +59,14 @@ tasks.register('integrationTest', Test) {
     systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
     systemProperty 'golden.write', System.getProperty('golden.write', 'false')
     systemProperty 'greedy.diagnostic', System.getProperty('greedy.diagnostic', 'false')
-    // Opt-in explicit-via retrace/undershoot measurement (ExplicitViaRetraceMeasurementTest).
-    systemProperty 'via.measure', System.getProperty('via.measure', 'false')
-    systemProperty 'via.export', System.getProperty('via.export', 'false')
-    systemProperty 'via.export.case', System.getProperty('via.export.case', '')
 
     testLogging {
-        events 'passed', 'skipped', 'failed'
+        // 'started' surfaces which case is in flight (so a wedged/slow routing
+        // case is visible immediately, not only on completion). showStandardStreams
+        // forwards each engine's stdout for in-test progress — verbose, but
+        // invaluable for diagnosing a stuck loop. Toggle off if too noisy.
+        events 'started', 'passed', 'skipped', 'failed'
         exceptionFormat 'short'
+        showStandardStreams = true
     }
 }

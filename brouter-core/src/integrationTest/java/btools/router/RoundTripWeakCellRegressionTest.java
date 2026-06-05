@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Locale;
 
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -20,6 +21,15 @@ import org.junit.Test;
  * catch a regression without false-positive flapping; they're not "ratchet" targets.
  */
 public class RoundTripWeakCellRegressionTest {
+
+  // Fail a pathological/non-terminating routing case fast instead of hanging
+  // the whole suite. Normal cases finish in seconds-to-low-minutes; 5 min is a
+  // generous ceiling. withLookingForStuckThread dumps the stuck stack on timeout.
+  @Rule
+  public org.junit.rules.Timeout perTestTimeout = org.junit.rules.Timeout.builder()
+    .withTimeout(5, java.util.concurrent.TimeUnit.MINUTES)
+    .withLookingForStuckThread(true)
+    .build();
 
   private File projectDir;
 

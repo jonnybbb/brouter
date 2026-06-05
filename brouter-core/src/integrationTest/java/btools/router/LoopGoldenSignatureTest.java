@@ -1,6 +1,7 @@
 package btools.router;
 
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Test;
 
 import java.io.File;
@@ -44,6 +45,15 @@ import static org.junit.Assert.fail;
  * standard build is unaffected.
  */
 public class LoopGoldenSignatureTest {
+
+  // Fail a pathological/non-terminating routing case fast instead of hanging
+  // the whole suite. Normal cases finish in seconds-to-low-minutes; 5 min is a
+  // generous ceiling. withLookingForStuckThread dumps the stuck stack on timeout.
+  @Rule
+  public org.junit.rules.Timeout perTestTimeout = org.junit.rules.Timeout.builder()
+    .withTimeout(5, java.util.concurrent.TimeUnit.MINUTES)
+    .withLookingForStuckThread(true)
+    .build();
 
   /** Golden file, relative to the module dir (cwd during the test = brouter-core). */
   private static final String GOLDEN_PATH =
