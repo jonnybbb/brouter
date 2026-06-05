@@ -12,7 +12,7 @@ final class LoopQualityReportGenerator {
   private LoopQualityReportGenerator() {
   }
 
-  static String generateHtml(List<LoopQualityTest.LoopQualityResult> results) {
+  static String generateHtml(List<LoopQualityResult> results) {
     StringBuilder sb = new StringBuilder(1024 * 1024);
 
     sb.append("<!DOCTYPE html>\n<html>\n<head>\n");
@@ -50,7 +50,7 @@ final class LoopQualityReportGenerator {
     sb.append("<div id=\"sidebar\">\n");
     sb.append("<div class=\"summary\">\n");
     int passed = 0, failed = 0, errors = 0;
-    for (LoopQualityTest.LoopQualityResult r : results) {
+    for (LoopQualityResult r : results) {
       if (r.metrics == null) errors++;
       else if (r.passed()) passed++;
       else failed++;
@@ -99,7 +99,7 @@ final class LoopQualityReportGenerator {
     sb.append("<thead><tr><th>Alg</th><th>Test</th><th>Reuse%</th><th>DistR</th><th>DirD</th><th>Cont</th><th>Comp</th><th>Score</th><th>Dist(m)</th></tr></thead>\n");
     sb.append("<tbody>\n");
     for (int i = 0; i < results.size(); i++) {
-      LoopQualityTest.LoopQualityResult r = results.get(i);
+      LoopQualityResult r = results.get(i);
       String status = r.metrics == null ? "error" : (r.passed() ? "pass" : "fail");
       String variant = r.variant != null ? r.variant : "probe";
       sb.append(String.format("<tr class=\"%s\" data-idx=\"%d\" data-region=\"%s\" data-profile=\"%s\" data-dist=\"%d\" data-status=\"%s\" data-variant=\"%s\" onclick=\"focusRoute(%d)\">",
@@ -131,7 +131,7 @@ final class LoopQualityReportGenerator {
     sb.append("<script>\n");
     sb.append("var routes = [\n");
     for (int i = 0; i < results.size(); i++) {
-      LoopQualityTest.LoopQualityResult r = results.get(i);
+      LoopQualityResult r = results.get(i);
       sb.append("  {label:\"").append(r.label).append(" [").append(r.variant).append("]\",");
       sb.append("variant:\"").append(r.variant).append("\",");
       sb.append("region:\"").append(r.region.name()).append("\",");
@@ -276,7 +276,7 @@ final class LoopQualityReportGenerator {
    * Generate a per-region HTML report with full route geometry and variant comparison.
    * Probe routes shown in blue, isochrone routes in orange.
    */
-  static String generateRegionHtml(LoopTestRegion region, List<LoopQualityTest.LoopQualityResult> results) {
+  static String generateRegionHtml(LoopTestRegion region, List<LoopQualityResult> results) {
     StringBuilder sb = new StringBuilder(512 * 1024);
 
     sb.append("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n");
@@ -320,7 +320,7 @@ final class LoopQualityReportGenerator {
     // Table
     sb.append("<table id=\"results\"><thead><tr><th>Test</th><th>Var</th><th>Reuse</th><th>DistR</th><th>Dir</th><th>Cont</th><th>Comp</th><th>Score</th><th>Dist</th></tr></thead><tbody>\n");
     for (int i = 0; i < results.size(); i++) {
-      LoopQualityTest.LoopQualityResult r = results.get(i);
+      LoopQualityResult r = results.get(i);
       String vc = r.variant != null ? r.variant : "probe";
       sb.append(String.format("<tr class=\"%s\" data-idx=\"%d\" data-profile=\"%s\" data-dist=\"%d\" data-variant=\"%s\" onclick=\"focusRoute(%d)\">",
         vc, i, r.profileName, r.distanceMeters / 1000, r.variant, i));
@@ -347,7 +347,7 @@ final class LoopQualityReportGenerator {
     // Embed routes with FULL coordinates
     sb.append("var routes = [\n");
     for (int i = 0; i < results.size(); i++) {
-      LoopQualityTest.LoopQualityResult r = results.get(i);
+      LoopQualityResult r = results.get(i);
       sb.append("{label:\"").append(r.label).append(" [").append(r.variant).append("]\",");
       sb.append("variant:\"").append(r.variant).append("\",");
       sb.append("profile:\"").append(r.profileName).append("\",");

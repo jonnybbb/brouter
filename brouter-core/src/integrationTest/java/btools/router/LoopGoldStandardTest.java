@@ -67,7 +67,7 @@ public class LoopGoldStandardTest {
   private static final double[] ALL_DIRECTIONS = {0, 90, 180, 270};
   private static final String[] ALL_DIR_LABELS = {"N", "E", "S", "W"};
 
-  private static final List<LoopQualityTest.LoopQualityResult> results = new ArrayList<>();
+  private static final List<LoopQualityResult> results = new ArrayList<>();
 
   @Parameterized.Parameter(0)
   public LoopTestRegion region;
@@ -122,7 +122,7 @@ public class LoopGoldStandardTest {
     boolean anySucceeded = false;
 
     for (AlgorithmVariant v : VARIANTS) {
-      LoopQualityTest.LoopQualityResult result = runVariant(v.name, v.algorithm, segDir, profileFile);
+      LoopQualityResult result = runVariant(v.name, v.algorithm, segDir, profileFile);
 
       synchronized (results) {
         if (result != null) results.add(result);
@@ -171,7 +171,7 @@ public class LoopGoldStandardTest {
     Assume.assumeTrue("no algorithm produced a track for " + testLabel, anySucceeded);
   }
 
-  private LoopQualityTest.LoopQualityResult runVariant(
+  private LoopQualityResult runVariant(
     String variant, RoundTripAlgorithm algorithm, File segDir, File profileFile) {
     try {
       List<OsmNodeNamed> wplist = new ArrayList<>();
@@ -200,7 +200,7 @@ public class LoopGoldStandardTest {
       String error = re.getErrorMessage();
 
       if (error != null || track == null || track.nodes == null || track.nodes.isEmpty()) {
-        return new LoopQualityTest.LoopQualityResult(testLabel, region, targetDistanceMeters,
+        return new LoopQualityResult(testLabel, region, targetDistanceMeters,
           profileName, direction, null,
           error != null ? error : (track == null ? "no track" : "empty track"),
           null, variant);
@@ -226,7 +226,7 @@ public class LoopGoldStandardTest {
       writeTrackFiles(track, testLabel, variant, rctx);
 
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
-      return new LoopQualityTest.LoopQualityResult(testLabel, region, targetDistanceMeters,
+      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, extractCoordinates(track), variant);
     } catch (Exception e) {
       // Write to file since Gradle swallows stderr
@@ -236,7 +236,7 @@ public class LoopGoldStandardTest {
         e.printStackTrace(pw);
         pw.close();
       } catch (Exception ignored) {}
-      return new LoopQualityTest.LoopQualityResult(testLabel, region, targetDistanceMeters,
+      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, null, e.getMessage(), null, variant);
     }
   }

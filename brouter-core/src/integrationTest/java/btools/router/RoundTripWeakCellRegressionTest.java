@@ -11,9 +11,9 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * Regression guard for {@link LoopQualityTest} cells that were historically weak
+ * Regression guard for {@link LoopQualityTestBase} cells that were historically weak
  * or that we explicitly improved in the F.* iteration. Opt-in via
- * {@code -Dloop.tests=true} (same gate as {@link LoopQualityTest} — these need
+ * {@code -Dloop.tests=true} (same gate as {@link LoopQualityTestBase} — these need
  * downloaded segment data).
  *
  * <p>Each test asserts a routed loop falls inside a documented quality envelope.

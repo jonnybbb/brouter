@@ -46,9 +46,26 @@ tasks.register('integrationTest', Test) {
     // fixture is also available for suites that use it.
     dependsOn ':brouter-map-creator:test'
 
-    // The loop-quality matrix accumulates 1000+ route coordinate sets and writes
-    // an HTML report in @AfterClass; the default heap OOMs, so give it headroom.
-    maxHeapSize = '8g'
+    // Parallelism: the loop-quality matrix is sharded one class per region
+    // (LoopQuality<Region>Test over LoopQualityTestBase), so Gradle's
+    // class-level fork distribution can run regions concurrently. Memory, not
+    // CPU, is the ceiling — keep forks × heap within machine RAM. Both are
+    // overridable for measurement/tuning: -Dloop.forks=N -Dloop.heap=Ng.
+    maxParallelForks = Integer.getInteger('loop.forks', 6)
+    // Report generation no longer runs in-test (it moved to the separate
+    // generateLoopReport task below), so each fork only needs routing heap —
+    // far less than the old in-@AfterClass 8g report build. Measured on the
+    // heaviest shard (alpine 100km mtb); tune with -Dloop.heap.
+    maxHeapSize = System.getProperty('loop.heap', '3g')
+
+    // Tests are write-only producers into a shared on-disk result cache. Clear
+    // it once here at suite start (fork-safe: a single delete before any fork
+    // runs, instead of the old in-test synchronized wipe that raced across
+    // forks), and render the report once afterwards in its own JVM.
+    doFirst {
+        delete file('build/reports/loops/.results')
+    }
+    finalizedBy 'generateLoopReport'
 
     // Segment handling: fetch missing neighbour tiles, reuse already-present ones
     // without a freshness re-fetch. Override per-run with -Dloop.segments.*.
@@ -69,4 +86,18 @@ tasks.register('integrationTest', Test) {
         exceptionFormat 'short'
         showStandardStreams = true
     }
+}
+
+// Renders the loop-quality HTML/GeoJSON report from the on-disk result cache
+// that the integrationTest forks populate. Runs in its own single JVM (so it
+// gets a large heap to hold the full corpus, while the test forks stay lean)
+// and is wired as integrationTest's finalizer, so it runs even when a quality
+// gate fails — the report is an artifact, never a build gate.
+tasks.register('generateLoopReport', JavaExec) {
+    description = 'Renders the loop-quality report from the persisted result cache (run after integrationTest).'
+    group = 'verification'
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    mainClass = 'btools.router.LoopQualityReport'
+    // One JVM holding the whole corpus + geometries; override with -Dloop.report.heap.
+    maxHeapSize = System.getProperty('loop.report.heap', '6g')
 }

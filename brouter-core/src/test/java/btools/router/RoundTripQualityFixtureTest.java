@@ -33,7 +33,7 @@ import org.junit.Test;
  * clean loop in every direction at small radii (matrix-verified across
  * algorithm/direction/radius), so these tests are reliable rather than
  * direction-fragile. Larger radii and real-geography shape quality live in the
- * gated suite ({@link LoopQualityTest}).
+ * gated suite ({@link LoopQualityTestBase}).
  */
 public class RoundTripQualityFixtureTest {
 

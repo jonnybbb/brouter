@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * These are terrain-independent correctness properties (closure, no beelines,
  * bounded reuse, valid voice hints; see {@link RoundTripFixture#assertValidLoop}).
  * Distance-accuracy bands and shape quality are scale-dependent and live in the
- * gated, real-geography suite ({@link LoopQualityTest}).
+ * gated, real-geography suite ({@link LoopQualityTestBase}).
  */
 @RunWith(Parameterized.class)
 public class RoundTripInvariantTest {
