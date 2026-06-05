@@ -778,7 +778,7 @@ public class RoundTripQualityGateTest {
    * {@code scatteredHostileMeters} of additional hostile bursts on the
    * opposite side (broken up by non-hostile edges to avoid extending the
    * contiguous run). The geometry is loop-shaped to avoid tripping the
-   * reuse classifier as SCENIC_OUT_AND_BACK.
+   * reuse classifier as OUT_AND_BACK.
    */
   private static OsmTrack trackWithContiguousHostile(int totalMeters,
                                                      int contiguousHostileMeters,

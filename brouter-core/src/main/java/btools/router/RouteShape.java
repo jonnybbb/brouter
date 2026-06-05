@@ -17,7 +17,7 @@ package btools.router;
  *       to a hub from which the loop runs. The stem is a meaningful chunk
  *       of the route but the unique loop body is the majority of the
  *       distance.</li>
- *   <li>{@link #SCENIC_OUT_AND_BACK} — the route is essentially an
+ *   <li>{@link #OUT_AND_BACK} — the route is essentially an
  *       out-and-back along the same road to an extremity (mountain pass,
  *       cape, dead-end valley). The "loop body" is empty or trivial; the
  *       cyclist returns the same way. Accepted only when the caller
@@ -32,7 +32,7 @@ package btools.router;
  *
  * <p>Shape classification is the semantic step that sits between raw
  * geometry (closure, distance ratio, beelines) and the final accept/reject
- * decision. A LOLLIPOP and a SCENIC_OUT_AND_BACK can both be high-quality
+ * decision. A LOLLIPOP and a OUT_AND_BACK can both be high-quality
  * routes for a cyclist — but they MUST be disclosed as such and only
  * returned in policies that allow them.
  */
@@ -42,7 +42,7 @@ public enum RouteShape {
   /** Loop with a retraced terminal spur ("stick" of the lollipop). */
   LOLLIPOP,
   /** Out-and-back along the same road to an extremity. */
-  SCENIC_OUT_AND_BACK,
+  OUT_AND_BACK,
   /** Accidental mid-route backtracking that should be rejected. */
   INVALID_RETRACE
 }

@@ -253,11 +253,17 @@ public final class RoutingContext {
    */
   public boolean explicitViaDensify;
   /**
-   * Force densification on ({@code TRUE}) or off ({@code FALSE}), bypassing the auto-gate.
-   * {@code null} (default) → auto-gate: densify only for non-paved profiles, where it is a
-   * low-risk win. Paved profiles (road bike) keep the plain explicit-via route, because in
-   * sparse terrain a retracing paved lollipop beats a one-way track loop the gate would reject.
-   * Used by tests/measurement to compare both modes deterministically.
+   * Request densification of explicit-via legs. The engine computes the effective
+   * {@link #explicitViaDensify} as {@code Boolean.TRUE.equals(override) && !isPavedProfile}:
+   * <ul>
+   *   <li>{@code TRUE} → opt in, but still gated to non-paved profiles. Paved profiles
+   *       (road bike) keep the plain explicit-via route, because in sparse terrain a
+   *       retracing paved lollipop beats a one-way track loop the gate would reject.
+   *       {@code TRUE} does <b>not</b> bypass the paved-profile gate.</li>
+   *   <li>{@code FALSE} or {@code null} (default) → no densification.</li>
+   * </ul>
+   * Used by tests/measurement to compare both modes deterministically. Tests that need
+   * densification on a paved profile must set {@link #explicitViaDensify} directly.
    */
   public Boolean explicitViaDensifyOverride;
   public double explicitViaDensifyAlpha = 0.5;

@@ -392,6 +392,14 @@ public final class LoopQualityMetrics {
    * roads, and the farthest-node-bearing signal degrades to ~random. Closure is
    * not scored — round-trips close by construction; bad closure should be a hard
    * gate, not a soft signal.
+   *
+   * <p><b>Reporting / test use only — NOT the production selection formula.</b>
+   * Production candidate ranking uses {@link RouteChoiceScore#score}, which applies
+   * different weights (it scores closure at 10% and adds shape penalties, splitting
+   * continuity/cost differently). This method has no production callers; it backs
+   * {@code toString()}, the loop-quality report generator, and integration-test
+   * gates. Keep the two in mind when tuning: changing weights here does not change
+   * which route production selects, and vice-versa.
    */
   public double compositeScore() {
     double distScore = 1.0 - Math.min(1.0, Math.abs(distanceRatio - 1.0) / 0.5);

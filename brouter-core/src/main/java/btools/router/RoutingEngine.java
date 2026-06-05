@@ -39,7 +39,7 @@ public class RoutingEngine extends Thread {
 
   NodesCache nodesCache;
   private SortedHeap<OsmPath> openSet = new SortedHeap<>();
-  private boolean finished = false;
+  private volatile boolean finished = false;
 
   protected List<OsmNodeNamed> waypoints = null;
   List<OsmNodeNamed> extraWaypoints = null;
@@ -83,6 +83,18 @@ public class RoutingEngine extends Thread {
 
   /** Reference road-geometry indirectness the geometric loop-radius calibration is tuned to. */
   private static final double REFERENCE_GEOM_INDIRECTNESS = 1.25;
+  /**
+   * Assumed road/air indirectness for a direction with NO observed isochrone
+   * geometry (probe-only frontier entries, and the no-iso-data fallback).
+   * Deliberately equal to {@link #REFERENCE_GEOM_INDIRECTNESS}: an unknown
+   * direction is assumed to behave like the calibration baseline, so the number
+   * of probe-only directions does not perturb the global indirectness
+   * compensation. (Was an inline {@code 1.3} literal at two sites — 0.05 above
+   * the calibration reference for no documented reason; unified here so the
+   * compensation has a single indirectness baseline.) Validate against the
+   * loop-quality corpus when changing.
+   */
+  private static final double DEFAULT_PROBE_INDIRECTNESS = REFERENCE_GEOM_INDIRECTNESS;
   /** Clamp range on the indirectness compensation factor (±20% of geometric base). */
   private static final double IND_COMPENSATION_MIN = 0.80;
   private static final double IND_COMPENSATION_MAX = 1.20;
@@ -505,7 +517,16 @@ public class RoutingEngine extends Thread {
         nodesCache = null;
       }
       openSet.clear();
-      finished = true; // this signals termination to outside
+      // Signal termination to outside pollers — but NOT for the round-trip path.
+      // In round-trip mode doRouting only produces the raw loop skeleton; the
+      // outer doRoundTrip still runs the quality gate afterwards and can null
+      // foundTrack / set errorMessage. Publishing `finished` here would let a
+      // polling caller (e.g. BRouterView) read an intermediate result. The
+      // round-trip path publishes `finished` in cleanupRoutingResources(), which
+      // runs in doRoundTrip's finally after the gate has decided.
+      if (engineMode != BROUTER_ENGINEMODE_ROUNDTRIP) {
+        finished = true; // this signals termination to outside
+      }
 
       if (infoLogWriter != null) {
         try {
@@ -679,6 +700,27 @@ public class RoutingEngine extends Thread {
         searchRadius = (routingContext.roundTripDistance == null
           || routingContext.roundTripDistance <= 0) ? 1500 : routingContext.roundTripDistance;
       }
+
+      // Fail fast on a missing start tile. Start-tile availability is invariant
+      // across every attempt below (direction × subRouteCount × AUTO candidate),
+      // yet the greedy/iso paths discover it only lazily — and every earlier touch
+      // point (the reachability probe, isochrone expansion) swallows the
+      // IllegalArgumentException — so without this it is either re-discovered per
+      // attempt or, in AUTO, wrapped as a generic "candidate threw" failure.
+      // Checking once here surfaces the canonical "datafile … not found" before any
+      // provider/isochrone/competition work, and keeps a missing-data start from
+      // being mislabeled "start point not on road network" by the greedy planner
+      // (whose matchPoint now uniformly maps any match failure to null).
+      OsmNodeNamed rtStart = waypoints.get(0);
+      if (nodesCache == null) {
+        resetCache(false);
+      }
+      if (!nodesCache.hasSegmentFor(rtStart.ilon, rtStart.ilat)) {
+        errorMessage = "datafile " + nodesCache.getSegmentFileName(rtStart.ilon, rtStart.ilat) + " not found";
+        logInfo(errorMessage);
+        return;
+      }
+
       double direction = (routingContext.startDirection == null ? -1 :routingContext.startDirection);
       double directionAdd = (routingContext.roundTripDirectionAdd == null ? ROUNDTRIP_DEFAULT_DIRECTIONADD :routingContext.roundTripDirectionAdd);
       if (direction == -1) {
@@ -799,7 +841,7 @@ public class RoutingEngine extends Thread {
       // before returning success. The gate rejects unsafe routes (beeline
       // segments, broken closure, distance way off, profile-hostile surfaces,
       // accidental mid-route backtracking). Acceptance is shape-aware:
-      // STRICT_LOOP/LOLLIPOP/SCENIC_OUT_AND_BACK each get explicit
+      // STRICT_LOOP/LOLLIPOP/OUT_AND_BACK each get explicit
       // disclosures so the cyclist knows what they're getting; only
       // INVALID_RETRACE is rejected. See {@link RoundTripQualityGate}.
       double expectedDistance = 2 * Math.PI * searchRadius;
@@ -1090,6 +1132,16 @@ public class RoutingEngine extends Thread {
         + "(tried " + results.size() + " candidates in " + totalMs + "ms): "
         + (err == null ? "unknown" : err);
       logInfo(errorMessage);
+      // Surface the best-geometry rejected candidate for post-mortem inspection,
+      // mirroring the direct-dispatch path which sets lastRejectedTrack before
+      // nulling foundTrack. Candidates are in algorithm-quality order, so the
+      // first with a track is the best available rejected geometry.
+      for (RoundTripCandidateResult r : results) {
+        if (r.track != null) {
+          lastRejectedTrack = r.track;
+          break;
+        }
+      }
       foundTrack = null;
       return;
     }
@@ -1113,15 +1165,24 @@ public class RoutingEngine extends Thread {
       String profileName, double direction) {
     RoundTripCandidateResult best = null;
     double bestScore = -1.0;
+    RouteChoiceScore.Verdict bestVerdict = null;
     for (RoundTripCandidateResult r : candidates) {
       if (r.track == null) {
         continue;
       }
-      double s = RouteChoiceScore.score(r.track, expectedDistance, profileName, null, direction).score();
+      RouteChoiceScore.Verdict v = RouteChoiceScore.score(r.track, expectedDistance, profileName, null, direction);
+      double s = v.score();
       if (s > bestScore) {
         bestScore = s;
         best = r;
+        bestVerdict = v;
       }
+    }
+    // Surface the computed best-effort score on the winner so the adoption
+    // summary logs the real value (and the score breakdown) instead of 0.000;
+    // r.score is otherwise only set for strictly-accepted candidates.
+    if (best != null && best.score == null) {
+      best.score = bestVerdict;
     }
     return best;
   }
@@ -1201,6 +1262,10 @@ public class RoutingEngine extends Thread {
     } catch (RuntimeException e) {
       // Preserve the exception type: e.getMessage() is null for NPE/AIOOBE/CCE,
       // which otherwise surfaces an undiagnosable "threw: null" to the operator.
+      // Also log the full stack trace on the parent (which, unlike the child, is
+      // not `quite`) so a recurring child failure is diagnosable from logs — the
+      // child suppressed its own logging via quite=true + null outfileBase.
+      logThrowable(e);
       r.errorMessage = "candidate " + algo + " threw: " + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage());
       r.runtimeMillis = System.currentTimeMillis() - t0;
@@ -1217,6 +1282,18 @@ public class RoutingEngine extends Thread {
     foundTrack = winner.track;
     errorMessage = null;
     finalizeAdoptedRoundTripTrack(foundTrack, foundTrack == null ? null : foundTrack.matchedWaypoints);
+    // Best-effort (quality-failed) winner adopted under lenient mode: make sure
+    // the user-facing quality Warning is present. The child engine usually
+    // attaches it, but when the parent's gate re-evaluation in runChildCandidate
+    // disagrees with the child's own verdict the child may not have — so attach
+    // it here if absent, mirroring the direct-dispatch advisory (and skip when a
+    // "Warning:" is already present to avoid a duplicate).
+    if (foundTrack != null && !winner.accepted() && winner.gateVerdict != null
+        && (foundTrack.message == null || !foundTrack.message.contains("Warning:"))) {
+      appendRouteMessage(foundTrack, "Warning: " + winner.gateVerdict.getRejectionReason()
+        + " (shape=" + winner.gateVerdict.getShape() + ") — route returned anyway; ride at your"
+        + " discretion, or set roundTripStrictQuality=1 to reject it.");
+    }
     // Append a summary message so debugging consumers can see the
     // competition outcome. Score breakdown is in the route-choice verdict.
     StringBuilder summary = new StringBuilder(256);
@@ -1758,6 +1835,39 @@ public class RoutingEngine extends Thread {
     return bulge;
   }
 
+  // --- Placement-path instrumentation (diagnostic only) -------------------
+  // Monotonic process-wide counters recording which waypoint-placement path
+  // each round-trip leg used. Purely additive: NO routing logic reads these.
+  // They exist to measure how often the terrain-unaware ENVELOPE path is taken
+  // (esp. ENVELOPE_ISO_FALLBACK, the only envelope case where an indirectness
+  // compensation could be derived) so the P5 envelope-compensation work can be
+  // prioritised and validated against the loop-quality corpus. AUTO runs its
+  // candidates in `quite` child engines whose logInfo is suppressed, so a
+  // static counter — not per-call logging — is what survives a corpus run.
+  // Aggregate with placementPathCounts(); reset between corpus cases with
+  // resetPlacementPathCounts().
+  enum PlacementPath { ISOCHRONE, ENVELOPE_ISO_FALLBACK, ENVELOPE_FAST, CIRCLE }
+
+  private static final java.util.concurrent.atomic.AtomicLongArray PLACEMENT_PATH_COUNTS =
+    new java.util.concurrent.atomic.AtomicLongArray(PlacementPath.values().length);
+
+  private void recordPlacementPath(PlacementPath path) {
+    PLACEMENT_PATH_COUNTS.incrementAndGet(path.ordinal());
+    logInfo("roundtrip placement path: " + path); // no-op for quite child engines
+  }
+
+  /** Snapshot of placement-path counts, indexed by {@link PlacementPath#ordinal()}. */
+  public static long[] placementPathCounts() {
+    long[] out = new long[PLACEMENT_PATH_COUNTS.length()];
+    for (int i = 0; i < out.length; i++) out[i] = PLACEMENT_PATH_COUNTS.get(i);
+    return out;
+  }
+
+  /** Reset the placement-path counters (for test/corpus isolation). */
+  public static void resetPlacementPathCounts() {
+    for (int i = 0; i < PLACEMENT_PATH_COUNTS.length(); i++) PLACEMENT_PATH_COUNTS.set(i, 0L);
+  }
+
   private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
     if (routingContext.allowSamewayback) {
       int[] pos = CheapRuler.destination(waypoints.get(0).ilon, waypoints.get(0).ilat, searchRadius, direction);
@@ -1772,8 +1882,16 @@ public class RoutingEngine extends Thread {
         logInfo("snapSamewaybackTip: no road within snap range; samewayback return leg may include a beeline");
       }
     } else {
-      List<OsmNodeNamed> userViaPoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
-      waypoints.subList(1, waypoints.size()).clear();
+      // INVARIANT: this branch runs only in non-explicit-via mode, which is
+      // reached only when waypoints.size() == 1 (user vias are handled earlier by
+      // doExplicitViaRoundTrip). Fail fast if a future refactor ever routes user
+      // vias here, rather than silently re-running the old bearing-sorted via
+      // injection that doExplicitViaRoundTrip was built to replace.
+      if (waypoints.size() > 1) {
+        throw new IllegalStateException(
+          "doWaypointBasedRoundTrip expects a single start waypoint; user vias must be "
+            + "handled by doExplicitViaRoundTrip (got " + waypoints.size() + ")");
+      }
 
       int targetPoints = routingContext.roundTripPoints == null ?
         Math.max(5, Math.min(15, (int) (searchRadius / 1500) + 3)) :
@@ -1787,12 +1905,15 @@ public class RoutingEngine extends Thread {
         double[][] merged = mergeIsochroneWithProbe(frontier, probeDirections, searchRadius);
         if (merged != null && merged.length >= 3) {
           List<IsoCandidate> isoCandidates = (iso != null) ? iso.candidates : null;
+          recordPlacementPath(PlacementPath.ISOCHRONE);
           placeWaypointsFromIsochrone(waypoints, merged, isoCandidates, searchRadius, direction, targetPoints);
         } else if (probeDirections != null && probeDirections.length >= 3) {
           logInfo("isochrone merge insufficient, falling back to probe directions");
+          recordPlacementPath(PlacementPath.ENVELOPE_ISO_FALLBACK);
           placeWaypointsFromEnvelope(waypoints, probeDirections, searchRadius, direction, targetPoints);
         } else {
           logInfo("both isochrone and probe insufficient, falling back to circle");
+          recordPlacementPath(PlacementPath.CIRCLE);
           buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
         }
       } else {
@@ -1801,9 +1922,11 @@ public class RoutingEngine extends Thread {
         // alternatives exist. Avoids fragile sea-edge/dead-end picks.
         double[] viableDirections = filterByProbeConfidence(probe, targetPoints);
         if (viableDirections != null && viableDirections.length >= 3) {
+          recordPlacementPath(PlacementPath.ENVELOPE_FAST);
           placeWaypointsFromEnvelope(waypoints, viableDirections, searchRadius, direction, targetPoints);
         } else {
           logInfo("reachability probe returned < 3 directions, falling back to circle");
+          recordPlacementPath(PlacementPath.CIRCLE);
           buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
         }
       }
@@ -1814,21 +1937,6 @@ public class RoutingEngine extends Thread {
       // Without this, if the user's click position is >250m from a road (park,
       // water, etc.), the routing engine inserts straight-line beelines.
       snapStartToRoad(waypoints, searchRadius);
-
-      if (!userViaPoints.isEmpty()) {
-        // No-beeline invariant: snap user vias before final matching. Forced
-        // user waypoints must never be silently dropped — fail clearly if any
-        // cannot be road-matched within the allowed range.
-        double userSnapDist = Math.min(searchRadius * 0.3, 2000);
-        List<Boolean> matched = snapWaypointsToRoad(userViaPoints, userSnapDist, "snapUserVia");
-        for (int i = 0; i < userViaPoints.size(); i++) {
-          if (!matched.get(i)) {
-            throw new IllegalArgumentException("user waypoint " + userViaPoints.get(i).name
-              + " has no road within " + (int) userSnapDist + "m");
-          }
-        }
-        mergeUserWaypointsIntoLoop(waypoints, userViaPoints, direction, targetPoints);
-      }
     }
 
     routingContext.waypointCatchingRange = 250;
@@ -2161,72 +2269,6 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Merge user-provided via waypoints into the round-trip loop.
-   * Inserts user waypoints among the circle-generated waypoints,
-   * sorted by bearing angle from the start point. If the total
-   * number of intermediate waypoints exceeds targetPoints,
-   * circle waypoints closest in angle to a user waypoint are removed.
-   */
-  void mergeUserWaypointsIntoLoop(List<OsmNodeNamed> waypoints, List<OsmNodeNamed> userViaPoints, double startAngle, int targetPoints) {
-    OsmNodeNamed start = waypoints.get(0);
-    OsmNodeNamed closingPoint = waypoints.remove(waypoints.size() - 1);
-    List<OsmNodeNamed> circlePoints = new ArrayList<>(waypoints.subList(1, waypoints.size()));
-    waypoints.subList(1, waypoints.size()).clear();
-
-    for (int i = 0; i < userViaPoints.size(); i++) {
-      OsmNodeNamed wp = userViaPoints.get(i);
-      if (wp.name == null || wp.name.isEmpty()) {
-        wp.name = "via" + (i + 1);
-      }
-    }
-
-    // Precompute user waypoint bearings (constant across removal iterations)
-    double[] userBearings = new double[userViaPoints.size()];
-    for (int i = 0; i < userViaPoints.size(); i++) {
-      userBearings[i] = CheapAngleMeter.getDirection(start.ilon, start.ilat,
-        userViaPoints.get(i).ilon, userViaPoints.get(i).ilat);
-    }
-
-    int maxCirclePoints = Math.max(1, targetPoints - userViaPoints.size());
-    while (circlePoints.size() > maxCirclePoints) {
-      int removeIdx = -1;
-      double smallestGap = Double.MAX_VALUE;
-      for (int ci = 0; ci < circlePoints.size(); ci++) {
-        double circBearing = CheapAngleMeter.getDirection(start.ilon, start.ilat,
-          circlePoints.get(ci).ilon, circlePoints.get(ci).ilat);
-        for (double userBearing : userBearings) {
-          double gap = CheapAngleMeter.getDifferenceFromDirection(circBearing, userBearing);
-          if (gap < smallestGap) {
-            smallestGap = gap;
-            removeIdx = ci;
-          }
-        }
-      }
-      logInfo("mergeUserWaypoints: removing circle point " + circlePoints.get(removeIdx).name
-        + " (angular gap " + (int) smallestGap + "° to nearest user waypoint)");
-      circlePoints.remove(removeIdx);
-    }
-
-    List<OsmNodeNamed> allIntermediates = new ArrayList<>();
-    allIntermediates.addAll(circlePoints);
-    allIntermediates.addAll(userViaPoints);
-
-    allIntermediates.sort((a, b) -> {
-      double relA = CheapAngleMeter.normalizeRelative(
-        CheapAngleMeter.getDirection(start.ilon, start.ilat, a.ilon, a.ilat) - startAngle);
-      double relB = CheapAngleMeter.normalizeRelative(
-        CheapAngleMeter.getDirection(start.ilon, start.ilat, b.ilon, b.ilat) - startAngle);
-      return Double.compare(relA, relB);
-    });
-
-    waypoints.addAll(allIntermediates);
-    waypoints.add(closingPoint);
-
-    logInfo("mergeUserWaypoints: loop has " + allIntermediates.size() + " intermediate waypoints ("
-      + userViaPoints.size() + " user, " + circlePoints.size() + " circle)");
-  }
-
-  /**
    * Filter round-trip waypoints that matched to bad positions.
    * Removes intermediate waypoints (named "rt*") where:
    * - The snap distance (waypoint to crosspoint) exceeds maxSnapDistance
@@ -2287,6 +2329,9 @@ public class RoutingEngine extends Thread {
       MatchedWaypoint prev = waypoints.get(i - 1);
       if (curr.name == null || !curr.name.startsWith("rt")) continue;
       if (prev.name == null || !prev.name.startsWith("rt")) continue;
+      // crosspoint is nullable (MatchedWaypoint.crosspoint); a not-yet-matched
+      // rt waypoint would NPE here. Skip the too-close test rather than crash.
+      if (curr.crosspoint == null || prev.crosspoint == null) continue;
 
       double dist = curr.crosspoint.calcDistance(prev.crosspoint);
       if (dist < minWaypointDistance) {
@@ -2455,8 +2500,19 @@ public class RoutingEngine extends Thread {
       candidateGroups.add(group);
     }
 
-    // Match all candidates at once — profile-aware via segment decoding
-    nodesCache.matchWaypointsToNodes(allCandidates, maxSnapDist, islandNodePairs);
+    // Match all candidates at once — profile-aware via segment decoding.
+    // Guard like the sibling callers (batchMatchToRoads, snapWaypointsToRoad): a
+    // cache/segment-decode failure must not abort the whole round trip. On error,
+    // leave the waypoints at their generated positions and let the downstream
+    // final matchWaypointsToNodes handle them, rather than throwing out of here
+    // into doRoundTrip's catch and failing the request outright.
+    try {
+      nodesCache.matchWaypointsToNodes(allCandidates, maxSnapDist, islandNodePairs);
+    } catch (Exception e) {
+      logInfo("validateAndAdjustWaypoints: candidate match failed ("
+        + e.getClass().getSimpleName() + "), keeping generated waypoint positions");
+      return;
+    }
 
     // Pick the best candidate for each waypoint or remove it.
     // Use direction-aware scoring: prefer roads perpendicular to the travel
@@ -3457,7 +3513,7 @@ public class RoutingEngine extends Thread {
         if (ind < minObservedInd) minObservedInd = ind;
       }
     }
-    if (minObservedInd == Double.MAX_VALUE) minObservedInd = 1.3;
+    if (minObservedInd == Double.MAX_VALUE) minObservedInd = DEFAULT_PROBE_INDIRECTNESS;
     double profileCostFactor = Math.max(1.0, minObservedInd);
     // Pure road-geometry indirectness (road meters per air meter), profile-free.
     double geomInd = medianInd / profileCostFactor;
@@ -3572,7 +3628,7 @@ public class RoutingEngine extends Thread {
         if (!covered) {
           // Probe-only: use searchRadius as airDist, estimate cost with default indirectness.
           // hits=0 marks this as "probed but not observed by isochrone" — lower confidence.
-          merged.put(bucket, new double[]{dir, searchRadius, searchRadius * 1.3, 0});
+          merged.put(bucket, new double[]{dir, searchRadius, searchRadius * DEFAULT_PROBE_INDIRECTNESS, 0});
         }
       }
     }
@@ -3588,6 +3644,17 @@ public class RoutingEngine extends Thread {
    * Place waypoints from the reachability envelope at a scaled search radius.
    * Selects N directions from the viable set that maximize angular spread,
    * then scales the radius to match v1.7.8's expected loop distance.
+   *
+   * <p><b>Known parity gap (P5):</b> unlike {@link #placeWaypointsFromIsochrone},
+   * this fallback applies only the geometric {@code computeRadiusScale} correction
+   * and does NOT apply terrain-indirectness compensation (it has no per-direction
+   * isochrone cost data to derive it from). It is reached precisely when the
+   * merged isochrone+probe frontier has &lt;3 usable directions — i.e. indirect
+   * terrain (mountains/coast), where unadjusted radii tend to overshoot the target
+   * loop distance. Adding a conservative {@link #DEFAULT_PROBE_INDIRECTNESS}-based
+   * shrink here is a candidate improvement but is a tuning change that needs
+   * loop-quality-corpus validation before landing (cf. the analogous out-of-scope
+   * note in docs/features/roundtrip-benchmark-2026-05.md).
    */
   void placeWaypointsFromEnvelope(List<OsmNodeNamed> waypoints, double[] viableDirections,
                                   double searchRadius, double startDirection, int targetPoints) {

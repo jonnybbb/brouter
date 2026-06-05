@@ -25,7 +25,7 @@ import java.util.Locale;
  *   <li>profile-specific cost/m is a soft preference;</li>
  *   <li>scores the final {@link OsmTrack} only, not pre-final planner state;</li>
  *   <li>penalises route-shape disclosures that indicate surprising
- *       behavior (LOLLIPOP and SCENIC_OUT_AND_BACK are still acceptable
+ *       behavior (LOLLIPOP and OUT_AND_BACK are still acceptable
  *       but rank below clean STRICT_LOOP all else equal).</li>
  * </ul>
  *
@@ -60,7 +60,7 @@ public final class RouteChoiceScore {
   static final double W_DIRECTION  = 0.05;
   /** Shape disclosure penalty: LOLLIPOP/SCENIC down-weight vs STRICT_LOOP. */
   static final double SHAPE_PENALTY_LOLLIPOP = 0.05;
-  static final double SHAPE_PENALTY_SCENIC   = 0.15;
+  static final double SHAPE_PENALTY_OUT_AND_BACK   = 0.15;
 
   // ---- Profile-typical cost-per-meter bands ------------------------------
   // Used to compute the cost/m component. A route on roads the profile
@@ -75,7 +75,10 @@ public final class RouteChoiceScore {
   static double[] costMBand(String profileName) {
     if (profileName == null) return new double[]{1.5, 4.0};
     String n = profileName.toLowerCase(Locale.ROOT);
-    if (n.contains("fastbike") || n.contains("road") || n.contains("racing")) {
+    // "road" must match as a whole word, not a substring: profiles like
+    // "Trekking-SmallRoads" are NOT paved-friendly racing profiles. This mirrors
+    // the whole-token "road" handling in RoundTripQualityGate.isPavedProfile.
+    if (n.contains("fastbike") || n.matches(".*\\broad\\b.*") || n.contains("racing")) {
       return new double[]{1.2, 3.0};   // tight band: paved-friendly profiles
     }
     if (n.contains("gravel")) {
@@ -246,14 +249,14 @@ public final class RouteChoiceScore {
     total += dirContrib;
 
     // 8. Shape disclosure penalty: cyclist sees the route shape; a clean
-    //    STRICT_LOOP ranks above a LOLLIPOP above a SCENIC_OUT_AND_BACK
+    //    STRICT_LOOP ranks above a LOLLIPOP above a OUT_AND_BACK
     //    all else equal. INVALID_RETRACE would have been gate-rejected
     //    above and wouldn't reach here.
     if (qualityGate != null) {
       RouteShape shape = qualityGate.getShape();
       double penalty = 0;
       if (shape == RouteShape.LOLLIPOP) penalty = SHAPE_PENALTY_LOLLIPOP;
-      else if (shape == RouteShape.SCENIC_OUT_AND_BACK) penalty = SHAPE_PENALTY_SCENIC;
+      else if (shape == RouteShape.OUT_AND_BACK) penalty = SHAPE_PENALTY_OUT_AND_BACK;
       if (penalty > 0) {
         reasons.add(new Reason("shape " + shape + " penalty",
           -penalty, 0, -penalty));

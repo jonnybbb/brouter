@@ -181,18 +181,18 @@ public class ReuseClassifierTest {
     OsmTrack t = outAndBack(10000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
     assertFalse("pure out-and-back rejected by default: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     assertNotNull(r.getRejectionReason());
   }
 
   @Test
   public void longStartEndRetraceAcceptedAsScenicWhenAllowed() {
     // Same out-and-back, with allowSamewayback=true → accepted as
-    // SCENIC_OUT_AND_BACK with a disclosure.
+    // OUT_AND_BACK with a disclosure.
     OsmTrack t = outAndBack(10000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("out-and-back accepted with allowSamewayback: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     assertTrue("out-and-back disclosure surfaced",
       r.getDisclosures().stream().anyMatch(d -> d.toLowerCase().contains("out-and-back")));
   }
@@ -228,7 +228,7 @@ public class ReuseClassifierTest {
   @Test
   public void startTouchingDominantSpurStillClassifiesAsLollipop() {
     // Regression: a lollipop whose DOMINANT retrace touches the START (not the
-    // end) used to be wrongly rejected as SCENIC_OUT_AND_BACK because
+    // end) used to be wrongly rejected as OUT_AND_BACK because
     // isStructuralLollipop's touchesStart branch skipped the hub node by one,
     // counting the start hub once (closing visit) instead of twice.
     //
@@ -258,7 +258,7 @@ public class ReuseClassifierTest {
     OsmTrack t = outAndBack(8000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("accepted: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
   }
 
   @Test
@@ -276,11 +276,11 @@ public class ReuseClassifierTest {
   public void capeStyleSpurAcceptedAsLollipopOrScenic() {
     // Cape/dead-end corridor: route goes 4km out to a tip, then back.
     // The "loop body" is essentially zero — pure spur. With allowSamewayback
-    // true, the gate accepts it as SCENIC_OUT_AND_BACK and discloses.
+    // true, the gate accepts it as OUT_AND_BACK and discloses.
     OsmTrack t = outAndBack(4000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("cape spur accepted with allowSamewayback: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
   }
 
   @Test
@@ -346,11 +346,11 @@ public class ReuseClassifierTest {
   @Test
   public void scenicOutAndBackDoesNotPretendToBeLoop() {
     // Even with allowSamewayback=true, the result's shape must be
-    // SCENIC_OUT_AND_BACK — never STRICT_LOOP. A consumer that asks
+    // OUT_AND_BACK — never STRICT_LOOP. A consumer that asks
     // "is this a loop?" must get the correct answer.
     OsmTrack t = outAndBack(6000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     org.junit.Assert.assertNotSame("out-and-back is not STRICT_LOOP",
       RouteShape.STRICT_LOOP, r.getShape());
   }
@@ -474,7 +474,7 @@ public class ReuseClassifierTest {
   @Test
   public void gateRejectsProfileHostileScenicSpur() {
     // Synthetic scenic-spur route but ALL edges carry highway=path. Even
-    // though structurally it's a SCENIC_OUT_AND_BACK that allowSamewayback
+    // though structurally it's a OUT_AND_BACK that allowSamewayback
     // would permit, fastbike must reject it as profile-hostile.
     OsmTrack t = outAndBack(6000);
     MessageData m = new MessageData();
@@ -525,7 +525,7 @@ public class ReuseClassifierTest {
   // fixture reached, plus direct coverage of the package-private helpers.
 
   /**
-   * Branch 3 (reuseRatio ≥ {@link ReuseClassifier#SCENIC_OUT_AND_BACK_REUSE_RATIO}).
+   * Branch 3 (reuseRatio ≥ {@link ReuseClassifier#OUT_AND_BACK_REUSE_RATIO}).
    *
    * <p><b>Reachability note.</b> A reuse ratio ≥ 0.85 is only attainable when
    * some edges are traversed ≥ 3 times (edges traversed at most twice cap the
@@ -536,7 +536,7 @@ public class ReuseClassifierTest {
    * ratio pre-check ([0.5, 1.8]) bounds {@code requested ≤ 1.8 × actual}, which
    * makes branch 3 effectively unreachable in production. It is reachable only
    * via the direct {@code classify()} API with {@code requested ≫ actual},
-   * which is what this test does to pin the SCENIC_OUT_AND_BACK verdict.
+   * which is what this test does to pin the OUT_AND_BACK verdict.
    */
   @Test
   public void veryHighReuseClassifiesAsScenicOutAndBack_directApiOnly() {
@@ -545,15 +545,15 @@ public class ReuseClassifierTest {
 
     RoundTripQualityResult rejected = ReuseClassifier.classify(t, requested, false);
     assertTrue("fixture must reach the 0.85 band, got " + rejected.getTotalReuseRatio(),
-      rejected.getTotalReuseRatio() >= ReuseClassifier.SCENIC_OUT_AND_BACK_REUSE_RATIO);
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, rejected.getShape());
+      rejected.getTotalReuseRatio() >= ReuseClassifier.OUT_AND_BACK_REUSE_RATIO);
+    assertEquals(RouteShape.OUT_AND_BACK, rejected.getShape());
     assertFalse("very-high-reuse rejected by default: " + rejected, rejected.isAccepted());
     assertTrue("reason cites retraced share: " + rejected.getRejectionReason(),
       rejected.getRejectionReason().contains("retraced"));
 
     RoundTripQualityResult accepted = ReuseClassifier.classify(t, requested, true);
     assertTrue("accepted with allowSamewayback: " + accepted, accepted.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, accepted.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, accepted.getShape());
     assertTrue("out-and-back disclosure surfaced: " + accepted.getDisclosures(),
       accepted.getDisclosures().stream().anyMatch(d -> d.contains("same-way-back")));
   }
@@ -579,14 +579,14 @@ public class ReuseClassifierTest {
   /**
    * Branch 4 demotion: a STRUCTURAL lollipop (hub revisited → real closed loop
    * body) whose loop body is below {@link ReuseClassifier#MIN_LOLLIPOP_LOOP_FRACTION}
-   * of the requested distance is demoted from LOLLIPOP to SCENIC_OUT_AND_BACK.
+   * of the requested distance is demoted from LOLLIPOP to OUT_AND_BACK.
    */
   @Test
   public void structuralLollipopWithTinyLoopBodyDemotedToScenic() {
     int requested = 30000;
     OsmTrack t = lollipop(3000, 1200); // ~4km loop body vs 30km requested → ~14% < 35%
     RoundTripQualityResult r = ReuseClassifier.classify(t, requested, false);
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     assertFalse("tiny-loop lollipop demoted and rejected by default: " + r, r.isAccepted());
     assertTrue("reason cites the small loop body: " + r.getRejectionReason(),
       r.getRejectionReason().contains("loop body only"));
@@ -603,7 +603,7 @@ public class ReuseClassifierTest {
     OsmTrack t = lollipop(3000, 1200);
     RoundTripQualityResult r = ReuseClassifier.classify(t, requested, true);
     assertTrue("accepted with allowSamewayback: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     assertTrue("discloses the loop-body share: " + r.getDisclosures(),
       r.getDisclosures().stream().anyMatch(d -> d.contains("loop body")));
   }

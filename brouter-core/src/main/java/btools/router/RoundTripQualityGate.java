@@ -50,7 +50,7 @@ import btools.util.CheapAngleMeter;
  *   <li><b>LOLLIPOP</b> — a loop with a retraced terminal spur (e.g. a
  *       scenic spur to a cape, climb to a pass, valley with one access
  *       road). Accepted with a disclosure.</li>
- *   <li><b>SCENIC_OUT_AND_BACK</b> — essentially out-and-back along the
+ *   <li><b>OUT_AND_BACK</b> — essentially out-and-back along the
  *       same road. Accepted only when {@code allowSamewayback=true}.</li>
  *   <li><b>INVALID_RETRACE</b> — accidental backtracking in the middle of
  *       a loop. Always rejected.</li>
@@ -284,7 +284,7 @@ public final class RoundTripQualityGate {
    *
    * <p>{@code allowSamewayback=true} signals the cyclist explicitly asked
    * for an out-and-back; the gate then permits the
-   * {@link RouteShape#SCENIC_OUT_AND_BACK} shape.
+   * {@link RouteShape#OUT_AND_BACK} shape.
    */
   public static String validate(OsmTrack track, double desiredDistance, String profileName,
                                   boolean allowSamewayback) {
@@ -313,7 +313,7 @@ public final class RoundTripQualityGate {
    *       a scenic spur on a fastbike profile that's mostly track is still
    *       a bad route, no matter how iconic.</li>
    *   <li>{@link ReuseClassifier#classify Semantic reuse classification} —
-   *       decides STRICT_LOOP vs LOLLIPOP vs SCENIC_OUT_AND_BACK vs
+   *       decides STRICT_LOOP vs LOLLIPOP vs OUT_AND_BACK vs
    *       INVALID_RETRACE and produces the final accept/reject verdict.</li>
    * </ol>
    *
@@ -1191,12 +1191,15 @@ public final class RoundTripQualityGate {
         paved = probePavedFromCostModel(expctxWay);
       }
     }
-    // Only cache a real verdict. A null context (e.g. an AUTO-competition child
-    // engine built via copyRequestFields(), which omits expctxWay) cannot probe
-    // and returns the safe `false` default for its own immediate use — but it
-    // must NOT overwrite the parent's correct probed entry for this profile in
-    // the shared static cache, or every later isPavedProfile() lookup would wrongly
-    // bypass the hostile-surface gate.
+    // Only cache a verdict computed from a real probe context. A null expctxWay
+    // means we could not probe, so `paved` is just the safe `false` default for
+    // this call's own immediate use; writing it would poison the shared static
+    // cache and make later isPavedProfile() lookups wrongly bypass the
+    // hostile-surface gate. Note: AUTO-competition child engines do NOT have a
+    // null context here — each child re-parses its own profile (non-null
+    // expctxWay) and re-runs this probe, so it writes the same verdict
+    // idempotently rather than being skipped. The guard defends against any
+    // genuinely context-less caller, not against the AUTO children.
     if (profileName != null && expctxWay != null) {
       PAVED_CLASSIFICATION.put(profileName, paved);
     }

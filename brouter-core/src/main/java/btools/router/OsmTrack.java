@@ -279,7 +279,11 @@ public final class OsmTrack {
               last_pe = pe;
               t.nodes.add(pe);
             }
-            t.cost = last_pe.cost;
+            // last_pe is null only for a degenerate 0-node stored track; guard the
+            // deref so a corrupt/empty entry yields cost 0 instead of an NPE.
+            if (last_pe != null) {
+              t.cost = last_pe.cost;
+            }
             t.buildMap();
 
             // check cheecksums, too
@@ -521,7 +525,11 @@ public final class OsmTrack {
           MatchedWaypoint mwpt = getMatchedWaypoint(nodeNr);
           if (mwpt != null && mwpt.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT) {
             input.cmd = VoiceHint.BL;
-            input.angle = (float) (nodeNr == 0 ? node.origin.message.turnangle : node.message.turnangle);
+            // node.origin.message can be null (see the fallback at the oldWay
+            // assignment above); fall back to node.message's turnangle rather
+            // than dereferencing a null origin message at nodeNr == 0.
+            input.angle = (float) (nodeNr == 0 && node.origin.message != null
+              ? node.origin.message.turnangle : node.message.turnangle);
             input.distanceToNext = node.calcDistance(node.origin);
           }
         }

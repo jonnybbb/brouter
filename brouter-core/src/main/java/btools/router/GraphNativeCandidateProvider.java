@@ -104,12 +104,15 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
       cp.ilat = t.ilat;
       cp.bearing = t.bearing;
       cp.bucketHits = t.bucketHits;
-      cp.sourceContour = t.sourceContour;
       cp.routedTrack = t.routedTrack;
-      // The scorer's costFromStart field is start-centered. These candidates
-      // are expanded from the current step position, so do not overload that
-      // field with local cost; the routed scorer will have the true leg data.
+      // The scorer's costFromStart and sourceContour fields are start-centered
+      // (cost/contour-depth measured from the loop start). These candidates are
+      // expanded from the current step position, so both are inapplicable here;
+      // leave them at the sentinels so the scorer's isoValidatedBonus AND
+      // isoContourDepthMismatch both correctly treat these as non-iso-anchored.
+      // The routed scorer will have the true leg data.
       cp.costFromStart = NO_ISO_COST;
+      cp.sourceContour = NO_ISO_CONTOUR;
       result.add(cp);
     }
     return result;

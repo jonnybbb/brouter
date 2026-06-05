@@ -78,7 +78,7 @@ public final class ReuseClassifier {
   /**
    * For LOLLIPOP acceptance: the non-retraced "loop body" must be at least
    * this fraction of the requested distance. Below this, the route is
-   * really a SCENIC_OUT_AND_BACK in disguise (trivial loop, mostly the
+   * really a OUT_AND_BACK in disguise (trivial loop, mostly the
    * stick) and should be treated as such.
    */
   public static final double MIN_LOLLIPOP_LOOP_FRACTION = 0.35;
@@ -86,10 +86,10 @@ public final class ReuseClassifier {
   /**
    * Above this reuse ratio the route is essentially out-and-back: any "loop"
    * is trivial, and the cyclist will perceive it as same-way-back. Routes
-   * above this threshold are classified as SCENIC_OUT_AND_BACK regardless
+   * above this threshold are classified as OUT_AND_BACK regardless
    * of structural detail.
    */
-  public static final double SCENIC_OUT_AND_BACK_REUSE_RATIO = 0.85;
+  public static final double OUT_AND_BACK_REUSE_RATIO = 0.85;
 
   /**
    * Per-stretch "near boundary" threshold: a stretch touches a boundary if
@@ -289,10 +289,10 @@ public final class ReuseClassifier {
     }
 
     // 3. Decide the route shape from total reuse + structure.
-    //    Very high reuse → SCENIC_OUT_AND_BACK regardless of structural
+    //    Very high reuse → OUT_AND_BACK regardless of structural
     //    detail; accepted only if explicitly allowed.
-    if (reuseRatio >= SCENIC_OUT_AND_BACK_REUSE_RATIO) {
-      RouteShape shape = RouteShape.SCENIC_OUT_AND_BACK;
+    if (reuseRatio >= OUT_AND_BACK_REUSE_RATIO) {
+      RouteShape shape = RouteShape.OUT_AND_BACK;
       if (!allowSamewayback) {
         return b.shape(shape)
           .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
@@ -338,7 +338,7 @@ public final class ReuseClassifier {
       }
       // Either the topology is one-way (out-and-back) OR the loop body is
       // too small to call a real lollipop. Both cases are
-      // SCENIC_OUT_AND_BACK: cyclist returns the same way along the spur.
+      // OUT_AND_BACK: cyclist returns the same way along the spur.
       if (!allowSamewayback) {
         String why = structuralLollipop
           ? String.format(Locale.US,
@@ -347,7 +347,7 @@ public final class ReuseClassifier {
           : String.format(Locale.US,
               "route is %.0f%% retraced same-way-back to extremity — allowSamewayback=0",
               reuseRatio * 100);
-        return b.shape(RouteShape.SCENIC_OUT_AND_BACK)
+        return b.shape(RouteShape.OUT_AND_BACK)
           .reject(RoundTripQualityResult.RejectionTier.QUALITY, why)
           .build();
       }
@@ -358,7 +358,7 @@ public final class ReuseClassifier {
         : String.format(Locale.US,
             "out-and-back to extremity: %.1fkm retraced same way",
             spurMeters / 1000.0);
-      return b.accepted(true).shape(RouteShape.SCENIC_OUT_AND_BACK)
+      return b.accepted(true).shape(RouteShape.OUT_AND_BACK)
         .addDisclosure(disclosure)
         .build();
     }
@@ -432,7 +432,7 @@ public final class ReuseClassifier {
     // farthest-from-start node sits in the loop, not on the stem. Requiring
     // the farthest point to lie inside the spur would mis-reject the
     // common "long stem + bigger loop" lollipop. The higher-level
-    // classifier still decides LOLLIPOP vs SCENIC_OUT_AND_BACK via the
+    // classifier still decides LOLLIPOP vs OUT_AND_BACK via the
     // unique-portion topology (closed loop vs one-way), so this stretch
     // classification can safely be permissive.
     boolean outBackTopology =
@@ -502,7 +502,7 @@ public final class ReuseClassifier {
     // [0, boundaryNodeIdx] (i <= prefixEnd), so touchesStart must scan the
     // suffix [boundaryNodeIdx, end] — starting at boundaryNodeIdx, not +1.
     // Skipping the hub here undercounts a start-touching lollipop's hub by one
-    // and wrongly rejects it as SCENIC_OUT_AND_BACK.
+    // and wrongly rejects it as OUT_AND_BACK.
     int prefixStart = touchesEnd ? 0 : boundaryNodeIdx;
 
     int occurrences = 0;

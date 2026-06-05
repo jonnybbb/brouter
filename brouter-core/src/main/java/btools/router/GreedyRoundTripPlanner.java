@@ -149,25 +149,9 @@ public class GreedyRoundTripPlanner {
     this.profileName = profileName;
   }
 
-  public GreedyRoundTripPlanner(RoutingEngine engine) {
-    this(engine, new RoundTripCandidateProvider.RadialCandidateProvider(),
-      new CandidateScorer(), DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
-  }
-
   public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider) {
     this(engine, provider, new CandidateScorer(),
       DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
-  }
-
-  /**
-   * Configure scorer/sub-route count/tolerance/max-attempts. Uses the default
-   * {@link RoundTripCandidateProvider.RadialCandidateProvider}; for QUALITY-tier
-   * callers, prefer the 6-arg ctor with an {@link IsochroneCandidateProvider}.
-   */
-  public GreedyRoundTripPlanner(RoutingEngine engine, CandidateScorer scorer,
-                                int subRouteCount, double tolerance, int maxAttempts) {
-    this(engine, new RoundTripCandidateProvider.RadialCandidateProvider(),
-      scorer, subRouteCount, tolerance, maxAttempts);
   }
 
   public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider,
@@ -854,7 +838,7 @@ public class GreedyRoundTripPlanner {
       result.setReusedEdgeRatio(metrics.getRoadReusePercent() / 100.0);
       result.addDiagnostic("quality: " + metrics);
       // Also surface the semantic reuse classification — what SHAPE this
-      // loop is (STRICT_LOOP / LOLLIPOP / SCENIC_OUT_AND_BACK) and any
+      // loop is (STRICT_LOOP / LOLLIPOP / OUT_AND_BACK) and any
       // disclosures (e.g. "contains retraced scenic spur: 4.2km"). The
       // engine's final gate will reject INVALID_RETRACE before the result
       // is returned to the caller, so a classifier verdict here is for
@@ -990,6 +974,13 @@ public class GreedyRoundTripPlanner {
       }
       return mwp;
     } catch (Exception e) {
+      // Return null on ANY failure so every caller's graceful recovery still
+      // works: the start site (~line 211) gives up this attempt, the candidate
+      // loop (~321) skips this candidate and tries the next, and the next-step
+      // site (~532) falls back to the accepted waypoint. Do NOT rethrow — a
+      // single missing-data candidate point must not abort the whole leg. The
+      // cause (incl. data-availability IllegalArgumentException from NodesCache)
+      // is logged so it is not silently lost when info logging is enabled.
       engine.logInfo("matchPoint(" + name + ") failed: " + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage()));
       return null;

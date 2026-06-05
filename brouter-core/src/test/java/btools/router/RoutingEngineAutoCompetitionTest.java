@@ -110,13 +110,13 @@ public class RoutingEngineAutoCompetitionTest {
     RoundTripQualityResult lollipop = RoundTripQualityResult.builder()
       .accepted(true).shape(RouteShape.LOLLIPOP).build();
     RoundTripQualityResult scenic = RoundTripQualityResult.builder()
-      .accepted(true).shape(RouteShape.SCENIC_OUT_AND_BACK).build();
+      .accepted(true).shape(RouteShape.OUT_AND_BACK).build();
 
     double strictS = RouteChoiceScore.score(t, t.distance, "fastbike", strict).score();
     double lollipopS = RouteChoiceScore.score(t, t.distance, "fastbike", lollipop).score();
     double scenicS = RouteChoiceScore.score(t, t.distance, "fastbike", scenic).score();
     Assert.assertTrue("STRICT_LOOP > LOLLIPOP", strictS > lollipopS);
-    Assert.assertTrue("LOLLIPOP > SCENIC_OUT_AND_BACK", lollipopS > scenicS);
+    Assert.assertTrue("LOLLIPOP > OUT_AND_BACK", lollipopS > scenicS);
   }
 
   @Test

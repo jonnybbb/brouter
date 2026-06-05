@@ -357,6 +357,20 @@ public class LoopQualityTest {
 
     printSummary(allResults);
 
+    // Diagnostic: waypoint-placement-path distribution across this run, to size
+    // the P5 envelope-compensation work. ENVELOPE_ISO_FALLBACK is the only
+    // envelope case where an indirectness shrink can be derived (isochrone data
+    // exists); ENVELOPE_FAST is the terrain-signal-less FAST-tier primary path.
+    // (Single-JVM run, so these process-wide counters aggregate the whole matrix.)
+    long[] placementCounts = RoutingEngine.placementPathCounts();
+    RoutingEngine.PlacementPath[] placementPaths = RoutingEngine.PlacementPath.values();
+    StringBuilder pc = new StringBuilder("PLACEMENT-PATH COUNTS: ");
+    for (int i = 0; i < placementCounts.length; i++) {
+      pc.append(placementPaths[i]).append('=').append(placementCounts[i]);
+      if (i < placementCounts.length - 1) pc.append(", ");
+    }
+    System.out.println(pc);
+
     try {
       File buildDir = new File("build/reports/loops");
       buildDir.mkdirs();

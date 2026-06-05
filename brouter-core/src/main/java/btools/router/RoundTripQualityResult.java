@@ -99,6 +99,7 @@ public final class RoundTripQualityResult {
       + "accepted=" + accepted
       + ", shape=" + shape
       + (rejectionReason != null ? ", reason=" + rejectionReason : "")
+      + (!accepted && rejectionTier != null ? ", tier=" + rejectionTier : "")
       + ", reuseRatio=" + String.format(java.util.Locale.US, "%.2f", totalReuseRatio)
       + ", maxContiguous=" + maxContiguousReuseMeters + "m"
       + ", stem=" + terminalStemReuseMeters + "m"
