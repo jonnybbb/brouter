@@ -20,3 +20,30 @@ misc/customprofiles
 .classpath
 .project
 !/.idea/runConfigurations
+
+# --- Round-trip work: local-only tooling & artifacts (kept out of the PR) ---
+# Local dev/investigation helpers
+/.claude/
+/.tool-versions
+/docker-compose.yml
+/download-segments.sh
+/node_modules/
+/package.json
+/package-lock.json
+/tools/
+/tmp/
+
+# Downloaded segment tiles (root-level; misc/segments4 is already ignored above)
+/segments4/
+
+# Generated loop-quality test output (the golden *.txt baselines stay tracked)
+/brouter-core/src/test/resources/test-data/golden/*.geojson
+
+# Internal investigation notes — the curated doc is docs/features/roundtrips.md
+# (these patterns require a hyphen, so docs/features/roundtrips.md is NOT matched)
+/docs/features/phase-2-*
+/docs/features/roundtrip-*.md
+/docs/features/roundtrip-*.json
+/docs/features/kaiserstuhl-*.md
+/docs/features/gpx-replay/
+/docs/features/visual-analysis/
