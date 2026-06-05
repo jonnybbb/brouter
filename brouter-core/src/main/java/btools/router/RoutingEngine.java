@@ -5488,17 +5488,35 @@ public class RoutingEngine extends Thread {
    * applied during this pass. Reuse penalties belong to route choice; this
    * method only annotates an already-chosen route.
    */
+  /**
+   * Fallback time budget for the guided detail-retrack when the caller imposed
+   * none ({@code maxRunningTime <= 0} — e.g. the quality tests' {@code doRun(0)}
+   * or an untimed CLI run). The guided pass normally visits few nodes, but if it
+   * exceeds the guide-track cost cap it can fall back to a free search; this caps
+   * that so a pathological retrack cannot run unbounded (it then times out and
+   * gracefully returns the raw track via the catch below). Production
+   * ({@code maxRunningTime > 0}) is already bounded by the request budget and is
+   * left unchanged.
+   */
+  private static final long RETRACK_DETAIL_FALLBACK_BUDGET_MS = 60_000;
+
   OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp, OsmTrack refTrack) {
     if (rawTrack == null || rawTrack.nodes == null || rawTrack.nodes.size() < 2) return rawTrack;
     double savedAirDistFactor = airDistanceCostFactor;
     double savedLastFactor = lastAirDistanceCostFactor;
     OsmTrack savedGuide = guideTrack;
     long savedStartTime = startTime;
+    long savedMaxRunningTime = maxRunningTime;
     boolean savedSuppressIslandGuard = suppressRoutingIslandGuard;
     airDistanceCostFactor = 0.;
     lastAirDistanceCostFactor = 0.;
     guideTrack = rawTrack;
     startTime = System.currentTimeMillis();
+    // Bound the retrack when the caller set no time budget (see constant above);
+    // production paths pass a positive maxRunningTime and are unaffected.
+    if (maxRunningTime <= 0) {
+      maxRunningTime = RETRACK_DETAIL_FALLBACK_BUDGET_MS;
+    }
     // Guided retracking visits few nodes (the route is already known), so
     // the island-check guard `nodesVisited < MAXNODES_ISLAND_CHECK` would
     // false-positive every call. Suppress it only for this scoped retrack;
@@ -5521,6 +5539,7 @@ public class RoutingEngine extends Thread {
       airDistanceCostFactor = savedAirDistFactor;
       lastAirDistanceCostFactor = savedLastFactor;
       startTime = savedStartTime;
+      maxRunningTime = savedMaxRunningTime;
       suppressRoutingIslandGuard = savedSuppressIslandGuard;
     }
   }
