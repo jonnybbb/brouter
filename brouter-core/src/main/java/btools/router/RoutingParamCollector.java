@@ -15,6 +15,17 @@ public class RoutingParamCollector {
   final static boolean DEBUG = false;
 
   /**
+   * Upper bound for the user-supplied {@code roundTripLength} (total loop length,
+   * metres) and {@code roundTripDistance} (search radius, metres). Far beyond any
+   * realistic loop, these only bound abusive/garbage values (e.g. Integer.MAX_VALUE)
+   * so a crafted request cannot drive a meaningless multi-thousand-km expansion
+   * before the engine's node-limit ceiling stops it. Over-max values are clamped
+   * (not rejected), preserving the "I want a big loop" intent at the maximum.
+   */
+  private static final int MAX_ROUNDTRIP_LENGTH_METERS = 500_000;   // 500 km loop
+  private static final int MAX_ROUNDTRIP_RADIUS_METERS = 200_000;   // ~1256 km loop
+
+  /**
    * get a list of points and optional extra info for the points
    *
    * @param lonLats  linked list separated by ';' or '|'
@@ -217,6 +228,10 @@ public class RoutingParamCollector {
           // (length / 2π); invalidate it so the roundTripDistance path is used.
           if (rctx.roundTripLength != null && rctx.roundTripLength <= 0) {
             rctx.roundTripLength = null;
+          } else if (rctx.roundTripLength != null && rctx.roundTripLength > MAX_ROUNDTRIP_LENGTH_METERS) {
+            System.err.println("clamping roundTripLength=" + rctx.roundTripLength
+              + " to max " + MAX_ROUNDTRIP_LENGTH_METERS + "m");
+            rctx.roundTripLength = MAX_ROUNDTRIP_LENGTH_METERS;
           }
         } else if (key.equals("roundTripDistance")) {
           rctx.roundTripDistance = parseIntParamOrNull(key, value);
@@ -225,6 +240,10 @@ public class RoutingParamCollector {
           // so invalidate it and let the default radius apply.
           if (rctx.roundTripDistance != null && rctx.roundTripDistance <= 0) {
             rctx.roundTripDistance = null;
+          } else if (rctx.roundTripDistance != null && rctx.roundTripDistance > MAX_ROUNDTRIP_RADIUS_METERS) {
+            System.err.println("clamping roundTripDistance=" + rctx.roundTripDistance
+              + " to max " + MAX_ROUNDTRIP_RADIUS_METERS + "m");
+            rctx.roundTripDistance = MAX_ROUNDTRIP_RADIUS_METERS;
           }
         } else if (key.equals("roundTripDirectionAdd")) {
           rctx.roundTripDirectionAdd = parseIntParamOrNull(key, value);

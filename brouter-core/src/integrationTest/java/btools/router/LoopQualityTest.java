@@ -16,8 +16,10 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import static org.junit.Assert.assertTrue;
 
@@ -90,6 +92,12 @@ public class LoopQualityTest {
   public TemporaryFolder outputDir = new TemporaryFolder();
 
   private File projectDir;
+
+  // Per-variant production-selector score (RouteChoiceScore) for the current
+  // case, populated by runVariant and read by the quality gate. The gate floors
+  // on this (the score AUTO actually ships) rather than the report-only
+  // compositeScore, so the test oracle matches production selection.
+  private final Map<String, Double> variantRcs = new HashMap<>();
 
   @Parameterized.Parameters(name = "{5}")
   public static Collection<Object[]> data() {
@@ -231,20 +239,28 @@ public class LoopQualityTest {
       failures.add(String.format("%s: cost/m %.2f exceeds max %.2f for %s profile",
         tag, m.getAverageCostPerMeter(), maxCostPerM, profileName));
     }
-    if (m.compositeScore() < MIN_COMPOSITE_PASS) {
-      failures.add(String.format("%s: composite %.2f below floor %.2f (route fails on multiple dimensions)",
-        tag, m.compositeScore(), MIN_COMPOSITE_PASS));
+    Double rcs = variantRcs.get(variant);
+    if (rcs != null && rcs < MIN_RCS_PASS) {
+      failures.add(String.format("%s: RouteChoiceScore %.2f below floor %.2f (production selector — route fails on multiple dimensions)",
+        tag, rcs, MIN_RCS_PASS));
     }
   }
 
   /**
-   * Composite-score floor applied to each gated variant (greedy, iso_greedy). A
-   * route below this is bad along multiple dimensions — the per-dimension
-   * thresholds in {@link LoopTestRegion} catch grossly-broken loops; this
-   * catches the more insidious "ratio 1.5 × low compactness × bad cost/m"
-   * combinations.
+   * Multi-dimension floor applied to each gated variant (greedy, iso_greedy),
+   * using {@link RouteChoiceScore} — the SAME production selector AUTO uses to
+   * pick a winner, so the test oracle matches what actually ships (closure +
+   * shape penalties included, unlike the report-only
+   * {@link LoopQualityMetrics#compositeScore}). The per-dimension thresholds in
+   * {@link LoopTestRegion} catch grossly-broken loops; this catches the more
+   * insidious "ratio 1.5 × low compactness × bad cost/m" combinations.
+   *
+   * <p>Calibrated (June 2026) from the 240-case corpus: the worst accepted gated
+   * route scored 0.629 (terrain-constrained alpine-100km-south); 0.50 clears all
+   * gated samples with anti-flap margin and only trips on genuine multi-dimension
+   * degradation — mirroring the prior compositeScore floor's looseness.
    */
-  private static final double MIN_COMPOSITE_PASS = 0.50;
+  private static final double MIN_RCS_PASS = 0.50;
 
   /** Whether this region is paved-coastal terrain (sparse gravel network), where
    *  the gravel cost/m ceiling is relaxed — see {@link #checkVariantQuality}. */
@@ -317,6 +333,12 @@ public class LoopQualityTest {
       }
 
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
+      // Stash the production-selector score for the quality gate (see checkVariantQuality).
+      // null gateVerdict scores on geometry — the track already passed the strict
+      // production gate (roundTripStrictQuality=true), so this measures its real
+      // RouteChoiceScore the same way the calibration distribution was collected.
+      variantRcs.put(variant,
+        RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).score());
       double[][] coords = extractCoordinates(track);
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);
