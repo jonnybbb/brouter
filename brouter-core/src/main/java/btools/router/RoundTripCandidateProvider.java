@@ -70,6 +70,12 @@ public interface RoundTripCandidateProvider {
     public int ilat;
     public double bearing;
     public double score; // heuristic score — set by the planner during ranking
+    /**
+     * Normalized [0,1] profile-desirability of this candidate's cell (issue #15).
+     * Only {@link DesirabilityCandidateProvider} sets it; all other providers leave
+     * it at 0, so the planner's desirability reward is a no-op for them.
+     */
+    public double desirability;
     /** Dijkstra cost-units from the loop start to this candidate; {@link #NO_ISO_COST} = unavailable. */
     public double costFromStart = NO_ISO_COST;
     /** Population of this candidate's angular bucket in the isochrone; {@link #NO_ISO_DENSITY} = unavailable. */

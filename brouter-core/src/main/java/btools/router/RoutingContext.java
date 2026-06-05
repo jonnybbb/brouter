@@ -289,6 +289,22 @@ public final class RoutingContext {
    */
   public boolean roundTripIsochrone;
 
+  /**
+   * Experimental profile-desirability heatmap for GREEDY round-trips (issue #15),
+   * settable via the request parameter {@code roundTripDesirability=1}. Off by
+   * default. When on, the GREEDY round-trip accumulates a coarse profile-cost-density
+   * grid during its isochrone expansion and biases waypoint placement toward
+   * high-desirability cells (see {@link DesirabilityCandidateProvider}).
+   *
+   * <p>Takes effect only when the GREEDY algorithm actually runs; inert for
+   * ISOCHRONE / ISO_GREEDY / WAYPOINT. Under the default AUTO algorithm a GREEDY
+   * child is spawned only when ISO_GREEDY does not clearly win the competition, so
+   * on good tile data this flag can be silently inert under AUTO — set
+   * {@code roundTripAlgorithm=GREEDY} explicitly to guarantee it is honoured. This
+   * is an exploratory infrastructure lever, not a tuned route-quality default.
+   */
+  public boolean roundTripDesirability;
+
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
 
   public double nogoCost = 0.;
@@ -691,6 +707,9 @@ public final class RoutingContext {
     // report no errorMessage, so the parent's strict re-gate finds no winner
     // but can only surface "unknown" instead of the child's real reason.
     c.roundTripStrictQuality = this.roundTripStrictQuality;
+    // The desirability flag (issue #15) must reach the GREEDY child spawned by the
+    // AUTO competition, where it actually takes effect.
+    c.roundTripDesirability = this.roundTripDesirability;
     // Densification request inputs (the effective explicitViaDensify flag is
     // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
     // AUTO children currently route a single waypoint and never densify, but

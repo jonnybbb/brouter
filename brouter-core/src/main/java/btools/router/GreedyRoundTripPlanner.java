@@ -140,6 +140,29 @@ public class GreedyRoundTripPlanner {
   private String profileName;
 
   /**
+   * Desirability reward weight for the round-trip heatmap experiment (issue #15).
+   * Subtracted (× the candidate's [0,1] desirability) from the candidate score so
+   * waypoints on profile-preferred terrain rank better.
+   *
+   * <p>Inert on the default routing path: only {@link DesirabilityCandidateProvider}
+   * (built solely when {@code roundTripDesirability} is set) assigns a non-zero
+   * {@code desirability}; every other provider leaves it at 0, so {@code 30 × 0}
+   * contributes nothing.
+   *
+   * <p>The value is intentionally <b>strong</b>, not a gentle nudge: the base
+   * {@link CandidateScorer#score} terms are normalized ratios weighted in the 0.5–3.0
+   * range, so a score is typically O(1–10). At 30 the desirability term meaningfully
+   * biases waypoint selection among the candidates the provider already constrained to
+   * the step's distance window — though how much it actually re-ranks depends on the
+   * stock spacing weights (notably {@code wPrev}); the measured route effect in the
+   * issue #15 study came with those relaxed, which this commit does not ship. Loop
+   * closure still pulls the final return leg back to the start. This is an exploratory
+   * experiment behind an off-by-default flag, not a tuned route-quality default; tuning
+   * it together with the spacing weights is future work.
+   */
+  private static final double DESIR_WEIGHT = 30.0;
+
+  /**
    * Set the active profile name. Should be called by {@link RoutingEngine}
    * during planner construction, immediately after the planner is
    * instantiated, so the internal fallback gate matches what the
@@ -278,7 +301,8 @@ public class GreedyRoundTripPlanner {
             0.0, // can't estimate visited ratio without routing
             distFromStart, searchRadius,
             distFromPrevious,
-            cp.costFromStart, cp.bucketHits, cp.sourceContour);
+            cp.costFromStart, cp.bucketHits, cp.sourceContour)
+            - DESIR_WEIGHT * cp.desirability; // issue #15: reward profile-desirable cells (lower score = better)
         }
 
         // Rank by score (lowest = best)

@@ -282,6 +282,11 @@ public class RoutingParamCollector {
           if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
           }
+        } else if (key.equals("roundTripDesirability")) {
+          // Experimental profile-desirability heatmap for GREEDY round-trips (issue #15).
+          // Off by default; honoured only by the GREEDY algorithm.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripDesirability = v != null && v == 1;
         } else if (key.equals("alternativeidx")) {
           Integer v = parseIntParamOrNull(key, value);
           if (v != null) rctx.setAlternativeIdx(v);
