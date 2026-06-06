@@ -56,6 +56,16 @@ public final class ReuseClassifier {
   public static final double MAX_STEM_REUSE_FRAC = 0.05;
 
   /**
+   * A boundary-touching <em>parallel-corridor</em> stretch (the return running
+   * alongside the outbound on a different way, detected spatially rather than
+   * by edge identity) longer than this is NOT forgiven as a short unavoidable
+   * stem — it downgrades the route to OUT_AND_BACK. Below it, a short forced
+   * parallel bit (the only metres of road out of a pinched start) is still
+   * tolerated as a stem.
+   */
+  public static final int PARALLEL_CORRIDOR_MIN_METERS = 300;
+
+  /**
    * Legacy fallback cap on mid-route retrace, used <em>only</em> when
    * {@code requestedDistance ≤ 0} (degenerate test fixtures). Production
    * code paths always have a positive requested distance and use
@@ -135,11 +145,18 @@ public final class ReuseClassifier {
     int n = track.nodes.size() - 1; // edge count
     int[] segLens = new int[n];
     boolean[] isReuse = new boolean[n];
+    boolean[] spatialOnly = new boolean[n]; // spatial-overlap edge that is NOT an identity retrace
     double[] firstVisitCumStart = new double[n];
     int[] visitOrdinal = new int[n]; // 1, 2, 3, ... — visit number for this edge
     double cum = 0;
     // Per-edge tracking: [firstVisitCumStart, firstVisitCumEnd, visitCount].
     Map<Long, double[]> edgeState = new HashMap<>();
+
+    // Spatial corridor overlap (a parallel return on a different way). Unioned
+    // with edge-identity reuse below so the classifier sees same-corridor-back
+    // that edge identity is blind to. visitOrdinal stays identity-only — a
+    // parallel corridor is a 2-visit phenomenon, never a same-road zigzag.
+    boolean[] spatialOverlap = CorridorOverlapIndex.computeEdgeOverlap(track);
 
     for (int i = 0; i < n; i++) {
       OsmPathElement a = track.nodes.get(i);
@@ -149,17 +166,21 @@ public final class ReuseClassifier {
 
       long key = edgeKey(a, b);
       double[] state = edgeState.get(key);
+      boolean identityReuse;
       if (state == null) {
         edgeState.put(key, new double[]{cum, cum + segLen, 1});
-        isReuse[i] = false;
+        identityReuse = false;
         firstVisitCumStart[i] = cum;
         visitOrdinal[i] = 1;
       } else {
         state[2] += 1;
-        isReuse[i] = true;
+        identityReuse = true;
         firstVisitCumStart[i] = state[0];
         visitOrdinal[i] = (int) state[2];
       }
+      boolean spatial = i < spatialOverlap.length && spatialOverlap[i];
+      isReuse[i] = identityReuse || spatial;
+      spatialOnly[i] = spatial && !identityReuse;
       cum += segLen;
     }
     double totalDist = cum;
@@ -177,6 +198,7 @@ public final class ReuseClassifier {
       double stretchLen = 0;
       int startEdgeIdx = i;
       int maxVisitOrdinal = 0;
+      double spatialOnlyLen = 0;
       while (i < n && isReuse[i]) {
         stretchLen += segLens[i];
         double fvStart = firstVisitCumStart[i];
@@ -186,12 +208,20 @@ public final class ReuseClassifier {
         double fvEnd = fvStart + segLens[i];
         if (fvEnd > firstVisitMax) firstVisitMax = fvEnd;
         if (visitOrdinal[i] > maxVisitOrdinal) maxVisitOrdinal = visitOrdinal[i];
+        if (spatialOnly[i]) spatialOnlyLen += segLens[i];
         cumPrefix += segLens[i];
         i++;
       }
       double endCum = cumPrefix;
+      // A real parallel corridor is a mix: mostly a parallel return on a
+      // different way, punctuated by the odd shared pinch (an identity retrace).
+      // Classify by the majority of the stretch's length, not by requiring
+      // every edge to be spatial — one shared bridge must not demote a 1 km
+      // parallel corridor back to a benign stem.
+      boolean stretchSpatialOnly = stretchLen > 0 && spatialOnlyLen * 2 >= stretchLen;
       stretches.add(new ReuseStretch(startEdgeIdx, i - 1,
-        startCum, endCum, stretchLen, firstVisitMin, firstVisitMax, maxVisitOrdinal));
+        startCum, endCum, stretchLen, firstVisitMin, firstVisitMax, maxVisitOrdinal,
+        stretchSpatialOnly));
     }
 
     return new TrackReuseProfile(totalDist, stretches);
@@ -241,6 +271,7 @@ public final class ReuseClassifier {
     // surfaced, rather than truncating each stretch into an int.
     double stemMeters = 0;
     double spurMeters = 0;
+    double parallelCorridorMeters = 0;
     int midRouteUnclassifiedMaxMeters = 0;
     int midRouteUnclassifiedTotalMeters = 0;
     boolean hasLongTerminalReuse = false;
@@ -255,6 +286,9 @@ public final class ReuseClassifier {
         case TERMINAL_SPUR:
           spurMeters += s.lengthMeters;
           hasLongTerminalReuse = true;
+          break;
+        case PARALLEL_CORRIDOR:
+          parallelCorridorMeters += s.lengthMeters;
           break;
         case MID_ROUTE:
           int len = (int) Math.round(s.lengthMeters);
@@ -285,6 +319,25 @@ public final class ReuseClassifier {
         .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
           "cumulative mid-route retrace %dm exceeds %dm — route zig-zags",
           midRouteUnclassifiedTotalMeters, midCap))
+        .build();
+    }
+
+    // 2b. Parallel return corridor: the route runs back alongside its outbound
+    //    on a different way (detected spatially, invisible to edge identity).
+    //    This is not a clean loop — downgrade to OUT_AND_BACK. Rejected under
+    //    the internal gate (allowSamewayback=false) so the planner retries;
+    //    surfaced as a disclosure by the lenient request gate.
+    if (parallelCorridorMeters > 0) {
+      String msg = String.format(Locale.US,
+        "parallel return corridor: %dm alongside outbound",
+        (int) Math.round(parallelCorridorMeters));
+      if (!allowSamewayback) {
+        return b.shape(RouteShape.OUT_AND_BACK)
+          .reject(RoundTripQualityResult.RejectionTier.QUALITY, msg)
+          .build();
+      }
+      return b.accepted(true).shape(RouteShape.OUT_AND_BACK)
+        .addDisclosure(msg)
         .build();
     }
 
@@ -416,6 +469,15 @@ public final class ReuseClassifier {
       return StretchKind.MID_ROUTE;
     }
 
+    // Parallel-corridor reuse (spatial overlap, NOT an edge-identity retrace):
+    // a return running alongside the outbound on a different way. Above the
+    // min length this is not a forgivable stem — it downgrades the route.
+    // Below it, a short forced parallel bit out of a pinched start is tolerated
+    // as a stem (handled by the stem branch below).
+    if (s.spatialOnly && s.lengthMeters > PARALLEL_CORRIDOR_MIN_METERS) {
+      return StretchKind.PARALLEL_CORRIDOR;
+    }
+
     // Short boundary-touching reuse: stem.
     if (s.lengthMeters <= stemCap) {
       return StretchKind.STEM;
@@ -528,7 +590,7 @@ public final class ReuseClassifier {
 
   // ---- Per-stretch types ---------------------------------------------------
 
-  enum StretchKind { STEM, TERMINAL_SPUR, MID_ROUTE }
+  enum StretchKind { STEM, TERMINAL_SPUR, MID_ROUTE, PARALLEL_CORRIDOR }
 
   /** One contiguous run of reused edges in the track. */
   static final class ReuseStretch {
@@ -549,11 +611,18 @@ public final class ReuseClassifier {
      * accidental backtracking that we never accept as a scenic spur.
      */
     final int maxVisitOrdinal;
+    /**
+     * True when every edge in this stretch is a spatial corridor overlap that
+     * is NOT also an edge-identity retrace — i.e. a parallel return on a
+     * different way. Such a stretch is classified {@link StretchKind#PARALLEL_CORRIDOR}
+     * (above the min length) rather than forgiven as a stem.
+     */
+    final boolean spatialOnly;
 
     ReuseStretch(int firstEdgeIndex, int lastEdgeIndex,
                  double startCumDist, double endCumDist, double lengthMeters,
                  double firstVisitCumMin, double firstVisitCumMax,
-                 int maxVisitOrdinal) {
+                 int maxVisitOrdinal, boolean spatialOnly) {
       this.firstEdgeIndex = firstEdgeIndex;
       this.lastEdgeIndex = lastEdgeIndex;
       this.startCumDist = startCumDist;
@@ -562,6 +631,7 @@ public final class ReuseClassifier {
       this.firstVisitCumMin = firstVisitCumMin;
       this.firstVisitCumMax = firstVisitCumMax;
       this.maxVisitOrdinal = maxVisitOrdinal;
+      this.spatialOnly = spatialOnly;
     }
   }
 

@@ -122,6 +122,13 @@ public final class LoopQualityMetrics {
   static double computeRoadReusePercent(List<OsmPathElement> nodes) {
     if (nodes.size() < 2) return 0.0;
 
+    // Spatial corridor overlap (a parallel return on a different way) unioned
+    // with edge-identity retrace, so this metric — consumed by RouteChoiceScore
+    // (W_REUSE) and the composite score — sees same-corridor-back that edge
+    // identity is blind to, and cannot drift from ReuseClassifier's gate which
+    // uses the same primitive.
+    boolean[] spatialOverlap = CorridorOverlapIndex.computeEdgeOverlap(nodes);
+
     Map<Long, int[]> edgeCounts = new HashMap<>();
     double totalDistance = 0;
     double reusedDistance = 0;
@@ -143,12 +150,16 @@ public final class LoopQualityMetrics {
       long edgeKey = lo ^ (hi * 0x9E3779B97F4A7C15L);
 
       int[] entry = edgeCounts.get(edgeKey);
+      boolean identityReuse = entry != null;
       if (entry == null) {
         edgeCounts.put(edgeKey, new int[]{1, segDist});
       } else {
-        // Second and subsequent traversals are reuse.
-        reusedDistance += segDist;
         entry[0]++;
+      }
+      // Second/subsequent identity traversal OR a spatial parallel corridor.
+      boolean spatial = (i - 1) < spatialOverlap.length && spatialOverlap[i - 1];
+      if (identityReuse || spatial) {
+        reusedDistance += segDist;
       }
     }
 

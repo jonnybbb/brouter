@@ -139,6 +139,22 @@ public class RoundTripResult {
     this.fallbackReason = fallbackReason;
   }
 
+  /**
+   * True when the returned loop is a rideable same-way-back corridor that the
+   * planner kept because no clean alternative exists in this (constrained)
+   * terrain. The request gate should accept it (disclosed) rather than reject
+   * it as a plain corridor. See {@code GreedyRoundTripPlanner} keep-when-forced.
+   */
+  private boolean forcedCorridorAccepted = false;
+
+  public boolean isForcedCorridorAccepted() {
+    return forcedCorridorAccepted;
+  }
+
+  public void setForcedCorridorAccepted(boolean forcedCorridorAccepted) {
+    this.forcedCorridorAccepted = forcedCorridorAccepted;
+  }
+
   public List<OsmTrack> getLegTracks() {
     return legTracks;
   }

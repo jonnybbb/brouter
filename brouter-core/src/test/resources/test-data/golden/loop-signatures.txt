@@ -7,4 +7,4 @@ greedy|urban_berlin|r8000|dir0|fastbike => nodes=2067 hash=58808dcd88b71688 dist
 iso_greedy|dreieich|r8000|dir0|fastbike => nodes=1252 hash=5f1d7fcf6aa311ce dist=46887 ascend=92 cost=90271 err=null
 iso_greedy|dreieich|r8000|dir90|fastbike => nodes=1277 hash=8c80d89c595ac042 dist=46532 ascend=128 cost=77498 err=null
 iso_greedy|rural_lozere|r8000|dir0|gravel => nodes=1235 hash=b922a79dae11f1eb dist=49157 ascend=836 cost=150516 err=null
-iso_greedy|urban_berlin|r8000|dir0|fastbike => nodes=2483 hash=e0ac65df0747bbeb dist=46441 ascend=27 cost=71169 err=null
+iso_greedy|urban_berlin|r8000|dir0|fastbike => nodes=2598 hash=a04f9bc7ce1d848e dist=50449 ascend=27 cost=74147 err=null

@@ -617,15 +617,16 @@ public class GreedyRoundTripPlanner {
           String reject = null;
           if (needDetail) {
             finalTrack = mergeSegmentsDetoured(segments, returnTrack);
-            reject = qualityGateReason(finalTrack, desiredDistance);
-            boolean gateAccepted = reject == null;
-            // Prefer a gate-accepted fallback over a gate-rejected one even at a
-            // higher geometric error; among same-status candidates keep the
-            // lowest error. Selecting by error alone could latch a rejected
-            // low-error loop and discard a usable accepted higher-error one.
+            RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
+            reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
+            int severity = fallbackSeverity(verdict);
+            // Prefer the soundest fallback (accepted > rideable corridor > chaos)
+            // even at a higher geometric error; among equal-soundness candidates
+            // keep the lowest error. Ranking by error alone could latch a
+            // low-error chaotic (self-intersecting) loop over a usable corridor.
             if (bestFallback == null
-                || isBetterFallback(gateAccepted, error, bestFallback.gateAccepted, bestFallback.error)) {
-              bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, gateAccepted);
+                || isBetterFallback(severity, error, bestFallback.severity, bestFallback.error)) {
+              bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, severity);
             }
           }
 
@@ -722,9 +723,21 @@ public class GreedyRoundTripPlanner {
         startMwp, bestFallback.legTracks, desiredDistance, startDirection);
       result.setTotalDistanceMeters(bestFallback.track.distance);
       result.setWithinTolerance(false);
-      String reject = qualityGateReason(bestFallback.track, desiredDistance);
+      RoundTripQualityResult verdict = qualityGateVerdict(bestFallback.track, desiredDistance);
+      String reject = (verdict == null || verdict.isAccepted()) ? null : verdict.getRejectionReason();
       String reason = "best error=" + String.format("%.1f%%", bestFallback.error * 100);
-      result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
+      // Keep-when-forced: the soundest loop the planner could find is a rideable
+      // same-way-back corridor and nothing clean exists (else bestFallback would
+      // be rank-0 accepted). Don't degrade it into oblivion — flag it so the
+      // request gate accepts the forced corridor (disclosed) instead of dropping
+      // the route or shipping a chaotic alternative.
+      boolean forcedCorridor = bestFallback.severity == 1 && isForcedCorridorVerdict(verdict);
+      result.setForcedCorridorAccepted(forcedCorridor);
+      if (forcedCorridor) {
+        result.setFallbackReason("forced corridor (no clean alternative): " + reject + "; " + reason);
+      } else {
+        result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
+      }
       result.setSubRoutesChosen(bestFallback.legTracks.size());
       result.setAttemptsUsed(totalAttempts);
       stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
@@ -785,10 +798,36 @@ public class GreedyRoundTripPlanner {
   // Package-private for direct testing — see GreedyRoundTripPlannerTest's
   // Phase 1.5 delegation verification.
   String qualityGateReason(OsmTrack track, double desiredDistance) {
-    if (track == null || track.nodes == null || track.nodes.size() < 4) return "no track";
-    RoundTripQualityResult r = RoundTripQualityGate.evaluate(
-      track, desiredDistance, profileName, /*allowSamewayback*/ false);
+    RoundTripQualityResult r = qualityGateVerdict(track, desiredDistance);
+    if (r == null) return "no track";
     return r.isAccepted() ? null : r.getRejectionReason();
+  }
+
+  /** Full gate verdict (allowSamewayback=false), or {@code null} for a non-loop track. */
+  RoundTripQualityResult qualityGateVerdict(OsmTrack track, double desiredDistance) {
+    if (track == null || track.nodes == null || track.nodes.size() < 4) return null;
+    return RoundTripQualityGate.evaluate(
+      track, desiredDistance, profileName, /*allowSamewayback*/ false);
+  }
+
+  /**
+   * Fallback soundness rank (lower = better) for a gate verdict. A clean
+   * accepted loop (0) beats a structurally-sound but same-way-back loop —
+   * a parallel corridor or out-and-back (1) — which in turn beats a chaotic
+   * loop (2: self-intersections, beelines, hostile surface, mid-route zigzag).
+   * When the planner can find nothing clean, shipping the rideable corridor
+   * (rank 1) is far better than wandering into a 21-crossing chaos loop.
+   */
+  static int fallbackSeverity(RoundTripQualityResult verdict) {
+    if (verdict == null) return 3;
+    if (verdict.isAccepted()) return 0;
+    return verdict.getShape() == RouteShape.OUT_AND_BACK ? 1 : 2;
+  }
+
+  /** True when the verdict's sole defect is a same-way-back corridor (rank-1 sound). */
+  static boolean isForcedCorridorVerdict(RoundTripQualityResult verdict) {
+    return verdict != null && !verdict.isAccepted()
+      && verdict.getShape() == RouteShape.OUT_AND_BACK;
   }
 
   /**
@@ -1409,21 +1448,34 @@ public class GreedyRoundTripPlanner {
    */
   static boolean isBetterFallback(boolean candidateAccepted, double candidateError,
                                   boolean incumbentAccepted, double incumbentError) {
-    if (candidateAccepted != incumbentAccepted) {
-      return candidateAccepted;
+    return isBetterFallback(candidateAccepted ? 0 : 2, candidateError,
+      incumbentAccepted ? 0 : 2, incumbentError);
+  }
+
+  /**
+   * Prefer the lower soundness rank (accepted &gt; sound corridor &gt; chaos);
+   * among equal ranks, the lower geometric error. This keeps a rideable
+   * same-way-back loop as the fallback instead of latching a low-error but
+   * chaotic (self-intersecting) loop the planner wandered into while retrying.
+   */
+  static boolean isBetterFallback(int candidateSeverity, double candidateError,
+                                  int incumbentSeverity, double incumbentError) {
+    if (candidateSeverity != incumbentSeverity) {
+      return candidateSeverity < incumbentSeverity;
     }
     return candidateError < incumbentError;
   }
 
   private Snapshot snapshotFallback(OsmTrack track, List<OsmTrack> segments, OsmTrack returnTrack,
-                                    List<MatchedWaypoint> waypointStack, double error, boolean gateAccepted) {
+                                    List<MatchedWaypoint> waypointStack, double error, int severity) {
     Snapshot snap = new Snapshot();
     snap.track = track;
     snap.waypointStack = new ArrayList<>(waypointStack);
     snap.legTracks = new ArrayList<>(segments);
     snap.legTracks.add(returnTrack);
     snap.error = error;
-    snap.gateAccepted = gateAccepted;
+    snap.severity = severity;
+    snap.gateAccepted = severity == 0;
     return snap;
   }
 
@@ -1433,6 +1485,8 @@ public class GreedyRoundTripPlanner {
     List<OsmTrack> legTracks;
     double error;
     boolean gateAccepted;
+    /** Fallback soundness rank — see {@link #fallbackSeverity}. */
+    int severity;
   }
 
   /**

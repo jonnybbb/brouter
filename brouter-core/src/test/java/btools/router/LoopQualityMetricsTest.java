@@ -40,6 +40,36 @@ public class LoopQualityMetricsTest {
     Assert.assertEquals("out-and-back should have ~50% reuse", 50.0, reuse, 1.0);
   }
 
+  // ~metre→ilon/ilat factors at this latitude (~50°N): 1 m ≈ 11.7 ilon, 9 ilat.
+  private static OsmPathElement m(double xMeters, double yMeters) {
+    return OsmPathElement.create(
+      BASE_ILON + (int) Math.round(xMeters * 11.7),
+      BASE_ILAT + (int) Math.round(yMeters * 9.0), (short) 0, null);
+  }
+
+  @Test
+  public void parallelCorridorRaisesReuseAboveEdgeIdentity() {
+    // Out 2km east at y=0, then back 2km at y=25 — a parallel return on a
+    // DIFFERENT way (no shared node/edge). Edge identity sees ~0% reuse; the
+    // spatial corridor union must report substantial reuse so RouteChoiceScore
+    // ranks this below a clean loop.
+    List<OsmPathElement> nodes = new ArrayList<>();
+    double[][] corners = {{0, 0}, {2000, 0}, {2000, 25}, {0, 25}, {0, 0}};
+    nodes.add(m(corners[0][0], corners[0][1]));
+    for (int i = 1; i < corners.length; i++) {
+      double[] a = corners[i - 1], b = corners[i];
+      double len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      int steps = Math.max(1, (int) Math.ceil(len / 20.0));
+      for (int k = 1; k <= steps; k++) {
+        double s = (double) k / steps;
+        nodes.add(m(a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s));
+      }
+    }
+    double reuse = LoopQualityMetrics.computeRoadReusePercent(nodes);
+    Assert.assertTrue("parallel corridor should read substantial reuse, got " + reuse + "%",
+      reuse > 25.0);
+  }
+
   @Test
   public void distanceRatioExact() {
     OsmTrack track = new OsmTrack();

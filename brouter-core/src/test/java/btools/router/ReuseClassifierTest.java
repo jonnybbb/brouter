@@ -102,6 +102,27 @@ public class ReuseClassifierTest {
   }
 
   /**
+   * Densify corners to ~{@code step}m edges (real routed tracks have short
+   * edges; the spatial corridor detector needs that granularity). Returns a
+   * stamped {@link OsmTrack}.
+   */
+  private static OsmTrack denseTrack(int[][] corners, int step) {
+    java.util.List<int[]> pts = new ArrayList<>();
+    pts.add(corners[0]);
+    for (int i = 1; i < corners.length; i++) {
+      int[] a = corners[i - 1], b = corners[i];
+      double len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      int n = Math.max(1, (int) Math.ceil(len / step));
+      for (int k = 1; k <= n; k++) {
+        double s = (double) k / n;
+        pts.add(new int[]{(int) Math.round(a[0] + (b[0] - a[0]) * s),
+          (int) Math.round(a[1] + (b[1] - a[1]) * s)});
+      }
+    }
+    return track(pts.toArray(new int[0][]));
+  }
+
+  /**
    * Lollipop: A → P (stem-out) → Q → R → P (loop body) → A (stem-back).
    * Stem of {@code stemMeters} on each side; loop body roughly a triangle.
    */
@@ -259,6 +280,45 @@ public class ReuseClassifierTest {
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("accepted: " + r, r.isAccepted());
     assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
+  }
+
+  @Test
+  public void parallelReturnCorridorDowngradedToOutAndBack() {
+    // Out 3km east at y=0, then back 3km east at y=30 (a different "way" 30m
+    // over — NOT an edge-identity retrace). Edge identity sees ~0% reuse, but
+    // a cyclist rides the same corridor back. The spatial detector must catch
+    // it and the route must NOT be a clean STRICT_LOOP.
+    OsmTrack t = denseTrack(new int[][]{
+      {0, 0}, {3000, 0},     // outbound
+      {3000, 30},            // connector
+      {0, 30},               // parallel return, 30m over
+      {0, 0}                 // close
+    }, 25);
+    RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
+    assertFalse("parallel-corridor route must not be accepted as a clean loop: " + r,
+      r.isAccepted());
+    assertTrue("rejection cites the parallel corridor: " + r.getRejectionReason(),
+      r.getRejectionReason().toLowerCase().contains("parallel"));
+  }
+
+  @Test
+  public void shortParallelBitToleratedAsStem() {
+    // A clean rectangular loop whose only near-parallel section is a short
+    // (<300m) bit at the start/end — a forced exit corridor. This must remain
+    // a STRICT_LOOP (we don't punish loops for a few metres of shared access).
+    OsmTrack t = denseTrack(new int[][]{
+      {0, 0}, {120, 0},        // short outbound at y=0
+      {3000, 0},               // continue east (loop body, no parallel)
+      {3000, 3000},            // north
+      {0, 3000},               // west
+      {0, 30},                 // south to near start
+      {120, 30},               // short parallel bit (~120m, well under 300m cap)
+      {0, 0}                   // close
+    }, 25);
+    RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
+    assertTrue("clean loop with only a short parallel bit accepted: " + r, r.isAccepted());
+    assertEquals(RouteShape.STRICT_LOOP, r.getShape());
   }
 
   @Test

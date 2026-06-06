@@ -158,6 +158,13 @@ public class RoutingEngine extends Thread {
    */
   private OsmTrack lastRejectedTrack;
   private RoundTripResult lastRoundTripResult;
+  /**
+   * Set by {@link #doGreedyRoundTrip} when the adopted loop is a forced
+   * same-way-back corridor (no clean alternative in constrained terrain). The
+   * uniform round-trip gate then evaluates it with allowSamewayback=true so the
+   * rideable corridor is accepted (disclosed) rather than rejected.
+   */
+  private boolean roundTripForcedCorridorAccepted;
   private int alternativeIndex = 0;
 
   protected String outputMessage = null;
@@ -872,8 +879,13 @@ public class RoutingEngine extends Thread {
           foundTrack.distance, foundTrack.nodes == null ? 0 : foundTrack.nodes.size(),
           RoundTripQualityGate.worstContiguousHostileMetersPaved(foundTrack));
       }
+      // A forced same-way-back corridor (planner found nothing clean in this
+      // constrained terrain) is accepted as a disclosed OUT_AND_BACK rather than
+      // rejected — keep-when-forced. Gratuitous corridors never reach here: the
+      // planner only sets the flag when no clean alternative exists.
+      boolean allowSamewayback = routingContext.allowSamewayback || roundTripForcedCorridorAccepted;
       RoundTripQualityResult quality = RoundTripQualityGate.evaluate(foundTrack, expectedDistance,
-        profileName, routingContext.allowSamewayback, explicitViaMode, roundTripFerriesAllowed());
+        profileName, allowSamewayback, explicitViaMode, roundTripFerriesAllowed());
       if (!quality.isAccepted()) {
         // STRUCTURAL failures (broken / un-routable / not-a-loop) are always
         // hard-rejected — there is nothing usable to offer. QUALITY failures
@@ -1965,6 +1977,7 @@ public class RoutingEngine extends Thread {
   void doGreedyRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
     // Initialize nodesCache — needed before the planner can match waypoints to the graph.
     resetCache(false);
+    roundTripForcedCorridorAccepted = false;
 
     OsmNodeNamed start = waypoints.get(0);
     double desiredDistance = 2 * Math.PI * searchRadius;
@@ -2085,6 +2098,7 @@ public class RoutingEngine extends Thread {
     // Reject loops the planner explicitly flagged as failing its quality gates
     // (DEGRADED_FALLBACK_PREFIX) — shipping a 180% overshoot or 60%-reused
     // forced-closure loop as success would silently fool downstream consumers.
+    roundTripForcedCorridorAccepted = result != null && result.isForcedCorridorAccepted();
     boolean degradedFallback = isDegradedGreedyResult(result);
     if (degradedFallback) {
       logInfo("greedy: rejecting degraded fallback (" + result.getFallbackReason()
