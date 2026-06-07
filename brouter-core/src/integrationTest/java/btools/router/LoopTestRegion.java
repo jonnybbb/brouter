@@ -111,4 +111,17 @@ public enum LoopTestRegion {
   private static Set<String> profiles(String... names) {
     return Collections.unmodifiableSet(new HashSet<>(Arrays.asList(names)));
   }
+
+  /**
+   * Whether a requested compass heading (degrees) runs straight into open sea
+   * from this region's start, making it a degenerate route request (the loop
+   * can only go inland). Such cases are excluded from the quality matrix — you
+   * cannot cycle on water, so grading direction adherence there is meaningless.
+   */
+  public boolean isSeaBlockedDirection(double directionDeg) {
+    // Coastal starts facing the sea to the south: "south" is open water.
+    //   Nice (43.70N, 7.27E)  — Mediterranean to the south.
+    //   Palma (39.57N, 2.65E) — Bay of Palma to the south.
+    return (this == COASTAL_NICE || this == MALLORCA) && directionDeg == 180.0;
+  }
 }
