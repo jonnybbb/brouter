@@ -313,18 +313,59 @@ public class CandidateScorer {
    * Penalty for misalignment with the direction preference.
    * Fades after step 2 (exploration phase only).
    */
+  /**
+   * Strengthen the direction preference so a round-trip keeps a coherent outward
+   * heading instead of wandering / doubling back into self-crossings. On by
+   * default; disable with {@code -Dloop.strongdir=false}. Strength and late-step
+   * retention are tunable via {@code -Dloop.dirmult} / {@code -Dloop.dirlate}.
+   */
+  static final boolean STRONG_DIRECTION = Boolean.parseBoolean(System.getProperty("loop.strongdir", "true"));
+  private static final double STRONG_DIRECTION_MULT = Double.parseDouble(System.getProperty("loop.dirmult", "2.5"));
+  /** Direction retention for steps &gt; 2 in strong mode (0 = off after step 2, lets closure win late). */
+  private static final double STRONG_DIRECTION_LATE = Double.parseDouble(System.getProperty("loop.dirlate", "0.3"));
+  /**
+   * Terrain-feasibility guard: scale the direction term's influence down when the
+   * requested heading is unreachable this step (the best candidate is far
+   * off-bearing — sea, no roads that way), so direction never forces a route
+   * into terrain it cannot traverse. The planner sets {@link #dirReferenceOffset}
+   * (best achievable |Δbearing|) each step. On by default; disable with
+   * {@code -Dloop.dirfeas=false}. Mountains keep direction (roads exist, just
+   * costlier) — only true blockage relaxes it.
+   */
+  static final boolean DIR_FEASIBILITY = Boolean.parseBoolean(System.getProperty("loop.dirfeas", "true"));
+  private double dirReferenceOffset = 0.0;
+
+  /** Best achievable |Δbearing| (deg) among this step's candidates; set by the planner. */
+  void setDirectionReferenceOffset(double deg) { this.dirReferenceOffset = deg; }
+
   double directionScore(double candidateBearing, DirectionPreference pref, int step) {
     if (pref == null || pref == DirectionPreference.ANY) return 0;
     double fade = directionFade(step);
     if (fade <= 0) return 0;
     double angleDiff = CheapAngleMeter.getDifferenceFromDirection(pref.bearing, candidateBearing);
-    return fade * (angleDiff / 180.0);
+    // Feasibility guard: scale the direction term's INFLUENCE down when the
+    // requested heading is unreachable this step (best candidate far off-bearing
+    // — sea/mountain), so direction stops forcing a bad route and clean-geometry
+    // / cost win instead. Scaling preserves relative ranking only when feasible;
+    // when blocked (best offset ≥ 90°) the term vanishes. (Subtracting the
+    // reference would NOT change per-step selection — it shifts all candidates
+    // equally — so we scale, not subtract.)
+    double feas = DIR_FEASIBILITY ? Math.max(0.0, 1.0 - dirReferenceOffset / 90.0) : 1.0;
+    double mult = STRONG_DIRECTION ? STRONG_DIRECTION_MULT : 1.0;
+    return mult * fade * feas * (angleDiff / 180.0);
   }
 
   /**
    * Direction preference fades: full weight at step 1, half at step 2, zero after.
+   * Strong-direction mode keeps a gentle outward pull through later steps so the
+   * loop stays coherent (loop-closure feasibility, w_loop, still dominates late).
    */
   double directionFade(int step) {
+    if (STRONG_DIRECTION) {
+      if (step <= 1) return 1.0;
+      if (step <= 2) return 0.8;
+      return STRONG_DIRECTION_LATE;
+    }
     if (step <= 1) return 1.0;
     if (step <= 2) return 0.5;
     return 0.0;

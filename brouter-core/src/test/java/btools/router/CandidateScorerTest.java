@@ -28,15 +28,18 @@ public class CandidateScorerTest {
   }
 
   @Test
-  public void directionPenaltyFadesAfterStep2() {
+  public void directionPenaltyFadesAcrossSteps() {
     double step1Score = scorer.directionScore(180, DirectionPreference.N, 1);
     double step2Score = scorer.directionScore(180, DirectionPreference.N, 2);
     double step3Score = scorer.directionScore(180, DirectionPreference.N, 3);
 
+    // Direction fades from the outbound steps inward. The default
+    // strong-direction mode retains a gentle late pull (does not snap to zero)
+    // so the loop keeps a coherent heading; the penalty is monotonically
+    // decreasing and stays positive while a preference is active.
     assertTrue("Step 1 should have full direction penalty", step1Score > 0);
-    assertTrue("Step 2 should have half direction penalty", step2Score > 0);
-    assertEquals("Step 3 should have zero direction penalty", 0.0, step3Score, 0.001);
-    assertTrue("Step 1 penalty > step 2 penalty", step1Score > step2Score);
+    assertTrue("Step 2 penalty < step 1", step2Score > 0 && step2Score < step1Score);
+    assertTrue("Step 3 penalty faded (< step 2)", step3Score >= 0 && step3Score < step2Score);
   }
 
   @Test

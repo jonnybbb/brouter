@@ -281,6 +281,22 @@ public class GreedyRoundTripPlanner {
             cachedRefTrack);
         candidatesGenerated += candidates.size();
 
+        // Terrain-feasibility reference for the direction term: the best heading
+        // actually reachable this step. When the requested direction is blocked
+        // (sea/mountain), the best candidate is far off-bearing, and charging only
+        // the offset BEYOND it stops direction from forcing a bad route. No-op
+        // unless -Dloop.dirfeas (CandidateScorer leaves the reference unused).
+        double dirRef = 0.0;
+        if (dirPref != DirectionPreference.ANY && !candidates.isEmpty()) {
+          double best = 180.0;
+          for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
+            double diff = CheapAngleMeter.getDifferenceFromDirection(dirPref.bearing, cp.bearing);
+            if (diff < best) best = diff;
+          }
+          dirRef = best;
+        }
+        scorer.setDirectionReferenceOffset(dirRef);
+
         // Score using air-distance estimates — O(1) per candidate
         for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);

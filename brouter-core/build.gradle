@@ -76,8 +76,9 @@ tasks.register('integrationTest', Test) {
     systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
     systemProperty 'golden.write', System.getProperty('golden.write', 'false')
     systemProperty 'greedy.diagnostic', System.getProperty('greedy.diagnostic', 'false')
-    // Ad-hoc single-loop generator (BaselGravelLoopGpxTest) overrides.
-    ['loop.lon', 'loop.lat', 'loop.km', 'loop.dir', 'loop.name', 'loop.profile'].each { k ->
+    // Ad-hoc single-loop generator (BaselGravelLoopGpxTest) overrides + the
+    // direction-strength tuning overrides (loop.strongdir/dirmult/dirlate/dirfeas).
+    ['loop.lon', 'loop.lat', 'loop.km', 'loop.dir', 'loop.name', 'loop.profile', 'loop.strongdir', 'loop.dirmult', 'loop.dirlate', 'loop.dirfeas'].each { k ->
         if (System.getProperty(k) != null) systemProperty k, System.getProperty(k)
     }
 
