@@ -338,8 +338,12 @@ public abstract class LoopQualityTestBase {
       // null gateVerdict scores on geometry — the track already passed the strict
       // production gate (roundTripStrictQuality=true), so this measures its real
       // RouteChoiceScore the same way the calibration distribution was collected.
+      // qualityScore() = RCS WITHOUT the self-intersection penalty: the soft
+      // MIN_RCS_PASS floor must not double-count crossings (already hard-gated by
+      // RoundTripQualityGate ≤ MAX_SELF_INTERSECTIONS). AUTO ranking still uses the
+      // penalised score() so it prefers the cleaner of two comparable candidates.
       variantRcs.put(variant,
-        RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).score());
+        RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).qualityScore());
       double[][] coords = extractCoordinates(track);
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);

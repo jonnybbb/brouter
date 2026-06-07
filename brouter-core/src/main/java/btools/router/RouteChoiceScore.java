@@ -61,6 +61,25 @@ public final class RouteChoiceScore {
   /** Shape disclosure penalty: LOLLIPOP/SCENIC down-weight vs STRICT_LOOP. */
   static final double SHAPE_PENALTY_LOLLIPOP = 0.05;
   static final double SHAPE_PENALTY_OUT_AND_BACK   = 0.15;
+  /**
+   * Self-intersection penalty per crossing. Crossings are a route-shape defect
+   * the cyclist sees but no other RCS term captures (reuse measures co-linear
+   * retrace, not transverse crossings). Subtracted per crossing so AUTO prefers
+   * the cleaner of two otherwise-comparable candidates.
+   *
+   * <p>Measured (full loop-quality matrix, offline AUTO simulation, 2026-06):
+   * today's AUTO ships 12.8% crossed loops; this term at 0.08/crossing drops that
+   * to 3.7% (the residual where BOTH greedy and iso_greedy cross, so no clean
+   * alternative exists) with no reuse/distance regression — it works by letting
+   * the selector see crossings and pick the already-existing cleaner candidate.
+   *
+   * <p>Ranking-only: RCS never gates acceptance ({@link RoundTripQualityGate}
+   * does), so this cannot cause a no-route. Tunable for the gold-standard
+   * re-baseline via {@code -Dloop.xpenalty}. The gate caps accepted loops at
+   * {@link RoundTripQualityGate#MAX_SELF_INTERSECTIONS}, so the penalty is bounded.
+   */
+  static final double SHAPE_PENALTY_PER_SELF_INTERSECTION =
+    Double.parseDouble(System.getProperty("loop.xpenalty", "0.08"));
 
   // ---- Profile-typical cost-per-meter bands ------------------------------
   // Used to compute the cost/m component. A route on roads the profile
@@ -119,14 +138,28 @@ public final class RouteChoiceScore {
   /** Result of scoring one candidate. */
   public static final class Verdict {
     private final double score;
+    private final double qualityScore;
     private final List<Reason> reasons;
 
-    Verdict(double score, List<Reason> reasons) {
+    Verdict(double score, double qualityScore, List<Reason> reasons) {
       this.score = score;
+      this.qualityScore = qualityScore;
       this.reasons = Collections.unmodifiableList(new ArrayList<>(reasons));
     }
 
+    /** Ranking score, including the self-intersection penalty. AUTO uses this to
+     *  prefer the cleaner of two otherwise-comparable candidates. */
     public double score() { return score; }
+
+    /**
+     * Multi-dimension quality score EXCLUDING the self-intersection penalty —
+     * for soft quality-floor checks (e.g. the loop-quality suite's MIN_RCS_PASS).
+     * Crossings are already hard-gated by {@link RoundTripQualityGate}
+     * (≤ MAX_SELF_INTERSECTIONS), so the soft floor must not double-count them;
+     * {@link #score()} keeps the penalty for ranking. All other shape penalties
+     * (LOLLIPOP/OUT_AND_BACK) remain in both, as they are not hard-gated.
+     */
+    public double qualityScore() { return qualityScore; }
     public List<Reason> reasons() { return reasons; }
 
     /** Multi-line human-readable breakdown. Suitable for logging. */
@@ -174,13 +207,13 @@ public final class RouteChoiceScore {
     if (track == null || track.nodes == null || track.nodes.size() < 2) {
       List<Reason> empty = new ArrayList<>();
       empty.add(new Reason("no track", 0, 0, 0));
-      return new Verdict(0.0, empty);
+      return new Verdict(0.0, 0.0, empty);
     }
     if (qualityGate != null && !qualityGate.isAccepted()) {
       List<Reason> empty = new ArrayList<>();
       empty.add(new Reason("gate rejected: " + qualityGate.getRejectionReason(),
         0, 0, 0));
-      return new Verdict(0.0, empty);
+      return new Verdict(0.0, 0.0, empty);
     }
 
     LoopQualityMetrics m = LoopQualityMetrics.compute(track, (int) requestedDistance, requestedDirection);
@@ -264,8 +297,25 @@ public final class RouteChoiceScore {
       }
     }
 
+    // 9. Self-intersection penalty. A route-shape defect the cyclist sees that
+    //    no term above captures (reuse = co-linear retrace, not transverse
+    //    crossings). Read directly from the track — the gate's count isn't
+    //    exposed on the verdict. Lets AUTO pick the cleaner of two comparable
+    //    candidates; measured to take shipped crossings 12.8%→3.7% (see constant).
+    int selfIntersections = RoundTripQualityGate.countSelfIntersections(track);
+    double selfIntPenalty = 0;
+    if (selfIntersections > 0) {
+      selfIntPenalty = SHAPE_PENALTY_PER_SELF_INTERSECTION * selfIntersections;
+      reasons.add(new Reason("self-intersections " + selfIntersections,
+        -selfIntPenalty, selfIntersections, -selfIntPenalty));
+      total -= selfIntPenalty;
+    }
+
+    // Ranking score includes the self-intersection penalty; qualityScore excludes
+    // it (crossings are already hard-gated, so the soft floor must not re-penalise).
     double clamped = Math.max(0.0, Math.min(1.0, total));
-    return new Verdict(clamped, reasons);
+    double qualityClamped = Math.max(0.0, Math.min(1.0, total + selfIntPenalty));
+    return new Verdict(clamped, qualityClamped, reasons);
   }
 
   private static String fmt(double v) {
