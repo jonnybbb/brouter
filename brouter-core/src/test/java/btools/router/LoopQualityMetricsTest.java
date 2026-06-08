@@ -472,7 +472,9 @@ public class LoopQualityMetricsTest {
       600,    // totalGapMeters
       0.8,    // compactnessScore
       1.4,    // averageCostPerMeter
-      120);   // closureDistanceMeters
+      120,    // closureDistanceMeters
+      2,      // spurCount
+      3200);  // worstSpurMeters
     Assert.assertEquals(12.5, m.getRoadReusePercent(), 1e-9);
     Assert.assertEquals(1.05, m.getDistanceRatio(), 1e-9);
     Assert.assertEquals(33.0, m.getDirectionDeltaDegrees(), 1e-9);
@@ -484,5 +486,7 @@ public class LoopQualityMetricsTest {
     Assert.assertEquals(0.8, m.getCompactnessScore(), 1e-9);
     Assert.assertEquals(1.4, m.getAverageCostPerMeter(), 1e-9);
     Assert.assertEquals(120, m.getClosureDistanceMeters());
+    Assert.assertEquals(2, m.getSpurCount());
+    Assert.assertEquals(3200, m.getWorstSpurMeters());
   }
 }

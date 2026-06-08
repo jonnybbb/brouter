@@ -81,6 +81,38 @@ public final class RouteChoiceScore {
   static final double SHAPE_PENALTY_PER_SELF_INTERSECTION =
     Double.parseDouble(System.getProperty("loop.xpenalty", "0.08"));
 
+  /**
+   * Near-revisit / "teardrop" penalty — shape term #10. Catches the defect that
+   * {@link #SHAPE_PENALTY_PER_SELF_INTERSECTION} (#9) MISSES: a loop that returns to
+   * within {@link #NEAR_REVISIT_EPS_M} of an earlier point and rejoins (a "small loop back
+   * to the same point") without a <em>transverse</em> crossing — a clean teardrop, which
+   * {@link RoundTripQualityGate#countSelfIntersections} (a strict segment-cross test) scores
+   * as 0. Measured motivating case: Basel 30 km gravel ships an ISO_GREEDY loop with a 7.3 km
+   * teardrop to Ettingen (countSelfIntersections=0) while a teardrop-free GREEDY alternative
+   * exists; AUTO couldn't see the defect so it shipped on distance.
+   *
+   * <p>Severity-weighted by excursion arc (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})),
+   * NOT a flat per-span count, so a 7 km teardrop outweighs a 600 m wiggle — this is what
+   * keeps the penalty from promoting a clean-but-much-shorter loop over a good-distance one
+   * with only a minor near-revisit.
+   *
+   * <p>Ranking-only and excluded from {@link Verdict#qualityScore()} exactly like #9: it lets
+   * AUTO pick the cleaner of two comparable candidates, but a terrain-forced teardrop shipping
+   * as best-available is not double-penalised in the soft quality floor. Tunable via
+   * {@code -Dloop.teardroppenalty}; default is provisional pending the corpus A/B calibration.
+   */
+  static final double SHAPE_PENALTY_PER_TEARDROP =
+    Double.parseDouble(System.getProperty("loop.teardroppenalty", "0.12"));
+  /** Near-revisit detector thresholds (mirror the probe; 10 km cap catches Basel's 7.3 km). */
+  static final double NEAR_REVISIT_EPS_M = 60.0;
+  static final double NEAR_REVISIT_MIN_ARC_M = 600.0;
+  static final double NEAR_REVISIT_MAX_ARC_M = 10000.0;
+  /** Excursion arc (m) at which a teardrop is "full severity" (1.0). */
+  static final double NEAR_REVISIT_NORM_M = 5000.0;
+  /** A near-revisit span covering more than this fraction of the perimeter is the loop's own
+   *  start≈end closure (only reachable on loops shorter than the arc cap), not a teardrop. */
+  static final double CLOSURE_EXCLUSION_FRACTION = 0.85;
+
   // ---- Profile-typical cost-per-meter bands ------------------------------
   // Used to compute the cost/m component. A route on roads the profile
   // actively prefers (cost/m at or below the lower bound) scores 1.0; above
@@ -311,11 +343,48 @@ public final class RouteChoiceScore {
       total -= selfIntPenalty;
     }
 
-    // Ranking score includes the self-intersection penalty; qualityScore excludes
-    // it (crossings are already hard-gated, so the soft floor must not re-penalise).
+    // 10. Near-revisit / teardrop penalty. The shape defect #9 misses: a "small loop
+    //     back to the same point" that never transversely crosses (countSelfIntersections=0).
+    //     Severity = Σ min(1, arc/NORM) over teardrop spans, so a big excursion outweighs a
+    //     minor wiggle. Ranking-only like #9 (added back into qualityScore below).
+    double teardropSeverity = teardropSeverity(track);
+    double teardropPenalty = 0;
+    if (teardropSeverity > 0) {
+      teardropPenalty = SHAPE_PENALTY_PER_TEARDROP * teardropSeverity;
+      reasons.add(new Reason("near-revisit teardrop sev " + fmt(teardropSeverity),
+        -teardropPenalty, teardropSeverity, -teardropPenalty));
+      total -= teardropPenalty;
+    }
+
+    // Ranking score includes the self-intersection + teardrop penalties; qualityScore
+    // excludes BOTH (they are ranking signals to pick the cleaner alternative — a
+    // terrain-forced defect shipping as best-available must not trip the soft floor).
     double clamped = Math.max(0.0, Math.min(1.0, total));
-    double qualityClamped = Math.max(0.0, Math.min(1.0, total + selfIntPenalty));
+    double qualityClamped = Math.max(0.0, Math.min(1.0, total + selfIntPenalty + teardropPenalty));
     return new Verdict(clamped, qualityClamped, reasons);
+  }
+
+  /**
+   * Sum of teardrop severities (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})) over the
+   * track's near-revisit spans, excluding the loop's own start≈end closure. Drives the
+   * #10 shape penalty. See {@link LoopQualityMetrics#nearRevisitSpans}.
+   */
+  private static double teardropSeverity(OsmTrack track) {
+    if (track == null || track.nodes == null) return 0;
+    List<OsmPathElement> nodes = track.nodes;
+    int n = nodes.size();
+    if (n < 4) return 0;
+    double[] cum = new double[n];
+    for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
+    double total = cum[n - 1];
+    double sev = 0;
+    for (int[] s : LoopQualityMetrics.nearRevisitSpans(nodes,
+        NEAR_REVISIT_EPS_M, NEAR_REVISIT_MIN_ARC_M, NEAR_REVISIT_MAX_ARC_M)) {
+      double arc = cum[s[1]] - cum[s[0]];
+      if (total > 0 && arc > CLOSURE_EXCLUSION_FRACTION * total) continue; // loop closure, not a teardrop
+      sev += Math.min(1.0, arc / NEAR_REVISIT_NORM_M);
+    }
+    return sev;
   }
 
   private static String fmt(double v) {

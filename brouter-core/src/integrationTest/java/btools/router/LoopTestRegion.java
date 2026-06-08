@@ -69,7 +69,22 @@ public enum LoopTestRegion {
   // Sa Calobra). Slightly relaxed reuse/distance thresholds because
   // out-and-back to a cape or pass IS the expected shape of a Mallorca ride.
   MALLORCA(2.650, 39.570, "E0_N35.rd5", 35.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel"));
+    profiles("fastbike", "gravel")),
+  // --- Candidate cycling-friendly regions (evaluation set, 2026-06-08) ---
+  // Replacing URBAN_BERLIN (flat-urban, not a real loop start) and ALPINE_INNSBRUCK
+  // (single Inn valley, few non-retrace loops). Freiburg/Basel are dense rolling
+  // cycling country; Annecy/Grenoble/Garmisch are mountain-but-loopable candidates
+  // (keep the best after the evaluation run). Same thresholds as comparable terrain.
+  FREIBURG(7.852, 48.000, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Black Forest edge, dense network
+  BASEL(7.590, 47.560, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Rhine / Jura foothills
+  ANNECY(6.130, 45.900, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // lake basin + Bornes/Bauges/Semnoz climbs
+  GRENOBLE(5.720, 45.190, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Vercors/Chartreuse/Belledonne valleys
+  GARMISCH(11.100, 47.500, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel"));       // Bavarian Alps, more valley connectivity
 
   /** Longitude in decimal degrees */
   public final double lon;

@@ -148,6 +148,8 @@ final class LoopQualityReportGenerator {
           r.metrics.getContinuityScore(), r.metrics.getCompactnessScore(),
           r.metrics.getAverageCostPerMeter(), r.metrics.getMaxGapMeters(),
           r.metrics.getClosureDistanceMeters(), r.metrics.compositeScore()));
+        sb.append(String.format(Locale.US, "spur:%d,worstSpur:%d,",
+          r.metrics.getSpurCount(), r.metrics.getWorstSpurMeters()));
       }
       sb.append("coords:[");
       if (r.coordinates != null && r.coordinates.length > 0) {
@@ -192,6 +194,7 @@ final class LoopQualityReportGenerator {
     sb.append("      popup += 'Cost/m: ' + r.costM + '<br>';\n");
     sb.append("      popup += 'Max gap: ' + r.maxGap + 'm<br>';\n");
     sb.append("      popup += 'Closure: ' + r.closure + 'm<br>';\n");
+    sb.append("      if (r.spur !== undefined && r.spur > 0) { popup += '<b style=\"color:#c0392b\">Spurs: ' + r.spur + ' (worst ' + r.worstSpur + 'm)</b><br>'; }\n");
     sb.append("      popup += '<b>Composite: ' + r.composite + '</b><br>';\n");
     sb.append("      popup += 'Status: <b>' + r.status + '</b>';\n");
     sb.append("    }\n");
@@ -360,6 +363,8 @@ final class LoopQualityReportGenerator {
           r.metrics.getContinuityScore(), r.metrics.getCompactnessScore(),
           r.metrics.getAverageCostPerMeter(), r.metrics.getMaxGapMeters(),
           r.metrics.getClosureDistanceMeters(), r.metrics.compositeScore()));
+        sb.append(String.format(Locale.US, "spur:%d,worstSpur:%d,",
+          r.metrics.getSpurCount(), r.metrics.getWorstSpurMeters()));
       }
       sb.append("coords:[");
       if (r.coordinates != null) {
@@ -385,7 +390,7 @@ final class LoopQualityReportGenerator {
     sb.append("    p+='Variant: <b>'+r.variant+'</b><br>';\n");
     sb.append("    p+='Profile: '+r.profile+'<br>';\n");
     sb.append("    p+='Requested: '+r.dist+'km<br>';\n");
-    sb.append("    if(r.reuse!==undefined){p+='<hr>Actual: '+r.actualDist+'m ('+r.distR+'x)<br>Reuse: '+r.reuse+'%<br>Dir delta: '+r.dirD+'&deg;<br>Continuity: '+r.cont+'<br>Compactness: '+r.compact+'<br>Cost/m: '+r.costM+'<br>Closure: '+r.closure+'m<br><b>Composite: '+r.composite+'</b>';}\n");
+    sb.append("    if(r.reuse!==undefined){p+='<hr>Actual: '+r.actualDist+'m ('+r.distR+'x)<br>Reuse: '+r.reuse+'%<br>Dir delta: '+r.dirD+'&deg;<br>Continuity: '+r.cont+'<br>Compactness: '+r.compact+'<br>Cost/m: '+r.costM+'<br>Closure: '+r.closure+'m<br>'+((r.spur>0)?'<b style=\"color:#c0392b\">Spurs: '+r.spur+' (worst '+r.worstSpur+'m)</b><br>':'')+'<b>Composite: '+r.composite+'</b>';}\n");
     sb.append("    layer.bindPopup(p);\n");
     sb.append("    layer.on('click',function(){highlightRow(i);});\n");
     sb.append("  }\n  layers.push(layer);\n});\n\n");

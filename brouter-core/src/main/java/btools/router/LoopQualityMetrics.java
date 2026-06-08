@@ -29,6 +29,10 @@ public final class LoopQualityMetrics {
   private final double compactnessScore;
   private final double averageCostPerMeter;
   private final int closureDistanceMeters;
+  /** Number of local out-and-back "spur" detours (see {@link #computeSpurInfo}). */
+  private final int spurCount;
+  /** Arc length (m) of the longest detected spur, 0 if none. */
+  private final int worstSpurMeters;
 
   /**
    * Reconstruct a metrics instance from primitive fields. Used by the
@@ -42,10 +46,11 @@ public final class LoopQualityMetrics {
                                               int requestedDistanceMeters, double continuityScore,
                                               int maxGapMeters, int totalGapMeters,
                                               double compactnessScore, double averageCostPerMeter,
-                                              int closureDistanceMeters) {
+                                              int closureDistanceMeters, int spurCount,
+                                              int worstSpurMeters) {
     return new LoopQualityMetrics(roadReusePercent, distanceRatio, directionDeltaDegrees,
       actualDistanceMeters, requestedDistanceMeters, continuityScore, maxGapMeters, totalGapMeters,
-      compactnessScore, averageCostPerMeter, closureDistanceMeters);
+      compactnessScore, averageCostPerMeter, closureDistanceMeters, spurCount, worstSpurMeters);
   }
 
   private LoopQualityMetrics(double roadReusePercent, double distanceRatio,
@@ -53,7 +58,7 @@ public final class LoopQualityMetrics {
                              int requestedDistanceMeters, double continuityScore,
                              int maxGapMeters, int totalGapMeters,
                              double compactnessScore, double averageCostPerMeter,
-                             int closureDistanceMeters) {
+                             int closureDistanceMeters, int spurCount, int worstSpurMeters) {
     this.roadReusePercent = roadReusePercent;
     this.distanceRatio = distanceRatio;
     this.directionDeltaDegrees = directionDeltaDegrees;
@@ -65,6 +70,8 @@ public final class LoopQualityMetrics {
     this.compactnessScore = compactnessScore;
     this.averageCostPerMeter = averageCostPerMeter;
     this.closureDistanceMeters = closureDistanceMeters;
+    this.spurCount = spurCount;
+    this.worstSpurMeters = worstSpurMeters;
   }
 
   /**
@@ -109,9 +116,221 @@ public final class LoopQualityMetrics {
       closureDist = first.calcDistance(last);
     }
 
+    int[] spurInfo = computeSpurInfo(nodes);
+
     return new LoopQualityMetrics(reusePercent, distRatio, dirDelta,
       track.distance, requestedDistanceMeters, contScore, maxGap, totalGap,
-      compact, avgCostPerMeter, closureDist);
+      compact, avgCostPerMeter, closureDist, spurInfo[0], spurInfo[1]);
+  }
+
+  /** Spur detector: a near-revisit must be this close spatially (m) to count. */
+  static final double SPUR_EPS_METERS = 60.0;
+  /** Lower arc-gap bound (m): closer revisits are local weaving, not an out-and-back. */
+  static final double SPUR_MIN_ARC_GAP = 600.0;
+  /** Upper arc-gap bound (m): keeps the detection LOCAL so the loop's own closure
+   *  (start≈end over the full perimeter) and broad legitimate lobes are not flagged. */
+  static final double SPUR_MAX_ARC_GAP = 6000.0;
+
+  /**
+   * Detect local out-and-back "spur" detours — the beeline back-and-forth the loop
+   * planner occasionally emits (e.g. a waypoint reachable only via a dead-end corridor,
+   * so the leg out and the leg back form a thin antenna).
+   *
+   * <p>A spur is a <em>local near-revisit</em>: the route returns within
+   * {@link #SPUR_EPS_METERS} of a point it already passed between {@link #SPUR_MIN_ARC_GAP}
+   * and {@link #SPUR_MAX_ARC_GAP} of riding earlier. The arc-gap band is the discriminator:
+   * <ul>
+   *   <li>the lower bound rejects switchback hairpins (adjacent arms are only a few hundred
+   *       metres of road apart) and trivial local weaving;</li>
+   *   <li>the upper bound keeps it LOCAL, so the loop's own closure and broad fat lobes
+   *       (whose arms are far apart) are not flagged.</li>
+   * </ul>
+   * Validated against a labelled example (Berlin gravel_E iso_greedy): flags exactly the
+   * eastern Wegendorf out-and-back and not the acceptable adjacent fat lobe. Reporting /
+   * gate signal only — not part of the production selection formula.
+   *
+   * @return int[]{spurCount, worstSpurArcMeters}
+   */
+  static int[] computeSpurInfo(List<OsmPathElement> nodes) {
+    int n = nodes.size();
+    if (n < 4) return new int[]{0, 0};
+
+    double[] cum = new double[n];
+    for (int i = 1; i < n; i++) {
+      cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
+    }
+
+    int spurCount = 0;
+    int worstArc = 0;
+    int i = 0;
+    while (i < n) {
+      // Farthest forward node within the arc-gap band that the route returns near.
+      int bestJ = -1;
+      OsmPathElement a = nodes.get(i);
+      for (int j = i + 1; j < n; j++) {
+        double gap = cum[j] - cum[i];
+        if (gap > SPUR_MAX_ARC_GAP) break;
+        if (gap >= SPUR_MIN_ARC_GAP && a.calcDistance(nodes.get(j)) <= SPUR_EPS_METERS) {
+          bestJ = j;
+        }
+      }
+      if (bestJ >= 0) {
+        spurCount++;
+        int arc = (int) Math.round(cum[bestJ] - cum[i]);
+        if (arc > worstArc) worstArc = arc;
+        i = bestJ; // non-overlapping spans
+      } else {
+        i++;
+      }
+    }
+    return new int[]{spurCount, worstArc};
+  }
+
+  /**
+   * Generalised near-revisit scan: the spans where a track returns within
+   * {@code epsMeters} of a point it already passed between {@code minArcMeters} and
+   * {@code maxArcMeters} of riding earlier. This is the same primitive as
+   * {@link #computeSpurInfo} but (a) parameterised and (b) returns the actual
+   * {@code [i, j]} node-index spans rather than a count, so a caller can map a span
+   * back to the leg(s) it falls in.
+   *
+   * <p>Used by the round-trip planner's elastic anti-reuse retry to decide whether a
+   * shipped leg (or the assembled loop) contains a penalty-induced out-and-back or a
+   * small sub-loop that rejoins near an earlier point. The detector is deliberately
+   * liberal: it is only a <em>trigger</em> for a re-route-and-compare, so a false
+   * positive costs one wasted re-route, never a wrong output.
+   *
+   * <p><b>Cap rationale:</b> {@link #computeSpurInfo} uses {@link #SPUR_MAX_ARC_GAP}
+   * (6 km), which <em>misses</em> the motivating Basel→Ettingen out-and-back (≈7.3 km).
+   * Callers targeting that class of detour pass a larger {@code maxArcMeters}
+   * (≈10 km). Spans are non-overlapping (after a hit, the scan resumes at {@code j}).
+   */
+  public static List<int[]> nearRevisitSpans(List<OsmPathElement> nodes,
+                                             double epsMeters, double minArcMeters,
+                                             double maxArcMeters) {
+    List<int[]> spans = new ArrayList<>();
+    int n = nodes == null ? 0 : nodes.size();
+    if (n < 4) return spans;
+
+    double[] cum = new double[n];
+    for (int i = 1; i < n; i++) {
+      cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
+    }
+
+    int i = 0;
+    while (i < n) {
+      int bestJ = -1;
+      OsmPathElement a = nodes.get(i);
+      for (int j = i + 1; j < n; j++) {
+        double gap = cum[j] - cum[i];
+        if (gap > maxArcMeters) break;
+        if (gap >= minArcMeters && a.calcDistance(nodes.get(j)) <= epsMeters) {
+          bestJ = j;
+        }
+      }
+      if (bestJ >= 0) {
+        spans.add(new int[]{i, bestJ});
+        i = bestJ; // non-overlapping spans
+      } else {
+        i++;
+      }
+    }
+    return spans;
+  }
+
+  /**
+   * True if {@code nodes} contains at least one near-revisit span under the given
+   * thresholds. Convenience wrapper over {@link #nearRevisitSpans}.
+   */
+  public static boolean hasNearRevisit(List<OsmPathElement> nodes,
+                                       double epsMeters, double minArcMeters,
+                                       double maxArcMeters) {
+    return !nearRevisitSpans(nodes, epsMeters, minArcMeters, maxArcMeters).isEmpty();
+  }
+
+  /**
+   * Length (m) of the longest single edge that is BOTH long and <em>null-way</em>
+   * (no {@code wayKeyValues}) — the beeline fingerprint.
+   *
+   * <p>The discriminator is a <b>conjunction</b>, established empirically:
+   * <ul>
+   *   <li><b>long + tagged</b> = a real rural road (e.g. an 800m {@code highway=service}
+   *       span with no intermediate OSM node) — legitimate;</li>
+   *   <li><b>short + null</b> = harmless undetailed geometry (shape nodes survive, so it
+   *       follows the real road shape) — pervasive on gravel because the metadata-detail
+   *       gate is paved-only, and visually fine;</li>
+   *   <li><b>long + null</b> = a beeline: a straight cut with no road shape AND no tags,
+   *       which is what {@link RoutingEngine#retrackForDetail} ships when it cannot snap a
+   *       straight expansion-guide onto the real road and falls back to the raw track.</li>
+   * </ul>
+   * Measuring the longest single null-way edge (not a contiguous sum) isolates the beeline
+   * from the pervasive-but-harmless undetailed-road population. Reporting / gate signal only.
+   */
+  public static int maxSingleNullEdgeMeters(OsmTrack track) {
+    if (track == null || track.nodes == null) return 0;
+    List<OsmPathElement> nodes = track.nodes;
+    int max = 0;
+    for (int i = 1; i < nodes.size(); i++) {
+      OsmPathElement curr = nodes.get(i);
+      String tags = (curr.message != null) ? curr.message.wayKeyValues : null;
+      boolean nullWay = (tags == null) || tags.isEmpty();
+      if (nullWay) {
+        int seg = nodes.get(i - 1).calcDistance(curr);
+        if (seg > max) max = seg;
+      }
+    }
+    return max;
+  }
+
+  /**
+   * The beeline-in-dead-end fingerprint: the longest single null-way edge (m) that lies
+   * <em>inside a detected spur span</em> (see {@link #computeSpurInfo}). This is the
+   * <b>intersection</b> of the two signals that survives all the evidence:
+   * <ul>
+   *   <li>a long null-way edge ALONE over-fires — on gravel the metadata-detail gate is
+   *       paved-only, so even real long rural roads ship undetailed (null + long);</li>
+   *   <li>a near-revisit spur ALONE over-fires (~29%) — most out-and-backs are legitimate;</li>
+   *   <li>their intersection is precise: a straight untagged cut <em>within</em> a near-revisit
+   *       is the dead-end beeline — the route left the road, shot straight to a dead-end pinned
+   *       waypoint and came back, which {@link RoutingEngine#retrackForDetail} could not snap to
+   *       a real way (so it shipped raw + untagged). A real long road is traversed once, not
+   *       inside a near-revisit, so it is excluded.</li>
+   * </ul>
+   * @return the longest single null-way edge within any spur span (m), 0 if none.
+   */
+  public static int beelineInSpurMeters(OsmTrack track) {
+    if (track == null || track.nodes == null) return 0;
+    List<OsmPathElement> nodes = track.nodes;
+    int n = nodes.size();
+    if (n < 4) return 0;
+    double[] cum = new double[n];
+    for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
+    int worst = 0;
+    int i = 0;
+    while (i < n) {
+      int bestJ = -1;
+      OsmPathElement a = nodes.get(i);
+      for (int j = i + 1; j < n; j++) {
+        double gap = cum[j] - cum[i];
+        if (gap > SPUR_MAX_ARC_GAP) break;
+        if (gap >= SPUR_MIN_ARC_GAP && a.calcDistance(nodes.get(j)) <= SPUR_EPS_METERS) bestJ = j;
+      }
+      if (bestJ >= 0) {
+        // longest single null-way edge within [i, bestJ]
+        for (int k = i + 1; k <= bestJ; k++) {
+          OsmPathElement curr = nodes.get(k);
+          String tags = (curr.message != null) ? curr.message.wayKeyValues : null;
+          if (tags == null || tags.isEmpty()) {
+            int seg = nodes.get(k - 1).calcDistance(curr);
+            if (seg > worst) worst = seg;
+          }
+        }
+        i = bestJ;
+      } else {
+        i++;
+      }
+    }
+    return worst;
   }
 
   /**
@@ -474,14 +693,23 @@ public final class LoopQualityMetrics {
     return closureDistanceMeters;
   }
 
+  public int getSpurCount() {
+    return spurCount;
+  }
+
+  public int getWorstSpurMeters() {
+    return worstSpurMeters;
+  }
+
   @Override
   public String toString() {
     return String.format(
       "LoopQualityMetrics[reuse=%.1f%%, distRatio=%.2f (%dm/%dm), dirDelta=%.1f°, " +
         "continuity=%.2f (maxGap=%dm, totalGap=%dm), compactness=%.2f, " +
-        "cost/m=%.1f, closure=%dm, composite=%.2f]",
+        "cost/m=%.1f, closure=%dm, spurs=%d (worst=%dm), composite=%.2f]",
       roadReusePercent, distanceRatio, actualDistanceMeters, requestedDistanceMeters,
       directionDeltaDegrees, continuityScore, maxGapMeters, totalGapMeters,
-      compactnessScore, averageCostPerMeter, closureDistanceMeters, compositeScore());
+      compactnessScore, averageCostPerMeter, closureDistanceMeters, spurCount, worstSpurMeters,
+      compositeScore());
   }
 }
