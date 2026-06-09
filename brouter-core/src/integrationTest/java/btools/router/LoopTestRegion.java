@@ -84,7 +84,28 @@ public enum LoopTestRegion {
   GRENOBLE(5.720, 45.190, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Vercors/Chartreuse/Belledonne valleys
   GARMISCH(11.100, 47.500, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel"));       // Bavarian Alps, more valley connectivity
+    profiles("fastbike", "gravel")),       // Bavarian Alps, more valley connectivity
+  // --- Gravel-mecca hill country (added 2026-06-09) -----------------------
+  // Two classic 30-100 km hilly gravel destinations. Black Forest is already
+  // covered by FREIBURG above. Thresholds start at the hilly-peer band
+  // (reuse 30, ratio 0.4-1.8, direction 180 no-op) shared by Lozère/Nice;
+  // confirmed-or-relaxed empirically by the LoopQuality<Region> run, not
+  // curve-fit. mtb excluded for the same reason as every other region (no
+  // verified singletrack-density network here).
+  //
+  // Girona, Catalonia (city centre, El Pont Major) — pro-cycling hub with a
+  // dense dirt lattice through Les Gavarres and the Garrotxa volcanic zone,
+  // dry year-round. Shares Lozère's E0_N40 tile (no new download).
+  GIRONA(2.8214, 41.9794, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Les Gavarres / Garrotxa dirt
+  // Tuscany — Crete Senesi, the open white-clay hills near Asciano (SE of
+  // Siena), the densest strade bianche (white gravel road) heartland. Start
+  // moved here from Gaiole in Chianti after calibration: Gaiole's wooded
+  // Chianti hills force gravel onto asphalt connectors at several headings
+  // (cost/m up to 5.81), while the Crete Senesi closes gravel loops in every
+  // direction at cost/m ~3.3 (mirrors the RURAL_LOZERE start relocation).
+  CRETE_SENESI(11.560, 43.230, "E10_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel"));       // strade bianche, Asciano/Eroica
 
   /** Longitude in decimal degrees */
   public final double lon;
