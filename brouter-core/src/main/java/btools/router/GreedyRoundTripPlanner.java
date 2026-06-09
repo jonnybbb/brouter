@@ -1461,6 +1461,12 @@ public class GreedyRoundTripPlanner {
    * of error), or — when both share the same gate verdict — when its geometric
    * error is lower. This prevents latching a gate-rejected low-error loop and
    * discarding a usable gate-accepted higher-error one.
+   *
+   * <p><b>Two-state convenience only:</b> this overload maps {@code accepted=false}
+   * to the chaos rank (2) and therefore <em>cannot express the middle tier</em>
+   * (severity 1 = sound same-way-back corridor). Callers that need the full
+   * three-tier preference (e.g. the production fallback selection at the
+   * {@code severity}-based call site) must use the {@code int} overload below.
    */
   static boolean isBetterFallback(boolean candidateAccepted, double candidateError,
                                   boolean incumbentAccepted, double incumbentError) {

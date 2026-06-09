@@ -143,6 +143,11 @@ public final class LoopQualityMetrics {
   /** Upper arc-gap bound (m): keeps the detection LOCAL so the loop's own closure
    *  (start≈end over the full perimeter) and broad legitimate lobes are not flagged. */
   static final double SPUR_MAX_ARC_GAP = 6000.0;
+  /** Wider arc-gap bound (m) for the beeline-in-spur detector. The 6 km
+   *  {@link #SPUR_MAX_ARC_GAP} misses the motivating Basel→Ettingen dead-end
+   *  out-and-back (~7.3 km); this matches {@code RouteChoiceScore.NEAR_REVISIT_MAX_ARC_M}
+   *  so the report telemetry and the AUTO teardrop term agree on the spur span. */
+  static final double BEELINE_MAX_ARC_GAP = 10000.0;
 
   /** A self-crossing whose smaller enclosed arc is at most this long (m) is
    *  attributed to a small detour loop / lasso rather than a far-apart structural
@@ -403,7 +408,7 @@ public final class LoopQualityMetrics {
       OsmPathElement a = nodes.get(i);
       for (int j = i + 1; j < n; j++) {
         double gap = cum[j] - cum[i];
-        if (gap > SPUR_MAX_ARC_GAP) break;
+        if (gap > BEELINE_MAX_ARC_GAP) break;
         if (gap >= SPUR_MIN_ARC_GAP && a.calcDistance(nodes.get(j)) <= SPUR_EPS_METERS) bestJ = j;
       }
       if (bestJ >= 0) {
@@ -808,10 +813,11 @@ public final class LoopQualityMetrics {
     return String.format(
       "LoopQualityMetrics[reuse=%.1f%%, distRatio=%.2f (%dm/%dm), dirDelta=%.1f°, " +
         "continuity=%.2f (maxGap=%dm, totalGap=%dm), compactness=%.2f, " +
-        "cost/m=%.1f, closure=%dm, spurs=%d (worst=%dm), composite=%.2f]",
+        "cost/m=%.1f, closure=%dm, spurs=%d (worst=%dm), " +
+        "selfIntersections=%d (smallLoop=%d), composite=%.2f]",
       roadReusePercent, distanceRatio, actualDistanceMeters, requestedDistanceMeters,
       directionDeltaDegrees, continuityScore, maxGapMeters, totalGapMeters,
       compactnessScore, averageCostPerMeter, closureDistanceMeters, spurCount, worstSpurMeters,
-      compositeScore());
+      selfIntersections, smallLoopCrossings, compositeScore());
   }
 }

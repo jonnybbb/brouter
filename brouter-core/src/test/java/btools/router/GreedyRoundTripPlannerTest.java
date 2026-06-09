@@ -326,6 +326,25 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
+  public void betterFallbackPrefersLowerSoundnessRankAcrossAllThreeTiers() {
+    // 3-tier guarantee (int overload): accepted (0) > sound same-way-back corridor (1) > chaos (2),
+    // and the rank dominates geometric error. The boolean adapter collapses every rejection to
+    // severity 2, so it cannot express the middle tier — this is the only coverage of the
+    // "rideable corridor beats chaos" invariant the planner's fallback selection relies on
+    // (GreedyRoundTripPlanner.java:644).
+    Assert.assertTrue("sound corridor (worse error) beats chaos (better error)",
+      GreedyRoundTripPlanner.isBetterFallback(1, 0.90, 2, 0.10));
+    Assert.assertFalse("chaos (better error) does not beat sound corridor (worse error)",
+      GreedyRoundTripPlanner.isBetterFallback(2, 0.10, 1, 0.90));
+    Assert.assertTrue("accepted (worse error) beats sound corridor (better error)",
+      GreedyRoundTripPlanner.isBetterFallback(0, 0.90, 1, 0.10));
+    Assert.assertFalse("sound corridor (better error) does not beat accepted (worse error)",
+      GreedyRoundTripPlanner.isBetterFallback(1, 0.10, 0, 0.90));
+    Assert.assertTrue("same tier (corridor) → lower error wins",
+      GreedyRoundTripPlanner.isBetterFallback(1, 0.10, 1, 0.20));
+  }
+
+  @Test
   public void greedyRejectsAllowSamewayback() {
     // allowSamewayback semantics (out-and-back) are not implemented by greedy;
     // dispatch must fall back to the waypoint-based algorithm.
