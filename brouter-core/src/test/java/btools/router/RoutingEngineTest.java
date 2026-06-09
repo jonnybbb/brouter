@@ -1639,4 +1639,79 @@ public class RoutingEngineTest {
     Assert.assertTrue(Double.isNaN(none.axisBearingDegrees));
     Assert.assertEquals(0.0, none.strength, 0.0);
   }
+
+  // ---- via-pinned bulge detection -----------------------------------------
+
+  /** Node at (xMeters east, yMeters north) of the test origin. */
+  private static OsmPathElement bulgeNode(double xMeters, double yMeters) {
+    double[] kxky = CheapRuler.getLonLatToMeterScales(START_ILAT);
+    int ilon = START_ILON + (int) Math.round(xMeters / kxky[0]);
+    int ilat = START_ILAT + (int) Math.round(yMeters / kxky[1]);
+    return OsmPathElement.create(ilon, ilat, (short) 0, null);
+  }
+
+  /**
+   * Wide-mouth bulge (the Basel "Im Stein" shape): northbound road with a
+   * rectangular detour — 600m west, 400m north, 600m back east — whose mouth
+   * nodes are 400m apart. No ≤50m pinch exists, so removeMicroDetours cannot
+   * see it; findViaPinnedBulgeSpan must return exactly the mouth pair.
+   */
+  @Test
+  public void findViaPinnedBulgeSpan_wideMouthRectangle() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    for (int y = 0; y <= 500; y += 100) nodes.add(bulgeNode(0, y));          // 0-5, mouth in = 5
+    for (int x = -150; x >= -600; x -= 150) nodes.add(bulgeNode(x, 500));    // 6-9 west leg
+    nodes.add(bulgeNode(-600, 650));                                         // 10
+    nodes.add(bulgeNode(-600, 800));                                         // 11 = pinned via
+    nodes.add(bulgeNode(-600, 900));                                         // 12 apex corner
+    for (int x = -450; x <= 0; x += 150) nodes.add(bulgeNode(x, 900));       // 13-16, mouth out = 16
+    for (int y = 1000; y <= 1400; y += 100) nodes.add(bulgeNode(0, y));      // 17-21
+
+    int[] span = RoutingEngine.findViaPinnedBulgeSpan(nodes, 11, 0, nodes.size() - 1, 4000);
+
+    Assert.assertNotNull("bulge span should be detected", span);
+    Assert.assertEquals("span start should be the inbound mouth node", 5, span[0]);
+    Assert.assertEquals("span end should be the outbound mouth node", 16, span[1]);
+  }
+
+  /** Normal forward progression near a via (arc ≈ crow-fly) must not fire. */
+  @Test
+  public void findViaPinnedBulgeSpan_straightRoadIsClean() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    for (int y = 0; y <= 2000; y += 100) nodes.add(bulgeNode(0, y));
+
+    Assert.assertNull(RoutingEngine.findViaPinnedBulgeSpan(nodes, 10, 0, nodes.size() - 1, 4000));
+  }
+
+  /** A gentle curve (ratio well under 3x) must not fire either. */
+  @Test
+  public void findViaPinnedBulgeSpan_gentleCurveIsClean() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    // quarter-circle of radius 1000m: arc ≈ 1571m, chord ≈ 1414m, ratio ≈ 1.1
+    for (int k = 0; k <= 18; k++) {
+      double a = Math.PI / 2 * k / 18.0;
+      nodes.add(bulgeNode(1000 * Math.sin(a), 1000 - 1000 * Math.cos(a)));
+    }
+    Assert.assertNull(RoutingEngine.findViaPinnedBulgeSpan(nodes, 9, 0, nodes.size() - 1, 4000));
+  }
+
+  /**
+   * spanCostPerMeter sums positive per-edge cost deltas and skips the negative
+   * delta of a leg-boundary reset (planner-merged tracks reset cumulative cost
+   * to 0 at each via join).
+   */
+  @Test
+  public void spanCostPerMeter_skipsLegBoundaryReset() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    for (int k = 0; k <= 4; k++) nodes.add(bulgeNode(0, k * 100));
+    nodes.get(0).cost = 0;
+    nodes.get(1).cost = 150;
+    nodes.get(2).cost = 300;  // leg 1 ends here
+    nodes.get(3).cost = 10;   // leg 2 restarts cumulative cost
+    nodes.get(4).cost = 160;
+
+    // positive deltas: 150 + 150 + 150 = 450 over ~400m
+    double cpm = RoutingEngine.spanCostPerMeter(nodes, 0, 4);
+    Assert.assertEquals(450.0 / 400.0, cpm, 0.02);
+  }
 }

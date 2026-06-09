@@ -12,6 +12,7 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -1463,6 +1464,7 @@ public class RoutingEngine extends Thread {
         assignMatchedWaypointIndexes(track, mwps);
         removeBackAndForthSegments(track, mwps);
         removeMicroDetours(track, 1500, mwps);
+        repairViaPinnedBulges(track, mwps);
       }
     }
     rebuildOriginChain(track);
@@ -2901,6 +2903,207 @@ public class RoutingEngine extends Thread {
         long cell = ((long) cx) << 32 | (cy & 0xFFFFFFFFL);
         grid.computeIfAbsent(cell, k -> new ArrayList<>()).add(i);
       }
+    }
+  }
+
+  /**
+   * Geometric trigger for a via-pinned bulge: the route arc across the span
+   * must be at least this multiple of the mouth's crow-fly distance. The Basel
+   * reference artifact (1.85km of grade2 track for 410m of progress) measures
+   * 4.5; 3.0 keeps margin against firing on ordinary loop curvature near a via.
+   */
+  static final double BULGE_MIN_PROGRESS_RATIO = 3.0;
+  /** Spans shorter than this are left to removeMicroDetours' teardrop band. */
+  static final int BULGE_MIN_ARC_M = 600;
+  /**
+   * Junk filter: the span's average cost/m must be at least this multiple of
+   * the whole track's average. A deliberate scenic petal rides roads the
+   * profile likes (span cost/m ≈ track average) and is kept; only overpriced
+   * detours — the profile got dragged onto roads it penalizes — qualify.
+   * Deliberately loose (the Basel reference span measures 1.38× because
+   * {@link #spanCostPerMeter} skips the leg-reset edge); the connector
+   * cost-advantage check below is the decisive guard.
+   */
+  static final double BULGE_MIN_COST_FACTOR = 1.2;
+  /**
+   * Repair acceptance: the connector must be at most this fraction of the
+   * bulge arc. This is an efficiency criterion, not a straightness one — a
+   * winding connector on profile-friendly roads still beats a junk-road bulge
+   * (Basel via3: 839m connector at 1.44 cost/m vs 3231m span at 3.92). When
+   * the shortest connector is comparable to the bulge itself, the bulge was
+   * network-forced, not via-pinned — keep it.
+   */
+  static final double BULGE_CONNECTOR_MAX_ARC_FRACTION = 0.6;
+  /** Repair acceptance: minimum arc length the splice must save. */
+  static final int BULGE_MIN_SAVED_M = 400;
+  /** Repair acceptance: connector cost/m × this must still undercut the span's
+   *  cost/m, so the repair is a genuine quality win, not a lateral move. */
+  static final double BULGE_CONNECTOR_COST_ADVANTAGE = 1.3;
+
+  /**
+   * Find a low-progress span pinned at a generated via: the pair (i, j) with
+   * i &lt; viaIdx &lt; j maximizing {@code arc - BULGE_MIN_PROGRESS_RATIO * crowFly}
+   * (the "excess length" of the detour), subject to {@code BULGE_MIN_ARC_M ≤ arc
+   * ≤ maxArcM}. Unlike removeMicroDetours this needs no ≤50m pinch point — it
+   * catches wide-mouth bulges whose outbound and return legs never come close
+   * (e.g. parallel field lanes 400m apart). Returns {@code {i, j}} or null.
+   */
+  static int[] findViaPinnedBulgeSpan(List<OsmPathElement> nodes, int viaIdx,
+                                      int loIdx, int hiIdx, int maxArcM) {
+    if (nodes == null || loIdx < 0 || hiIdx >= nodes.size()
+        || viaIdx <= loIdx || viaIdx >= hiIdx) {
+      return null;
+    }
+    double[] cum = new double[hiIdx - loIdx + 1];
+    for (int k = loIdx + 1; k <= hiIdx; k++) {
+      cum[k - loIdx] = cum[k - loIdx - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+    }
+    double bestBenefit = 0;
+    int bi = -1;
+    int bj = -1;
+    for (int i = viaIdx - 1; i >= loIdx; i--) {
+      if (cum[viaIdx - loIdx] - cum[i - loIdx] > maxArcM) break;
+      for (int j = viaIdx + 1; j <= hiIdx; j++) {
+        double arc = cum[j - loIdx] - cum[i - loIdx];
+        if (arc > maxArcM) break;
+        if (arc < BULGE_MIN_ARC_M) continue;
+        double crowFly = CheapRuler.distance(
+          nodes.get(i).getILon(), nodes.get(i).getILat(),
+          nodes.get(j).getILon(), nodes.get(j).getILat());
+        double benefit = arc - BULGE_MIN_PROGRESS_RATIO * crowFly;
+        if (benefit > bestBenefit) {
+          bestBenefit = benefit;
+          bi = i;
+          bj = j;
+        }
+      }
+    }
+    return bi < 0 ? null : new int[]{bi, bj};
+  }
+
+  /**
+   * Average cost per meter over a node span, summing per-edge cost deltas.
+   * Node costs are cumulative per routed leg and reset to 0 at leg joins in
+   * planner-merged tracks; a negative delta marks such a reset and that edge's
+   * cost is skipped (slightly underestimates the span — conservative for the
+   * junk filter, which requires the span to be expensive).
+   */
+  static double spanCostPerMeter(List<OsmPathElement> nodes, int fromIdx, int toIdx) {
+    double cost = 0;
+    double dist = 0;
+    for (int k = fromIdx + 1; k <= toIdx; k++) {
+      int dc = nodes.get(k).cost - nodes.get(k - 1).cost;
+      if (dc > 0) cost += dc;
+      dist += nodes.get(k - 1).calcDistance(nodes.get(k));
+    }
+    return dist > 0 ? cost / dist : Double.MAX_VALUE;
+  }
+
+  /**
+   * Detect and repair wide-mouth bulges pinned at generated round-trip vias.
+   *
+   * <p>The planner can place a via in a pocket whose only escape is over roads
+   * the profile penalizes (Basel reference: via on a grade2 field track 750m
+   * west of a parallel asphalt cycle route — the loop pays ~11× the through
+   * cost to touch it). The resulting detour has no ≤50m pinch point, so
+   * {@link #removeMicroDetours}' teardrop band never sees it; and it encloses
+   * real area (petal compactness ~0.9), so a thin-only filter can't separate
+   * it from scenic petals. What does separate it is price: the span rides
+   * roads at ≥{@link #BULGE_MIN_COST_FACTOR}× the track's average cost/m.
+   *
+   * <p>Because the mouth is wide, the span cannot simply be deleted (that
+   * would leave an off-road beeline). Instead the mouth is re-routed: a local
+   * {@link #findTrack} between the two mouth nodes, accepted only when the
+   * connector meaningfully shortens the span
+   * ({@link #BULGE_CONNECTOR_MAX_ARC_FRACTION}, {@link #BULGE_MIN_SAVED_M})
+   * and undercuts its cost/m ({@link #BULGE_CONNECTOR_COST_ADVANTAGE}) — when
+   * the network offers no better connector, the bulge was forced, and it stays.
+   */
+  void repairViaPinnedBulges(OsmTrack track, List<MatchedWaypoint> waypoints) {
+    List<OsmPathElement> nodes = track.nodes;
+    if (nodes == null || nodes.size() < 10 || waypoints == null || waypoints.size() < 3) {
+      return;
+    }
+    long totalDist = 0;
+    for (int k = 1; k < nodes.size(); k++) {
+      totalDist += nodes.get(k - 1).calcDistance(nodes.get(k));
+    }
+    int arcCap = (int) Math.min(VIA_TEARDROP_MAX_ARC_M, VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
+    double trackCostPerM = spanCostPerMeter(nodes, 0, nodes.size() - 1);
+
+    for (int wi = 1; wi < waypoints.size() - 1; wi++) {
+      MatchedWaypoint via = waypoints.get(wi);
+      if (!via.generated) continue;
+      int v = via.indexInTrack;
+      if (v <= 0 || v >= nodes.size() - 1) continue;
+      int lo = Math.max(0, waypoints.get(wi - 1).indexInTrack + 1);
+      int hi = Math.min(nodes.size() - 1, waypoints.get(wi + 1).indexInTrack - 1);
+      int[] span = findViaPinnedBulgeSpan(nodes, v, lo, hi, arcCap);
+      if (span == null) continue;
+      double spanCpm = spanCostPerMeter(nodes, span[0], span[1]);
+      if (trackCostPerM > 0 && spanCpm < BULGE_MIN_COST_FACTOR * trackCostPerM) {
+        logInfo("repairViaPinnedBulges: " + via.name + " span " + span[0] + "-" + span[1]
+          + " kept as petal (span " + spanCpm + " vs track " + trackCostPerM + " cost/m)");
+        continue; // priced like the rest of the loop — a petal, not an artifact
+      }
+      OsmPathElement ni = nodes.get(span[0]);
+      OsmPathElement nj = nodes.get(span[1]);
+      double arc = 0;
+      for (int k = span[0] + 1; k <= span[1]; k++) {
+        arc += nodes.get(k - 1).calcDistance(nodes.get(k));
+      }
+      double crowFly = CheapRuler.distance(ni.getILon(), ni.getILat(), nj.getILon(), nj.getILat());
+
+      List<OsmNode> mouthPts = new ArrayList<>();
+      mouthPts.add(new OsmNode(ni.getILon(), ni.getILat()));
+      mouthPts.add(new OsmNode(nj.getILon(), nj.getILat()));
+      List<MatchedWaypoint> mouth = batchMatchToRoads(mouthPts, 100.0, "bulge_repair");
+      if (mouth == null || !isRoadSnap(mouth.get(0)) || !isRoadSnap(mouth.get(1))) {
+        logInfo("repairViaPinnedBulges: " + via.name + " mouth snap failed");
+        continue;
+      }
+
+      OsmTrack connector = null;
+      OsmTrack savedGuide = guideTrack;
+      guideTrack = null; // a live guide track would corrupt the local search
+      try {
+        connector = findTrack("bulge-repair", mouth.get(0), mouth.get(1), null, null, false);
+      } catch (RuntimeException e) {
+        logInfo("repairViaPinnedBulges: connector routing failed (" + e.getMessage() + ")");
+      } finally {
+        guideTrack = savedGuide;
+      }
+      if (connector == null || connector.nodes == null || connector.nodes.size() < 2) {
+        logInfo("repairViaPinnedBulges: " + via.name + " no connector route");
+        continue;
+      }
+      double connCpm = connector.distance > 0
+        ? (double) connector.cost / connector.distance : Double.MAX_VALUE;
+      if (connector.distance > arc * BULGE_CONNECTOR_MAX_ARC_FRACTION
+          || arc - connector.distance < BULGE_MIN_SAVED_M
+          || connCpm * BULGE_CONNECTOR_COST_ADVANTAGE > spanCpm) {
+        logInfo(String.format(Locale.US,
+          "repairViaPinnedBulges: %s connector rejected (dist=%d crowFly=%.0f arc=%.0f connCpm=%.2f spanCpm=%.2f)",
+          via.name, connector.distance, crowFly, arc, connCpm, spanCpm));
+        continue;
+      }
+
+      // Splice: replace the span interior with the connector's nodes, trimming
+      // connector endpoints that duplicate the mouth nodes.
+      List<OsmPathElement> conn = connector.nodes;
+      int cs = 0;
+      int ce = conn.size();
+      while (cs < ce && conn.get(cs).calcDistance(ni) <= 2) cs++;
+      while (ce > cs && conn.get(ce - 1).calcDistance(nj) <= 2) ce--;
+      List<OsmPathElement> interior = new ArrayList<>(conn.subList(cs, ce));
+      int removedNodes = span[1] - span[0] - 1;
+      nodes.subList(span[0] + 1, span[1]).clear();
+      nodes.addAll(span[0] + 1, interior);
+      adjustWaypointIndices(waypoints, span[0], span[1] - 1, removedNodes - interior.size());
+
+      logInfo(String.format(Locale.US,
+        "repairViaPinnedBulges: at %s replaced %.0fm bulge (mouth %.0fm, span %.2f cost/m vs track %.2f) with %dm connector (%.2f cost/m)",
+        via.name, arc, crowFly, spanCpm, trackCostPerM, connector.distance, connCpm));
     }
   }
 
