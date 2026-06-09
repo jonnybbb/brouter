@@ -2781,10 +2781,35 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Via-pinned teardrop band: a detour pinned at a generated via (the planner
+   * placed a waypoint in a one-way-out pocket; the anti-reuse penalty then
+   * shapes the escape into a thin offset loop instead of an exact retrace the
+   * symmetric spur remover could strip) may be removed up to this arc length —
+   * well beyond the plain micro-detour cap.
+   */
+  static final int VIA_TEARDROP_MAX_ARC_M = 4000;
+  /** ... bounded relative to the whole track, so short loops never lose a large share. */
+  static final double VIA_TEARDROP_MAX_ARC_FRAC = 0.15;
+  /**
+   * Petal-compactness ceiling for the via-pinned band: spans fatter than this
+   * (shoelace area vs same-perimeter circle) enclose real area — a scenic petal
+   * the rider may want — and are kept. Thin excursions (deep, narrow, returning
+   * to the pinch point) are routing artifacts and removed. A pure out-and-back
+   * scores ~0; a 10:1 deep-narrow teardrop ~0.3; a round petal 0.7+.
+   */
+  static final double VIA_TEARDROP_MAX_COMPACTNESS = 0.30;
+
+  /**
    * Remove micro-detours: small loops where the route returns to the same
    * area within a short distance. Uses proximity matching (not just exact
    * node identity) to catch detours through parallel roads or dual
    * carriageways where the route returns to a nearby but distinct node.
+   *
+   * <p>Spans pinned at a generated round-trip via get an extended cap
+   * ({@link #VIA_TEARDROP_MAX_ARC_M}, fraction-bounded) but must additionally
+   * be thin ({@link #petalCompactness} ≤ {@link #VIA_TEARDROP_MAX_COMPACTNESS})
+   * so genuine scenic petals survive; below {@code maxLoopDistance} behaviour
+   * is unchanged.
    *
    * @param maxLoopDistance maximum route distance of a loop to be considered a micro-detour (in meters)
    */
@@ -2799,6 +2824,12 @@ public class RoutingEngine extends Thread {
 
     while (changed) {
       changed = false;
+      long totalDist = 0;
+      for (int k = 1; k < nodes.size(); k++) {
+        totalDist += nodes.get(k - 1).calcDistance(nodes.get(k));
+      }
+      int viaTeardropCap = (int) Math.min(VIA_TEARDROP_MAX_ARC_M,
+        VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
       Map<Long, List<Integer>> grid = new HashMap<>();
 
       for (int i = 0; i < nodes.size(); i++) {
@@ -2839,15 +2870,24 @@ public class RoutingEngine extends Thread {
 
           // Near generated roundtrip waypoints, use a relaxed ratio (2x instead of 3x)
           // since detours there are artifacts of synthetic waypoint placement.
-          double ratioThreshold = 3.0;
-          if (isNearGeneratedWaypoint(nodes, matchIdx, i, waypoints, waypointProximity)) {
-            ratioThreshold = 2.0;
+          boolean nearVia = isNearGeneratedWaypoint(nodes, matchIdx, i, waypoints, waypointProximity);
+          double ratioThreshold = nearVia ? 2.0 : 3.0;
+
+          // Via-pinned teardrop band: spans pinned at a generated via may exceed
+          // the plain cap, but only THIN spans are removed there — a fat span
+          // encloses real area (scenic petal) and stays.
+          int effectiveCap = (nearVia && viaTeardropCap > maxLoopDistance)
+            ? viaTeardropCap : maxLoopDistance;
+          boolean removable = loopDist > 0 && loopDist <= effectiveCap;
+          if (removable && loopDist > maxLoopDistance
+              && petalCompactness(nodes, matchIdx, i, loopDist) > VIA_TEARDROP_MAX_COMPACTNESS) {
+            removable = false;
           }
 
           // A genuine detour has route distance much larger than crow-fly distance
           // (the route went elsewhere and came back). Normal forward progression
           // has route distance ≈ crow-fly distance.
-          if (loopDist <= maxLoopDistance && loopDist > 0 && loopDist > crowFly * ratioThreshold) {
+          if (removable && loopDist > crowFly * ratioThreshold) {
             logInfo("removeMicroDetours: removing " + (i - matchIdx) + " nodes (loop of " + loopDist + "m, crow-fly " + (int) crowFly + "m, ratio " + String.format("%.1f", ratioThreshold) + "x at index " + matchIdx + ")");
             int removeCount = i - matchIdx;
             nodes.subList(matchIdx + 1, i + 1).clear();
@@ -2939,7 +2979,9 @@ public class RoutingEngine extends Thread {
 
   /**
    * Check if a loop (between matchIdx and currentIdx in the track) is near
-   * a generated roundtrip waypoint (name starting with "rt").
+   * a generated roundtrip waypoint — either flagged {@link MatchedWaypoint#generated}
+   * (greedy planner vias, densification bulges) or named with the WAYPOINT
+   * algorithm's "rt" prefix. User-supplied waypoints match neither.
    */
   private boolean isNearGeneratedWaypoint(List<OsmPathElement> nodes, int matchIdx, int currentIdx,
                                           List<MatchedWaypoint> waypoints, int proximityMeters) {
@@ -2949,12 +2991,42 @@ public class RoutingEngine extends Thread {
       if (checkIdx < 0 || checkIdx >= nodes.size()) continue;
       OsmPathElement refNode = nodes.get(checkIdx);
       for (MatchedWaypoint mwp : waypoints) {
-        if (mwp.name == null || !mwp.name.startsWith("rt")) continue;
+        if (!mwp.generated && (mwp.name == null || !mwp.name.startsWith("rt"))) continue;
         if (mwp.crosspoint == null) continue;
         if (refNode.calcDistance(mwp.crosspoint) <= proximityMeters) return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Shape thinness of the sub-track {@code nodes[fromIdx..toIdx]} treated as a
+   * closed petal (auto-closed by the {@code toIdx → fromIdx} chord): shoelace
+   * polygon area divided by the area of a circle with the same perimeter.
+   * Self-intersecting (zigzag) spans cancel in the shoelace sum and score near
+   * 0 — correctly classified as thin artifacts. Result clamped to [0, 1].
+   */
+  static double petalCompactness(List<OsmPathElement> nodes, int fromIdx, int toIdx,
+                                 double loopDistMeters) {
+    if (loopDistMeters <= 0 || toIdx - fromIdx < 2) return 1.0; // degenerate: keep
+    double[] kxky = CheapRuler.getLonLatToMeterScales(nodes.get(fromIdx).getILat());
+    double kx = kxky[0];
+    double ky = kxky[1];
+    int lon0 = nodes.get(fromIdx).getILon();
+    int lat0 = nodes.get(fromIdx).getILat();
+    double area2 = 0;
+    double px = 0;
+    double py = 0; // origin = first span node, so the closing chord contributes 0
+    for (int k = fromIdx + 1; k <= toIdx; k++) {
+      double x = (nodes.get(k).getILon() - lon0) * kx;
+      double y = (nodes.get(k).getILat() - lat0) * ky;
+      area2 += px * y - x * py;
+      px = x;
+      py = y;
+    }
+    double area = Math.abs(area2) / 2.0;
+    double circleArea = loopDistMeters * loopDistMeters / (4.0 * Math.PI);
+    return Math.min(1.0, area / circleArea);
   }
 
   /**

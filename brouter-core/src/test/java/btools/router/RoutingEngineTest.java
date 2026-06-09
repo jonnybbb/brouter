@@ -631,6 +631,125 @@ public class RoutingEngineTest {
     Assert.assertSame(nodeG, track.nodes.get(4));
   }
 
+  /**
+   * Thin teardrop pinned at a generated via, ~2.5km arc on a ~24km track:
+   * out 1.2km north, cross 72m, back down a parallel arm, rejoining within
+   * ~24m of the divergence point. The arms are ~72m apart (beyond the 50m
+   * proximity threshold) so only the pinch pair matches — the shape the
+   * anti-reuse penalty produces at a dead-end via, which the symmetric
+   * back-and-forth remover cannot strip. Node indices: 0..2 corridor,
+   * 3 = pinch-out B, 4..7 = excursion (tip at index 5), 8 = pinch-return B2,
+   * 9..10 corridor.
+   */
+  private OsmTrack buildViaTeardropTrack() {
+    int baseLon = START_ILON;
+    int baseLat = START_ILAT;
+    OsmTrack track = new OsmTrack();
+    track.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 100000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 200000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat, (short) 0, null)); // B (pinch-out)
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 5400, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 10800, (short) 0, null)); // tip
+    track.nodes.add(OsmPathElement.create(baseLon + 206000, baseLat + 10800, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 206000, baseLat + 5400, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205300, baseLat + 100, (short) 0, null)); // B2 (~24m from B)
+    track.nodes.add(OsmPathElement.create(baseLon + 208000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 300000, baseLat, (short) 0, null));
+    return track;
+  }
+
+  // Via-pinned thin teardrop beyond the plain 1500m cap is removed when the
+  // span is pinned at a generated round-trip via (greedy planner placement).
+  @Test
+  public void removeMicroDetoursRemovesViaPinnedThinTeardrop() {
+    RoutingEngine re = createDummyEngine(5000);
+    OsmTrack track = buildViaTeardropTrack();
+    OsmPathElement pinchOut = track.nodes.get(3);
+    OsmPathElement afterSpur = track.nodes.get(9);
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    MatchedWaypoint via = createMatchedWaypoint("via2",
+      START_ILON + 205000, START_ILAT + 10800, START_ILON + 205000, START_ILAT + 10800);
+    via.generated = true; // greedy planner via — not a user waypoint
+    via.indexInTrack = 5;
+    wpts.add(via);
+
+    re.removeMicroDetours(track, 1500, wpts);
+
+    Assert.assertEquals("teardrop (arc ~2.5km > plain cap) removed via the via-pinned band",
+      6, track.nodes.size());
+    Assert.assertSame("pinch-out node survives", pinchOut, track.nodes.get(3));
+    Assert.assertSame("track continues after the removed spur", afterSpur, track.nodes.get(4));
+  }
+
+  // The same-size span enclosing real area (a fat petal — possibly a scenic
+  // sub-loop) is NOT removed: the via-pinned band requires thinness.
+  @Test
+  public void removeMicroDetoursKeepsFatViaPetal() {
+    RoutingEngine re = createDummyEngine(5000);
+    int baseLon = START_ILON;
+    int baseLat = START_ILAT;
+    OsmTrack track = new OsmTrack();
+    track.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 100000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 200000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat, (short) 0, null)); // B (pinch-out)
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 5600, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 5600, (short) 0, null)); // petal far corner
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 200, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205300, baseLat + 100, (short) 0, null)); // B2 (~24m from B)
+    track.nodes.add(OsmPathElement.create(baseLon + 208000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 300000, baseLat, (short) 0, null));
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    MatchedWaypoint via = createMatchedWaypoint("via2",
+      baseLon + 213600, baseLat + 5600, baseLon + 213600, baseLat + 5600);
+    via.generated = true;
+    via.indexInTrack = 5;
+    wpts.add(via);
+
+    re.removeMicroDetours(track, 1500, wpts);
+
+    Assert.assertEquals("fat petal (compactness ~0.8) survives the via-pinned band",
+      10, track.nodes.size());
+  }
+
+  // Without a generated via pinning the span, the extended band never opens:
+  // user waypoints (generated=false, non-"rt" name) keep legacy behaviour.
+  @Test
+  public void removeMicroDetoursKeepsLargeTeardropWithoutGeneratedVia() {
+    RoutingEngine re = createDummyEngine(5000);
+    OsmTrack track = buildViaTeardropTrack();
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    MatchedWaypoint userVia = createMatchedWaypoint("userVia",
+      START_ILON + 205000, START_ILAT + 10800, START_ILON + 205000, START_ILAT + 10800);
+    userVia.indexInTrack = 5; // generated stays false — a user-chosen destination
+    wpts.add(userVia);
+
+    re.removeMicroDetours(track, 1500, wpts);
+
+    Assert.assertEquals("user-via teardrop is the user's choice — kept (legacy cap applies)",
+      11, track.nodes.size());
+  }
+
+  // petalCompactness: thin out-and-back-ish spans near 0, round petals high.
+  @Test
+  public void petalCompactnessSeparatesThinTeardropFromFatPetal() {
+    OsmTrack thin = buildViaTeardropTrack();
+    double thinLoopDist = 0;
+    for (int j = 4; j <= 8; j++) {
+      thinLoopDist += thin.nodes.get(j).calcDistance(thin.nodes.get(j - 1));
+    }
+    double thinScore = RoutingEngine.petalCompactness(thin.nodes, 3, 8, thinLoopDist);
+    Assert.assertTrue("thin teardrop compactness " + thinScore + " below ceiling",
+      thinScore <= RoutingEngine.VIA_TEARDROP_MAX_COMPACTNESS);
+
+    // Degenerate span (fewer than 2 interior segments) is treated as fat (kept).
+    Assert.assertEquals(1.0, RoutingEngine.petalCompactness(thin.nodes, 3, 4, 600), 1e-9);
+  }
+
   // --- Isochrone + combined strategy tests ---
 
   // Integration: isochrone=true produces a valid closed loop

@@ -17,8 +17,9 @@ import btools.util.CheapAngleMeter;
  *         + w_isoHostility * hostility            // 0 unless hostilityActive (paved profiles)
  *         + w_isoBonus    * isoContourDepthMismatch(sourceContour, step, totalSteps)
  *
- * The last three terms are the ISO-aware contribution: a bonus (lower score) for
- * candidates validated by the isochrone Dijkstra, a hostility penalty applied only
+ * The last three terms are the ISO-aware contribution: a bucket-density bonus
+ * (lower score) for candidates reached by a Dijkstra expansion — start-centered
+ * iso or per-step graph-native — a hostility penalty applied only
  * when {@link #setHostilityActive(boolean)} is on, and a contour-depth-mismatch
  * penalty. {@code hostility} is the contiguous-hostile-meters penalty when routed
  * leg data is available, else the cost-per-airmeter penalty.
@@ -233,16 +234,22 @@ public class CandidateScorer {
   }
 
   /**
-   * Bonus (subtracted from the score, so makes the candidate better) for an
-   * iso-validated candidate of acceptable bucket density. Plateaus at hits≥3
-   * — extra-dense buckets do NOT score better than typical-dense ones (we
-   * don't want to over-prefer urban-grid candidates). Sparse buckets
-   * (hits&lt;3) ramp down to 0 (fragility signal — one-shot road slivers).
-   * Radial candidates (no iso metadata) get 0.
+   * Bonus (subtracted from the score, so makes the candidate better) for a
+   * Dijkstra-expansion candidate of acceptable bucket density. Plateaus at
+   * hits≥3 — extra-dense buckets do NOT score better than typical-dense ones
+   * (we don't want to over-prefer urban-grid candidates). Sparse buckets
+   * (hits&lt;3) ramp down to 0 (fragility signal — one-shot road slivers,
+   * usually dead-end pockets that force the next leg to backtrack out).
+   *
+   * <p>Gated on bucket density ALONE: per-step graph-native candidates (the
+   * production GREEDY default) carry real {@code bucketHits} but a sentinel
+   * {@code costFromStart} — the former conjunctive guard zeroed the dead-end
+   * signal exactly on that path. {@code costFromStart} stays in the signature
+   * for callers/tests but no longer gates the bonus.
+   * Radial candidates (no density metadata) get 0.
    */
   double isoValidatedBonus(double costFromStart, int bucketHits) {
-    if (costFromStart == RoundTripCandidateProvider.NO_ISO_COST
-        || bucketHits == RoundTripCandidateProvider.NO_ISO_DENSITY) {
+    if (bucketHits == RoundTripCandidateProvider.NO_ISO_DENSITY) {
       return 0;
     }
     if (bucketHits >= 3) return 1.0;

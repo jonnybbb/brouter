@@ -1393,6 +1393,12 @@ public class GreedyRoundTripPlanner {
     for (int i = 1; i < stack.size(); i++) {
       MatchedWaypoint mwp = stack.get(i);
       MatchedWaypoint viaMwp = copyMatchedWaypoint(mwp, "via" + i);
+      // Planner-placed via, not a user waypoint: the engine's via-pinned spur
+      // cleanup (removeMicroDetours / isNearGeneratedWaypoint) keys on this
+      // flag — the WAYPOINT algorithm's "rt*" name convention does not apply
+      // to greedy vias, so without the flag the relaxed-ratio and teardrop
+      // bands never activate on greedy-adopted loops.
+      viaMwp.generated = true;
       mwps.add(viaMwp);
     }
 

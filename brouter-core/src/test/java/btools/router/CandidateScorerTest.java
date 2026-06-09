@@ -281,17 +281,41 @@ public class CandidateScorerTest {
   }
 
   @Test
-  public void isoValidatedBonusIsZeroWhenEitherFieldMissing() {
-    // Test the helper directly: both fields must be present for the bonus.
-    assertEquals(0.0, scorer.isoValidatedBonus(
-      RoundTripCandidateProvider.NO_ISO_COST, 10), 1e-9);
-    assertEquals(0.0, scorer.isoValidatedBonus(
+  public void isoValidatedBonusGatesOnBucketDensityAlone() {
+    // The bonus keys on bucket density only. A sentinel costFromStart must NOT
+    // zero it: per-step graph-native candidates (production GREEDY) carry real
+    // bucketHits with costFromStart = NO_ISO_COST, and the former conjunctive
+    // guard disabled the dead-end fragility signal exactly on that path.
+    assertTrue("density present, iso cost sentinel → bonus still applies",
+      scorer.isoValidatedBonus(RoundTripCandidateProvider.NO_ISO_COST, 10) > 0);
+    assertEquals("density missing → no bonus", 0.0, scorer.isoValidatedBonus(
       6500, RoundTripCandidateProvider.NO_ISO_DENSITY), 1e-9);
-    assertEquals(0.0, scorer.isoValidatedBonus(
+    assertEquals("both missing → no bonus", 0.0, scorer.isoValidatedBonus(
       RoundTripCandidateProvider.NO_ISO_COST,
       RoundTripCandidateProvider.NO_ISO_DENSITY), 1e-9);
-    assertTrue("populated → bonus > 0",
+    assertTrue("fully populated → bonus > 0",
       scorer.isoValidatedBonus(6500, 10) > 0);
+  }
+
+  @Test
+  public void graphNativeOneShotDeadEndRanksWorseThanDenseCandidate() {
+    // Graph-native per-step candidates: costFromStart is the NO_ISO_COST
+    // sentinel, bucketHits is real. A one-shot bucket (hits=1, the dead-end
+    // road-sliver signature) must rank worse than a dense bucket (hits>=3) at
+    // otherwise identical geometry — this is the placement-side signal that
+    // steers vias away from one-way-out pockets.
+    double dense = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      RoundTripCandidateProvider.NO_ISO_COST, 10);
+    double oneShotDeadEnd = scorer.score(
+      2000, 2000, 0, 8000, 10000,
+      90, DirectionPreference.ANY, 1, 5,
+      0.0, 5000, 5000, -1,
+      RoundTripCandidateProvider.NO_ISO_COST, 1);
+    assertTrue("one-shot dead-end candidate scores worse than dense: "
+      + oneShotDeadEnd + " vs " + dense, oneShotDeadEnd > dense);
   }
 
   @Test

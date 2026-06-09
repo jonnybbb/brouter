@@ -439,6 +439,14 @@ public class GreedyRoundTripPlannerTest {
       Assert.assertEquals("waypoint and crosspoint must coincide for " + m.name,
         m.crosspoint.ilat, m.waypoint.ilat);
     }
+    // Vias are planner-generated: the engine's via-pinned spur/teardrop cleanup
+    // (isNearGeneratedWaypoint) keys on the generated flag — greedy vias are
+    // named "via*", not "rt*", so without the flag the cleanup never activates.
+    // Start/closing copies of the user's start point stay non-generated.
+    Assert.assertFalse("'from' is the user's start, not generated", matched.get(0).generated);
+    Assert.assertTrue("'via1' must be flagged generated", matched.get(1).generated);
+    Assert.assertTrue("'via2' must be flagged generated", matched.get(2).generated);
+    Assert.assertFalse("'to' is the user's start, not generated", matched.get(3).generated);
   }
 
   private static MatchedWaypoint makeMatchedWaypoint(int crossLon, int crossLat,
