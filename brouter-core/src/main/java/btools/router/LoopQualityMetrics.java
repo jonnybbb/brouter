@@ -33,6 +33,12 @@ public final class LoopQualityMetrics {
   private final int spurCount;
   /** Arc length (m) of the longest detected spur, 0 if none. */
   private final int worstSpurMeters;
+  /** Total self-intersections (transverse X-crossings) of the route shape. */
+  private final int selfIntersections;
+  /** Of {@link #selfIntersections}, how many enclose only a SHORT arc — i.e. the
+   *  crossing is caused by a small detour loop/lasso rather than a far-apart
+   *  structural crossing (outbound leg vs return leg). See {@link #detectCrossings}. */
+  private final int smallLoopCrossings;
 
   /**
    * Reconstruct a metrics instance from primitive fields. Used by the
@@ -47,10 +53,12 @@ public final class LoopQualityMetrics {
                                               int maxGapMeters, int totalGapMeters,
                                               double compactnessScore, double averageCostPerMeter,
                                               int closureDistanceMeters, int spurCount,
-                                              int worstSpurMeters) {
+                                              int worstSpurMeters, int selfIntersections,
+                                              int smallLoopCrossings) {
     return new LoopQualityMetrics(roadReusePercent, distanceRatio, directionDeltaDegrees,
       actualDistanceMeters, requestedDistanceMeters, continuityScore, maxGapMeters, totalGapMeters,
-      compactnessScore, averageCostPerMeter, closureDistanceMeters, spurCount, worstSpurMeters);
+      compactnessScore, averageCostPerMeter, closureDistanceMeters, spurCount, worstSpurMeters,
+      selfIntersections, smallLoopCrossings);
   }
 
   private LoopQualityMetrics(double roadReusePercent, double distanceRatio,
@@ -58,7 +66,8 @@ public final class LoopQualityMetrics {
                              int requestedDistanceMeters, double continuityScore,
                              int maxGapMeters, int totalGapMeters,
                              double compactnessScore, double averageCostPerMeter,
-                             int closureDistanceMeters, int spurCount, int worstSpurMeters) {
+                             int closureDistanceMeters, int spurCount, int worstSpurMeters,
+                             int selfIntersections, int smallLoopCrossings) {
     this.roadReusePercent = roadReusePercent;
     this.distanceRatio = distanceRatio;
     this.directionDeltaDegrees = directionDeltaDegrees;
@@ -72,6 +81,8 @@ public final class LoopQualityMetrics {
     this.closureDistanceMeters = closureDistanceMeters;
     this.spurCount = spurCount;
     this.worstSpurMeters = worstSpurMeters;
+    this.selfIntersections = selfIntersections;
+    this.smallLoopCrossings = smallLoopCrossings;
   }
 
   /**
@@ -117,10 +128,12 @@ public final class LoopQualityMetrics {
     }
 
     int[] spurInfo = computeSpurInfo(nodes);
+    int[] crossInfo = detectCrossings(nodes);
 
     return new LoopQualityMetrics(reusePercent, distRatio, dirDelta,
       track.distance, requestedDistanceMeters, contScore, maxGap, totalGap,
-      compact, avgCostPerMeter, closureDist, spurInfo[0], spurInfo[1]);
+      compact, avgCostPerMeter, closureDist, spurInfo[0], spurInfo[1],
+      crossInfo[0], crossInfo[1]);
   }
 
   /** Spur detector: a near-revisit must be this close spatially (m) to count. */
@@ -130,6 +143,84 @@ public final class LoopQualityMetrics {
   /** Upper arc-gap bound (m): keeps the detection LOCAL so the loop's own closure
    *  (start≈end over the full perimeter) and broad legitimate lobes are not flagged. */
   static final double SPUR_MAX_ARC_GAP = 6000.0;
+
+  /** A self-crossing whose smaller enclosed arc is at most this long (m) is
+   *  attributed to a small detour loop / lasso rather than a far-apart structural
+   *  crossing (outbound leg vs return leg). */
+  static final double SMALL_LOOP_MAX_ARC_METERS = 4000.0;
+  /** Bound the O(n²) crossing scan: sample the shape to at most this many points. */
+  private static final int CROSS_SCAN_MAX_NODES = 3000;
+
+  /**
+   * Detect transverse self-intersections (X-crossings) of the route and classify
+   * each by the arc it encloses. A crossing whose smaller enclosed sub-loop is
+   * short (≤ {@link #SMALL_LOOP_MAX_ARC_METERS}) is a SMALL DETOUR LOOP / lasso the
+   * planner emitted; a crossing enclosing most of the perimeter is a structural
+   * outbound-vs-return crossing. Uses the same CCW segment-intersection test as
+   * {@link RoundTripQualityGate#countSelfIntersections} (kept in sync), with a
+   * sampling cap to bound the O(n²) scan.
+   *
+   * @return int[]{totalCrossings, smallLoopCrossings}
+   */
+  static int[] detectCrossings(List<OsmPathElement> nodes) {
+    int full = nodes.size();
+    if (full < 4) return new int[]{0, 0};
+    List<OsmPathElement> pts;
+    if (full <= CROSS_SCAN_MAX_NODES) {
+      pts = nodes;
+    } else {
+      pts = new java.util.ArrayList<>(CROSS_SCAN_MAX_NODES);
+      double step = (double) (full - 1) / (CROSS_SCAN_MAX_NODES - 1);
+      for (int k = 0; k < CROSS_SCAN_MAX_NODES; k++) {
+        int idx = (int) Math.round(k * step);
+        if (idx >= full) idx = full - 1;
+        pts.add(nodes.get(idx));
+      }
+    }
+    int n = pts.size();
+    double[] cum = new double[n];
+    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + pts.get(k - 1).calcDistance(pts.get(k));
+    double perim = cum[n - 1];
+    int total = 0, smallLoop = 0;
+    int ceiling = 64; // we only need counts; bound degenerate inputs
+    for (int i = 0; i < n - 1; i++) {
+      for (int j = i + 2; j < n - 1; j++) {
+        if (i == 0 && j == n - 2) continue; // start≈end loop closure, not a crossing
+        if (segmentsCrossLocal(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1))) {
+          total++;
+          double arc = cum[j] - cum[i];
+          double enclosed = Math.min(arc, perim - arc);
+          if (enclosed <= SMALL_LOOP_MAX_ARC_METERS) smallLoop++;
+          if (total > ceiling) return new int[]{total, smallLoop};
+        }
+      }
+    }
+    return new int[]{total, smallLoop};
+  }
+
+  private static boolean segmentsCrossLocal(OsmPathElement p1, OsmPathElement p2,
+                                            OsmPathElement p3, OsmPathElement p4) {
+    if (samePointLocal(p1, p3) || samePointLocal(p1, p4)
+        || samePointLocal(p2, p3) || samePointLocal(p2, p4)) return false;
+    return oppLocal(ccwLocal(p1, p3, p4), ccwLocal(p2, p3, p4))
+        && oppLocal(ccwLocal(p1, p2, p3), ccwLocal(p1, p2, p4));
+  }
+
+  private static boolean samePointLocal(OsmPathElement a, OsmPathElement b) {
+    return a.getILon() == b.getILon() && a.getILat() == b.getILat();
+  }
+
+  private static boolean oppLocal(long a, long b) {
+    return (a > 0 && b < 0) || (a < 0 && b > 0);
+  }
+
+  private static long ccwLocal(OsmPathElement a, OsmPathElement b, OsmPathElement c) {
+    long dx1 = (long) b.getILon() - a.getILon();
+    long dy1 = (long) b.getILat() - a.getILat();
+    long dx2 = (long) c.getILon() - a.getILon();
+    long dy2 = (long) c.getILat() - a.getILat();
+    return dx1 * dy2 - dy1 * dx2;
+  }
 
   /**
    * Detect local out-and-back "spur" detours — the beeline back-and-forth the loop
@@ -699,6 +790,17 @@ public final class LoopQualityMetrics {
 
   public int getWorstSpurMeters() {
     return worstSpurMeters;
+  }
+
+  /** Total transverse self-intersections (X-crossings) of the route shape. */
+  public int getSelfIntersections() {
+    return selfIntersections;
+  }
+
+  /** How many of {@link #getSelfIntersections} are caused by a small detour
+   *  loop / lasso (short enclosed arc), as opposed to a structural crossing. */
+  public int getSmallLoopCrossings() {
+    return smallLoopCrossings;
   }
 
   @Override

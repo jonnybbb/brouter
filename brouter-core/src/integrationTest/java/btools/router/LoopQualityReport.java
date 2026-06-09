@@ -230,8 +230,10 @@ final class LoopQualityReport {
         m.getMaxGapMeters(), m.getTotalGapMeters(), m.getCompactnessScore()));
       sb.append(String.format(Locale.US, "\"costM\":%.4f,\"closure\":%d,",
         m.getAverageCostPerMeter(), m.getClosureDistanceMeters()));
-      sb.append(String.format(Locale.US, "\"spur\":%d,\"worstSpur\":%d",
+      sb.append(String.format(Locale.US, "\"spur\":%d,\"worstSpur\":%d,",
         m.getSpurCount(), m.getWorstSpurMeters()));
+      sb.append(String.format(Locale.US, "\"crossX\":%d,\"loopX\":%d",
+        m.getSelfIntersections(), m.getSmallLoopCrossings()));
       sb.append("},");
     }
     if (r.coordinates != null) {
@@ -330,8 +332,10 @@ final class LoopQualityReport {
     int closure = (int) Math.round(numField(block, "closure"));
     int spur = (int) Math.round(numField(block, "spur"));
     int worstSpur = (int) Math.round(numField(block, "worstSpur"));
+    int crossX = (int) Math.round(numField(block, "crossX"));
+    int loopX = (int) Math.round(numField(block, "loopX"));
     return LoopQualityMetrics.fromFields(reuse, distR, dirD, actual, requested,
-      cont, maxGap, totGap, compact, costM, closure, spur, worstSpur);
+      cont, maxGap, totGap, compact, costM, closure, spur, worstSpur, crossX, loopX);
   }
 
   private static double[][] parseCoords(String json) {

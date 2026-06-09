@@ -144,6 +144,11 @@ public abstract class LoopQualityTestBase {
     LoopQualityResult isoResult = runVariant("isochrone", RoundTripAlgorithm.ISOCHRONE, segDir, profileFile);
     LoopQualityResult greedyResult = runVariant("greedy", RoundTripAlgorithm.GREEDY, segDir, profileFile);
     LoopQualityResult isoGreedyResult = runVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY, segDir, profileFile);
+    // The route production actually ships: full AUTO competition, routed LENIENT
+    // (production default) so the report draws the shipped loop even when it is a
+    // best-effort warn. Rendered for visual comparison only — NOT quality-gated
+    // (the gate stays on the forced greedy/iso_greedy variants below).
+    LoopQualityResult autoResult = runVariant("auto", RoundTripAlgorithm.AUTO, segDir, profileFile, false);
 
     // Persist each result to disk. Write-only producer; the report is rendered
     // later by the generateLoopReport Gradle task (LoopQualityReport.main).
@@ -151,11 +156,13 @@ public abstract class LoopQualityTestBase {
     LoopQualityReport.persist(isoResult);
     LoopQualityReport.persist(greedyResult);
     LoopQualityReport.persist(isoGreedyResult);
+    LoopQualityReport.persist(autoResult);
 
     logVariantMetrics(probeResult);
     logVariantMetrics(isoResult);
     logVariantMetrics(greedyResult);
     logVariantMetrics(isoGreedyResult);
+    logVariantMetrics(autoResult);
 
     // Gate the production round-trip strategies. greedy and iso_greedy are the
     // primary algorithms AUTO ships; assert the quality bars on each that
@@ -310,6 +317,12 @@ public abstract class LoopQualityTestBase {
   }
 
   private LoopQualityResult runVariant(String variant, RoundTripAlgorithm algorithm, File segDir, File profileFile) {
+    // Forced single-strategy variants are graded strict (clean loops only).
+    return runVariant(variant, algorithm, segDir, profileFile, true);
+  }
+
+  private LoopQualityResult runVariant(String variant, RoundTripAlgorithm algorithm, File segDir,
+                                       File profileFile, boolean strictQuality) {
     try {
       List<OsmNodeNamed> wplist = new ArrayList<>();
       OsmNodeNamed start = new OsmNodeNamed();
@@ -326,8 +339,10 @@ public abstract class LoopQualityTestBase {
       // Quality-measurement matrix: grade only gate-accepted clean loops. The
       // engine now defaults to lenient (return quality-failed routes with a
       // warning); strict keeps the gate hard so a quality-rejected best-effort
-      // doesn't appear here as a graded (failing) track.
-      rctx.roundTripStrictQuality = true;
+      // doesn't appear here as a graded (failing) track. The "auto" variant
+      // routes lenient (strictQuality=false) so the report draws exactly the
+      // loop production AUTO would ship, not a strict-rejected blank.
+      rctx.roundTripStrictQuality = strictQuality;
 
       String outPath = new File(outputDir.getRoot(), testLabel + "_" + variant).getAbsolutePath();
       RoutingEngine re = new RoutingEngine(
@@ -389,11 +404,12 @@ public abstract class LoopQualityTestBase {
     }
     LoopQualityMetrics m = r.metrics;
     System.out.println(String.format(Locale.US,
-      "%s [%s]: composite=%.2f distR=%.2f reuse=%.1f%% dirD=%.0f cost/m=%.2f continuity=%.2f compactness=%.2f closure=%dm",
+      "%s [%s]: composite=%.2f distR=%.2f reuse=%.1f%% dirD=%.0f cost/m=%.2f continuity=%.2f compactness=%.2f closure=%dm spurs=%d crossX=%d loopX=%d",
       r.label, r.variant, m.compositeScore(), m.getDistanceRatio(),
       m.getRoadReusePercent(), m.getDirectionDeltaDegrees(),
       m.getAverageCostPerMeter(), m.getContinuityScore(), m.getCompactnessScore(),
-      m.getClosureDistanceMeters()));
+      m.getClosureDistanceMeters(), m.getSpurCount(), m.getSelfIntersections(),
+      m.getSmallLoopCrossings()));
   }
 
   // ---- Coordinate extraction / simplification ----------------------------

@@ -41,7 +41,7 @@ final class LoopQualityReportGenerator {
     sb.append(".legend { margin-bottom: 8px; font-size: 12px; }\n");
     sb.append(".legend span { display: inline-block; width: 14px; height: 14px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }\n");
     sb.append(".variant-badge { display: inline-block; width: 16px; height: 16px; border-radius: 3px; color: #fff; text-align: center; font-weight: bold; font-size: 10px; line-height: 16px; }\n");
-    sb.append(".v-probe { background: #0066cc; } .v-isochrone { background: #e67300; } .v-greedy { background: #22aa44; } .v-iso_greedy { background: #aa22cc; }\n");
+    sb.append(".v-probe { background: #0066cc; } .v-isochrone { background: #e67300; } .v-greedy { background: #22aa44; } .v-iso_greedy { background: #aa22cc; } .v-auto { background: #000; }\n");
     sb.append(".filters label { display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 12px; background: #fff; border: 1px solid #ced4da; border-radius: 3px; cursor: pointer; }\n");
     sb.append("</style>\n");
     sb.append("</head>\n<body>\n");
@@ -69,7 +69,8 @@ final class LoopQualityReportGenerator {
     sb.append("<span style=\"background:#0066cc\"></span> Probe &nbsp; ");
     sb.append("<span style=\"background:#e67300\"></span> Isochrone &nbsp; ");
     sb.append("<span style=\"background:#22aa44\"></span> Greedy &nbsp; ");
-    sb.append("<span style=\"background:#aa22cc\"></span> Iso-Greedy\n");
+    sb.append("<span style=\"background:#aa22cc\"></span> Iso-Greedy &nbsp; ");
+    sb.append("<span style=\"background:#000\"></span> <b>AUTO (ships)</b>\n");
     sb.append("</div>\n");
 
     // Filters
@@ -89,8 +90,16 @@ final class LoopQualityReportGenerator {
     sb.append("<option>pass</option><option>fail</option><option>error</option>");
     sb.append("</select>\n");
     sb.append("<select id=\"fVariant\" onchange=\"applyFilters()\"><option value=\"\">All algorithms</option>");
-    sb.append("<option>probe</option><option>isochrone</option><option>greedy</option><option>iso_greedy</option>");
+    sb.append("<option>auto</option><option>probe</option><option>isochrone</option><option>greedy</option><option>iso_greedy</option>");
     sb.append("</select>\n");
+    sb.append("<select id=\"fQuality\" onchange=\"applyFilters()\"><option value=\"\">Any quality</option>");
+    sb.append("<option value=\"spur\">&#9888; has spurs</option>");
+    sb.append("<option value=\"cross\">&#9888; has crossings</option>");
+    sb.append("<option value=\"loopcross\">&#9888; detour-loop crossings</option>");
+    sb.append("<option value=\"badshape\">&#9888; spurs OR crossings</option>");
+    sb.append("<option value=\"lowcompact\">&#9888; low compactness (&lt;0.35)</option>");
+    sb.append("</select>\n");
+    sb.append("<label title=\"Click a route to overlay every algorithm for the SAME request\"><input type=\"checkbox\" id=\"fCompare\" onchange=\"applyFilters()\"> Compare algorithms</label>\n");
     sb.append("<label><input type=\"checkbox\" id=\"fShowAll\" onchange=\"applyFilters()\"> Show all on map</label>\n");
     sb.append("</div>\n");
 
@@ -102,8 +111,12 @@ final class LoopQualityReportGenerator {
       LoopQualityResult r = results.get(i);
       String status = r.metrics == null ? "error" : (r.passed() ? "pass" : "fail");
       String variant = r.variant != null ? r.variant : "probe";
-      sb.append(String.format("<tr class=\"%s\" data-idx=\"%d\" data-region=\"%s\" data-profile=\"%s\" data-dist=\"%d\" data-status=\"%s\" data-variant=\"%s\" onclick=\"focusRoute(%d)\">",
-        status, i, r.region.name(), r.profileName, r.distanceMeters / 1000, status, variant, i));
+      int spur = r.metrics != null ? r.metrics.getSpurCount() : 0;
+      int crossX = r.metrics != null ? r.metrics.getSelfIntersections() : 0;
+      int loopX = r.metrics != null ? r.metrics.getSmallLoopCrossings() : 0;
+      double compact = r.metrics != null ? r.metrics.getCompactnessScore() : 1.0;
+      sb.append(String.format(Locale.US, "<tr class=\"%s\" data-idx=\"%d\" data-region=\"%s\" data-profile=\"%s\" data-dist=\"%d\" data-status=\"%s\" data-variant=\"%s\" data-case=\"%s\" data-spur=\"%d\" data-crossx=\"%d\" data-loopx=\"%d\" data-compact=\"%.2f\" onclick=\"focusRoute(%d)\">",
+        status, i, r.region.name(), r.profileName, r.distanceMeters / 1000, status, variant, r.label, spur, crossX, loopX, compact, i));
       sb.append(String.format("<td><span class=\"variant-badge v-%s\" title=\"%s\">%s</span></td>",
         variant, variant, variant.substring(0, 1).toUpperCase()));
       sb.append(String.format("<td title=\"%s\">%s</td>", r.label, abbreviateLabel(r.label)));
@@ -134,6 +147,7 @@ final class LoopQualityReportGenerator {
       LoopQualityResult r = results.get(i);
       sb.append("  {label:\"").append(r.label).append(" [").append(r.variant).append("]\",");
       sb.append("variant:\"").append(r.variant).append("\",");
+      sb.append("caseKey:\"").append(r.label).append("\",");
       sb.append("region:\"").append(r.region.name()).append("\",");
       sb.append("profile:\"").append(r.profileName).append("\",");
       sb.append("dist:").append(r.distanceMeters / 1000).append(",");
@@ -148,8 +162,9 @@ final class LoopQualityReportGenerator {
           r.metrics.getContinuityScore(), r.metrics.getCompactnessScore(),
           r.metrics.getAverageCostPerMeter(), r.metrics.getMaxGapMeters(),
           r.metrics.getClosureDistanceMeters(), r.metrics.compositeScore()));
-        sb.append(String.format(Locale.US, "spur:%d,worstSpur:%d,",
-          r.metrics.getSpurCount(), r.metrics.getWorstSpurMeters()));
+        sb.append(String.format(Locale.US, "spur:%d,worstSpur:%d,crossX:%d,loopX:%d,",
+          r.metrics.getSpurCount(), r.metrics.getWorstSpurMeters(),
+          r.metrics.getSelfIntersections(), r.metrics.getSmallLoopCrossings()));
       }
       sb.append("coords:[");
       if (r.coordinates != null && r.coordinates.length > 0) {
@@ -169,7 +184,7 @@ final class LoopQualityReportGenerator {
     sb.append("}).addTo(map);\n\n");
 
     sb.append("var layers = [];\n");
-    sb.append("var variantColors = {probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n");
+    sb.append("var variantColors = {auto:'#000000', probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n");
     sb.append("var selectedIdx = -1;\n\n");
 
     sb.append("routes.forEach(function(r, i) {\n");
@@ -195,6 +210,7 @@ final class LoopQualityReportGenerator {
     sb.append("      popup += 'Max gap: ' + r.maxGap + 'm<br>';\n");
     sb.append("      popup += 'Closure: ' + r.closure + 'm<br>';\n");
     sb.append("      if (r.spur !== undefined && r.spur > 0) { popup += '<b style=\"color:#c0392b\">Spurs: ' + r.spur + ' (worst ' + r.worstSpur + 'm)</b><br>'; }\n");
+    sb.append("      if (r.crossX !== undefined && r.crossX > 0) { popup += '<b style=\"color:#c0392b\">Crossings: ' + r.crossX + (r.loopX > 0 ? ' (' + r.loopX + ' from detour loops)' : '') + '</b><br>'; }\n");
     sb.append("      popup += '<b>Composite: ' + r.composite + '</b><br>';\n");
     sb.append("      popup += 'Status: <b>' + r.status + '</b>';\n");
     sb.append("    }\n");
@@ -214,6 +230,8 @@ final class LoopQualityReportGenerator {
     sb.append("}\n\n");
 
     sb.append("function focusRoute(idx) {\n");
+    sb.append("  var compare = document.getElementById('fCompare') && document.getElementById('fCompare').checked;\n");
+    sb.append("  if (compare) { focusCompare(idx); return; }\n");
     sb.append("  var showAll = document.getElementById('fShowAll').checked;\n");
     sb.append("  if (!showAll && selectedIdx >= 0 && selectedIdx !== idx && layers[selectedIdx]) layers[selectedIdx].remove();\n");
     sb.append("  highlightRow(idx);\n");
@@ -227,6 +245,24 @@ final class LoopQualityReportGenerator {
     sb.append("  } else {\n");
     sb.append("    map.setView(r.center, 11);\n");
     sb.append("  }\n");
+    sb.append("}\n\n");
+
+    sb.append("function focusCompare(idx) {\n");
+    sb.append("  // Overlay EVERY algorithm variant for the same route request (region/profile/dist/dir),\n");
+    sb.append("  // each in its variant colour, so they can be compared side-by-side on one map.\n");
+    sb.append("  var key = routes[idx].caseKey;\n");
+    sb.append("  var bounds = L.latLngBounds([]);\n");
+    sb.append("  layers.forEach(function(layer, j) {\n");
+    sb.append("    if (!layer) return;\n");
+    sb.append("    if (routes[j].caseKey === key) {\n");
+    sb.append("      if (!map.hasLayer(layer)) layer.addTo(map);\n");
+    sb.append("      layer.setStyle({weight: (j === idx ? 5 : 3), opacity: (j === idx ? 1.0 : 0.7)});\n");
+    sb.append("      bounds.extend(layer.getBounds());\n");
+    sb.append("    } else if (map.hasLayer(layer)) { layer.remove(); }\n");
+    sb.append("  });\n");
+    sb.append("  highlightRow(idx);\n");
+    sb.append("  if (layers[idx]) { layers[idx].bringToFront(); layers[idx].openPopup(); }\n");
+    sb.append("  if (bounds.isValid()) map.fitBounds(bounds.pad(0.1));\n");
     sb.append("}\n\n");
 
     sb.append("function highlightRow(idx) {\n");
@@ -243,6 +279,8 @@ final class LoopQualityReportGenerator {
     sb.append("  var fD = document.getElementById('fDist').value;\n");
     sb.append("  var fS = document.getElementById('fStatus').value;\n");
     sb.append("  var fV = document.getElementById('fVariant').value;\n");
+    sb.append("  var fQ = document.getElementById('fQuality').value;\n");
+    sb.append("  var compare = document.getElementById('fCompare').checked;\n");
     sb.append("  var showAll = document.getElementById('fShowAll').checked;\n");
     sb.append("  var visibleIdx = [];\n");
     sb.append("  document.querySelectorAll('#results tbody tr').forEach(function(row) {\n");
@@ -252,11 +290,21 @@ final class LoopQualityReportGenerator {
     sb.append("    if (fD && row.dataset.dist !== fD) show = false;\n");
     sb.append("    if (fS && row.dataset.status !== fS) show = false;\n");
     sb.append("    if (fV && row.dataset.variant !== fV) show = false;\n");
+    sb.append("    if (fQ) {\n");
+    sb.append("      var sp = +row.dataset.spur, cx = +row.dataset.crossx, lx = +row.dataset.loopx, cm = +row.dataset.compact;\n");
+    sb.append("      if (fQ === 'spur' && !(sp > 0)) show = false;\n");
+    sb.append("      else if (fQ === 'cross' && !(cx > 0)) show = false;\n");
+    sb.append("      else if (fQ === 'loopcross' && !(lx > 0)) show = false;\n");
+    sb.append("      else if (fQ === 'badshape' && !(sp > 0 || cx > 0)) show = false;\n");
+    sb.append("      else if (fQ === 'lowcompact' && !(cm < 0.35)) show = false;\n");
+    sb.append("    }\n");
     sb.append("    row.style.display = show ? '' : 'none';\n");
     sb.append("    var idx = parseInt(row.dataset.idx);\n");
     sb.append("    if (show) visibleIdx.push(idx);\n");
     sb.append("    if (!show && idx === selectedIdx) { row.classList.remove('selected'); selectedIdx = -1; }\n");
     sb.append("  });\n");
+    sb.append("  // Compare mode draws the per-case variant overlay in focusRoute; leave the map alone here.\n");
+    sb.append("  if (compare) return;\n");
     sb.append("  // Map sync: in show-all mode every visible route is drawn; otherwise only the selected one.\n");
     sb.append("  layers.forEach(function(layer, idx) {\n");
     sb.append("    if (!layer) return;\n");
@@ -298,7 +346,7 @@ final class LoopQualityReportGenerator {
     sb.append("td { padding: 3px; border-bottom: 1px solid #dee2e6; }\n");
     sb.append("tr:hover { background: #e2e6ea; cursor: pointer; }\n");
     sb.append("tr.selected { outline: 2px solid #007bff; }\n");
-    sb.append(".probe { color: #0066cc; } .isochrone { color: #e67300; } .greedy { color: #22aa44; }\n");
+    sb.append(".probe { color: #0066cc; } .isochrone { color: #e67300; } .greedy { color: #22aa44; } .iso_greedy { color: #aa22cc; } .auto { color: #000; }\n");
     sb.append(".metric-bad { color: #dc3545; font-weight: bold; }\n");
     sb.append("</style>\n</head>\n<body>\n");
 
@@ -308,7 +356,9 @@ final class LoopQualityReportGenerator {
     sb.append("<p>").append(String.format("%.3f, %.3f", region.lon, region.lat)).append("</p>\n");
     sb.append("<p style=\"margin:4px 0\"><span class=\"probe\">&#9632; Probe (blue)</span> &nbsp; ");
     sb.append("<span class=\"isochrone\">&#9632; Isochrone (orange)</span> &nbsp; ");
-    sb.append("<span class=\"greedy\">&#9632; Greedy (green)</span></p>\n");
+    sb.append("<span class=\"greedy\">&#9632; Greedy (green)</span> &nbsp; ");
+    sb.append("<span class=\"iso_greedy\">&#9632; Iso-Greedy (purple)</span> &nbsp; ");
+    sb.append("<span class=\"auto\">&#9632; <b>AUTO ships (black)</b></span></p>\n");
 
     // Filters
     sb.append("<div class=\"filters\">\n");
@@ -317,7 +367,7 @@ final class LoopQualityReportGenerator {
     sb.append("<select id=\"fDist\" onchange=\"applyFilters()\"><option value=\"\">All distances</option>");
     sb.append("<option>30</option><option>50</option><option>80</option><option>100</option></select>\n");
     sb.append("<select id=\"fVariant\" onchange=\"applyFilters()\"><option value=\"\">All variants</option>");
-    sb.append("<option>probe</option><option>isochrone</option><option>greedy</option></select>\n");
+    sb.append("<option>auto</option><option>probe</option><option>isochrone</option><option>greedy</option><option>iso_greedy</option></select>\n");
     sb.append("</div>\n");
 
     // Table
@@ -363,8 +413,9 @@ final class LoopQualityReportGenerator {
           r.metrics.getContinuityScore(), r.metrics.getCompactnessScore(),
           r.metrics.getAverageCostPerMeter(), r.metrics.getMaxGapMeters(),
           r.metrics.getClosureDistanceMeters(), r.metrics.compositeScore()));
-        sb.append(String.format(Locale.US, "spur:%d,worstSpur:%d,",
-          r.metrics.getSpurCount(), r.metrics.getWorstSpurMeters()));
+        sb.append(String.format(Locale.US, "spur:%d,worstSpur:%d,crossX:%d,loopX:%d,",
+          r.metrics.getSpurCount(), r.metrics.getWorstSpurMeters(),
+          r.metrics.getSelfIntersections(), r.metrics.getSmallLoopCrossings()));
       }
       sb.append("coords:[");
       if (r.coordinates != null) {
@@ -380,7 +431,7 @@ final class LoopQualityReportGenerator {
     sb.append(String.format(Locale.US, "var map = L.map('map').setView([%.4f, %.4f], 11);\n", region.lat, region.lon));
     sb.append("L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OSM',maxZoom:18}).addTo(map);\n");
     sb.append("var layers=[], selectedIdx=-1;\n");
-    sb.append("var variantColors = {probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n\n");
+    sb.append("var variantColors = {auto:'#000000', probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n\n");
 
     sb.append("routes.forEach(function(r,i){\n");
     sb.append("  var layer=null;\n");
@@ -390,7 +441,7 @@ final class LoopQualityReportGenerator {
     sb.append("    p+='Variant: <b>'+r.variant+'</b><br>';\n");
     sb.append("    p+='Profile: '+r.profile+'<br>';\n");
     sb.append("    p+='Requested: '+r.dist+'km<br>';\n");
-    sb.append("    if(r.reuse!==undefined){p+='<hr>Actual: '+r.actualDist+'m ('+r.distR+'x)<br>Reuse: '+r.reuse+'%<br>Dir delta: '+r.dirD+'&deg;<br>Continuity: '+r.cont+'<br>Compactness: '+r.compact+'<br>Cost/m: '+r.costM+'<br>Closure: '+r.closure+'m<br>'+((r.spur>0)?'<b style=\"color:#c0392b\">Spurs: '+r.spur+' (worst '+r.worstSpur+'m)</b><br>':'')+'<b>Composite: '+r.composite+'</b>';}\n");
+    sb.append("    if(r.reuse!==undefined){p+='<hr>Actual: '+r.actualDist+'m ('+r.distR+'x)<br>Reuse: '+r.reuse+'%<br>Dir delta: '+r.dirD+'&deg;<br>Continuity: '+r.cont+'<br>Compactness: '+r.compact+'<br>Cost/m: '+r.costM+'<br>Closure: '+r.closure+'m<br>'+((r.spur>0)?'<b style=\"color:#c0392b\">Spurs: '+r.spur+' (worst '+r.worstSpur+'m)</b><br>':'')+((r.crossX>0)?'<b style=\"color:#c0392b\">Crossings: '+r.crossX+((r.loopX>0)?' ('+r.loopX+' from detour loops)':'')+'</b><br>':'')+'<b>Composite: '+r.composite+'</b>';}\n");
     sb.append("    layer.bindPopup(p);\n");
     sb.append("    layer.on('click',function(){highlightRow(i);});\n");
     sb.append("  }\n  layers.push(layer);\n});\n\n");
