@@ -6,7 +6,12 @@ package btools.codec;
  * matches to the waypoints
  */
 public interface WaypointMatcher {
-  boolean start(int ilonStart, int ilatStart, int ilonTarget, int ilatTarget, boolean useAsStartWay);
+  /**
+   * @param wayDescription the way's tag-value description bitmap (may be null);
+   *                       lets matches carry the matched way's tags for
+   *                       profile-aware snap scoring downstream
+   */
+  boolean start(int ilonStart, int ilatStart, int ilonTarget, int ilatTarget, boolean useAsStartWay, byte[] wayDescription);
 
   void transferNode(int ilon, int ilat);
 

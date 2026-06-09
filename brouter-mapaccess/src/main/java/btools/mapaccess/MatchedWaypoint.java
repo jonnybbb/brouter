@@ -30,6 +30,10 @@ public final class MatchedWaypoint {
   // Lets spur cleanup strip generated detours without matching on the name.
   // Not part of writeToStream/readFromStream (rebuilt, like name/wpttype).
   public boolean generated = false;
+  // Tag-value description bitmap of the matched way, captured by the waypoint
+  // matcher so snap scoring can evaluate the way's profile cost factor without
+  // re-reading the graph. Not part of writeToStream/readFromStream.
+  public byte[] wayDescription;
   public int indexInTrack = 0;
   public double directionToNext = -1;
   public double directionDiff = 361;

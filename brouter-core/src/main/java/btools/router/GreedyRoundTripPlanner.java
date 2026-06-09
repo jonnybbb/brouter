@@ -97,6 +97,14 @@ public class GreedyRoundTripPlanner {
   // Multiplier applied to the air-distance return estimate when deciding
   // whether to skip the return Dijkstra. > 1 means we skip less aggressively.
   private static final double RETURN_SKIP_SAFETY = 1.5;
+  /**
+   * When the profile-aware candidate snap relocates a via further than this
+   * from the original graph-native candidate node, the pre-routed leg (which
+   * ends at the original node) is discarded and the leg is re-routed. Below
+   * this the cached leg still effectively reaches the via (final waypoint
+   * matching catches within 250m).
+   */
+  private static final double VIA_RELOCATION_DROP_CACHED_LEG_M = 50;
 
   /**
    * Phase 2 v3 diagnostic: when {@code -Dgreedy.diagnostic=true} is set,
@@ -358,7 +366,14 @@ public class GreedyRoundTripPlanner {
         for (int r = 0; r < routeAttempts; r++) {
           RoundTripCandidateProvider.CandidatePoint cp = toRoute.get(r);
 
-          MatchedWaypoint toMwp = matchPoint(cp.ilon, cp.ilat, "greedy_to");
+          // Profile-aware snap for every candidate via: prefer a profile-
+          // compatible road near the candidate over the plain nearest way, so
+          // a via never commits the loop to a junk-road pocket (the via-pinned
+          // bulge source — see RoutingEngine.repairViaPinnedBulges). Graph-
+          // native candidates need this just as much as off-road radial
+          // points: their Dijkstra expansion terminates on whatever node hits
+          // the cost contour, which in a track pocket IS a junk road.
+          MatchedWaypoint toMwp = matchCandidatePointProfileAware(cp.ilon, cp.ilat);
           if (toMwp == null) continue;
 
           // Snap distance from the candidate coordinate to its routed-on-road
@@ -368,7 +383,16 @@ public class GreedyRoundTripPlanner {
           double snapDist = CheapRuler.distance(cp.ilon, cp.ilat, snappedIlon, snappedIlat);
           if (snapDist > airRadius * 0.5) continue;
 
+          // A pre-routed graph-native leg ends at the ORIGINAL candidate node;
+          // if the profile-aware snap relocated the via, that cached leg no
+          // longer reaches it. Drop the cache and route to the relocated point
+          // — one extra Dijkstra, paid only when a relocation actually fired.
           OsmTrack subTrack = cp.routedTrack;
+          if (subTrack != null && snapDist > VIA_RELOCATION_DROP_CACHED_LEG_M) {
+            engine.logInfo("greedy: candidate via relocated " + (int) snapDist
+              + "m to profile-friendly road, re-routing leg");
+            subTrack = null;
+          }
           if (subTrack == null) {
             subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, deadline);
           }
@@ -1038,6 +1062,24 @@ public class GreedyRoundTripPlanner {
   }
 
   // --- Waypoint matching ---
+
+  /**
+   * Profile-aware variant of {@link #matchPoint} for candidate-via targets:
+   * delegates to {@link RoutingEngine#profileAwareMatchPoint} (probe rings,
+   * cost-factor scored) with the same null-on-any-failure contract. Falls back
+   * to the plain nearest match when the probe matching throws or finds nothing,
+   * so candidate handling is never stricter than before.
+   */
+  private MatchedWaypoint matchCandidatePointProfileAware(int ilon, int ilat) {
+    try {
+      MatchedWaypoint mwp = engine.profileAwareMatchPoint(ilon, ilat, "greedy_to", 2000);
+      if (mwp != null) return mwp;
+    } catch (Exception e) {
+      engine.logInfo("matchCandidatePointProfileAware failed: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+    }
+    return matchPoint(ilon, ilat, "greedy_to");
+  }
 
   private MatchedWaypoint matchPoint(int ilon, int ilat, String name) {
     try {

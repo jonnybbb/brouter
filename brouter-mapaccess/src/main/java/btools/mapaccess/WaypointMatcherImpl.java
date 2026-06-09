@@ -32,6 +32,8 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
   private int maxWptIdx;
   private double maxDistance;
   public boolean useDynamicRange = false;
+  /** Tag-value description of the way currently being fed by the decoder. */
+  private byte[] currentWayDescription;
 
   private Comparator<MatchedWaypoint> comparator;
 
@@ -133,6 +135,7 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
         }
         // new match for that waypoint
         mwp.radius = radius; // shortest distance to way
+        mwp.wayDescription = currentWayDescription; // tags of the matched way
         mwp.hasUpdate = true;
         anyUpdate = true;
         // calculate crosspoint
@@ -156,7 +159,7 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
   }
 
   @Override
-  public boolean start(int ilonStart, int ilatStart, int ilonTarget, int ilatTarget, boolean useAsStartWay) {
+  public boolean start(int ilonStart, int ilatStart, int ilonTarget, int ilatTarget, boolean useAsStartWay, byte[] wayDescription) {
     if (islandPairs.size() > 0) {
       long n1 = ((long) ilonStart) << 32 | ilatStart;
       long n2 = ((long) ilonTarget) << 32 | ilatTarget;
@@ -170,6 +173,7 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
     latTarget = ilatTarget;
     anyUpdate = false;
     this.useAsStartWay = useAsStartWay;
+    this.currentWayDescription = wayDescription;
     return true;
   }
 

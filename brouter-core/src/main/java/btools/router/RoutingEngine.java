@@ -1782,6 +1782,84 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Probe-ring radii for {@link #profileAwareMatchPoint}. The inner ring covers
+   * "good road just past the nearest track" cases; the outer ring covers
+   * pocket escapes (the Basel reference via sat 750m from the parallel asphalt
+   * cycle route, with nothing but grade2 track in between).
+   */
+  private static final double[] VIA_SNAP_PROBE_RINGS = {300, 700};
+  /**
+   * Relocation triggers only when the plain nearest snap is meaningfully
+   * profile-hostile. Below this cost factor the original snap is fine and the
+   * cached graph-native leg (if any) stays valid — relocating on marginal wins
+   * (cf 1.2 → 1.1) was measured to fire on most candidates, paying an extra
+   * leg Dijkstra each (~6× shard runtime) and churning routes for no artifact
+   * being prevented.
+   */
+  static final double VIA_SNAP_HOSTILE_COSTFACTOR = 2.0;
+  /** ... and only when the alternative is substantially better than the
+   *  original (multiplicative improvement), not a lateral move. */
+  static final double VIA_SNAP_MIN_IMPROVEMENT = 0.6;
+
+  /**
+   * Profile-aware point match for planner-generated round-trip vias. The plain
+   * nearest-road match commits the via to whatever way is closest — for
+   * fastbike that can be a grade2 track in a pocket whose only escape is more
+   * track, which pins a junk bulge into the loop (see
+   * {@link #repairViaPinnedBulges}). When (and only when) that nearest snap is
+   * profile-hostile ({@link #VIA_SNAP_HOSTILE_COSTFACTOR}), probe rings
+   * ({@link #VIA_SNAP_PROBE_RINGS}) are evaluated and the via moves to the
+   * best-scoring road ({@code costFactor*1000 + distance}) if it improves the
+   * cost factor by {@link #VIA_SNAP_MIN_IMPROVEMENT}; otherwise the plain
+   * nearest match is returned unchanged. Returns null when nothing matches.
+   */
+  MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist) {
+    OsmNode orig = new OsmNode(ilon, ilat);
+    List<OsmNode> points = new ArrayList<>();
+    points.add(new OsmNode(ilon, ilat));
+    for (double ring : VIA_SNAP_PROBE_RINGS) {
+      for (double bearing = 0; bearing < 360; bearing += 45) {
+        int[] p = CheapRuler.destination(ilon, ilat, ring, bearing);
+        points.add(new OsmNode(p[0], p[1]));
+      }
+    }
+    List<MatchedWaypoint> mwps = batchMatchToRoads(points, maxSnapDist, name);
+    if (mwps == null) return null;
+
+    MatchedWaypoint origMatch = isRoadSnap(mwps.get(0)) ? mwps.get(0) : null;
+    double origCf = origMatch != null ? snapCandidateCostFactor(origMatch) : Double.MAX_VALUE;
+
+    MatchedWaypoint best = origMatch;
+    double bestCf = origCf;
+    if (origMatch == null || origCf >= VIA_SNAP_HOSTILE_COSTFACTOR) {
+      double bestScore = origMatch != null ? origCf * 1000.0 : Double.MAX_VALUE;
+      for (MatchedWaypoint m : mwps) {
+        if (!isRoadSnap(m)) continue;
+        double costFactor = snapCandidateCostFactor(m);
+        double score = costFactor * 1000.0 + orig.calcDistance(m.crosspoint);
+        if (score < bestScore) {
+          bestScore = score;
+          best = m;
+          bestCf = costFactor;
+        }
+      }
+      // Accept the relocation only when it is a substantial improvement, not a
+      // lateral move among comparably hostile roads.
+      if (origMatch != null && best != origMatch && bestCf > origCf * VIA_SNAP_MIN_IMPROVEMENT) {
+        best = origMatch;
+      }
+    }
+    if (best != null) {
+      best.name = name;
+      // Re-anchor the waypoint on the original position so downstream radius /
+      // catching-range checks measure from the planner's intended target.
+      best.waypoint = orig;
+      best.radius = orig.calcDistance(best.crosspoint);
+    }
+    return best;
+  }
+
+  /**
    * Profile-aware start snap for explicit-via round trips. The plain nearest-road snap
    * ({@link #snapWaypointToRoad}) matches the nearest <em>accessible</em> way, which for a
    * road bike can be a track right next to a paved road — starting the loop on unpaved.
@@ -2699,21 +2777,19 @@ public class RoutingEngine extends Thread {
    * this is a cheap in-memory walk.
    */
   private float snapCandidateCostFactor(MatchedWaypoint mwp) {
-    if (mwp == null || mwp.node1 == null || mwp.node2 == null) return 1.0f;
+    // Evaluate the tag description the waypoint matcher captured from the
+    // matched way. The previous implementation walked node1's links to find
+    // the way — but the matcher's node1/node2 are coordinate-only copies that
+    // are never hollow and carry no links, so that walk silently returned the
+    // 1.0 fallback for every match and all "profile-aware" snap scoring was
+    // inert. The matcher now records the way description at match time.
+    if (mwp == null || mwp.wayDescription == null) return 1.0f;
     try {
-      if (!nodesCache.obtainNonHollowNode(mwp.node1)) return 1.0f;
+      routingContext.expctxWay.evaluate(false, mwp.wayDescription);
+      return routingContext.expctxWay.getCostfactor();
     } catch (RuntimeException ignored) {
       return 1.0f;
     }
-    for (OsmLink link = mwp.node1.firstlink; link != null; link = link.getNext(mwp.node1)) {
-      if (link.getTarget(mwp.node1) == mwp.node2 && link.descriptionBitmap != null) {
-        boolean isReverse = link.isReverse(mwp.node1);
-        routingContext.expctxWay.evaluate(routingContext.inverseDirection ^ isReverse,
-          link.descriptionBitmap);
-        return routingContext.expctxWay.getCostfactor();
-      }
-    }
-    return 1.0f;
   }
 
   /**
