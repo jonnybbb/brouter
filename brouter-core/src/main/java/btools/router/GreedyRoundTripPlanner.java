@@ -180,6 +180,36 @@ public class GreedyRoundTripPlanner {
     this.profileName = profileName;
   }
 
+  /**
+   * Pocket-avoidance weight on the candidate heuristic score. Applied to
+   * {@link #pocketPenalty}'s [0,1] output; at 2.0 a true pocket candidate
+   * (≤3 reachable cells) loses to any well-connected alternative whose other
+   * terms are within ~2 score units — strong enough to steer vias off
+   * dead-end small roads in residual areas (the root cause behind teardrop
+   * and stub artifacts), weak enough that a genuinely better-positioned
+   * pocket can still win when nothing else closes the loop.
+   */
+  static final double POCKET_PENALTY_WEIGHT = 2.0;
+  /** Reachable-cell count at/above which a candidate is fully safe (no penalty). */
+  static final int POCKET_SAFE_CELLS = 10;
+  /** Reachable-cell count at/below which the penalty saturates at 1.0. */
+  static final int POCKET_MIN_CELLS = 3;
+
+  /**
+   * [0,1] pocket penalty from the candidate's reachability-cell density
+   * (see {@link IsochroneExpansionResult#reachableCellsAround}): 0 at
+   * ≥{@link #POCKET_SAFE_CELLS} (junction-rich neighborhood, also clears a
+   * well-connected expansion-edge half-disk at ~12), 1 at
+   * ≤{@link #POCKET_MIN_CELLS} (thin dead-end corridor). Candidates without
+   * a cloud (-1: radial/iso-start providers) get 0 — no signal, no penalty.
+   */
+  static double pocketPenalty(int reachableCells) {
+    if (reachableCells < 0) return 0;
+    if (reachableCells >= POCKET_SAFE_CELLS) return 0;
+    if (reachableCells <= POCKET_MIN_CELLS) return 1.0;
+    return (POCKET_SAFE_CELLS - reachableCells) / (double) (POCKET_SAFE_CELLS - POCKET_MIN_CELLS);
+  }
+
   public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider) {
     this(engine, provider, new CandidateScorer(),
       DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
@@ -326,7 +356,8 @@ public class GreedyRoundTripPlanner {
             distFromStart, searchRadius,
             distFromPrevious,
             cp.costFromStart, cp.bucketHits, cp.sourceContour)
-            - DESIR_WEIGHT * cp.desirability; // issue #15: reward profile-desirable cells (lower score = better)
+            - DESIR_WEIGHT * cp.desirability // issue #15: reward profile-desirable cells (lower score = better)
+            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
         }
 
         // Rank by score (lowest = best)

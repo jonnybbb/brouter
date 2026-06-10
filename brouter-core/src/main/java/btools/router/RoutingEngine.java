@@ -218,6 +218,14 @@ public class RoutingEngine extends Thread {
   // a DesirabilityCandidateProvider that biases waypoint placement toward
   // high-desirability cells. Stays empty (and unused) when the flag is off.
   static final int DESIRABILITY_CELL = 5000; // microdeg (~500m)
+  /**
+   * Reachability-cloud cell size for pocket-avoiding waypoint placement: every
+   * node an isochrone expansion pops is bucketed into cells of roughly this
+   * many meters. ~150m keeps a 5×5 neighborhood at ~750m — local enough that a
+   * dead-end corridor (cells along one line) is distinguishable from a
+   * junction-rich neighborhood (filled square).
+   */
+  static final int REACHABILITY_CELL_M = 150;
   private static final int DESIRABILITY_TOP_K = 10; // candidate cells offered per greedy step
   // Package-private so the round-trip desirability wiring test can assert the grid
   // was actually populated (i.e. the flag-on path was exercised end-to-end).
@@ -921,6 +929,25 @@ public class RoutingEngine extends Thread {
       logInfo("round-trip quality: " + quality);
       for (String d : quality.getDisclosures()) {
         appendRouteMessage(foundTrack, d);
+      }
+
+      // Transparency for the silent band: 1..MAX crossings and guard-blocked
+      // spurs pass the gate without any message, yet the cyclist sees them on
+      // the map. Disclose every nonzero count — informational only, the route
+      // ships either way (lenient product policy: odd-but-cycleable > nothing).
+      int shippedCrossings = RoundTripQualityGate.countSelfIntersections(foundTrack);
+      if (shippedCrossings > 0) {
+        appendRouteMessage(foundTrack, String.format(Locale.US,
+          "Note: route crosses its own path %d time%s.",
+          shippedCrossings, shippedCrossings == 1 ? "" : "s"));
+      }
+      if (foundTrack.nodes != null) {
+        int[] spurInfo = LoopQualityMetrics.computeSpurInfo(foundTrack.nodes);
+        if (spurInfo[0] > 0 && spurInfo[1] > 600) {
+          appendRouteMessage(foundTrack, String.format(Locale.US,
+            "Note: route contains %d out-and-back section%s (longest %.1fkm).",
+            spurInfo[0], spurInfo[0] == 1 ? "" : "s", spurInfo[1] / 1000.0));
+        }
       }
 
       // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
@@ -3752,6 +3779,14 @@ public class RoutingEngine extends Thread {
 
     int nodesExpanded = 0;
 
+    // Reachability cloud (pocket-avoiding placement): fixed per-expansion
+    // scale, captured once at the start latitude — CheapRuler's banded scale
+    // cache could otherwise map one physical point into two cells.
+    double[] cellKxKy = CheapRuler.getLonLatToMeterScales(start.ilat);
+    int cellDivLon = Math.max(1, (int) (REACHABILITY_CELL_M / cellKxKy[0]));
+    int cellDivLat = Math.max(1, (int) (REACHABILITY_CELL_M / cellKxKy[1]));
+    java.util.Set<Long> visitedCells = new java.util.HashSet<>(4096);
+
     for (;;) {
       OsmPath path = isoOpenSet.popLowestKeyValue();
       if (path == null) break;
@@ -3775,6 +3810,8 @@ public class RoutingEngine extends Thread {
       // (see AIR_REACH_BONUS_WEIGHT).
       int curIlon = currentNode.getILon();
       int curIlat = currentNode.getILat();
+      visitedCells.add((((long) (curIlon / cellDivLon)) << 32)
+        | ((curIlat / cellDivLat) & 0xFFFFFFFFL));
       double dist = CheapRuler.distance(start.ilon, start.ilat, curIlon, curIlat);
       if (accumulatingDesirabilityGrid && dist > 50) {
         // Accumulate profile-cost-density per ~500m cell (issue #15 heatmap).
@@ -3936,7 +3973,8 @@ public class RoutingEngine extends Thread {
       + (nodesExpanded >= maxNodes ? " (maxNodes limit)" : "")
       + ", " + results.size() + "/" + bucketCount + " buckets populated");
     if (results.isEmpty()) return null;
-    return new IsochroneExpansionResult(results.toArray(new double[0][]), candidatePool);
+    return new IsochroneExpansionResult(results.toArray(new double[0][]), candidatePool,
+      visitedCells, cellDivLon, cellDivLat);
   }
 
   private OsmTrack compileCandidateTrack(OsmPath path) {

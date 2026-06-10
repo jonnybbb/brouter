@@ -449,6 +449,25 @@ public class GreedyRoundTripPlannerTest {
     Assert.assertFalse("'to' is the user's start, not generated", matched.get(3).generated);
   }
 
+  @Test
+  public void pocketPenaltyRampsWithReachability() {
+    // No cloud (radial/iso-start candidates): no signal, no penalty.
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(-1), 1e-9);
+    // Junction-rich neighborhood and the well-connected expansion-edge
+    // half-disk (~12 cells) are both penalty-free.
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(25), 1e-9);
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(12), 1e-9);
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(10), 1e-9);
+    // Thin dead-end corridor saturates.
+    Assert.assertEquals(1.0, GreedyRoundTripPlanner.pocketPenalty(3), 1e-9);
+    Assert.assertEquals(1.0, GreedyRoundTripPlanner.pocketPenalty(0), 1e-9);
+    // Monotone ramp in between.
+    double p7 = GreedyRoundTripPlanner.pocketPenalty(7);
+    double p5 = GreedyRoundTripPlanner.pocketPenalty(5);
+    Assert.assertTrue("ramp must be monotone: p(7)=" + p7 + " p(5)=" + p5,
+      p7 > 0 && p5 > p7 && p5 < 1.0);
+  }
+
   private static MatchedWaypoint makeMatchedWaypoint(int crossLon, int crossLat,
                                                      int n1Lon, int n1Lat,
                                                      int n2Lon, int n2Lat) {

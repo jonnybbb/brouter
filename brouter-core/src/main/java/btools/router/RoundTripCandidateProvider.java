@@ -88,6 +88,13 @@ public interface RoundTripCandidateProvider {
      * leg instead of routing to the candidate coordinate a second time.
      */
     public OsmTrack routedTrack;
+    /**
+     * Reachability-cloud cells occupied in the candidate's 5×5 neighborhood
+     * (0..25; see {@link IsochroneExpansionResult#reachableCellsAround}), or
+     * -1 when no cloud is available. Low values mark dead-end pockets / thin
+     * corridors — the placement signature behind teardrop and stub artifacts.
+     */
+    public int reachableCells = -1;
   }
 
   /**

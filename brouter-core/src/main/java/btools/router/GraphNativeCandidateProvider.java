@@ -48,14 +48,15 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
 
   private final RoutingEngine engine;
   /**
-   * Caches the <em>unfiltered</em> Dijkstra expansion pool per
-   * (position, expansionRadius). The expensive expansion genuinely is the same
-   * for a given rounded radius; the airRadius-specific window/sort is applied
-   * per call in {@link #buildTemplates}, so callers whose airRadius rounds to
-   * the same expansionRadius share the expansion without poisoning each other's
-   * window.
+   * Caches the <em>unfiltered</em> Dijkstra expansion per
+   * (position, expansionRadius) — the full result, so both the candidate pool
+   * and the reachability cloud are reused. The expensive expansion genuinely
+   * is the same for a given rounded radius; the airRadius-specific window/sort
+   * is applied per call in {@link #buildTemplates}, so callers whose airRadius
+   * rounds to the same expansionRadius share the expansion without poisoning
+   * each other's window.
    */
-  private final Map<CacheKey, List<IsoCandidate>> expansionCache = new HashMap<>();
+  private final Map<CacheKey, IsochroneExpansionResult> expansionCache = new HashMap<>();
 
   GraphNativeCandidateProvider(RoutingEngine engine) {
     this.engine = engine;
@@ -72,30 +73,31 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     if (engine == null || airRadius <= 0) return new ArrayList<>();
 
     int expansionRadius = roundedExpansionRadius(airRadius);
-    List<IsoCandidate> pool;
+    IsochroneExpansionResult expansion;
     if (refTrack == null || refTrack.nodes == null || refTrack.nodes.isEmpty()) {
       CacheKey key = new CacheKey(fromIlon, fromIlat, expansionRadius);
-      pool = expansionCache.get(key);
-      if (pool == null) {
-        pool = runExpansion(fromIlon, fromIlat, expansionRadius, null);
+      expansion = expansionCache.get(key);
+      if (expansion == null) {
+        expansion = runExpansion(fromIlon, fromIlat, expansionRadius, null);
         // Cache only non-empty expansions. Caching an empty/failed result would
         // silently serve "no candidates" to every later attempt at the same
         // radius without re-running the expansion (a transient failure becomes
         // permanent for that step).
-        if (!pool.isEmpty()) {
-          expansionCache.put(key, pool);
+        if (expansion != null && !expansion.candidates.isEmpty()) {
+          expansionCache.put(key, expansion);
         }
       }
     } else {
       // Poisoning depends on the already-accepted route, so do not reuse the
       // no-ref cache when a reference track is present.
-      pool = runExpansion(fromIlon, fromIlat, expansionRadius, refTrack);
+      expansion = runExpansion(fromIlon, fromIlat, expansionRadius, refTrack);
     }
+    if (expansion == null) return new ArrayList<>();
     // Window/sort is airRadius-specific and must run per call, not be cached:
     // distinct airRadius values that round to the same expansionRadius share
     // the expansion above but need their own window [LOW, HIGH] and
     // distance-error sort.
-    List<Template> templates = buildTemplates(pool, fromIlon, fromIlat, airRadius);
+    List<Template> templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
 
     List<CandidatePoint> result = new ArrayList<>(templates.size());
     for (Template t : templates) {
@@ -105,6 +107,10 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
       cp.bearing = t.bearing;
       cp.bucketHits = t.bucketHits;
       cp.routedTrack = t.routedTrack;
+      // Pocket signal: reachable-cell density of the candidate's neighborhood
+      // from this expansion's visited cloud. The planner penalizes low values
+      // so vias stop landing on small roads in residual areas.
+      cp.reachableCells = expansion.reachableCellsAround(t.ilon, t.ilat);
       // The scorer's costFromStart and sourceContour fields are start-centered
       // (cost/contour-depth measured from the loop start). These candidates are
       // expanded from the current step position, so both are inapplicable here;
@@ -124,9 +130,9 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     return ((r + g - 1) / g) * g;
   }
 
-  /** Run (and return) the unfiltered Dijkstra expansion pool. Cached per radius. */
-  private List<IsoCandidate> runExpansion(int fromIlon, int fromIlat,
-                                          int expansionRadius, OsmTrack refTrack) {
+  /** Run (and return) the unfiltered Dijkstra expansion. Cached per radius. */
+  private IsochroneExpansionResult runExpansion(int fromIlon, int fromIlat,
+                                                int expansionRadius, OsmTrack refTrack) {
     OsmNodeNamed current = new OsmNodeNamed();
     current.ilon = fromIlon;
     current.ilat = fromIlat;
@@ -137,9 +143,9 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     if (expansion == null || expansion.candidates == null || expansion.candidates.isEmpty()) {
       engine.logInfo("graph-native candidates: no expansion result at radius "
         + expansionRadius + "m");
-      return new ArrayList<>();
+      return null;
     }
-    return expansion.candidates;
+    return expansion;
   }
 
   /** Window-filter, dedupe, score and cap the expansion pool for one airRadius. */
