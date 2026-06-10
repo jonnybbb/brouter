@@ -138,6 +138,25 @@ public class GreedyRoundTripPlanner {
   private final int maxAttempts;
 
   /**
+   * Round-trip variety seed (ADR-0001): the request's {@code alternativeidx},
+   * reused as a deterministic seed in round-trip mode. 0 means inert — the
+   * planner output is bit-identical to the unseeded baseline. Any value
+   * &gt;= 1 enables {@link #VARIETY_JITTER_AMPLITUDE multiplicative jitter}
+   * on the heuristic candidate score, so different seeds route different
+   * near-tie candidates while the direction focus stays untouched.
+   */
+  private int varietySeed;
+
+  /**
+   * Multiplicative amplitude of the variety-seed score jitter: score ×
+   * (1 + amplitude × unit), unit uniform in [-1, 1). ±10% flips only
+   * near-tie rankings — the calibration knob for the seed feature; tune it
+   * from full-matrix A/B evidence (divergence between seeds vs. gate
+   * pass-rate against seed 0), not by feel.
+   */
+  static final double VARIETY_JITTER_AMPLITUDE = 0.10;
+
+  /**
    * Active profile name, set by {@link RoutingEngine} before planning.
    * The planner's internal {@link #qualityGateReason fallback gate}
    * forwards to {@link RoundTripQualityGate#evaluate}, which needs the
@@ -234,6 +253,31 @@ public class GreedyRoundTripPlanner {
    */
   public void setHostilityActive(boolean active) {
     scorer.setHostilityActive(active);
+  }
+
+  /** Set the round-trip variety seed (ADR-0001). Negative values clamp to 0 (= inert). */
+  public void setVarietySeed(int seed) {
+    varietySeed = Math.max(0, seed);
+  }
+
+  /**
+   * Deterministic uniform value in [-1, 1) from a seed and two salts
+   * (splitmix64-style finalizer). Keyed on stable inputs only — candidate
+   * coordinates or fixed knob ids, never iteration order — so the same
+   * request + seed reproduces the same route. Shared by the greedy score
+   * jitter and the WAYPOINT/ISOCHRONE geometry knobs in
+   * {@link RoutingEngine#doWaypointBasedRoundTrip}.
+   */
+  static double seededUnit(int seed, int saltA, int saltB) {
+    long h = seed * 0x9E3779B97F4A7C15L;
+    h ^= saltA * 0xC2B2AE3D27D4EB4FL;
+    h ^= saltB * 0x165667B19E3779F9L;
+    h ^= h >>> 30;
+    h *= 0xBF58476D1CE4E5B9L;
+    h ^= h >>> 27;
+    h *= 0x94D049BB133111EBL;
+    h ^= h >>> 31;
+    return ((h >>> 11) / (double) (1L << 53)) * 2.0 - 1.0;
   }
 
   /**
@@ -358,6 +402,15 @@ public class GreedyRoundTripPlanner {
             cp.costFromStart, cp.bucketHits, cp.sourceContour)
             - DESIR_WEIGHT * cp.desirability // issue #15: reward profile-desirable cells (lower score = better)
             + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
+
+          // Variety seed (ADR-0001): jitter the HEURISTIC score only — it
+          // perturbs which candidates get routed, while the routed-candidate
+          // comparison below stays purely quality-driven. Multiplicative, so
+          // it flips near-tie rankings without overriding clear winners;
+          // in sparse networks with no near-ties, variety is best-effort.
+          if (varietySeed > 0) {
+            cp.score *= 1.0 + VARIETY_JITTER_AMPLITUDE * seededUnit(varietySeed, cp.ilon, cp.ilat);
+          }
         }
 
         // Rank by score (lowest = best)

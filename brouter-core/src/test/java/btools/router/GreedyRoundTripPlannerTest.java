@@ -761,4 +761,46 @@ public class GreedyRoundTripPlannerTest {
       GreedyRoundTripPlanner.boundaryProximityWeight(12000, 11000, 10000), 1e-9);
   }
 
+  // ---- variety seed (ADR-0001): score-jitter hash properties ---------------
+
+  @Test
+  public void seededUnit_isDeterministicAndBounded() {
+    double a = GreedyRoundTripPlanner.seededUnit(3, 8_500_000, 47_500_000);
+    double b = GreedyRoundTripPlanner.seededUnit(3, 8_500_000, 47_500_000);
+    Assert.assertEquals("same seed + same salts must reproduce exactly", a, b, 0.0);
+    for (int seed = 1; seed <= 50; seed++) {
+      for (int salt = 0; salt < 20; salt++) {
+        double u = GreedyRoundTripPlanner.seededUnit(seed, salt, salt * 31 + 7);
+        Assert.assertTrue("unit must lie in [-1,1), got " + u, u >= -1.0 && u < 1.0);
+      }
+    }
+  }
+
+  @Test
+  public void seededUnit_variesAcrossSeedsAndCandidates() {
+    // Different seeds must jitter the same candidate differently — this is
+    // what makes seed N select a different loop variant than seed M.
+    double s1 = GreedyRoundTripPlanner.seededUnit(1, 8_500_000, 47_500_000);
+    double s2 = GreedyRoundTripPlanner.seededUnit(2, 8_500_000, 47_500_000);
+    Assert.assertNotEquals("seeds 1 and 2 must differ", s1, s2, 1e-12);
+    // The same seed must jitter different candidates differently — otherwise
+    // every candidate shifts by the same factor and the ranking never flips.
+    double c1 = GreedyRoundTripPlanner.seededUnit(5, 8_500_000, 47_500_000);
+    double c2 = GreedyRoundTripPlanner.seededUnit(5, 8_500_100, 47_500_000);
+    Assert.assertNotEquals("neighboring candidates must differ", c1, c2, 1e-12);
+  }
+
+  @Test
+  public void varietyJitter_factorStaysWithinAmplitude() {
+    // The multiplicative factor must stay inside 1 ± VARIETY_JITTER_AMPLITUDE,
+    // the bound the gate-pass-rate calibration (ADR-0001) is built on.
+    for (int seed = 1; seed <= 100; seed++) {
+      double factor = 1.0 + GreedyRoundTripPlanner.VARIETY_JITTER_AMPLITUDE
+        * GreedyRoundTripPlanner.seededUnit(seed, 8_500_000, 47_500_000);
+      Assert.assertTrue("factor out of bounds: " + factor,
+        factor >= 1.0 - GreedyRoundTripPlanner.VARIETY_JITTER_AMPLITUDE
+          && factor < 1.0 + GreedyRoundTripPlanner.VARIETY_JITTER_AMPLITUDE);
+    }
+  }
+
 }

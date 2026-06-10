@@ -29,6 +29,17 @@ public final class RoutingContext {
     return alternativeIdx < min ? min : (alternativeIdx > max ? max : alternativeIdx);
   }
 
+  /**
+   * Variety seed for round-trip mode (ADR-0001): the raw {@code alternativeidx}
+   * value with only a lower clamp at 0. Unlike classic routing's enumerated
+   * 0–3 alternatives, round trips accept any value &gt;= 1 as a deterministic
+   * seed selecting one loop variant; 0 (or absent) is bit-identical to the
+   * unperturbed baseline. The seed never influences the start-direction draw.
+   */
+  public int getRoundTripSeed() {
+    return Math.max(0, alternativeIdx);
+  }
+
   public int alternativeIdx = 0;
   public String localFunction;
   public long profileTimestamp;

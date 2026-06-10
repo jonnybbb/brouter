@@ -776,6 +776,11 @@ public class RoutingEngine extends Thread {
       boolean explicitViaMode = waypoints.size() > 1;
       if (explicitViaMode) {
         logInfo("round trip: explicit-via mode (" + (waypoints.size() - 1) + " user via points)");
+        // Variety seed (ADR-0001) disclosure: user vias are a hard skeleton
+        // expressing stronger intent than any heuristic, so the seed is ignored.
+        if (routingContext.getRoundTripSeed() > 0) {
+          logInfo("alternativeidx has no effect in explicit-via round trips");
+        }
         doExplicitViaRoundTrip(searchRadius, direction);
       } else {
         // Resolve the roundTripIsochrone shortcut into the canonical
@@ -2007,6 +2012,23 @@ public class RoutingEngine extends Thread {
   }
 
   private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
+    // Variety seed (ADR-0001): bounded multi-knob perturbation for the
+    // geometric placement paths. The phase shift stays within ±15° so the
+    // direction focus is preserved; the radius stays within ±3% so the loop
+    // stays inside the quality gate's distance tolerance — the gate's
+    // expectedDistance is computed from the caller's UNJITTERED radius, so
+    // it keeps measuring against the user's requested length. targetPoints
+    // ±1 is applied below (derived values only). Seed 0/absent leaves every
+    // knob at exactly 0 — bit-identical to the unseeded baseline.
+    int varietySeed = routingContext.getRoundTripSeed();
+    if (varietySeed > 0) {
+      double phaseShiftDeg = 15.0 * GreedyRoundTripPlanner.seededUnit(varietySeed, 1, 0);
+      double radiusScale = 1.0 + 0.03 * GreedyRoundTripPlanner.seededUnit(varietySeed, 2, 0);
+      direction = CheapAngleMeter.normalize(direction + phaseShiftDeg);
+      searchRadius *= radiusScale;
+      logInfo("round trip variety seed " + varietySeed + ": phase shift " + (int) phaseShiftDeg
+        + " deg, radius scale " + radiusScale);
+    }
     if (routingContext.allowSamewayback) {
       int[] pos = CheapRuler.destination(waypoints.get(0).ilon, waypoints.get(0).ilat, searchRadius, direction);
       OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(pos[0], pos[1]));
@@ -2034,6 +2056,12 @@ public class RoutingEngine extends Thread {
       int targetPoints = routingContext.roundTripPoints == null ?
         Math.max(5, Math.min(15, (int) (searchRadius / 1500) + 3)) :
         routingContext.roundTripPoints;
+      // Variety seed knob: ±1 via-point count, only when the count is derived —
+      // an explicit roundTripPoints is a user decision the seed must not override.
+      if (varietySeed > 0 && routingContext.roundTripPoints == null) {
+        targetPoints = Math.max(4,
+          targetPoints + (int) Math.round(GreedyRoundTripPlanner.seededUnit(varietySeed, 3, 0)));
+      }
 
       if (algo == RoundTripAlgorithm.ISOCHRONE) {
         ProbeResult probe = probeReachableDirections(waypoints.get(0), searchRadius);
@@ -4353,6 +4381,7 @@ public class RoutingEngine extends Thread {
         new CandidateScorer(), subRouteCount, 0.05, 8);
       planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(routingContext.getProfileName()));
       planner.setProfileName(routingContext.getProfileName());
+      planner.setVarietySeed(routingContext.getRoundTripSeed());
       result = planner.plan(start, desiredDistance, tryDirection);
       if (result != null) {
         result.setIsoAsymmetryBearingApplied(bias.applied);
