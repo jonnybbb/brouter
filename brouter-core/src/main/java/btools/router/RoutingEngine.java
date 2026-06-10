@@ -1465,6 +1465,7 @@ public class RoutingEngine extends Thread {
         removeBackAndForthSegments(track, mwps);
         removeMicroDetours(track, 1500, mwps);
         repairViaPinnedBulges(track, mwps);
+        removeArtifactSpurSpans(track, mwps);
       }
     }
     rebuildOriginChain(track);
@@ -3173,13 +3174,126 @@ public class RoutingEngine extends Thread {
       while (ce > cs && conn.get(ce - 1).calcDistance(nj) <= 2) ce--;
       List<OsmPathElement> interior = new ArrayList<>(conn.subList(cs, ce));
       int removedNodes = span[1] - span[0] - 1;
+      // Crossing guard: the connector is routed without sight of the rest of
+      // the loop, so it can cut transversely across the outbound or return —
+      // trading a fat bulge for a user-visible self-crossing (measured: AUTO
+      // fastbike crossings +49% before this guard). Splice the node list
+      // first, compare self-intersections, and revert if the count rose;
+      // waypoint indices are only adjusted after acceptance.
+      int crossingsBefore = RoundTripQualityGate.countSelfIntersections(track);
+      List<OsmPathElement> oldInterior = new ArrayList<>(nodes.subList(span[0] + 1, span[1]));
       nodes.subList(span[0] + 1, span[1]).clear();
       nodes.addAll(span[0] + 1, interior);
+      int crossingsAfter = RoundTripQualityGate.countSelfIntersections(track);
+      if (crossingsAfter > crossingsBefore) {
+        nodes.subList(span[0] + 1, span[0] + 1 + interior.size()).clear();
+        nodes.addAll(span[0] + 1, oldInterior);
+        logInfo("repairViaPinnedBulges: " + via.name + " connector rejected (would add "
+          + (crossingsAfter - crossingsBefore) + " self-crossing(s))");
+        continue;
+      }
       adjustWaypointIndices(waypoints, span[0], span[1] - 1, removedNodes - interior.size());
 
       logInfo(String.format(Locale.US,
         "repairViaPinnedBulges: at %s replaced %.0fm bulge (mouth %.0fm, span %.2f cost/m vs track %.2f) with %dm connector (%.2f cost/m)",
         via.name, arc, crowFly, spanCpm, trackCostPerM, connector.distance, connCpm));
+    }
+  }
+
+  /** Artifact-spur repair: compactness at or below this is thin (artifact by shape). */
+  static final double SPUR_ARTIFACT_MAX_COMPACTNESS = 0.30;
+  /** Artifact by price: span cost/m at or above this multiple of the track average. */
+  static final double SPUR_ARTIFACT_MIN_COST_FACTOR = 1.3;
+  /** Near-revisit parameters (mirror {@link LoopQualityMetrics#computeSpurInfo}). */
+  static final double SPUR_REPAIR_EPS_M = 60.0;
+  static final double SPUR_REPAIR_MIN_ARC_M = 600.0;
+  static final int SPUR_REPAIR_MAX_ARC_M = 6000;
+  /** Never repair below this fraction of the requested loop distance. */
+  static final double SPUR_REPAIR_MIN_DISTR = 0.85;
+
+  /** Requested total loop distance from the request context, 0 when unknown. */
+  private double roundTripExpectedDistance() {
+    if (routingContext.roundTripLength != null) {
+      return routingContext.roundTripLength;
+    }
+    if (routingContext.roundTripDistance != null && routingContext.roundTripDistance > 0) {
+      return 2 * Math.PI * routingContext.roundTripDistance; // roundTripDistance is a radius
+    }
+    return 0;
+  }
+
+  /** Whether the span (i, j) strictly contains a USER waypoint (not planner-generated). */
+  private static boolean spanContainsUserWaypoint(List<MatchedWaypoint> waypoints, int i, int j) {
+    if (waypoints == null) return false;
+    for (int wi = 1; wi < waypoints.size() - 1; wi++) {
+      MatchedWaypoint wp = waypoints.get(wi);
+      boolean generated = wp.generated || (wp.name != null && wp.name.startsWith("rt"));
+      if (!generated && wp.indexInTrack > i && wp.indexInTrack < j) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Remove artifact near-revisit spur spans from a round-trip loop — the
+   * residual class every narrower pass misses: start-stem antennas pinned at
+   * no via, pinches between removeMicroDetours' 50m and the detector's 60m,
+   * arcs above the 4km via-band, and overpriced-but-fat excursions. The span
+   * source is the locked near-revisit primitive
+   * ({@link LoopQualityMetrics#nearRevisitSpans}); a span is an ARTIFACT (and
+   * removed) when it is thin ({@link RoutingEngine#petalCompactness} ≤
+   * {@link #SPUR_ARTIFACT_MAX_COMPACTNESS}) or rides roads priced ≥
+   * {@link #SPUR_ARTIFACT_MIN_COST_FACTOR}× the track average — a scenic
+   * petal is neither. Guards: spans containing a USER via are never touched;
+   * removal never takes the loop below {@link #SPUR_REPAIR_MIN_DISTR} of the
+   * requested distance (or 90% of the current length when the request is
+   * unknown); a removal that would create a self-crossing (the ≤60m splice
+   * jump can transversely cut another part of the loop) is reverted.
+   */
+  void removeArtifactSpurSpans(OsmTrack track, List<MatchedWaypoint> waypoints) {
+    List<OsmPathElement> nodes = track.nodes;
+    if (nodes == null || nodes.size() < 10) return;
+    long totalDist = 0;
+    for (int k = 1; k < nodes.size(); k++) {
+      totalDist += nodes.get(k - 1).calcDistance(nodes.get(k));
+    }
+    double expected = roundTripExpectedDistance();
+    double minTotal = expected > 0 ? SPUR_REPAIR_MIN_DISTR * expected : 0.9 * totalDist;
+    double trackCpm = spanCostPerMeter(nodes, 0, nodes.size() - 1);
+
+    boolean changed = true;
+    while (changed) {
+      changed = false;
+      int maxArc = (int) Math.min(SPUR_REPAIR_MAX_ARC_M, VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
+      for (int[] s : LoopQualityMetrics.nearRevisitSpans(
+          nodes, SPUR_REPAIR_EPS_M, SPUR_REPAIR_MIN_ARC_M, maxArc)) {
+        int i = s[0];
+        int j = s[1];
+        double arc = 0;
+        for (int k = i + 1; k <= j; k++) {
+          arc += nodes.get(k - 1).calcDistance(nodes.get(k));
+        }
+        double jump = nodes.get(i).calcDistance(nodes.get(j));
+        if (totalDist - (arc - jump) < minTotal) continue;
+        if (spanContainsUserWaypoint(waypoints, i, j)) continue;
+        boolean thin = petalCompactness(nodes, i, j, arc) <= SPUR_ARTIFACT_MAX_COMPACTNESS;
+        boolean overpriced = trackCpm > 0
+          && spanCostPerMeter(nodes, i, j) >= SPUR_ARTIFACT_MIN_COST_FACTOR * trackCpm;
+        if (!thin && !overpriced) continue; // scenic petal — keep
+        int crossingsBefore = RoundTripQualityGate.countSelfIntersections(track);
+        List<OsmPathElement> oldInterior = new ArrayList<>(nodes.subList(i + 1, j));
+        nodes.subList(i + 1, j).clear();
+        if (RoundTripQualityGate.countSelfIntersections(track) > crossingsBefore) {
+          nodes.addAll(i + 1, oldInterior);
+          continue;
+        }
+        adjustWaypointIndices(waypoints, i, j - 1, oldInterior.size());
+        totalDist -= (long) (arc - jump);
+        logInfo(String.format(Locale.US,
+          "removeArtifactSpurSpans: removed %.0fm spur span [%d..%d] (%s)",
+          arc, i, j, thin ? "thin" : "overpriced"));
+        changed = true;
+        break; // indices shifted — rescan
+      }
     }
   }
 

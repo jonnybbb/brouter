@@ -548,7 +548,7 @@ public class GreedyRoundTripPlanner {
           localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
           continue;
         }
-        if (metadataMissingTooHigh(detailedAccepted)) {
+        if (detailFidelityTooLow(detailedAccepted)) {
           result.addDiagnostic("step " + step + ": accepted leg still lacks metadata after retrack ("
             + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + "), retrying");
           localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
@@ -615,8 +615,9 @@ public class GreedyRoundTripPlanner {
         }
 
         // One Dijkstra: return path to start.
+        OsmTrack returnRef = buildRefTrack(segments);
         OsmTrack returnTrack = timedFindTrack("greedy-return", currentMwp, startMwp,
-          buildRefTrack(segments), deadline);
+          returnRef, deadline);
         returnChecksPerformed++;
         if (returnTrack != null && returnTrack.distance > 0) {
           double closedDistance = totalDistance + returnTrack.distance;
@@ -636,9 +637,12 @@ public class GreedyRoundTripPlanner {
             needDetail = true;
           }
           if (needDetail) {
-            // retrackForDetail ignores the refTrack arg (its guide track already
-            // fixes the node sequence), so don't pay for a buildRefTrack merge here.
-            returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
+            // Same fidelity-enforced detailing as committed forward legs: a
+            // failed retrack on the closing leg used to ship raw chord geometry
+            // (no fallback at all here). The reroute fallback reuses returnRef
+            // so the replacement return keeps the same anti-reuse poisoning.
+            returnTrack = detailWithFallback("greedy-return-detail-fallback",
+              returnTrack, currentMwp, startMwp, returnRef, deadline);
           }
           if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
             RoundTripQualityGate.HostileStretch returnHostile =
@@ -659,6 +663,15 @@ public class GreedyRoundTripPlanner {
             finalTrack = mergeSegmentsDetoured(segments, returnTrack);
             RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
             reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
+            // Geometry-fidelity guard on the closing leg: when even the
+            // detailWithFallback reroute could not produce faithful geometry,
+            // do not close on it — route the rejection through the existing
+            // undo-and-retry machinery instead of shipping chord geometry.
+            if (reject == null && detailFidelityTooLow(returnTrack)) {
+              reject = "return leg geometry fidelity too low (chord "
+                + LoopQualityMetrics.maxSingleNullEdgeMeters(returnTrack) + "m, missing meta "
+                + formatPct(RoundTripQualityGate.missingMetadataFraction(returnTrack)) + ")";
+            }
             int severity = fallbackSeverity(verdict);
             // Prefer the soundest fallback (accepted > rideable corridor > chaos)
             // even at a higher geometric error; among equal-soundness candidates
@@ -1034,25 +1047,72 @@ public class GreedyRoundTripPlanner {
 
   private OsmTrack detailAcceptedTrack(ScoredRoute accepted, MatchedWaypoint fromMwp,
                                        OsmTrack refTrack, long deadline) {
-    OsmTrack detailed = engine.retrackForDetail(accepted.track, fromMwp, accepted.toMwp, refTrack);
-    if (!metadataMissingTooHigh(detailed)) {
+    return detailWithFallback("greedy-sub-detail-fallback",
+      accepted.track, fromMwp, accepted.toMwp, refTrack, deadline);
+  }
+
+  /**
+   * Detail-retrack {@code leg} and, when the result's fidelity is too low
+   * (the retrack fell back to raw geometry somewhere — see
+   * {@link #detailFidelityTooLow}), re-route the leg once and retrack that.
+   * Returns the best track obtained; callers re-check fidelity and decide
+   * whether to commit, retry, or accept best-effort.
+   */
+  private OsmTrack detailWithFallback(String name, OsmTrack leg, MatchedWaypoint fromMwp,
+                                      MatchedWaypoint toMwp, OsmTrack refTrack, long deadline) {
+    OsmTrack detailed = engine.retrackForDetail(leg, fromMwp, toMwp, refTrack);
+    if (!detailFidelityTooLow(detailed)) {
       return detailed;
     }
 
-    OsmTrack rerouted = timedFindTrack("greedy-sub-detail-fallback", fromMwp, accepted.toMwp, refTrack, deadline);
+    OsmTrack rerouted = timedFindTrack(name, fromMwp, toMwp, refTrack, deadline);
     if (rerouted == null || rerouted.distance == 0) {
       return detailed;
     }
-    OsmTrack detailedRerouted = engine.retrackForDetail(rerouted, fromMwp, accepted.toMwp, refTrack);
-    if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
-      System.err.printf("[greedy-diag] detail fallback missingMetadata raw=%.1f%% rerouted=%.1f%%%n",
+    OsmTrack detailedRerouted = engine.retrackForDetail(rerouted, fromMwp, toMwp, refTrack);
+    if (DIAGNOSTIC) {
+      System.err.printf("[greedy-diag] detail fallback (%s) missingMeta raw=%.1f%%/chord %dm, rerouted=%.1f%%/chord %dm%n",
+        name,
         RoundTripQualityGate.missingMetadataFraction(detailed) * 100.0,
-        RoundTripQualityGate.missingMetadataFraction(detailedRerouted) * 100.0);
+        LoopQualityMetrics.maxSingleNullEdgeMeters(detailed),
+        RoundTripQualityGate.missingMetadataFraction(detailedRerouted) * 100.0,
+        LoopQualityMetrics.maxSingleNullEdgeMeters(detailedRerouted));
     }
     return detailedRerouted;
   }
 
-  private boolean metadataMissingTooHigh(OsmTrack track) {
+  /**
+   * Max length of a single untagged edge tolerated on a committed leg. In
+   * detail mode every link is subdivided at its OSM shape points and carries
+   * tags, so edges are short and tagged; one long null-tag edge is the chord
+   * fingerprint of a failed detail pass — the shipped geometry cuts straight
+   * across terrain where the real road curves (the user-visible "beeline").
+   * Ground-truthed on Lozère gravel (2026-06-09): flagged 300-950m chords all
+   * had a real curving road between the same endpoints.
+   */
+  private static final int MAX_UNDETAILED_EDGE_METERS = 200;
+
+  /**
+   * Whether a detailed leg is unfit to commit. Two concerns, scoped
+   * differently:
+   * <ul>
+   *   <li><b>Chord fingerprint (all profiles)</b> — a long null-tag edge means
+   *       the detail pass fell back to raw geometry there and the shipped
+   *       polyline cuts straight across terrain (the user-visible "beeline").
+   *       Many SHORT null edges are visually fine (geometry still follows the
+   *       road shape), so the fingerprint, not the fraction, is the geometry
+   *       criterion. Keeping the fraction profile-agnostic was measured to
+   *       roughly double matrix runtime via unnecessary gravel reroutes and
+   *       contributed to an AUTO budget exhaustion no-route (grenoble 50km).</li>
+   *   <li><b>Metadata coverage (paved only)</b> — the gate's hostility check
+   *       needs verifiable tags; unverifiable distance above the ceiling is a
+   *       paved-profile safety concern, the original rationale.</li>
+   * </ul>
+   */
+  private boolean detailFidelityTooLow(OsmTrack track) {
+    if (LoopQualityMetrics.maxSingleNullEdgeMeters(track) > MAX_UNDETAILED_EDGE_METERS) {
+      return true;
+    }
     return RoundTripQualityGate.isPavedProfile(profileName)
       && RoundTripQualityGate.missingMetadataFraction(track) > RoundTripQualityGate.MAX_HOSTILE_FRACTION;
   }

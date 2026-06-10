@@ -395,13 +395,26 @@ public final class LoopQualityMetrics {
    * @return the longest single null-way edge within any spur span (m), 0 if none.
    */
   public static int beelineInSpurMeters(OsmTrack track) {
-    if (track == null || track.nodes == null) return 0;
+    int[] d = beelineInSpurDetail(track);
+    return d[0];
+  }
+
+  /**
+   * Like {@link #beelineInSpurMeters} but also returns the flagged edge's
+   * endpoints so callers (gate diagnostics, calibration tooling) can locate it
+   * on the map. {@code [meters, startIlon, startIlat, endIlon, endIlat]};
+   * coordinates are 0 when no edge was flagged.
+   */
+  public static int[] beelineInSpurDetail(OsmTrack track) {
+    int[] none = new int[]{0, 0, 0, 0, 0};
+    if (track == null || track.nodes == null) return none;
     List<OsmPathElement> nodes = track.nodes;
     int n = nodes.size();
-    if (n < 4) return 0;
+    if (n < 4) return none;
     double[] cum = new double[n];
     for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
-    int worst = 0;
+    double total = cum[n - 1];
+    int[] worst = none;
     int i = 0;
     while (i < n) {
       int bestJ = -1;
@@ -409,6 +422,10 @@ public final class LoopQualityMetrics {
       for (int j = i + 1; j < n; j++) {
         double gap = cum[j] - cum[i];
         if (gap > BEELINE_MAX_ARC_GAP) break;
+        // A span covering most of the perimeter is the loop's own start≈end
+        // closure (reachable on loops shorter than the arc cap), not a spur —
+        // same exclusion as RouteChoiceScore.CLOSURE_EXCLUSION_FRACTION.
+        if (total > 0 && gap > RouteChoiceScore.CLOSURE_EXCLUSION_FRACTION * total) break;
         if (gap >= SPUR_MIN_ARC_GAP && a.calcDistance(nodes.get(j)) <= SPUR_EPS_METERS) bestJ = j;
       }
       if (bestJ >= 0) {
@@ -417,8 +434,11 @@ public final class LoopQualityMetrics {
           OsmPathElement curr = nodes.get(k);
           String tags = (curr.message != null) ? curr.message.wayKeyValues : null;
           if (tags == null || tags.isEmpty()) {
-            int seg = nodes.get(k - 1).calcDistance(curr);
-            if (seg > worst) worst = seg;
+            OsmPathElement prev = nodes.get(k - 1);
+            int seg = prev.calcDistance(curr);
+            if (seg > worst[0]) {
+              worst = new int[]{seg, prev.getILon(), prev.getILat(), curr.getILon(), curr.getILat()};
+            }
           }
         }
         i = bestJ;

@@ -734,6 +734,71 @@ public class RoutingEngineTest {
       11, track.nodes.size());
   }
 
+  // removeArtifactSpurSpans: generalized spur repair — removes thin
+  // near-revisit excursions even when NOT pinned at a generated via (the
+  // start-stem antenna class), keeps fat petals, never touches user vias.
+  @Test
+  public void removeArtifactSpurSpansRemovesThinSpurWithoutVia() {
+    RoutingEngine re = createDummyEngine(5000);
+    // Request context: ~24km loop requested; removing the 2.4km spur keeps the
+    // track at distR ~0.9, above the SPUR_REPAIR_MIN_DISTR floor.
+    re.routingContext.roundTripLength = 24000;
+    OsmTrack track = buildViaTeardropTrack();
+    OsmPathElement pinchOut = track.nodes.get(3);
+
+    re.removeArtifactSpurSpans(track, new ArrayList<>());
+
+    // Interior removed, both span endpoints kept (pinch-out + rejoin node,
+    // ~24m apart): 11 - 4 interior nodes = 7.
+    Assert.assertEquals("thin 2.5km spur removed without any via pinning it",
+      7, track.nodes.size());
+    Assert.assertSame("pinch-out node survives", pinchOut, track.nodes.get(3));
+  }
+
+  @Test
+  public void removeArtifactSpurSpansKeepsFatPetal() {
+    RoutingEngine re = createDummyEngine(5000);
+    int baseLon = START_ILON;
+    int baseLat = START_ILAT;
+    OsmTrack track = new OsmTrack();
+    track.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 100000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 200000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 5600, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 5600, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 200, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205300, baseLat + 100, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 208000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 300000, baseLat, (short) 0, null));
+
+    re.removeArtifactSpurSpans(track, new ArrayList<>());
+
+    Assert.assertEquals("fat petal (compactness ~0.8, normal cost) is scenic — kept",
+      10, track.nodes.size());
+  }
+
+  @Test
+  public void removeArtifactSpurSpansProtectsUserVia() {
+    RoutingEngine re = createDummyEngine(5000);
+    OsmTrack track = buildViaTeardropTrack();
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    wpts.add(createMatchedWaypoint("from", START_ILON, START_ILAT, START_ILON, START_ILAT));
+    MatchedWaypoint userVia = createMatchedWaypoint("userVia",
+      START_ILON + 205000, START_ILAT + 10800, START_ILON + 205000, START_ILAT + 10800);
+    userVia.indexInTrack = 5; // tip of the spur — the user asked to go there
+    wpts.add(userVia);
+    MatchedWaypoint to = createMatchedWaypoint("to", START_ILON + 300000, START_ILAT,
+      START_ILON + 300000, START_ILAT);
+    to.indexInTrack = track.nodes.size() - 1;
+    wpts.add(to);
+
+    re.removeArtifactSpurSpans(track, wpts);
+
+    Assert.assertEquals("span holds a user via — never repaired", 11, track.nodes.size());
+  }
+
   // petalCompactness: thin out-and-back-ish spans near 0, round petals high.
   @Test
   public void petalCompactnessSeparatesThinTeardropFromFatPetal() {

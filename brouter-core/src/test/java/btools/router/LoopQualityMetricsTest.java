@@ -70,6 +70,77 @@ public class LoopQualityMetricsTest {
       reuse > 25.0);
   }
 
+  // ---- beelineInSpurMeters: chord fingerprint + closure exclusion ----------
+
+  private static MessageData tagged() {
+    MessageData md = new MessageData();
+    md.wayKeyValues = "highway=track surface=gravel";
+    md.costfactor = 1.5f;
+    return md;
+  }
+
+  /**
+   * Loop with a dead-end spur at the start: out via one long (~480m) straight
+   * edge, tip hop, back on a parallel arm rejoining within ~49m of the start
+   * (arc ~985m — a near-revisit span), then a ~2km-sided square loop body.
+   * Every edge is tagged except, when {@code longEdgeTagged} is false, the
+   * long spur edge — the raw-fallback chord fingerprint.
+   */
+  private static OsmTrack spurLoop(boolean longEdgeTagged) {
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(480, 0));     // the long spur edge
+    t.nodes.add(m(480, 45));    // tip hop
+    t.nodes.add(m(20, 45));     // parallel return arm (~49m from start)
+    t.nodes.add(m(2000, 0));
+    t.nodes.add(m(2000, 2000));
+    t.nodes.add(m(0, 2000));
+    t.nodes.add(m(0, 0));
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = tagged();
+    }
+    if (!longEdgeTagged) {
+      t.nodes.get(1).message = null; // edge node0→node1 becomes null-way
+    }
+    return t;
+  }
+
+  @Test
+  public void beelineInSpurFlagsUntaggedChordInsideSpur() {
+    int[] d = LoopQualityMetrics.beelineInSpurDetail(spurLoop(false));
+    Assert.assertTrue("untagged ~480m chord inside the spur must be flagged, got " + d[0] + "m",
+      d[0] > 400 && d[0] < 560);
+    Assert.assertEquals("flagged edge start ilon", BASE_ILON, d[1]);
+    Assert.assertEquals("flagged edge end ilon (480m east)",
+      BASE_ILON + (int) Math.round(480 * 11.7), d[3]);
+  }
+
+  @Test
+  public void beelineInSpurIgnoresTaggedLongEdge() {
+    Assert.assertEquals("tagged long edge is a real road, not a chord",
+      0, LoopQualityMetrics.beelineInSpurMeters(spurLoop(true)));
+  }
+
+  @Test
+  public void beelineInSpurExcludesLoopOwnClosure() {
+    // A plain sub-10km loop closes start≈end with the full perimeter as the
+    // "arc" — that span is the loop's own closure, not a spur, and a long
+    // null edge in the loop body must NOT be flagged (regression guard:
+    // before the closure exclusion this false-fired on every loop under the
+    // 10km arc cap).
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(2400, 0));    // one long edge, left untagged below
+    t.nodes.add(m(2400, 2400));
+    t.nodes.add(m(0, 2400));
+    t.nodes.add(m(0, 0));
+    for (int i = 2; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = tagged();
+    }
+    Assert.assertEquals("loop closure is not a spur; long null edge outside any spur not flagged",
+      0, LoopQualityMetrics.beelineInSpurMeters(t));
+  }
+
   @Test
   public void distanceRatioExact() {
     OsmTrack track = new OsmTrack();
