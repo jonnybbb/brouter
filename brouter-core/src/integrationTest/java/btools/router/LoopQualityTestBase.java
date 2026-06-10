@@ -218,21 +218,7 @@ public abstract class LoopQualityTestBase {
         tag, m.getDirectionDeltaDegrees(), region.maxDirectionDelta));
     }
     double maxCostPerM = maxCostPerMeterForProfile(profileName);
-    if ("gravel".equalsIgnoreCase(profileName) && isPavedCoastalRegion()) {
-      // Paved-coastal override. Cost decomposition (2026-06) showed these
-      // regions force gravel onto 19-29% tertiary/secondary asphalt at
-      // costfactor 4.4-5.6, because the gravel-ideal unpaved network is too
-      // sparse to close a loop — fastbike rides the SAME corridors at cf ~1.0,
-      // confirming it is terrain, not a bad route or chaotic geometry. The
-      // strict 4.1 bar stays everywhere the unpaved network is real.
-      //
-      // NOTE: Nice's failure is GREEDY-in-isolation (cost/m 4.10); production
-      // AUTO ships the ISO_GREEDY loop at cost/m 2.44. The matrix grades greedy
-      // separately as a fallback-quality signal, so this override only prevents
-      // it flagging a path production supersedes — it does not mask the
-      // shipped route.
-      maxCostPerM = 4.3;
-    } else if ("gravel".equalsIgnoreCase(profileName) && region == LoopTestRegion.CRETE_SENESI
+    if ("gravel".equalsIgnoreCase(profileName) && region == LoopTestRegion.CRETE_SENESI
         && "iso_greedy".equals(variant)) {
       // Crete Senesi, ISO_GREEDY-only relaxation (2026-06). Heading SOUTH the
       // ISO_GREEDY fallback closes a costlier loop (cost/m 4.15-4.46) than
@@ -286,30 +272,24 @@ public abstract class LoopQualityTestBase {
    */
   private static final double MIN_RCS_PASS = 0.50;
 
-  /** Whether this region is paved-coastal terrain (sparse gravel network), where
-   *  the gravel cost/m ceiling is relaxed — see {@link #checkVariantQuality}. */
-  private boolean isPavedCoastalRegion() {
-    return region == LoopTestRegion.MALLORCA || region == LoopTestRegion.COASTAL_NICE;
-  }
-
   /**
    * Profile-specific cost-per-meter <em>baseline</em> ceiling. fastbike rejects
    * high-costfactor roads (tracks, unpaved); gravel/mtb expect higher values
-   * because their preferred surfaces are themselves higher costfactor. Gravel
-   * in paved-coastal terrain gets a per-region override in
-   * {@link #checkVariantQuality}.
+   * because their preferred surfaces are themselves higher costfactor.
    *
-   * <p>Gravel baseline raised 4.0 → 4.1 (2026-06): the marginal failures at
-   * Innsbruck (4.08) and Lozère (4.02) tip over on moderate/untagged surface —
-   * service/residential asphalt (~2.5-2.9) and untagged rural roads gravel
-   * conservatively costs at ~3.1 for lack of a {@code surface=} tag — not on a
-   * bad route. The loops there still use 17-19% gravel-ideal track.
+   * <p>Gravel baseline raised 4.1 → 4.5 (2026-06-10, user decision): the
+   * marginal strict-variant failures (Annecy iso_greedy 4.23, the former
+   * paved-coastal 4.3 override band) are constrained-terrain pricing on
+   * rideable loops, and the product stance is "ship a route that looks odd
+   * but is still cycleable rather than nothing". 4.5 also subsumes the old
+   * paved-coastal override (4.3), which was removed; Crete Senesi's
+   * ISO_GREEDY-only 4.6 relaxation remains above the new baseline.
    */
   private static double maxCostPerMeterForProfile(String profileName) {
     if (profileName == null) return 4.0;
     switch (profileName.toLowerCase()) {
       case "fastbike": return 3.5;
-      case "gravel": return 4.1;
+      case "gravel": return 4.5;
       case "mtb": return 5.0;
       case "trekking": return 4.0;
       default: return 4.5;

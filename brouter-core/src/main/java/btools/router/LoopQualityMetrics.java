@@ -200,6 +200,26 @@ public final class LoopQualityMetrics {
         }
       }
     }
+    // Crossings AT a shared junction node — invisible to the CCW scan above
+    // (its shared-endpoint exclusion), yet the dominant real-world case on a
+    // road network: both passes ride through the same intersection. Same
+    // transversality test as the gate (RoundTripQualityGate.isTransverseRevisit)
+    // so the report metric and the production gate cannot drift.
+    Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
+    for (int k = 1; k < n - 1; k++) {
+      List<Integer> prev = occ.computeIfAbsent(pts.get(k).getIdFromPos(), x -> new ArrayList<>());
+      for (int k1 : prev) {
+        if (k - k1 <= 1) continue;
+        if (RoundTripQualityGate.isTransverseRevisit(pts, k1, k)) {
+          total++;
+          double arc = cum[k] - cum[k1];
+          double enclosed = Math.min(arc, perim - arc);
+          if (enclosed <= SMALL_LOOP_MAX_ARC_METERS) smallLoop++;
+          if (total > ceiling) return new int[]{total, smallLoop};
+        }
+      }
+      prev.add(k);
+    }
     return new int[]{total, smallLoop};
   }
 

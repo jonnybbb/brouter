@@ -551,7 +551,82 @@ public final class RoundTripQualityGate {
         }
       }
     }
+    // The CCW scan above excludes segment pairs sharing an endpoint — but on a
+    // road network most genuine self-crossings happen AT a shared junction node
+    // (both passes ride through the same intersection), which made the count
+    // systematically blind to exactly the knots a cyclist sees on the map
+    // (observed: dreieich 50km fastbike W showing 2 visual knots, counted 1).
+    crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings);
     return crossings;
+  }
+
+  /**
+   * Count node revisits where the second pass crosses the first TRANSVERSELY —
+   * the four incident path directions interleave around the shared node. A
+   * touch-and-turn (teardrop pinch: both pass-2 directions inside one sector
+   * of pass 1) and a same-edge retrace (shared neighbor) are NOT crossings;
+   * the former is the near-revisit detector's domain, the latter is reuse.
+   */
+  private static int countTransverseNodeRevisits(List<OsmPathElement> nodes, int ceiling) {
+    int n = nodes.size();
+    if (n < 5 || ceiling <= 0) return 0;
+    Map<Long, int[]> first = new java.util.HashMap<>(n * 2);
+    int crossings = 0;
+    for (int k = 1; k < n - 1; k++) {
+      long id = nodes.get(k).getIdFromPos();
+      int[] prevIdx = first.get(id);
+      if (prevIdx == null) {
+        first.put(id, new int[]{k});
+        continue;
+      }
+      for (int k1 : prevIdx) {
+        if (k - k1 <= 1) continue;
+        if (isTransverseRevisit(nodes, k1, k)) {
+          crossings++;
+          if (crossings >= ceiling) return crossings;
+        }
+      }
+      int[] grown = java.util.Arrays.copyOf(prevIdx, prevIdx.length + 1);
+      grown[prevIdx.length] = k;
+      first.put(id, grown);
+    }
+    return crossings;
+  }
+
+  // Package-visible: LoopQualityMetrics.detectCrossings reuses the same
+  // transversality test so the report metric and the gate cannot drift.
+  static boolean isTransverseRevisit(List<OsmPathElement> nodes, int k1, int k2) {
+    OsmPathElement p = nodes.get(k1);
+    OsmPathElement in1 = nodes.get(k1 - 1);
+    OsmPathElement out1 = nodes.get(k1 + 1);
+    OsmPathElement in2 = nodes.get(k2 - 1);
+    OsmPathElement out2 = nodes.get(k2 + 1);
+    // Shared-edge guard: a neighbor of pass 2 coinciding with a neighbor of
+    // pass 1 means the passes share an incident edge — retrace, not a crossing.
+    if (samePoint(in2, in1) || samePoint(in2, out1)
+        || samePoint(out2, in1) || samePoint(out2, out1)) {
+      return false;
+    }
+    // Degenerate zero-length neighbors cannot define a direction.
+    if (samePoint(in1, p) || samePoint(out1, p) || samePoint(in2, p) || samePoint(out2, p)) {
+      return false;
+    }
+    double b1 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), in1.getILon(), in1.getILat());
+    double b2 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), out1.getILon(), out1.getILat());
+    double c1 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), in2.getILon(), in2.getILat());
+    double c2 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), out2.getILon(), out2.getILat());
+    // Pass 1 splits the angular circle at b1/b2; pass 2 crosses transversely
+    // iff its two directions fall in DIFFERENT sectors.
+    boolean c1InSector = angleInSector(c1, b1, b2);
+    boolean c2InSector = angleInSector(c2, b1, b2);
+    return c1InSector != c2InSector;
+  }
+
+  /** Whether {@code x} lies in the clockwise sector from {@code from} to {@code to}. */
+  private static boolean angleInSector(double x, double from, double to) {
+    double span = (to - from + 360.0) % 360.0;
+    double off = (x - from + 360.0) % 360.0;
+    return off > 0 && off < span;
   }
 
   private static List<OsmPathElement> sampledShapeNodes(List<OsmPathElement> nodes) {

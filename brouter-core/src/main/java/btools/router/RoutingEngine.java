@@ -3110,7 +3110,7 @@ public class RoutingEngine extends Thread {
 
     for (int wi = 1; wi < waypoints.size() - 1; wi++) {
       MatchedWaypoint via = waypoints.get(wi);
-      if (!via.generated) continue;
+      if (!isGeneratedRoundTripWaypoint(via)) continue;
       int v = via.indexInTrack;
       if (v <= 0 || v >= nodes.size() - 1) continue;
       int lo = Math.max(0, waypoints.get(wi - 1).indexInTrack + 1);
@@ -3200,8 +3200,16 @@ public class RoutingEngine extends Thread {
     }
   }
 
-  /** Artifact-spur repair: compactness at or below this is thin (artifact by shape). */
-  static final double SPUR_ARTIFACT_MAX_COMPACTNESS = 0.30;
+  /**
+   * Artifact-spur repair: compactness at or below this is an artifact by shape.
+   * Raised 0.30 → 0.65 (2026-06-10, user calibration): the freiburg 80km N
+   * petals (compactness 0.38 and 0.62) are detour loops to the cyclist's eye —
+   * riding a circle back to within 60m of an earlier point is an artifact at
+   * any ordinary fatness. Only a near-circular sub-loop (above 0.65) survives
+   * on shape alone; user vias and the distance floor still protect deliberate
+   * excursions.
+   */
+  static final double SPUR_ARTIFACT_MAX_COMPACTNESS = 0.65;
   /** Artifact by price: span cost/m at or above this multiple of the track average. */
   static final double SPUR_ARTIFACT_MIN_COST_FACTOR = 1.3;
   /** Near-revisit parameters (mirror {@link LoopQualityMetrics#computeSpurInfo}). */
@@ -3222,13 +3230,22 @@ public class RoutingEngine extends Thread {
     return 0;
   }
 
+  /**
+   * Whether this waypoint is engine-generated (greedy planner vias carry the
+   * {@code generated} flag; the WAYPOINT algorithm's points use the "rt" name
+   * prefix). User-supplied waypoints match neither — they express route
+   * intent and must never be repaired away.
+   */
+  private static boolean isGeneratedRoundTripWaypoint(MatchedWaypoint wp) {
+    return wp.generated || (wp.name != null && wp.name.startsWith("rt"));
+  }
+
   /** Whether the span (i, j) strictly contains a USER waypoint (not planner-generated). */
   private static boolean spanContainsUserWaypoint(List<MatchedWaypoint> waypoints, int i, int j) {
     if (waypoints == null) return false;
     for (int wi = 1; wi < waypoints.size() - 1; wi++) {
       MatchedWaypoint wp = waypoints.get(wi);
-      boolean generated = wp.generated || (wp.name != null && wp.name.startsWith("rt"));
-      if (!generated && wp.indexInTrack > i && wp.indexInTrack < j) return true;
+      if (!isGeneratedRoundTripWaypoint(wp) && wp.indexInTrack > i && wp.indexInTrack < j) return true;
     }
     return false;
   }
@@ -3264,14 +3281,19 @@ public class RoutingEngine extends Thread {
     while (changed) {
       changed = false;
       int maxArc = (int) Math.min(SPUR_REPAIR_MAX_ARC_M, VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
-      for (int[] s : LoopQualityMetrics.nearRevisitSpans(
-          nodes, SPUR_REPAIR_EPS_M, SPUR_REPAIR_MIN_ARC_M, maxArc)) {
+      List<int[]> spans = new ArrayList<>(LoopQualityMetrics.nearRevisitSpans(
+        nodes, SPUR_REPAIR_EPS_M, SPUR_REPAIR_MIN_ARC_M, maxArc));
+      double[] cum = new double[nodes.size()];
+      for (int k = 1; k < nodes.size(); k++) {
+        cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+      }
+      // Largest-arc first: the distance floor caps how much can be removed in
+      // total, so spend that budget on the worst offender, not scan order.
+      spans.sort((a, b) -> Double.compare(cum[b[1]] - cum[b[0]], cum[a[1]] - cum[a[0]]));
+      for (int[] s : spans) {
         int i = s[0];
         int j = s[1];
-        double arc = 0;
-        for (int k = i + 1; k <= j; k++) {
-          arc += nodes.get(k - 1).calcDistance(nodes.get(k));
-        }
+        double arc = cum[j] - cum[i];
         double jump = nodes.get(i).calcDistance(nodes.get(j));
         if (totalDist - (arc - jump) < minTotal) continue;
         if (spanContainsUserWaypoint(waypoints, i, j)) continue;
@@ -5206,6 +5228,14 @@ public class RoutingEngine extends Thread {
       if (!routingContext.allowSamewayback && !explicitViaRoundTrip) {
         removeBackAndForthSegments(totaltrack, matchedWaypoints);
         removeMicroDetours(totaltrack, 1500, matchedWaypoints);
+        // Same artifact-repair chain as the greedy adoption path
+        // (finalizeAdoptedRoundTripTrack): probe/isochrone are fast fallback
+        // algorithms worth keeping, and their generated "rt*" waypoints suffer
+        // the same via-pinned bulges and near-revisit petals. Both passes
+        // recognize rt-named waypoints as generated and carry the full guard
+        // set (user-via protection, distance floor, crossing guard).
+        repairViaPinnedBulges(totaltrack, matchedWaypoints);
+        removeArtifactSpurSpans(totaltrack, matchedWaypoints);
       } else if (!routingContext.allowSamewayback && explicitViaRoundTrip && routingContext.explicitViaDensify) {
         // Densified explicit-via: strip the out-and-back spurs at GENERATED bulge points
         // only — never user vias. removeMicroDetours is still skipped (it would

@@ -1156,6 +1156,59 @@ public class RoundTripQualityGateTest {
   }
 
   // ======================================================================
+  // Node-shared crossings (the CCW scan's blind spot)
+  // ======================================================================
+
+  /** Track passing twice through node P=(0,0); the second pass enters from
+   *  {@code in2} and leaves to {@code out2} (coordinates in makeNode units). */
+  private static OsmTrack twoPassesThroughNode(int in2x, int in2y, int out2x, int out2y) {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(-200, 0));
+    t.nodes.add(makeNode(0, 0));      // P, pass 1: west → east
+    t.nodes.add(makeNode(200, 0));
+    t.nodes.add(makeNode(in2x, in2y));
+    t.nodes.add(makeNode(0, 0));      // P again
+    t.nodes.add(makeNode(out2x, out2y));
+    t.nodes.add(makeNode(-400, -400));
+    return t;
+  }
+
+  @Test
+  public void countsTransverseCrossingAtSharedJunctionNode() {
+    // Pass 2 enters from the NE and exits to the S: the four directions
+    // interleave — a genuine X through the junction. The CCW scan alone
+    // counts 0 here (shared endpoint); the cyclist sees a knot.
+    OsmTrack t = twoPassesThroughNode(200, 200, 0, -200);
+    assertEquals("transverse pass through a shared node is a crossing",
+      1, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void touchAndTurnAtSharedNodeIsNotACrossing() {
+    // Pass 2 enters from the NE and exits to the NW: both directions on the
+    // same side of pass 1 — a teardrop pinch (near-revisit territory), not a
+    // crossing.
+    OsmTrack t = twoPassesThroughNode(200, 200, -200, 200);
+    assertEquals("tangential touch is not a crossing",
+      0, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void sameEdgeRetraceIsNotACrossing() {
+    // Out-and-back over the same edge: shared neighbor → reuse, not crossing.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(-200, 0));
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(makeNode(200, 0));
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(makeNode(-200, 0));
+    assertEquals("same-edge retrace is reuse, not a crossing",
+      0, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  // ======================================================================
   // Closure-gap boundary (MAX_CLOSURE_METERS = 400)
   // ======================================================================
 
