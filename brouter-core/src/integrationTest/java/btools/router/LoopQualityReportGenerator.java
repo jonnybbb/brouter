@@ -173,7 +173,9 @@ final class LoopQualityReportGenerator {
           sb.append(String.format(Locale.US, "[%.5f,%.5f]", r.coordinates[j][1], r.coordinates[j][0])); // Leaflet: [lat, lon]
         }
       }
-      sb.append("]},\n");
+      sb.append("],");
+      appendDefectOverlays(sb, r);
+      sb.append("},\n");
     }
     sb.append("];\n\n");
 
@@ -186,6 +188,7 @@ final class LoopQualityReportGenerator {
     sb.append("var layers = [];\n");
     sb.append("var variantColors = {auto:'#000000', probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n");
     sb.append("var selectedIdx = -1;\n\n");
+    appendDefectJs(sb);
 
     sb.append("routes.forEach(function(r, i) {\n");
     sb.append("  var color = variantColors[r.variant] || '#888';\n");
@@ -236,6 +239,7 @@ final class LoopQualityReportGenerator {
     sb.append("  if (!showAll && selectedIdx >= 0 && selectedIdx !== idx && layers[selectedIdx]) layers[selectedIdx].remove();\n");
     sb.append("  highlightRow(idx);\n");
     sb.append("  var r = routes[idx];\n");
+    sb.append("  drawDefects(r);\n");
     sb.append("  if (layers[idx]) {\n");
     sb.append("    if (!map.hasLayer(layers[idx])) layers[idx].addTo(map);\n");
     sb.append("    layers[idx].setStyle({weight: 5, opacity: 1.0});\n");
@@ -261,6 +265,7 @@ final class LoopQualityReportGenerator {
     sb.append("    } else if (map.hasLayer(layer)) { layer.remove(); }\n");
     sb.append("  });\n");
     sb.append("  highlightRow(idx);\n");
+    sb.append("  drawDefects(routes[idx]);\n");
     sb.append("  if (layers[idx]) { layers[idx].bringToFront(); layers[idx].openPopup(); }\n");
     sb.append("  if (bounds.isValid()) map.fitBounds(bounds.pad(0.1));\n");
     sb.append("}\n\n");
@@ -424,7 +429,9 @@ final class LoopQualityReportGenerator {
           sb.append(String.format(Locale.US, "[%.5f,%.5f]", r.coordinates[j][1], r.coordinates[j][0]));
         }
       }
-      sb.append("]},\n");
+      sb.append("],");
+      appendDefectOverlays(sb, r);
+      sb.append("},\n");
     }
     sb.append("];\n\n");
 
@@ -432,6 +439,7 @@ final class LoopQualityReportGenerator {
     sb.append("L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OSM',maxZoom:18}).addTo(map);\n");
     sb.append("var layers=[], selectedIdx=-1;\n");
     sb.append("var variantColors = {auto:'#000000', probe:'#0066cc', isochrone:'#e67300', greedy:'#22aa44', iso_greedy:'#aa22cc'};\n\n");
+    appendDefectJs(sb);
 
     sb.append("routes.forEach(function(r,i){\n");
     sb.append("  var layer=null;\n");
@@ -446,7 +454,7 @@ final class LoopQualityReportGenerator {
     sb.append("    layer.on('click',function(){highlightRow(i);});\n");
     sb.append("  }\n  layers.push(layer);\n});\n\n");
 
-    sb.append("function focusRoute(i){if(selectedIdx>=0&&selectedIdx!==i&&layers[selectedIdx])layers[selectedIdx].remove();highlightRow(i);if(layers[i]){layers[i].addTo(map);layers[i].setStyle({weight:5,opacity:1});map.fitBounds(layers[i].getBounds().pad(0.1));layers[i].openPopup();}}\n");
+    sb.append("function focusRoute(i){if(selectedIdx>=0&&selectedIdx!==i&&layers[selectedIdx])layers[selectedIdx].remove();highlightRow(i);drawDefects(routes[i]);if(layers[i]){layers[i].addTo(map);layers[i].setStyle({weight:5,opacity:1});map.fitBounds(layers[i].getBounds().pad(0.1));layers[i].openPopup();}}\n");
     sb.append("function highlightRow(i){if(selectedIdx>=0&&layers[selectedIdx])layers[selectedIdx].setStyle({weight:3,opacity:0.7});document.querySelectorAll('tr.selected').forEach(function(e){e.classList.remove('selected');});selectedIdx=i;var row=document.querySelector('tr[data-idx=\"'+i+'\"]');if(row){row.classList.add('selected');row.scrollIntoView({block:'nearest'});}}\n\n");
 
     sb.append("function applyFilters(){\n");
@@ -464,6 +472,74 @@ final class LoopQualityReportGenerator {
 
     sb.append("</script>\n</body>\n</html>\n");
     return sb.toString();
+  }
+
+  /**
+   * Emit per-route defect overlays for the map: crossing locations
+   * ({@code xpts}: [lat, lon, enclosedArcM] per crossing) and near-revisit
+   * span index ranges ({@code spans}: [i0, i1] into {@code coords}).
+   * Computed at render time from the persisted Douglas-Peucker-simplified
+   * geometry — DP removes points but never moves them, so positions survive
+   * simplification. The authoritative COUNTS in the table still come from
+   * the full-resolution test-time metrics; that is also why the O(n²)
+   * crossing scan only runs on routes the metrics already flagged.
+   */
+  private static void appendDefectOverlays(StringBuilder sb, LoopQualityResult r) {
+    List<OsmPathElement> els = null;
+    if (r.coordinates != null && r.coordinates.length >= 4) {
+      els = new java.util.ArrayList<>(r.coordinates.length);
+      for (double[] c : r.coordinates) {
+        els.add(OsmPathElement.create(
+          (int) Math.round((c[0] + 180.0) * 1e6),
+          (int) Math.round((c[1] + 90.0) * 1e6), (short) 0, null));
+      }
+    }
+    sb.append("xpts:[");
+    if (els != null && r.metrics != null && r.metrics.getSelfIntersections() > 0) {
+      boolean first = true;
+      for (double[] x : LoopQualityMetrics.crossingPoints(els)) {
+        if (!first) sb.append(",");
+        first = false;
+        sb.append(String.format(Locale.US, "[%.5f,%.5f,%.0f]", x[1], x[0], x[2]));
+      }
+    }
+    sb.append("],spans:[");
+    if (els != null) {
+      double[] cum = new double[els.size()];
+      for (int k = 1; k < els.size(); k++) {
+        cum[k] = cum[k - 1] + els.get(k - 1).calcDistance(els.get(k));
+      }
+      double perim = cum[els.size() - 1];
+      boolean first = true;
+      for (int[] s : LoopQualityMetrics.nearRevisitSpans(els, 60.0, 600.0, 10000.0)) {
+        double arc = cum[s[1]] - cum[s[0]];
+        if (perim > 0 && arc > 0.85 * perim) continue; // the loop's own closure
+        if (!first) sb.append(",");
+        first = false;
+        sb.append("[").append(s[0]).append(",").append(s[1]).append("]");
+      }
+    }
+    sb.append("]");
+  }
+
+  /** Shared map-side JS: defect overlay layer + renderer, used by both pages. */
+  private static void appendDefectJs(StringBuilder sb) {
+    sb.append("var defectLayer = L.layerGroup().addTo(map);\n");
+    sb.append("function drawDefects(r) {\n");
+    sb.append("  defectLayer.clearLayers();\n");
+    sb.append("  if (!r) return;\n");
+    sb.append("  (r.xpts||[]).forEach(function(x) {\n");
+    sb.append("    L.circleMarker([x[0],x[1]], {radius:9, color:'#c0392b', weight:3, fillColor:'#ff2222', fillOpacity:0.45})\n");
+    sb.append("      .bindPopup('<b>&#9888; Route crossing</b><br>enclosed loop ~' + (x[2]/1000).toFixed(1) + 'km'\n");
+    sb.append("        + (x[2] <= 4000 ? ' (detour loop / lasso)' : ' (structural outbound-vs-return)'))\n");
+    sb.append("      .addTo(defectLayer);\n");
+    sb.append("  });\n");
+    sb.append("  (r.spans||[]).forEach(function(s) {\n");
+    sb.append("    L.polyline(r.coords.slice(s[0], s[1]+1), {color:'#e67e22', weight:8, opacity:0.5, dashArray:'8 8'})\n");
+    sb.append("      .bindPopup('<b>&#9888; Near-revisit span</b><br>out-and-back / teardrop section')\n");
+    sb.append("      .addTo(defectLayer);\n");
+    sb.append("  });\n");
+    sb.append("}\n\n");
   }
 
   private static String abbreviateLabel(String label) {

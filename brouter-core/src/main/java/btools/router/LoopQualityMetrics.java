@@ -223,6 +223,81 @@ public final class LoopQualityMetrics {
     return new int[]{total, smallLoop};
   }
 
+  /**
+   * Like {@link #detectCrossings} but returns the crossing LOCATIONS for map
+   * highlighting: one {@code {lon, lat, enclosedArcMeters}} per crossing, in
+   * degrees. Mirrors detectCrossings' two passes (CCW segment scan + shared-
+   * junction transversal revisits), sampling cap, closure exclusion and
+   * ceiling — keep the two in sync. Report/visualization only: counts shown
+   * to users still come from detectCrossings on full-resolution geometry;
+   * this may be called on simplified geometry, where the positions survive
+   * (Douglas-Peucker removes points but does not move them) even though the
+   * exact count can differ.
+   */
+  static List<double[]> crossingPoints(List<OsmPathElement> nodes) {
+    List<double[]> out = new ArrayList<>();
+    int full = nodes == null ? 0 : nodes.size();
+    if (full < 4) return out;
+    List<OsmPathElement> pts;
+    if (full <= CROSS_SCAN_MAX_NODES) {
+      pts = nodes;
+    } else {
+      pts = new java.util.ArrayList<>(CROSS_SCAN_MAX_NODES);
+      double step = (double) (full - 1) / (CROSS_SCAN_MAX_NODES - 1);
+      for (int k = 0; k < CROSS_SCAN_MAX_NODES; k++) {
+        int idx = (int) Math.round(k * step);
+        if (idx >= full) idx = full - 1;
+        pts.add(nodes.get(idx));
+      }
+    }
+    int n = pts.size();
+    double[] cum = new double[n];
+    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + pts.get(k - 1).calcDistance(pts.get(k));
+    double perim = cum[n - 1];
+    int ceiling = 64;
+    for (int i = 0; i < n - 1; i++) {
+      for (int j = i + 2; j < n - 1; j++) {
+        if (i == 0 && j == n - 2) continue;
+        if (segmentsCrossLocal(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1))) {
+          double arc = cum[j] - cum[i];
+          double enclosed = Math.min(arc, perim - arc);
+          out.add(intersectionLonLat(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1), enclosed));
+          if (out.size() > ceiling) return out;
+        }
+      }
+    }
+    Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
+    for (int k = 1; k < n - 1; k++) {
+      List<Integer> prev = occ.computeIfAbsent(pts.get(k).getIdFromPos(), x -> new ArrayList<>());
+      for (int k1 : prev) {
+        if (k - k1 <= 1) continue;
+        if (RoundTripQualityGate.isTransverseRevisit(pts, k1, k)) {
+          double arc = cum[k] - cum[k1];
+          double enclosed = Math.min(arc, perim - arc);
+          out.add(new double[]{pts.get(k).getILon() / 1e6 - 180.0,
+            pts.get(k).getILat() / 1e6 - 90.0, enclosed});
+          if (out.size() > ceiling) return out;
+        }
+      }
+      prev.add(k);
+    }
+    return out;
+  }
+
+  /** Parametric intersection of two (known-crossing) segments, in degrees. */
+  private static double[] intersectionLonLat(OsmPathElement p1, OsmPathElement p2,
+                                             OsmPathElement p3, OsmPathElement p4, double enclosed) {
+    double x1 = p1.getILon(), y1 = p1.getILat();
+    double dx1 = p2.getILon() - x1, dy1 = p2.getILat() - y1;
+    double x3 = p3.getILon(), y3 = p3.getILat();
+    double dx2 = p4.getILon() - x3, dy2 = p4.getILat() - y3;
+    double denom = dx1 * dy2 - dy1 * dx2;
+    double t = denom == 0 ? 0.5 : ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom;
+    double lon = (x1 + t * dx1) / 1e6 - 180.0;
+    double lat = (y1 + t * dy1) / 1e6 - 90.0;
+    return new double[]{lon, lat, enclosed};
+  }
+
   private static boolean segmentsCrossLocal(OsmPathElement p1, OsmPathElement p2,
                                             OsmPathElement p3, OsmPathElement p4) {
     if (samePointLocal(p1, p3) || samePointLocal(p1, p4)
