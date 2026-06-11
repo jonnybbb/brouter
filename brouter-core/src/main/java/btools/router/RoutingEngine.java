@@ -1858,6 +1858,19 @@ public class RoutingEngine extends Thread {
   /** ... and only when the alternative is substantially better than the
    *  original (multiplicative improvement), not a lateral move. */
   static final double VIA_SNAP_MIN_IMPROVEMENT = 0.6;
+  /**
+   * Loop-scale relocation bound: a via may relocate at most this fraction of
+   * the round-trip search radius away from the planner's intended position.
+   * The probe rings ({@link #VIA_SNAP_PROBE_RINGS}) and {@code maxSnapDist}
+   * are absolute, so without this bound a small loop can have a via pulled
+   * sideways by a distance comparable to the whole loop radius — measured on
+   * the r=1000m fixture (after the 8802e75b metadata-consistency fix made
+   * snap cost factors real): the GREEDY dir90 loop flipped clean →
+   * 19%-retraced OUT_AND_BACK. At production radii (≥8000m) the cap reaches
+   * {@code maxSnapDist} and behaviour is unchanged — the junk-pocket bulges
+   * this relocation prevents are a long-loop phenomenon.
+   */
+  static final double VIA_RELOCATION_LOOP_FRACTION = 0.25;
 
   /**
    * Profile-aware point match for planner-generated round-trip vias. The plain
@@ -1872,10 +1885,16 @@ public class RoutingEngine extends Thread {
    * nearest match is returned unchanged. Returns null when nothing matches.
    */
   MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist) {
+    // Loop-scale relocation bound (see VIA_RELOCATION_LOOP_FRACTION). When no
+    // round-trip scale is known (0), fall back to the absolute maxSnapDist.
+    double relocationCap = roundTripSearchRadius > 0
+      ? Math.min(maxSnapDist, VIA_RELOCATION_LOOP_FRACTION * roundTripSearchRadius)
+      : maxSnapDist;
     OsmNode orig = new OsmNode(ilon, ilat);
     List<OsmNode> points = new ArrayList<>();
     points.add(new OsmNode(ilon, ilat));
     for (double ring : VIA_SNAP_PROBE_RINGS) {
+      if (ring > relocationCap) continue; // ring would only yield over-cap candidates
       for (double bearing = 0; bearing < 360; bearing += 45) {
         int[] p = CheapRuler.destination(ilon, ilat, ring, bearing);
         points.add(new OsmNode(p[0], p[1]));
@@ -1905,6 +1924,11 @@ public class RoutingEngine extends Thread {
       double bestScore = origMatch != null ? origCf * 1000.0 : Double.MAX_VALUE;
       for (MatchedWaypoint m : mwps) {
         if (!isRoadSnap(m)) continue;
+        // Hard loop-scale bound on the actual displacement (ring filtering
+        // above is necessary but not sufficient: a ring point can snap to a
+        // road far beyond the cap). The incumbent (m == origMatch) is exempt —
+        // staying put is never a relocation.
+        if (m != origMatch && orig.calcDistance(m.crosspoint) > relocationCap) continue;
         double costFactor = snapCandidateCostFactor(m);
         double score = costFactor * 1000.0 + orig.calcDistance(m.crosspoint);
         if (score < bestScore) {
@@ -2151,6 +2175,10 @@ public class RoutingEngine extends Thread {
     // Initialize nodesCache — needed before the planner can match waypoints to the graph.
     resetCache(false);
     roundTripForcedCorridorAccepted = false;
+    // Loop scale for the via-relocation bound (profileAwareMatchPoint): must be
+    // set BEFORE planner via matching — the doRouting fallthrough below used to
+    // set it only late, leaving the bound inert during greedy placement.
+    roundTripSearchRadius = searchRadius;
 
     OsmNodeNamed start = waypoints.get(0);
     double desiredDistance = 2 * Math.PI * searchRadius;
