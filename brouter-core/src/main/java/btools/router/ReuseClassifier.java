@@ -86,6 +86,18 @@ public final class ReuseClassifier {
   public static final double MAX_UNCLASSIFIED_CONTIGUOUS_REUSE_FRAC = 0.08;
 
   /**
+   * Soft band above the retrace cap: between cap and cap × this factor the
+   * route is ACCEPTED with a disclosure instead of rejected. Root-caused on
+   * freiburg_100km_fastbike_N (2026-06-11): the planner's natural closure was
+   * 147m (1.8%) over the 7,992m cap — a hard reject there forced a zigzag
+   * via-hop back across Waldkirch that bought three at-grade town crossings.
+   * Retrace is co-linear riding the cyclist barely notices; a marginal
+   * overage must not outweigh structural crossings. Above the band the hard
+   * reject stands — that is genuine accidental backtracking.
+   */
+  public static final double UNCLASSIFIED_REUSE_SOFT_BAND = 1.25;
+
+  /**
    * For LOLLIPOP acceptance: the non-retraced "loop body" must be at least
    * this fraction of the requested distance. Below this, the route is
    * really a OUT_AND_BACK in disguise (trivial loop, mostly the
@@ -301,25 +313,37 @@ public final class ReuseClassifier {
       .scenicSpurReuseMeters((int) Math.round(spurMeters));
 
     // 1. Reject on long unclassified mid-route retrace (single stretch).
-    if (midRouteUnclassifiedMaxMeters > midCap) {
+    //    Marginal overages (within UNCLASSIFIED_REUSE_SOFT_BAND) are accepted
+    //    with a disclosure further below — a hard reject at the exact cap
+    //    boundary forces the planner into worse alternatives (measured:
+    //    a 147m overage bought a three-crossing town zigzag).
+    int hardCap = (int) (midCap * UNCLASSIFIED_REUSE_SOFT_BAND);
+    if (midRouteUnclassifiedMaxMeters > hardCap) {
       return b.shape(RouteShape.INVALID_RETRACE)
         .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
           "mid-route retrace %dm exceeds %dm — accidental backtracking",
-          midRouteUnclassifiedMaxMeters, midCap))
+          midRouteUnclassifiedMaxMeters, hardCap))
         .build();
     }
 
     // 2. Reject on excessive total mid-route reuse (death-by-a-thousand-cuts:
     //    many small mid-route stretches that each pass the per-stretch cap
     //    but together turn the route into a zig-zag). Same cap as the
-    //    single-stretch one: 2km/8% of cumulative mid-route reuse is plenty
-    //    to mark the route as accidentally retracey.
-    if (midRouteUnclassifiedTotalMeters > midCap) {
+    //    single-stretch one.
+    if (midRouteUnclassifiedTotalMeters > hardCap) {
       return b.shape(RouteShape.INVALID_RETRACE)
         .reject(RoundTripQualityResult.RejectionTier.QUALITY, String.format(Locale.US,
           "cumulative mid-route retrace %dm exceeds %dm — route zig-zags",
-          midRouteUnclassifiedTotalMeters, midCap))
+          midRouteUnclassifiedTotalMeters, hardCap))
         .build();
+    }
+
+    // Soft band: over the calibrated cap but within the band — accept and
+    // disclose, never silently.
+    if (midRouteUnclassifiedTotalMeters > midCap || midRouteUnclassifiedMaxMeters > midCap) {
+      b.addDisclosure(String.format(Locale.US,
+        "contains %dm of mid-route retrace (within the %dm tolerance band)",
+        Math.max(midRouteUnclassifiedTotalMeters, midRouteUnclassifiedMaxMeters), hardCap));
     }
 
     // 2b. Parallel return corridor: the route runs back alongside its outbound

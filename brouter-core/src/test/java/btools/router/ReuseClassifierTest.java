@@ -625,8 +625,8 @@ public class ReuseClassifierTest {
    */
   @Test
   public void cumulativeMidRouteRetraceRejectedAsZigzag() {
-    int requested = 30000;                              // midCap = 8% = 2400m
-    OsmTrack t = loopWithMidRetraces(20000, 2000, 1000, 3); // 3 × ~1km = ~3km > cap
+    int requested = 30000;  // midCap = 8% = 2400m; hard cap = ×1.25 band = 3000m
+    OsmTrack t = loopWithMidRetraces(20000, 2000, 1000, 4); // 4 × ~1km = ~4km > hard cap
     RoundTripQualityResult r = ReuseClassifier.classify(t, requested, false);
     assertFalse("cumulative mid-route retrace rejected: " + r, r.isAccepted());
     assertEquals(RouteShape.INVALID_RETRACE, r.getShape());
@@ -634,6 +634,26 @@ public class ReuseClassifierTest {
         + r.getRejectionReason(),
       r.getRejectionReason().contains("cumulative")
         || r.getRejectionReason().contains("zig-zag"));
+  }
+
+  /**
+   * Soft band (root-caused on freiburg_100km_fastbike_N): a marginal overage
+   * above the calibrated cap but within
+   * {@link ReuseClassifier#UNCLASSIFIED_REUSE_SOFT_BAND} is ACCEPTED with a
+   * disclosure — a hard reject at the exact boundary forced the planner into
+   * a three-crossing town zigzag over a 147m overage.
+   */
+  @Test
+  public void midRouteRetraceWithinSoftBandAcceptedWithDisclosure() {
+    int requested = 30000;  // midCap 2400m, hard cap 3000m
+    OsmTrack t = loopWithMidRetraces(20000, 2000, 1000, 3); // ~3km: over cap, in band
+    RoundTripQualityResult r = ReuseClassifier.classify(t, requested, false);
+    assertTrue("in-band retrace accepted: " + r, r.isAccepted());
+    boolean disclosed = false;
+    for (String d : r.getDisclosures()) {
+      if (d.contains("tolerance band")) disclosed = true;
+    }
+    assertTrue("band acceptance is disclosed: " + r.getDisclosures(), disclosed);
   }
 
   /**

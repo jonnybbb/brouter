@@ -33,6 +33,18 @@ public class GreedyRoundTripPlanner {
   private static final double DEFAULT_TOLERANCE = 0.05;
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final double ROAD_INDIRECTNESS = 1.3;
+  /**
+   * Adaptive indirectness bounds (root-caused on freiburg_100km_fastbike_N,
+   * 2026-06-11): the flat 1.3 air-to-road factor under-modeled an Elz-valley
+   * leg that routed at 2.0× air distance (25.7km against a 16.65km target),
+   * over-extending the loop and cornering the closure into a zigzag. The
+   * planner now updates a per-plan estimate from each routed leg's observed
+   * ratio (EMA, alpha 0.5), clamped to [ROAD_INDIRECTNESS, this max] — it can
+   * only become MORE conservative than the baseline, never more optimistic,
+   * so flat-terrain behaviour is unchanged.
+   */
+  private static final double MAX_INDIRECTNESS_EST = 2.5;
+  private static final double INDIRECTNESS_EMA_ALPHA = 0.5;
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   /**
    * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
@@ -334,6 +346,9 @@ public class GreedyRoundTripPlanner {
     double searchRadius = desiredDistance / 4.0;
     int prevIlon = -1;
     int prevIlat = -1;
+    // Air-to-road factor, adaptive per plan (see MAX_INDIRECTNESS_EST):
+    // starts at the calibrated baseline, learns from each routed leg.
+    double indirectnessEst = ROAD_INDIRECTNESS;
 
     for (int step = 1; step <= subRouteCount; step++) {
       if (System.currentTimeMillis() >= deadline) {
@@ -351,7 +366,7 @@ public class GreedyRoundTripPlanner {
         totalAttempts++;
         if (System.currentTimeMillis() >= deadline) break;
 
-        double airRadius = localRadius / ROAD_INDIRECTNESS;
+        double airRadius = localRadius / indirectnessEst;
 
         // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
         List<RoundTripCandidateProvider.CandidatePoint> candidates =
@@ -382,13 +397,13 @@ public class GreedyRoundTripPlanner {
         // Score using air-distance estimates — O(1) per candidate
         for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
-          double estimatedRouteDist = airDistToCp * ROAD_INDIRECTNESS;
+          double estimatedRouteDist = airDistToCp * indirectnessEst;
           double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
-          double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
+          double estimatedReturn = airDistToStart * indirectnessEst;
           double distFromStart = airDistToStart;
 
           double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * ROAD_INDIRECTNESS
+            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * indirectnessEst
             : -1;
 
           cp.score = scorer.score(
@@ -521,9 +536,9 @@ public class GreedyRoundTripPlanner {
           double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
             visitedEdges, totalDistance, desiredDistance, segLens);
           double airDistToStart = CheapRuler.distance(snappedIlon, snappedIlat, start.ilon, start.ilat);
-          double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
+          double estimatedReturn = airDistToStart * indirectnessEst;
           double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, snappedIlon, snappedIlat) * ROAD_INDIRECTNESS
+            ? CheapRuler.distance(prevIlon, prevIlat, snappedIlon, snappedIlat) * indirectnessEst
             : -1;
           double snappedBearing = CheapRuler.getScaledBearing(
             currentIlon, currentIlat, snappedIlon, snappedIlat);
@@ -665,6 +680,19 @@ public class GreedyRoundTripPlanner {
         addVisitedEdges(accepted.track, visitedEdges, totalDistance);
         segments.add(accepted.track);
         totalDistance += accepted.routeDistance;
+        // Learn the observed air-to-road ratio of this leg (kept on undo —
+        // a routed leg is a real terrain measurement either way).
+        OsmPathElement legEnd = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
+        double legAir = CheapRuler.distance(currentIlon, currentIlat, legEnd.getILon(), legEnd.getILat());
+        if (legAir > 500) {
+          double observed = accepted.routeDistance / legAir;
+          indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
+            (1 - INDIRECTNESS_EMA_ALPHA) * indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
+          if (indirectnessEst > ROAD_INDIRECTNESS + 0.05) {
+            result.addDiagnostic(String.format(java.util.Locale.US,
+              "step %d: observed indirectness %.2f, estimate now %.2f", step, observed, indirectnessEst));
+          }
+        }
         if (accepted.fromIsoCandidate) acceptedIsoLegs++;
         else acceptedRadialLegs++;
 
@@ -685,7 +713,7 @@ public class GreedyRoundTripPlanner {
         int curIlon = currentMwp.crosspoint.getILon();
         int curIlat = currentMwp.crosspoint.getILat();
         double airDistToStart = CheapRuler.distance(curIlon, curIlat, start.ilon, start.ilat);
-        double minReturn = airDistToStart * ROAD_INDIRECTNESS;
+        double minReturn = airDistToStart * indirectnessEst;
 
         // Skip the return check only when closure is clearly out of reach AND
         // we still have multiple steps left. ROAD_INDIRECTNESS is a heuristic;
