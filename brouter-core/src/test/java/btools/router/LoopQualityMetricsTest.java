@@ -528,6 +528,75 @@ public class LoopQualityMetricsTest {
     Assert.assertEquals(0.5, LoopQualityMetrics.computeCostMatchScore(2.75), 1e-9);
   }
 
+  // ---- lasso-crossing weighting in RouteChoiceScore (#9b) ------------------
+
+  /**
+   * A ~12km square loop; with {@code lasso} a small (~1.3km enclosed) detour
+   * loop on the bottom edge transversely crosses the outbound path once —
+   * the lasso classification target ({@code detectCrossings} → smallLoop).
+   */
+  private static OsmTrack lassoLoop(boolean lasso) {
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(1000, 0));
+    if (lasso) {
+      t.nodes.add(m(1400, 0));
+      t.nodes.add(m(1400, 300));
+      t.nodes.add(m(1100, 300));
+      t.nodes.add(m(1100, -100)); // crosses the (1000,0)-(1400,0) segment at (1100,0)
+      t.nodes.add(m(1600, -100));
+      t.nodes.add(m(1600, 0));
+    }
+    t.nodes.add(m(3000, 0));
+    t.nodes.add(m(3000, 3000));
+    t.nodes.add(m(0, 3000));
+    t.nodes.add(m(0, 0));
+    int dist = 0;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      dist += t.nodes.get(i - 1).calcDistance(t.nodes.get(i));
+    }
+    t.distance = dist;
+    t.cost = dist * 2;
+    return t;
+  }
+
+  @Test
+  public void detectCrossings_classifiesLassoBySmallEnclosedArc() {
+    int[] lasso = LoopQualityMetrics.detectCrossings(lassoLoop(true).nodes);
+    Assert.assertEquals("one crossing", 1, lasso[0]);
+    Assert.assertEquals("classified as lasso (enclosed ~1.3km <= 4km)", 1, lasso[1]);
+    int[] clean = LoopQualityMetrics.detectCrossings(lassoLoop(false).nodes);
+    Assert.assertEquals(0, clean[0]);
+  }
+
+  @Test
+  public void routeChoiceScore_lassoSurchargeIsRankingOnly() {
+    OsmTrack track = lassoLoop(true);
+    RouteChoiceScore.Verdict v = RouteChoiceScore.score(track, track.distance, "gravel", null, -1);
+    boolean hasLassoReason = false;
+    for (RouteChoiceScore.Reason r : v.reasons()) {
+      if (r.label.contains("lasso crossings 1")) {
+        hasLassoReason = true;
+      }
+    }
+    Assert.assertTrue("lasso surcharge reason present: " + v.reasons(), hasLassoReason);
+    // Ranking-only: the crossing + lasso penalties are excluded from the soft
+    // quality floor (no teardrop in this geometry, so the gap is exactly #9 + #9b).
+    Assert.assertEquals(
+      RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA,
+      v.qualityScore() - v.score(), 1e-9);
+  }
+
+  @Test
+  public void lassoEffectiveWeightStaysInReviewBand() {
+    // Loop-review item 3 calls for lassos at 2-3× a structural crossing; the
+    // surcharge is additive, so effective = (x + extra) / x.
+    double effective = (RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION
+      + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA) / RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION;
+    Assert.assertTrue("effective lasso weight " + effective + " in [2,3]",
+      effective >= 2.0 && effective <= 3.0);
+  }
+
   // ---- fromFields rehydration (field-order transposition guard) -----------
 
   @Test
