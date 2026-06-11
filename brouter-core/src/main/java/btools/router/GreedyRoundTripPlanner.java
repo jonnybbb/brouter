@@ -698,10 +698,13 @@ public class GreedyRoundTripPlanner {
           break;
         }
 
-        // One Dijkstra: return path to start.
+        // One Dijkstra: return path to start. When the fully-penalised return
+        // ships a self-crossing, routeReturnWithVariants escalates to
+        // relaxed-penalty variants and picks the best shape (extra Dijkstras
+        // are spent only on the defective case).
         OsmTrack returnRef = buildRefTrack(segments);
-        OsmTrack returnTrack = timedFindTrack("greedy-return", currentMwp, startMwp,
-          returnRef, deadline);
+        OsmTrack returnTrack = routeReturnWithVariants(segments, returnRef,
+          currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
         returnChecksPerformed++;
         if (returnTrack != null && returnTrack.distance > 0) {
           double closedDistance = totalDistance + returnTrack.distance;
@@ -1097,6 +1100,134 @@ public class GreedyRoundTripPlanner {
    */
   // Package-private (not private) so RoutingIslandExceptionTest can drive the
   // unroutable-leg path directly via a RoutingEngine test double.
+  /**
+   * Cap on how much of a relaxed-penalty return variant may retrace the
+   * committed legs (node-membership length fraction). Bounds the trade this
+   * search is allowed to make: a bounded same-way-back stretch may replace a
+   * self-crossing return, a full retrace may not.
+   */
+  private static final double MAX_VARIANT_REUSE_FRACTION = 0.5;
+  /** Penalty step-down ladder tried when the fully-penalised return self-crosses. */
+  private static final double[] RETURN_VARIANT_FACTORS = {0.5, 0.0};
+
+  /**
+   * Scored return variants (loop-review backlog item 2, post-debunk scope):
+   * route the closing leg under the standard full anti-reuse penalty first;
+   * when — and only when — that return crosses the committed path (the
+   * shipped-teardrop fingerprint), re-route it with the refTrack penalty
+   * relaxed ({@link #RETURN_VARIANT_FACTORS}) and pick the best variant by
+   * (crossings, reuse fraction, distance error), lexicographically. Variants
+   * retracing more than {@link #MAX_VARIANT_REUSE_FRACTION} of their length
+   * are discarded. The clean common case costs zero extra Dijkstras and is
+   * bit-identical to the pre-variant behaviour.
+   */
+  private OsmTrack routeReturnWithVariants(List<OsmTrack> segments, OsmTrack returnRef,
+                                           MatchedWaypoint fromMwp, MatchedWaypoint toMwp,
+                                           long deadline, RoundTripResult result,
+                                           double totalDistance, double desiredDistance, int step) {
+    OsmTrack base = timedFindTrack("greedy-return", fromMwp, toMwp, returnRef, deadline);
+    if (base == null || base.distance <= 0) {
+      return base;
+    }
+    List<OsmPathElement> prefix =
+      segments.isEmpty() ? null : mergeSegmentsNoMap(segments, null).nodes;
+    int baseCrossings = countTentativeSelfIntersections(prefix, base);
+    if (baseCrossings == 0) {
+      return base;
+    }
+
+    List<OsmTrack> variants = new ArrayList<>();
+    List<double[]> scores = new ArrayList<>(); // {factor, crossings, reuseFraction, distError}
+    variants.add(base);
+    scores.add(new double[]{1.0, baseCrossings, reuseFraction(base, returnRef),
+      closedDistanceError(totalDistance, base.distance, desiredDistance)});
+
+    RoutingContext rc = engine.routingContext;
+    for (double factor : RETURN_VARIANT_FACTORS) {
+      OsmTrack variant;
+      double saved = rc.refTrackCostFactor;
+      try {
+        rc.refTrackCostFactor = factor;
+        variant = timedFindTrack("greedy-return-relaxed", fromMwp, toMwp, returnRef, deadline);
+      } finally {
+        rc.refTrackCostFactor = saved;
+      }
+      if (variant == null || variant.distance <= 0 || sameNodeSequence(variant, base)) {
+        continue;
+      }
+      double reuse = reuseFraction(variant, returnRef);
+      if (reuse > MAX_VARIANT_REUSE_FRACTION) {
+        continue;
+      }
+      variants.add(variant);
+      scores.add(new double[]{factor, countTentativeSelfIntersections(prefix, variant),
+        reuse, closedDistanceError(totalDistance, variant.distance, desiredDistance)});
+    }
+
+    int best = 0;
+    for (int i = 1; i < scores.size(); i++) {
+      double[] a = scores.get(i);
+      double[] b = scores.get(best);
+      if (a[1] != b[1] ? a[1] < b[1] : (a[2] != b[2] ? a[2] < b[2] : a[3] < b[3])) {
+        best = i;
+      }
+    }
+    if (best != 0) {
+      double[] s = scores.get(best);
+      String msg = "return variant factor=" + s[0] + " wins: crossings " + baseCrossings
+        + " -> " + (int) s[1] + ", reuse " + (int) (s[2] * 100) + "%, distErr "
+        + Math.round(s[3] * 100) + "%";
+      result.addDiagnostic("step " + step + ": " + msg);
+      engine.logInfo("greedy " + msg);
+    }
+    return variants.get(best);
+  }
+
+  /**
+   * Length fraction of {@code leg} whose segments run between nodes the
+   * reference track visited. Node membership (not traveled-edge membership)
+   * by design: the variant legs are raw junction sequences while the
+   * reference track is detailed, so consecutive-pair granularities differ;
+   * for a bounded-retrace MEASUREMENT the looser node test is the right
+   * trade (the penalty itself uses the strict edge test in OsmPath).
+   */
+  static double reuseFraction(OsmTrack leg, OsmTrack refTrack) {
+    if (leg == null || leg.nodes == null || leg.nodes.size() < 2 || refTrack == null) {
+      return 0;
+    }
+    double total = 0;
+    double reused = 0;
+    for (int i = 1; i < leg.nodes.size(); i++) {
+      OsmPathElement a = leg.nodes.get(i - 1);
+      OsmPathElement b = leg.nodes.get(i);
+      double d = a.calcDistance(b);
+      total += d;
+      if (refTrack.containsNode(a) && refTrack.containsNode(b)) {
+        reused += d;
+      }
+    }
+    return total > 0 ? reused / total : 0;
+  }
+
+  private static double closedDistanceError(double totalDistance, int returnDistance, double desiredDistance) {
+    return desiredDistance > 0
+      ? Math.abs(totalDistance + returnDistance - desiredDistance) / desiredDistance : 0;
+  }
+
+  private static boolean sameNodeSequence(OsmTrack a, OsmTrack b) {
+    if (a.nodes == null || b.nodes == null || a.nodes.size() != b.nodes.size()) {
+      return false;
+    }
+    for (int i = 0; i < a.nodes.size(); i++) {
+      OsmPathElement x = a.nodes.get(i);
+      OsmPathElement y = b.nodes.get(i);
+      if (x.getILon() != y.getILon() || x.getILat() != y.getILat()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   OsmTrack timedFindTrack(String name, MatchedWaypoint from, MatchedWaypoint to,
                                   OsmTrack refTrack, long deadline) {
     long now = System.currentTimeMillis();

@@ -40,6 +40,17 @@ public final class RoutingContext {
     return Math.max(0, alternativeIdx);
   }
 
+  /**
+   * Multiplier on the anti-reuse refTrack penalty in
+   * {@link OsmPath#addAddionalPenalty}: a traveled refTrack edge costs an
+   * extra {@code linkdist × this factor}. 1.0 is the historic behaviour and
+   * exact at integer math (bit-identical costs); the greedy round-trip
+   * return-variant search lowers it (0.5 / 0.0) to offer retrace-tolerant
+   * closing legs when the fully-penalised return ships a self-crossing.
+   * Nothing outside the round-trip planner should ever set it ≠ 1.0.
+   */
+  public double refTrackCostFactor = 1.0;
+
   public int alternativeIdx = 0;
   public String localFunction;
   public long profileTimestamp;
