@@ -761,6 +761,32 @@ public class GreedyRoundTripPlannerTest {
       GreedyRoundTripPlanner.boundaryProximityWeight(12000, 11000, 10000), 1e-9);
   }
 
+  // ---- heading persistence (loop-shape term, 2026-06-11) -------------------
+
+  @Test
+  public void headingPersistence_withinQuotaIsFree() {
+    // 6 steps → quota = 1.5 × 60° = 90°: gentle continuation costs nothing.
+    Assert.assertEquals(0.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(90, 90, 6), 1e-9);
+    Assert.assertEquals(0.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(90, 150, 6), 1e-9);
+    Assert.assertEquals("wraparound handled",
+      0.0, GreedyRoundTripPlanner.headingPersistencePenalty(350, 30, 6), 1e-9);
+  }
+
+  @Test
+  public void headingPersistence_kinksAndReversalsPay() {
+    // 120° kink at quota 90° → excess 30/180.
+    Assert.assertEquals(30.0 / 180.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(0, 120, 6), 1e-9);
+    // Full reversal → excess 90/180 = 0.5 (the zigzag fingerprint).
+    Assert.assertEquals(0.5,
+      GreedyRoundTripPlanner.headingPersistencePenalty(0, 180, 6), 1e-9);
+    // Fewer steps → larger quota: the same 120° kink is free at 4 steps (quota 135°).
+    Assert.assertEquals(0.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(0, 120, 4), 1e-9);
+  }
+
   // ---- leg-junction seam contiguity (loop-review backlog item 1) -----------
 
   private static OsmTrack trackWithNodes(int[][] lonLat) {

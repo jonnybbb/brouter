@@ -45,6 +45,36 @@ public class GreedyRoundTripPlanner {
    */
   private static final double MAX_INDIRECTNESS_EST = 2.5;
   private static final double INDIRECTNESS_EMA_ALPHA = 0.5;
+
+  /**
+   * Heading-persistence term (loop-shape work, 2026-06-11): a smooth loop
+   * changes heading by ~360°/subRouteCount per step; a candidate whose bearing
+   * kinks beyond that quota (with {@link #HEADING_QUOTA_SLACK} slack for
+   * terrain) pays this weight × the normalized excess. Rounds via corners into
+   * sweeping arcs and discourages sharp heading reversals — the precursor of
+   * the zigzag/crossing mechanism root-caused on freiburg_100km_fastbike_N
+   * (a heading-monotone loop cannot self-intersect). Soft by design: terrain
+   * may force a sharp bend (valley exits), so this only tilts near-ties —
+   * never a hard rule (the beeline-gate lesson applies to shape rules too).
+   * Score scale is O(1-10); a full 180° reversal at slack-quota 90° costs
+   * 0.5 × weight.
+   */
+  private static final double W_HEADING_PERSISTENCE = 1.0;
+  /** Slack factor on the per-step heading quota (1.5 → 90° allowed at 6 steps). */
+  private static final double HEADING_QUOTA_SLACK = 1.5;
+
+  /**
+   * Normalized penalty for a candidate bearing that kinks beyond the smooth-
+   * loop quota relative to the previous leg's bearing. 0 within quota; up to
+   * (180 − quota)/180 for a full reversal.
+   */
+  static double headingPersistencePenalty(double prevLegBearing, double candidateBearing,
+                                          int subRouteCount) {
+    double quota = HEADING_QUOTA_SLACK * 360.0 / Math.max(1, subRouteCount);
+    double delta = CheapAngleMeter.getDifferenceFromDirection(prevLegBearing, candidateBearing);
+    return Math.max(0, delta - quota) / 180.0;
+  }
+
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   /**
    * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
@@ -394,6 +424,12 @@ public class GreedyRoundTripPlanner {
         }
         scorer.setDirectionReferenceOffset(dirRef);
 
+        // Previous leg's bearing for the heading-persistence term: NaN on
+        // step 1 (no previous leg — the start-direction term covers it).
+        double prevLegBearing = prevIlon >= 0
+          ? CheapAngleMeter.getDirection(prevIlon, prevIlat, currentIlon, currentIlat)
+          : Double.NaN;
+
         // Score using air-distance estimates — O(1) per candidate
         for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
@@ -417,6 +453,13 @@ public class GreedyRoundTripPlanner {
             cp.costFromStart, cp.bucketHits, cp.sourceContour)
             - DESIR_WEIGHT * cp.desirability // issue #15: reward profile-desirable cells (lower score = better)
             + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
+
+          // Heading persistence: prefer candidates that keep turning gently
+          // instead of kinking at the via (see W_HEADING_PERSISTENCE).
+          if (!Double.isNaN(prevLegBearing)) {
+            cp.score += W_HEADING_PERSISTENCE
+              * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
+          }
 
           // Variety seed (ADR-0001): jitter the HEURISTIC score only — it
           // perturbs which candidates get routed, while the routed-candidate
