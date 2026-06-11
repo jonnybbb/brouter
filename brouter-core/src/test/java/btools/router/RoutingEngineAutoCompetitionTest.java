@@ -237,6 +237,46 @@ public class RoutingEngineAutoCompetitionTest {
         Collections.singletonList(noTrack), 10000, "fastbike", 0));
   }
 
+  @Test
+  public void scoreBestEffortBypassesZeroGuardButKeepsShapePenalty() {
+    OsmTrack t = loopWithCostPerMeter(5000, 1.0);
+    RoundTripQualityResult rejectedCorridor = RoundTripQualityResult.builder()
+      .reject(RoundTripQualityResult.RejectionTier.QUALITY, "same-way-back corridor")
+      .shape(RouteShape.OUT_AND_BACK).build();
+    // Strict scorer: a rejected gate still zeroes (production ranking unchanged).
+    Assert.assertEquals("strict score() keeps the rejected-gate zero guard",
+      0.0, RouteChoiceScore.score(t, t.distance, "fastbike", rejectedCorridor, 0).score(), 1e-9);
+    // Best-effort scorer: real geometry score minus the shape disclosure penalty.
+    double baseline = RouteChoiceScore.score(t, t.distance, "fastbike", null, 0).score();
+    Assert.assertTrue("test geometry must not clamp at 1.0", baseline < 1.0);
+    RouteChoiceScore.Verdict v = RouteChoiceScore.scoreBestEffort(
+      t, t.distance, "fastbike", rejectedCorridor, 0);
+    Assert.assertTrue("zero guard bypassed for best-effort ranking", v.score() > 0);
+    Assert.assertEquals("gate shape penalty applied on top of the geometry score",
+      baseline - RouteChoiceScore.SHAPE_PENALTY_OUT_AND_BACK, v.score(), 1e-9);
+  }
+
+  @Test
+  public void bestEffortSelectionRanksRejectedCorridorBelowRejectedStrictLoop() {
+    // Identical geometry; only the gate's shape verdict differs. The disclosed
+    // corridor (OUT_AND_BACK) must lose to a strict-loop-shaped candidate
+    // rejected for a non-shape reason. Before scoreBestEffort consumed the
+    // gate verdict, both ranked identically and list order decided.
+    OsmTrack t = loopWithCostPerMeter(5000, 1.0);
+    RoundTripCandidateResult corridor = candidate(RoundTripAlgorithm.ISO_GREEDY, t);
+    corridor.gateVerdict = RoundTripQualityResult.builder()
+      .reject(RoundTripQualityResult.RejectionTier.QUALITY, "same-way-back corridor")
+      .shape(RouteShape.OUT_AND_BACK).build();
+    RoundTripCandidateResult strictOffTarget = candidate(RoundTripAlgorithm.GREEDY, t);
+    strictOffTarget.gateVerdict = RoundTripQualityResult.builder()
+      .reject(RoundTripQualityResult.RejectionTier.QUALITY, "distance off target")
+      .shape(RouteShape.STRICT_LOOP).build();
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      Arrays.asList(corridor, strictOffTarget), t.distance, "fastbike", 0);
+    Assert.assertSame("strict-shaped candidate must outrank the disclosed corridor",
+      strictOffTarget, best);
+  }
+
   // ------------- helpers -----------------------------------------------------
 
   private static RoundTripCandidateResult candidate(RoundTripAlgorithm algo, OsmTrack track) {

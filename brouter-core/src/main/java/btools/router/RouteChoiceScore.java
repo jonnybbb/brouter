@@ -252,12 +252,32 @@ public final class RouteChoiceScore {
   public static Verdict score(OsmTrack track, double requestedDistance,
                               String profileName, RoundTripQualityResult qualityGate,
                               double requestedDirection) {
+    return score(track, requestedDistance, profileName, qualityGate, requestedDirection, true);
+  }
+
+  /**
+   * Best-effort ranking variant: scores a gate-REJECTED track on its real
+   * geometry (bypasses the rejected-gate zero guard) while still consuming the
+   * gate's shape for the disclosure penalty (term #8). Used when AUTO must rank
+   * degraded candidates that all failed the gate — passing {@code null} instead
+   * would also bypass the guard, but silently lose the LOLLIPOP/OUT_AND_BACK
+   * penalty and rank a rejected corridor as if it were a strict loop.
+   */
+  public static Verdict scoreBestEffort(OsmTrack track, double requestedDistance,
+                                        String profileName, RoundTripQualityResult qualityGate,
+                                        double requestedDirection) {
+    return score(track, requestedDistance, profileName, qualityGate, requestedDirection, false);
+  }
+
+  private static Verdict score(OsmTrack track, double requestedDistance,
+                               String profileName, RoundTripQualityResult qualityGate,
+                               double requestedDirection, boolean rejectedGateZeroes) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) {
       List<Reason> empty = new ArrayList<>();
       empty.add(new Reason("no track", 0, 0, 0));
       return new Verdict(0.0, 0.0, empty);
     }
-    if (qualityGate != null && !qualityGate.isAccepted()) {
+    if (rejectedGateZeroes && qualityGate != null && !qualityGate.isAccepted()) {
       List<Reason> empty = new ArrayList<>();
       empty.add(new Reason("gate rejected: " + qualityGate.getRejectionReason(),
         0, 0, 0));
@@ -331,8 +351,9 @@ public final class RouteChoiceScore {
 
     // 8. Shape disclosure penalty: cyclist sees the route shape; a clean
     //    STRICT_LOOP ranks above a LOLLIPOP above a OUT_AND_BACK
-    //    all else equal. INVALID_RETRACE would have been gate-rejected
-    //    above and wouldn't reach here.
+    //    all else equal. In strict mode INVALID_RETRACE is gate-rejected above
+    //    and never reaches here; in best-effort mode it can — it carries no
+    //    explicit penalty, but its ~50%+ reuse already zeroes the reuse term.
     if (qualityGate != null) {
       RouteShape shape = qualityGate.getShape();
       double penalty = 0;

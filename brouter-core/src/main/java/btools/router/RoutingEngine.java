@@ -1230,14 +1230,16 @@ public class RoutingEngine extends Thread {
   /**
    * Rank degraded best-effort round-trip candidates and return the most rideable,
    * or {@code null} if none have a track. Scores each with the multi-factor
-   * {@link RouteChoiceScore} (distance closeness + profile cost/m match +
-   * reuse/shape) using a {@code null} gate verdict, which bypasses the scorer's
-   * accepted-only zero-guard so a rejected track is ranked on its real geometry
-   * instead of collapsing to 0. Because every QUALITY failure corresponds to a
-   * weak component in that score (distance miss → low distance term, hostile
-   * surface → low cost/m term, chaos/retrace → low reuse term), the least-bad
-   * overall candidate wins. Ties keep {@code candidates} order (the AUTO
-   * algorithm-quality order). Does no routing — the tracks are already built.
+   * {@link RouteChoiceScore#scoreBestEffort}, which bypasses the scorer's
+   * accepted-only zero-guard (so a rejected track is ranked on its real geometry
+   * instead of collapsing to 0) while still consuming the candidate's gate
+   * verdict for the shape disclosure penalty — a rejected LOLLIPOP/OUT_AND_BACK
+   * must not rank as if it were a strict loop. Because every QUALITY failure
+   * also corresponds to a weak component in the score (distance miss → low
+   * distance term, hostile surface → low cost/m term, chaos/retrace → low reuse
+   * term), the least-bad overall candidate wins. Ties keep {@code candidates}
+   * order (the AUTO algorithm-quality order). Does no routing — the tracks are
+   * already built.
    */
   static RoundTripCandidateResult selectBestEffortCandidate(
       List<RoundTripCandidateResult> candidates, double expectedDistance,
@@ -1249,7 +1251,8 @@ public class RoutingEngine extends Thread {
       if (r.track == null) {
         continue;
       }
-      RouteChoiceScore.Verdict v = RouteChoiceScore.score(r.track, expectedDistance, profileName, null, direction);
+      RouteChoiceScore.Verdict v = RouteChoiceScore.scoreBestEffort(
+        r.track, expectedDistance, profileName, r.gateVerdict, direction);
       double s = v.score();
       if (s > bestScore) {
         bestScore = s;
@@ -1322,6 +1325,11 @@ public class RoutingEngine extends Thread {
         r.routedRadialCandidates = cr.getRoutedRadialCandidates();
         r.acceptedIsoLegs = cr.getAcceptedIsoLegs();
         r.acceptedRadialLegs = cr.getAcceptedRadialLegs();
+        // Keep-when-forced: the child accepted a same-way-back corridor because
+        // nothing clean exists. Without carrying this, the re-gate below would
+        // reject the track the child engine accepted by design (the direct
+        // routing path honors the same flag at the main gate).
+        r.forcedCorridorAccepted = cr.isForcedCorridorAccepted();
       }
 
       if (r.track != null) {
@@ -1332,7 +1340,8 @@ public class RoutingEngine extends Thread {
         double expectedDist = 2 * Math.PI * searchRadius;
         String profileName = routingContext.getProfileName();
         r.gateVerdict = RoundTripQualityGate.evaluate(r.track, expectedDist,
-          profileName, routingContext.allowSamewayback, false, roundTripFerriesAllowed());
+          profileName, routingContext.allowSamewayback || r.forcedCorridorAccepted,
+          false, roundTripFerriesAllowed());
         if (r.gateVerdict.isAccepted()) {
           r.score = RouteChoiceScore.score(r.track, expectedDist,
             profileName, r.gateVerdict, direction);
@@ -1881,6 +1890,18 @@ public class RoutingEngine extends Thread {
     MatchedWaypoint best = origMatch;
     double bestCf = origCf;
     if (origMatch == null || origCf >= VIA_SNAP_HOSTILE_COSTFACTOR) {
+      // KNOWN INCONSISTENCY, kept for now: the incumbent is scored WITHOUT its
+      // snap-distance term while the probe alternatives pay costFactor*1000 +
+      // distance (the sibling start-snapper scores the incumbent with the full
+      // formula). The omission gives the hostile original a stickiness bonus
+      // equal to its own snap distance, which can block a relocation the
+      // improvement guard below would keep. Risk of the consistent formula:
+      // it loosens incumbent stickiness while relocation distance has no bound
+      // relative to loop scale (rings {300,700} + maxSnapDist are absolute, so
+      // a small loop can have a via pulled >1km sideways). Change this only
+      // together with a loop-scale relocation bound, validated on a GREEN
+      // matrix baseline (a 2026-06-11 attempt was reverted during a red
+      // baseline; its regression evidence was misattributed and is unproven).
       double bestScore = origMatch != null ? origCf * 1000.0 : Double.MAX_VALUE;
       for (MatchedWaypoint m : mwps) {
         if (!isRoadSnap(m)) continue;
