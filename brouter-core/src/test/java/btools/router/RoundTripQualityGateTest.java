@@ -1160,17 +1160,26 @@ public class RoundTripQualityGateTest {
   // ======================================================================
 
   /** Track passing twice through node P=(0,0); the second pass enters from
-   *  {@code in2} and leaves to {@code out2} (coordinates in makeNode units). */
+   *  {@code in2} and leaves to {@code out2} (coordinates in makeNode units).
+   *  Lead-in/lead-out keep P outside the CROSSING_START_END_EXEMPT_M home
+   *  zone (the expected leave-and-return weave near route start/end is
+   *  deliberately not counted), so these tests exercise pure transversality. */
   private static OsmTrack twoPassesThroughNode(int in2x, int in2y, int out2x, int out2y) {
     OsmTrack t = new OsmTrack();
     t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(-1200, 0));
+    t.nodes.add(makeNode(-700, 0));
     t.nodes.add(makeNode(-200, 0));
     t.nodes.add(makeNode(0, 0));      // P, pass 1: west → east
     t.nodes.add(makeNode(200, 0));
     t.nodes.add(makeNode(in2x, in2y));
     t.nodes.add(makeNode(0, 0));      // P again
     t.nodes.add(makeNode(out2x, out2y));
-    t.nodes.add(makeNode(-400, -400));
+    // Lead-out extends radially along the exit direction so it cannot cross
+    // the lead-in regardless of which exit the test variant chooses.
+    t.nodes.add(makeNode(2 * out2x, 2 * out2y));
+    t.nodes.add(makeNode(3 * out2x, 3 * out2y));
+    t.nodes.add(makeNode(4 * out2x, 4 * out2y));
     return t;
   }
 

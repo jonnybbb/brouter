@@ -2,7 +2,7 @@
 # Regenerate with -Dgolden.tests=true -Dgolden.write=true on known-good code.
 greedy|dreieich|r8000|dir0|fastbike => nodes=1250 hash=c990a398f804aa8d dist=47158 ascend=128 cost=80293 err=null
 greedy|dreieich|r8000|dir90|fastbike => nodes=1203 hash=7c576939e349379f dist=48868 ascend=109 cost=80680 err=null
-greedy|rural_lozere|r8000|dir0|gravel => nodes=1316 hash=893754ae88c3a7f3 dist=48799 ascend=880 cost=136424 err=null
+greedy|rural_lozere|r8000|dir0|gravel => nodes=1351 hash=f797b6ab9885f165 dist=49728 ascend=964 cost=140417 err=null
 greedy|urban_berlin|r8000|dir0|fastbike => nodes=2115 hash=bbed4a0925395acd dist=51125 ascend=61 cost=72829 err=null
 iso_greedy|dreieich|r8000|dir0|fastbike => nodes=1423 hash=0b26bab45c328e71 dist=48830 ascend=134 cost=77084 err=null
 iso_greedy|dreieich|r8000|dir90|fastbike => nodes=1301 hash=84949dc4d3600e26 dist=44020 ascend=111 cost=79061 err=null

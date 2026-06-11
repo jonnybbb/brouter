@@ -189,9 +189,19 @@ public final class LoopQualityMetrics {
     int total = 0, smallLoop = 0;
     int ceiling = 64; // we only need counts; bound degenerate inputs
     for (int i = 0; i < n - 1; i++) {
+      // Start/end-zone + bridge/tunnel exemptions, mirroring
+      // RoundTripQualityGate.countSelfIntersections (keep in sync): home-zone
+      // weave and vertically separated passes are not defects.
+      boolean aExempt = cum[i + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+        || cum[i] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+        || RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(i + 1));
       for (int j = i + 2; j < n - 1; j++) {
         if (i == 0 && j == n - 2) continue; // start≈end loop closure, not a crossing
+        if (aExempt
+          || cum[j + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+          || cum[j] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
         if (segmentsCrossLocal(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1))) {
+          if (RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(j + 1))) continue;
           total++;
           double arc = cum[j] - cum[i];
           double enclosed = Math.min(arc, perim - arc);
@@ -208,8 +218,11 @@ public final class LoopQualityMetrics {
     Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
     for (int k = 1; k < n - 1; k++) {
       List<Integer> prev = occ.computeIfAbsent(pts.get(k).getIdFromPos(), x -> new ArrayList<>());
+      boolean kExempt = cum[k] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+        || cum[k] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M;
       for (int k1 : prev) {
         if (k - k1 <= 1) continue;
+        if (kExempt || cum[k1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
         if (RoundTripQualityGate.isTransverseRevisit(pts, k1, k)) {
           total++;
           double arc = cum[k] - cum[k1];
@@ -256,9 +269,20 @@ public final class LoopQualityMetrics {
     double perim = cum[n - 1];
     int ceiling = 64;
     for (int i = 0; i < n - 1; i++) {
+      // Same exemptions as detectCrossings/the gate count: home-zone weave and
+      // bridge/tunnel passes. The bridge check needs per-edge messages, so on
+      // simplified render-time geometry (no messages) markers can over-show
+      // relative to the test-time count — counts stay authoritative.
+      boolean aExempt = cum[i + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+        || cum[i] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+        || RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(i + 1));
       for (int j = i + 2; j < n - 1; j++) {
         if (i == 0 && j == n - 2) continue;
+        if (aExempt
+          || cum[j + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+          || cum[j] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
         if (segmentsCrossLocal(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1))) {
+          if (RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(j + 1))) continue;
           double arc = cum[j] - cum[i];
           double enclosed = Math.min(arc, perim - arc);
           out.add(intersectionLonLat(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1), enclosed));
@@ -269,8 +293,11 @@ public final class LoopQualityMetrics {
     Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
     for (int k = 1; k < n - 1; k++) {
       List<Integer> prev = occ.computeIfAbsent(pts.get(k).getIdFromPos(), x -> new ArrayList<>());
+      boolean kExempt = cum[k] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
+        || cum[k] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M;
       for (int k1 : prev) {
         if (k - k1 <= 1) continue;
+        if (kExempt || cum[k1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
         if (RoundTripQualityGate.isTransverseRevisit(pts, k1, k)) {
           double arc = cum[k] - cum[k1];
           double enclosed = Math.min(arc, perim - arc);

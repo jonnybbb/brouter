@@ -561,6 +561,52 @@ public class LoopQualityMetricsTest {
   }
 
   @Test
+  public void crossings_bridgeOrTunnelEdgeIsExempt() {
+    // User label (2026-06-11): a crossing where one pass rides a bridge or
+    // tunnel is vertically separated — e.g. a ramp loop built to avoid
+    // stairs, or re-crossing a river on a different bridge. Tag the edge
+    // that ENDS at (1100,-100) — the second crossing segment — as a bridge.
+    OsmTrack t = lassoLoop(true);
+    MessageData md = new MessageData();
+    md.wayKeyValues = "highway=secondary bridge=yes";
+    t.nodes.get(5).message = md; // edge (1100,300)->(1100,-100)
+    Assert.assertEquals("bridge crossing not counted by the metric",
+      0, LoopQualityMetrics.detectCrossings(t.nodes)[0]);
+    Assert.assertEquals("bridge crossing not counted by the gate",
+      0, RoundTripQualityGate.countSelfIntersections(t));
+    Assert.assertTrue("no marker either",
+      LoopQualityMetrics.crossingPoints(t.nodes).isEmpty());
+    // Tunnel works the same way.
+    md.wayKeyValues = "highway=secondary tunnel=yes";
+    Assert.assertEquals(0, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void crossings_startEndZoneIsExempt() {
+    // User label (2026-06-11): crossings at the very beginning/end of the
+    // route are the expected leave-and-return weave. Same lasso geometry,
+    // but shifted so the crossing sits ~150m from the route start.
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(50, 0));
+    t.nodes.add(m(450, 0));
+    t.nodes.add(m(450, 300));
+    t.nodes.add(m(150, 300));
+    t.nodes.add(m(150, -100)); // crosses the (50,0)-(450,0) segment at (150,0), cum ~ 150m
+    t.nodes.add(m(650, -100));
+    t.nodes.add(m(650, 0));
+    t.nodes.add(m(3000, 0));
+    t.nodes.add(m(3000, 3000));
+    t.nodes.add(m(0, 3000));
+    t.nodes.add(m(0, 0));
+    Assert.assertEquals("home-zone crossing not counted",
+      0, LoopQualityMetrics.detectCrossings(t.nodes)[0]);
+    Assert.assertEquals(0, RoundTripQualityGate.countSelfIntersections(t));
+    // Control: the identical detour placed mid-edge (cum > 500m) IS counted.
+    Assert.assertEquals(1, LoopQualityMetrics.detectCrossings(lassoLoop(true).nodes)[0]);
+  }
+
+  @Test
   public void detectCrossings_classifiesLassoBySmallEnclosedArc() {
     int[] lasso = LoopQualityMetrics.detectCrossings(lassoLoop(true).nodes);
     Assert.assertEquals("one crossing", 1, lasso[0]);

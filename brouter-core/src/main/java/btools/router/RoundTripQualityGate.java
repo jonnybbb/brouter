@@ -529,10 +529,41 @@ public final class RoundTripQualityGate {
     return null;
   }
 
+  /**
+   * Crossings whose segments lie within this arc distance of the route start
+   * or end are NOT counted (user labeling, 2026-06-11): leaving and returning
+   * through the same home neighborhood crosses the outbound path by
+   * construction — expected, not a defect.
+   */
+  static final double CROSSING_START_END_EXEMPT_M = 500;
+
+  /**
+   * Vertical-separation exemption (user labeling, 2026-06-11): a geometric
+   * crossing where either involved edge is a bridge or tunnel is not an
+   * at-grade crossing — the dominant false-positive classes were bridge-ramp
+   * loops (route crosses under its own bridge approach, e.g. a spiral ramp
+   * built to avoid stairs) and river crossings re-crossed on different
+   * bridges. Edge tags ride on the edge's END element ({@code message} of
+   * {@code nodes[i]} describes edge i-1→i); raw tracks without messages keep
+   * the historic behaviour (no exemption).
+   */
+  static boolean bridgeOrTunnelEdge(OsmPathElement edgeEnd) {
+    if (edgeEnd == null || edgeEnd.message == null || edgeEnd.message.wayKeyValues == null) {
+      return false;
+    }
+    String tags = edgeEnd.message.wayKeyValues;
+    return tags.contains("bridge=") || tags.contains("tunnel=");
+  }
+
   static int countSelfIntersections(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 4) return 0;
     List<OsmPathElement> nodes = sampledShapeNodes(track.nodes);
     int n = nodes.size();
+    double[] cum = new double[n];
+    for (int k = 1; k < n; k++) {
+      cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+    }
+    double perim = cum[n - 1];
     int crossings = 0;
     // Hard ceiling proportional to the threshold; routes that already
     // qualify as chaotic don't benefit from precise upper counting and
@@ -541,11 +572,18 @@ public final class RoundTripQualityGate {
     for (int i = 0; i < n - 1; i++) {
       OsmPathElement a1 = nodes.get(i);
       OsmPathElement a2 = nodes.get(i + 1);
+      boolean aExempt = cum[i + 1] <= CROSSING_START_END_EXEMPT_M
+        || cum[i] >= perim - CROSSING_START_END_EXEMPT_M
+        || bridgeOrTunnelEdge(a2);
       for (int j = i + 2; j < n - 1; j++) {
         // The first and last segments in a closed loop share the start/end
         // coordinate; that closure is not a self-crossing.
         if (i == 0 && j == n - 2) continue;
+        if (aExempt
+          || cum[j + 1] <= CROSSING_START_END_EXEMPT_M
+          || cum[j] >= perim - CROSSING_START_END_EXEMPT_M) continue;
         if (segmentsCross(a1, a2, nodes.get(j), nodes.get(j + 1))) {
+          if (bridgeOrTunnelEdge(nodes.get(j + 1))) continue; // vertically separated
           crossings++;
           if (crossings > absoluteCeiling) return crossings;
         }
@@ -556,7 +594,7 @@ public final class RoundTripQualityGate {
     // (both passes ride through the same intersection), which made the count
     // systematically blind to exactly the knots a cyclist sees on the map
     // (observed: dreieich 50km fastbike W showing 2 visual knots, counted 1).
-    crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings);
+    crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings, cum);
     return crossings;
   }
 
@@ -567,9 +605,10 @@ public final class RoundTripQualityGate {
    * of pass 1) and a same-edge retrace (shared neighbor) are NOT crossings;
    * the former is the near-revisit detector's domain, the latter is reuse.
    */
-  private static int countTransverseNodeRevisits(List<OsmPathElement> nodes, int ceiling) {
+  private static int countTransverseNodeRevisits(List<OsmPathElement> nodes, int ceiling, double[] cum) {
     int n = nodes.size();
     if (n < 5 || ceiling <= 0) return 0;
+    double perim = cum[n - 1];
     Map<Long, int[]> first = new java.util.HashMap<>(n * 2);
     int crossings = 0;
     for (int k = 1; k < n - 1; k++) {
@@ -579,8 +618,14 @@ public final class RoundTripQualityGate {
         first.put(id, new int[]{k});
         continue;
       }
+      // Start/end exemption: revisits of a junction in the home zone are the
+      // expected leave-and-return weave, not a defect (see
+      // CROSSING_START_END_EXEMPT_M).
+      boolean kExempt = cum[k] <= CROSSING_START_END_EXEMPT_M
+        || cum[k] >= perim - CROSSING_START_END_EXEMPT_M;
       for (int k1 : prevIdx) {
         if (k - k1 <= 1) continue;
+        if (kExempt || cum[k1] <= CROSSING_START_END_EXEMPT_M) continue;
         if (isTransverseRevisit(nodes, k1, k)) {
           crossings++;
           if (crossings >= ceiling) return crossings;
