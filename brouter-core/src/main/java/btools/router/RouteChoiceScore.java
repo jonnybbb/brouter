@@ -83,16 +83,21 @@ public final class RouteChoiceScore {
 
   /**
    * Lasso surcharge — shape term #9b (loop-review backlog item 3).
-   * {@link LoopQualityMetrics#detectCrossings} classifies each crossing by its
+   * {@link LoopQualityMetrics#crossingPoints} classifies each crossing by its
    * enclosed arc: ≤ {@link LoopQualityMetrics#SMALL_LOOP_MAX_ARC_METERS} means
    * a small detour loop / lasso the cyclist actually rides around — a worse,
    * more visible defect than a far-apart structural outbound-vs-return
    * crossing. ADDITIVE on top of #9's per-crossing penalty so #9's measured
    * calibration (shipped crossings 12.8%→3.7%) holds unchanged for structural
-   * crossings; a lasso pays 0.08 + 0.12 = 2.5× the structural rate — the
-   * middle of the review's 2-3× band. Ranking-only like #9 (excluded from
-   * {@link Verdict#qualityScore()}); tunable via {@code -Dloop.lassoextra}
-   * pending corpus calibration.
+   * crossings.
+   *
+   * <p><b>Size-faded</b> (user label, Basel 80km fastbike E, 2026-06-11: a
+   * detour loop "big enough" to ride is fine): per-lasso severity =
+   * {@code 1 − enclosedArc / SMALL_LOOP_MAX_ARC_METERS}, so a 400m circle
+   * pays ~the full surcharge (effective ~2.5× a structural crossing — the
+   * middle of the review's 2-3× band) while a near-cap 3.5km loop pays
+   * almost nothing. Ranking-only like #9 (excluded from
+   * {@link Verdict#qualityScore()}); tunable via {@code -Dloop.lassoextra}.
    */
   static final double SHAPE_PENALTY_LASSO_EXTRA =
     Double.parseDouble(System.getProperty("loop.lassoextra", "0.12"));
@@ -381,17 +386,24 @@ public final class RouteChoiceScore {
     }
 
     // 9b. Lasso surcharge: crossings whose enclosed sub-loop is short are
-    //     small detour loops the cyclist rides around — weighted ~2.5× a
-    //     structural crossing (see SHAPE_PENALTY_LASSO_EXTRA). Guarded on #9
-    //     so the O(n²-capped) classification scan only runs on tracks that
-    //     have crossings at all.
+    //     small detour loops the cyclist rides around. Size-faded severity
+    //     (see SHAPE_PENALTY_LASSO_EXTRA): a tiny circle pays ~full, a loop
+    //     near the 4km cap pays almost nothing. Guarded on #9 so the
+    //     O(n²-capped) classification scan only runs on tracks that have
+    //     crossings at all.
     double lassoPenalty = 0;
     if (selfIntersections > 0 && track.nodes != null) {
-      int lassoCrossings = LoopQualityMetrics.detectCrossings(track.nodes)[1];
-      if (lassoCrossings > 0) {
-        lassoPenalty = SHAPE_PENALTY_LASSO_EXTRA * lassoCrossings;
-        reasons.add(new Reason("lasso crossings " + lassoCrossings,
-          -lassoPenalty, lassoCrossings, -lassoPenalty));
+      double lassoSeverity = 0;
+      for (double[] x : LoopQualityMetrics.crossingPoints(track.nodes)) {
+        double enclosed = x[2];
+        if (enclosed <= LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS) {
+          lassoSeverity += 1.0 - enclosed / LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS;
+        }
+      }
+      if (lassoSeverity > 0) {
+        lassoPenalty = SHAPE_PENALTY_LASSO_EXTRA * lassoSeverity;
+        reasons.add(new Reason("lasso crossings sev " + fmt(lassoSeverity),
+          -lassoPenalty, lassoSeverity, -lassoPenalty));
         total -= lassoPenalty;
       }
     }

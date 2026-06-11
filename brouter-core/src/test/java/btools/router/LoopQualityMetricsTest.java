@@ -570,31 +570,60 @@ public class LoopQualityMetricsTest {
   }
 
   @Test
-  public void routeChoiceScore_lassoSurchargeIsRankingOnly() {
+  public void routeChoiceScore_lassoSurchargeIsRankingOnlyAndSizeFaded() {
     OsmTrack track = lassoLoop(true);
     RouteChoiceScore.Verdict v = RouteChoiceScore.score(track, track.distance, "gravel", null, -1);
     boolean hasLassoReason = false;
     for (RouteChoiceScore.Reason r : v.reasons()) {
-      if (r.label.contains("lasso crossings 1")) {
+      if (r.label.startsWith("lasso crossings sev")) {
         hasLassoReason = true;
       }
     }
     Assert.assertTrue("lasso surcharge reason present: " + v.reasons(), hasLassoReason);
+    // Size-faded severity: the fixture's enclosed loop is ~1.3km of the 4km
+    // cap, so the surcharge must be strictly between 0 and the full extra
+    // (user label: a big-enough detour loop is fine — severity fades with size).
+    double expectedSeverity = 0;
+    for (double[] x : LoopQualityMetrics.crossingPoints(track.nodes)) {
+      if (x[2] <= LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS) {
+        expectedSeverity += 1.0 - x[2] / LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS;
+      }
+    }
+    Assert.assertTrue("severity in (0,1): " + expectedSeverity,
+      expectedSeverity > 0 && expectedSeverity < 1);
     // Ranking-only: the crossing + lasso penalties are excluded from the soft
     // quality floor (no teardrop in this geometry, so the gap is exactly #9 + #9b).
     Assert.assertEquals(
-      RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA,
+      RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION
+        + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA * expectedSeverity,
       v.qualityScore() - v.score(), 1e-9);
   }
 
   @Test
   public void lassoEffectiveWeightStaysInReviewBand() {
-    // Loop-review item 3 calls for lassos at 2-3× a structural crossing; the
-    // surcharge is additive, so effective = (x + extra) / x.
-    double effective = (RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION
+    // Loop-review item 3 calls for lassos at 2-3× a structural crossing. With
+    // size fading this is the MAX effective weight (severity → 1 for a tiny
+    // circle); a near-cap loop fades toward 1× (user label: big = fine).
+    double maxEffective = (RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION
       + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA) / RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION;
-    Assert.assertTrue("effective lasso weight " + effective + " in [2,3]",
-      effective >= 2.0 && effective <= 3.0);
+    Assert.assertTrue("max effective lasso weight " + maxEffective + " in [2,3]",
+      maxEffective >= 2.0 && maxEffective <= 3.0);
+  }
+
+  @Test
+  public void crossingPoints_locatesTheLassoIntersection() {
+    // The render-side highlighter must place the marker AT the crossing:
+    // the fixture's arms cross at x=1100m, y=0 (see lassoLoop).
+    java.util.List<double[]> pts = LoopQualityMetrics.crossingPoints(lassoLoop(true).nodes);
+    Assert.assertEquals(1, pts.size());
+    OsmPathElement expected = m(1100, 0);
+    OsmPathElement actual = OsmPathElement.create(
+      (int) Math.round((pts.get(0)[0] + 180.0) * 1e6),
+      (int) Math.round((pts.get(0)[1] + 90.0) * 1e6), (short) 0, null);
+    Assert.assertTrue("marker within 30m of the true crossing",
+      expected.calcDistance(actual) <= 30);
+    Assert.assertTrue("classified small (enclosed <= 4km)",
+      pts.get(0)[2] <= LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS);
   }
 
   // ---- fromFields rehydration (field-order transposition guard) -----------
