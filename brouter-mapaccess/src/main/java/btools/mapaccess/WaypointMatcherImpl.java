@@ -208,6 +208,9 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
           mw.radius = mwp.radius;
           mw.directionDiff = diff;
           mw.directionToNext = mwp.directionToNext;
+          // tags of the way that produced this candidate — without this, the
+          // selection below can pair one way's geometry with another way's tags
+          mw.wayDescription = mwp.wayDescription;
 
           updateWayList(mwp.wayNearest, mw);
 
@@ -227,6 +230,7 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
           mw.radius = mwp.radius;
           mw.directionDiff = diff;
           mw.directionToNext = mwp.directionToNext;
+          mw.wayDescription = mwp.wayDescription;
 
           updateWayList(mwp.wayNearest, mw);
 
@@ -237,6 +241,11 @@ public final class WaypointMatcherImpl implements WaypointMatcher {
           mwp.node2 = new OsmNode(way.node2.ilon, way.node2.ilat);
           mwp.directionDiff = way.directionDiff;
           mwp.radius = way.radius;
+          // keep the tags consistent with the SELECTED candidate: on a radius
+          // tie an earlier way can outrank the last updater (directionDiff
+          // tie-break), and checkSegment left the last updater's tags here —
+          // snapCandidateCostFactor would then score the wrong road's tags.
+          mwp.wayDescription = way.wayDescription;
 
         }
       }
