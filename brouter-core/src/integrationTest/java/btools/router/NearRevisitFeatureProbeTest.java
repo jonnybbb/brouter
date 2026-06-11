@@ -47,6 +47,16 @@ import btools.mapaccess.MatchedWaypoint;
  * <p>Opt-in via {@code -Dfeature.probe=true}; one CSV per case in
  * {@code build/feature-probe/} (fork-safe). minArc 300 so the borderline
  * [300,600) band is covered too; filter rows by arcM as needed.
+ *
+ * <p><b>Labeling round 1 (2026-06-11, user-labeled on the map):</b> all three
+ * production-band spans flagged {@code avoidable=1} (Garmisch 3.8-7.6km) were
+ * labeled VALID — no defect. Lesson: the provisional avoidability rule
+ * (an alternative arm exists at ≤2× cost with <30% retrace) is necessary but
+ * NOT sufficient; in constrained valleys an alternative arm in the graph is
+ * not a better ride. Zero labeled positives in the corpus so far — do not
+ * build span-repair machinery without one; a future avoidability v2 should
+ * require the alternative to be meaningfully better (shape/score gain), not
+ * merely exist.
  */
 @RunWith(Parameterized.class)
 public class NearRevisitFeatureProbeTest {
