@@ -761,6 +761,57 @@ public class GreedyRoundTripPlannerTest {
       GreedyRoundTripPlanner.boundaryProximityWeight(12000, 11000, 10000), 1e-9);
   }
 
+  // ---- leg-junction seam contiguity (loop-review backlog item 1) -----------
+
+  private static OsmTrack trackWithNodes(int[][] lonLat) {
+    OsmTrack t = new OsmTrack();
+    for (int[] p : lonLat) {
+      OsmNode n = new OsmNode(p[0], p[1]);
+      t.nodes.add(OsmPathElement.create(n.ilon, n.ilat, (short) 0, null));
+    }
+    return t;
+  }
+
+  @Test
+  public void seamGaps_contiguousLegsReportNothing() {
+    // Leg 2 starts exactly where leg 1 ends — the by-construction contract.
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack b = trackWithNodes(new int[][]{{188730000, 140000000}, {188740000, 140000000}});
+    Assert.assertTrue(GreedyRoundTripPlanner.seamGapsMeters(
+      java.util.Arrays.asList(a, b), null).isEmpty());
+  }
+
+  @Test
+  public void seamGaps_smallSnapOffsetTolerated() {
+    // ~35m offset (0.0005 deg lon at 50N) — below the 100m defect threshold.
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack b = trackWithNodes(new int[][]{{188730500, 140000000}, {188740000, 140000000}});
+    Assert.assertTrue(GreedyRoundTripPlanner.seamGapsMeters(
+      java.util.Arrays.asList(a, b), null).isEmpty());
+  }
+
+  @Test
+  public void seamGaps_spliceDefectReported() {
+    // Leg 2 starts ~700m away from leg 1's end (0.01 deg lon) — a glued
+    // non-adjacent endpoint, exactly what the safety net exists to surface.
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack b = trackWithNodes(new int[][]{{188830000, 140000000}, {188840000, 140000000}});
+    java.util.List<String> gaps =
+      GreedyRoundTripPlanner.seamGapsMeters(java.util.Arrays.asList(a), b);
+    Assert.assertEquals(1, gaps.size());
+    Assert.assertTrue("gap message names the leg: " + gaps.get(0),
+      gaps.get(0).contains("leg 2"));
+  }
+
+  @Test
+  public void seamGaps_emptyLegsSkipped() {
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack empty = new OsmTrack();
+    OsmTrack b = trackWithNodes(new int[][]{{188730000, 140000000}, {188740000, 140000000}});
+    Assert.assertTrue(GreedyRoundTripPlanner.seamGapsMeters(
+      java.util.Arrays.asList(a, empty, b), null).isEmpty());
+  }
+
   // ---- variety seed (ADR-0001): score-jitter hash properties ---------------
 
   @Test

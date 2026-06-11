@@ -955,6 +955,22 @@ public class RoutingEngine extends Thread {
         }
       }
 
+      // Residual-chord advisory (loop-review backlog item 1): the planner's
+      // fidelity enforcement retries chord legs, but a best-effort adoption or
+      // a non-greedy path can still ship a long null-tag edge that renders as
+      // a straight line cutting across terrain. Ground truth (Lozère study):
+      // these follow a real curving road whose detail is missing, so the route
+      // is rideable — disclose, don't reject. Same threshold as the planner's
+      // fidelity check so the two mechanisms never disagree about what a
+      // chord is.
+      int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(foundTrack);
+      if (chordMeters > GreedyRoundTripPlanner.MAX_UNDETAILED_EDGE_METERS) {
+        appendRouteMessage(foundTrack, String.format(Locale.US,
+          "Note: route contains an undetailed straight-line section of ~%dm "
+            + "(way detail missing in the map data; the actual road may curve).",
+          chordMeters));
+      }
+
       // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
       // overshoot is worth flagging so the caller can suggest a shorter
       // distance. This stays informational because the hard gate above

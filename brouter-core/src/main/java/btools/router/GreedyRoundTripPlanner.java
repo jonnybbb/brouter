@@ -745,6 +745,7 @@ public class GreedyRoundTripPlanner {
           String reject = null;
           if (needDetail) {
             finalTrack = mergeSegmentsDetoured(segments, returnTrack);
+            reportSeamGaps(segments, returnTrack, result);
             RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
             reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
             // Geometry-fidelity guard on the closing leg: when even the
@@ -892,6 +893,7 @@ public class GreedyRoundTripPlanner {
         returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
+        reportSeamGaps(segments, null, result);
         if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
           RoundTripQualityGate.HostileStretch forceHostile =
             RoundTripQualityGate.worstHostileStretchPaved(finalTrack);
@@ -1174,7 +1176,10 @@ public class GreedyRoundTripPlanner {
    * Ground-truthed on Lozère gravel (2026-06-09): flagged 300-950m chords all
    * had a real curving road between the same endpoints.
    */
-  private static final int MAX_UNDETAILED_EDGE_METERS = 200;
+  // Package-visible: doRoundTrip's residual-chord disclosure uses the same
+  // threshold, so the advisory and the planner's fidelity retry never disagree
+  // about what counts as a chord.
+  static final int MAX_UNDETAILED_EDGE_METERS = 200;
 
   /**
    * Whether a detailed leg is unfit to commit. Two concerns, scoped
@@ -1315,6 +1320,61 @@ public class GreedyRoundTripPlanner {
       }
       first = false;
       targetNodes.add(node);
+    }
+  }
+
+  /**
+   * Leg-junction seam gap above which the merged loop is considered to carry a
+   * synthetic splice defect. Adjacent legs share their junction node by
+   * construction (leg N+1 routes from leg N's matched endpoint), so any larger
+   * jump means some machinery (via relocation, cached-leg reuse, repair splice)
+   * glued non-adjacent endpoints — the merged track ships that jump as a
+   * silent straight edge that neither the DIRECT-waypoint nor the
+   * direct_segment marker ever sees.
+   */
+  static final int MAX_SEAM_GAP_METERS = 100;
+
+  /**
+   * Leg-junction contiguity check (loop-review backlog item 1). Returns one
+   * human-readable description per seam whose endpoints differ by more than
+   * {@link #MAX_SEAM_GAP_METERS}. Detection-only by the beeline-gate lesson
+   * (a geometric hard gate fired 1283x/run on legitimate chord geometry):
+   * callers log + attach diagnostics, never reject — by construction this
+   * should never fire, so any hit is a planner bug worth a grep-able trace.
+   */
+  static List<String> seamGapsMeters(List<OsmTrack> segments, OsmTrack finalSegment) {
+    List<String> gaps = new ArrayList<>();
+    OsmPathElement prevTail = null;
+    int leg = 0;
+    List<OsmTrack> all = new ArrayList<>(segments);
+    if (finalSegment != null) {
+      all.add(finalSegment);
+    }
+    for (OsmTrack seg : all) {
+      leg++;
+      if (seg == null || seg.nodes == null || seg.nodes.isEmpty()) {
+        continue;
+      }
+      OsmPathElement head = seg.nodes.get(0);
+      if (prevTail != null
+          && (prevTail.getILon() != head.getILon() || prevTail.getILat() != head.getILat())) {
+        int gap = prevTail.calcDistance(head);
+        if (gap > MAX_SEAM_GAP_METERS) {
+          gaps.add("seam before leg " + leg + ": " + gap + "m jump between leg endpoints");
+        }
+      }
+      prevTail = seg.nodes.get(seg.nodes.size() - 1);
+    }
+    return gaps;
+  }
+
+  /** Log + attach diagnostics for any seam gaps in the final loop assembly. */
+  private void reportSeamGaps(List<OsmTrack> segments, OsmTrack finalSegment, RoundTripResult result) {
+    for (String gap : seamGapsMeters(segments, finalSegment)) {
+      result.addDiagnostic("seam-contiguity: " + gap);
+      if (engine != null) {
+        engine.logInfo("greedy seam-contiguity defect: " + gap);
+      }
     }
   }
 
