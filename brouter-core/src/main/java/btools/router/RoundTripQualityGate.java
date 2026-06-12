@@ -435,11 +435,23 @@ public final class RoundTripQualityGate {
 
     // 5. Geometry chaos: self-crossing spikes and repeated hairpins are
     //    user-visible failures even when every individual edge is routed.
+    //    Tiering (load-robustness, 2026-06-12): moderate chaos stays QUALITY —
+    //    the lenient product policy ships odd-but-rideable with a Warning. A
+    //    crossing EXPLOSION (> 2× the cap) is not rideable-odd; it is the
+    //    exhausted planner's weave residue (observed: coastal Nice 100km
+    //    gravel shipping 42-57 crossings when CPU contention truncated the
+    //    closure search) — STRUCTURAL, so lenient adoption, best-effort
+    //    fallbacks and AUTO children all refuse it and fall through to
+    //    cleaner candidates.
     String chaos = checkShapeChaos(track);
     if (chaos != null) {
+      RoundTripQualityResult.RejectionTier tier =
+        countSelfIntersections(track) > 2 * MAX_SELF_INTERSECTIONS
+          ? RoundTripQualityResult.RejectionTier.STRUCTURAL
+          : RoundTripQualityResult.RejectionTier.QUALITY;
       return RoundTripQualityResult.builder()
         .shape(RouteShape.INVALID_RETRACE)
-        .reject(RoundTripQualityResult.RejectionTier.QUALITY, chaos)
+        .reject(tier, chaos)
         .build();
     }
 
@@ -672,6 +684,147 @@ public final class RoundTripQualityGate {
     double span = (to - from + 360.0) % 360.0;
     double off = (x - from + 360.0) % 360.0;
     return off > 0 && off < span;
+  }
+
+  // ======================================================================
+  // Shared-corridor crossings — DARK (probe/telemetry only, 2026-06-12)
+  //
+  // NOT yet wired into countSelfIntersections: per the ADR-0002 discipline
+  // the matrix-wide candidate harvest (SharedCorridorProbe, build/corridor-
+  // probe/) must be labeled first. Flip = add countCorridorCrossings(nodes)
+  // to countSelfIntersections' sum once labeling confirms the rule and the
+  // shared-run length bound. Annecy investigation (2026-06-11): a route that
+  // crosses itself THROUGH a shared run of edges (a roundabout arc, a few
+  // junction edges) defeats isTransverseRevisit's shared-edge guard at every
+  // node of the run, so the count is systematically blind to exactly the
+  // X-knots a cyclist sees (Rond-Point de la Contamine; Route des
+  // Diacquenods figure-eight). Matrix harvest: 16% of shipped AUTO loops
+  // carry at least one such candidate.
+  // ======================================================================
+
+  /**
+   * Maximal shared corridors of a closed track: runs of >=2 consecutive node
+   * revisits (i.e. at least one shared EDGE — the single-node case stays with
+   * {@link #isTransverseRevisit}). Returns one {@code int[]{a1, a2, b1, b2,
+   * sameDir, crossing}} per run, where {@code a1..a2} is the pass-1 index
+   * span, {@code b1..b2} the pass-2 span, {@code sameDir} whether pass 2
+   * rides the run in the same direction (always true on oneway/roundabout
+   * edges), and {@code crossing} whether the loop transversally crosses
+   * itself through this run ({@link #corridorCrosses}; evaluated for
+   * same-direction runs only — opposite-direction runs are a retrace of a
+   * two-way road, the reuse/CorridorOverlapIndex domain, and counting them
+   * as crossings would mislabel measured retraces like Route de Clermont).
+   *
+   * <p>Caller passes FULL-resolution nodes: sampling breaks the node-identity
+   * adjacency this grouping relies on.
+   */
+  static List<int[]> sharedCorridors(List<OsmPathElement> nodes) {
+    List<int[]> out = new ArrayList<>();
+    int n = nodes.size();
+    if (n < 5) return out;
+    double[] cum = new double[n];
+    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+    double perim = cum[n - 1];
+
+    List<int[]> pairs = new ArrayList<>();
+    Map<Long, int[]> first = new java.util.HashMap<>(n * 2);
+    for (int k = 1; k < n - 1; k++) {
+      long id = nodes.get(k).getIdFromPos();
+      int[] prev = first.get(id);
+      if (prev != null) {
+        for (int k1 : prev) {
+          if (k - k1 <= 1) continue;
+          if (cum[k] <= CROSSING_START_END_EXEMPT_M || cum[k] >= perim - CROSSING_START_END_EXEMPT_M
+            || cum[k1] <= CROSSING_START_END_EXEMPT_M) continue;
+          pairs.add(new int[]{k1, k});
+        }
+        int[] grown = java.util.Arrays.copyOf(prev, prev.length + 1);
+        grown[prev.length] = k;
+        first.put(id, grown);
+      } else {
+        first.put(id, new int[]{k});
+      }
+    }
+    if (pairs.isEmpty()) return out;
+    pairs.sort((x, y) -> Integer.compare(x[0], y[0]));
+
+    List<int[]> run = new ArrayList<>();
+    for (int i = 0; i <= pairs.size(); i++) {
+      int[] p = i < pairs.size() ? pairs.get(i) : null;
+      int[] last = run.isEmpty() ? null : run.get(run.size() - 1);
+      if (p != null && (last == null
+        || (p[0] - last[0] <= 2 && Math.abs(p[1] - last[1]) <= 2))) {
+        run.add(p);
+        continue;
+      }
+      if (run.size() >= 2) {
+        int a1 = run.get(0)[0], a2 = run.get(run.size() - 1)[0];
+        int b1 = Integer.MAX_VALUE, b2 = -1;
+        for (int[] q : run) {
+          b1 = Math.min(b1, q[1]);
+          b2 = Math.max(b2, q[1]);
+        }
+        boolean sameDir = run.get(run.size() - 1)[1] > run.get(0)[1];
+        boolean crossing = sameDir && corridorCrosses(nodes, a1, a2, b1, b2);
+        out.add(new int[]{a1, a2, b1, b2, sameDir ? 1 : 0, crossing ? 1 : 0});
+      }
+      run = new ArrayList<>();
+      if (p != null) run.add(p);
+    }
+    return out;
+  }
+
+  /**
+   * Exact corridor-contracted transversality: does pass 2 (entering the shared
+   * run at node {@code a1} from {@code nodes[b1-1]}, exiting at {@code a2}
+   * toward {@code nodes[b2+1]}) cross pass 1's path (… {@code a1-1} → run →
+   * {@code a2+1} …)? Since pass 2 rides exactly ON pass 1's run, side-of-path
+   * propagates consistently along it, so the run contracts to its two end
+   * nodes: at each end, pass 1's outgoing and incoming rays split the angular
+   * circle, and pass 2 crosses iff its attachment falls in different sectors
+   * at the two ends (same outgoing-then-incoming boundary order at both ends
+   * keeps the sector orientation comparable). This is the corridor analogue of
+   * {@link #isTransverseRevisit}'s single-node test, with real node geometry —
+   * no centroid approximation.
+   */
+  private static boolean corridorCrosses(List<OsmPathElement> nodes, int a1, int a2, int b1, int b2) {
+    int n = nodes.size();
+    if (a1 - 1 < 0 || a2 + 1 >= n || b1 - 1 < 0 || b2 + 1 >= n) return false;
+    OsmPathElement e1 = nodes.get(a1), e2 = nodes.get(a2);
+    OsmPathElement in1 = nodes.get(a1 - 1), out1 = nodes.get(a2 + 1);
+    OsmPathElement in2 = nodes.get(b1 - 1), out2 = nodes.get(b2 + 1);
+    OsmPathElement c1next = nodes.get(a1 + 1), c2prev = nodes.get(a2 - 1);
+    // Shared approach/exit edge: the passes also share the edge OUTSIDE the
+    // run on that side — an extended retrace shape, not a crossing through it.
+    if (samePoint(in2, in1) || samePoint(out2, out1)) return false;
+    // Degenerate zero-length rays cannot define a sector.
+    if (samePoint(in1, e1) || samePoint(c1next, e1) || samePoint(in2, e1)
+      || samePoint(out1, e2) || samePoint(c2prev, e2) || samePoint(out2, e2)) {
+      return false;
+    }
+    boolean sideIn = angleInSector(
+      CheapAngleMeter.getDirection(e1.getILon(), e1.getILat(), in2.getILon(), in2.getILat()),
+      CheapAngleMeter.getDirection(e1.getILon(), e1.getILat(), c1next.getILon(), c1next.getILat()),
+      CheapAngleMeter.getDirection(e1.getILon(), e1.getILat(), in1.getILon(), in1.getILat()));
+    boolean sideOut = angleInSector(
+      CheapAngleMeter.getDirection(e2.getILon(), e2.getILat(), out2.getILon(), out2.getILat()),
+      CheapAngleMeter.getDirection(e2.getILon(), e2.getILat(), out1.getILon(), out1.getILat()),
+      CheapAngleMeter.getDirection(e2.getILon(), e2.getILat(), c2prev.getILon(), c2prev.getILat()));
+    return sideIn != sideOut;
+  }
+
+  /**
+   * DARK count over {@link #sharedCorridors}: one crossing per qualifying
+   * same-direction run. Not part of {@link #countSelfIntersections} yet —
+   * see the section comment above for the flip condition.
+   */
+  static int countCorridorCrossings(List<OsmPathElement> nodes) {
+    int crossings = 0;
+    for (int[] c : sharedCorridors(nodes)) {
+      crossings += c[5];
+      if (crossings >= MAX_SELF_INTERSECTIONS * 4) break;
+    }
+    return crossings;
   }
 
   private static List<OsmPathElement> sampledShapeNodes(List<OsmPathElement> nodes) {
