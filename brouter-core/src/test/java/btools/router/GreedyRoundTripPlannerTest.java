@@ -787,6 +787,19 @@ public class GreedyRoundTripPlannerTest {
       GreedyRoundTripPlanner.headingPersistencePenalty(0, 120, 4), 1e-9);
   }
 
+  @Test
+  public void headingPersistence_terrainGateFades() {
+    // Open network (baseline indirectness): full weight.
+    Assert.assertEquals(1.0, GreedyRoundTripPlanner.headingTerrainFreedom(1.3), 1e-9);
+    // Constrained terrain (Nice-class, observed ~2.0): term fully off —
+    // the network dictates the headings, fighting it ships weave (A/B:
+    // coastal_nice_100km_gravel went 0→43 crossings at full weight).
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.headingTerrainFreedom(2.0), 1e-9);
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.headingTerrainFreedom(2.5), 1e-9);
+    // Midpoint fades linearly.
+    Assert.assertEquals(0.5, GreedyRoundTripPlanner.headingTerrainFreedom(1.65), 1e-9);
+  }
+
   // ---- leg-junction seam contiguity (loop-review backlog item 1) -----------
 
   private static OsmTrack trackWithNodes(int[][] lonLat) {

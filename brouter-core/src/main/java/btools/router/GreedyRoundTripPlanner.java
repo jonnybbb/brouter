@@ -62,6 +62,28 @@ public class GreedyRoundTripPlanner {
   private static final double W_HEADING_PERSISTENCE = 1.0;
   /** Slack factor on the per-step heading quota (1.5 → 90° allowed at 6 steps). */
   private static final double HEADING_QUOTA_SLACK = 1.5;
+  /**
+   * Terrain gate for the heading term (matrix A/B 2026-06-12): at full weight,
+   * constrained coastal/mountain cells blew up (coastal_nice_100km_gravel E/N
+   * went 0→43/0→42 crossings — terrain FORCES sharp macro-turns there, and
+   * penalizing them made legs weave instead), while open networks improved
+   * across the board (spurs −30%, lassos −25%). The per-plan adaptive
+   * indirectness estimate is a ready-made terrain-freedom signal: ~1.3 on
+   * open networks, →2.0+ where the graph forces indirect roads. Weight fades
+   * linearly from full at the baseline to zero at this estimate.
+   */
+  private static final double HEADING_TERRAIN_FADE_MAX = 2.0;
+
+  /**
+   * Terrain-freedom factor in [0,1] for the heading term: 1 at the calibrated
+   * indirectness baseline (open network), 0 at {@link #HEADING_TERRAIN_FADE_MAX}
+   * (terrain dictates the headings — do not fight it).
+   */
+  static double headingTerrainFreedom(double indirectnessEst) {
+    double f = (HEADING_TERRAIN_FADE_MAX - indirectnessEst)
+      / (HEADING_TERRAIN_FADE_MAX - ROAD_INDIRECTNESS);
+    return Math.max(0.0, Math.min(1.0, f));
+  }
 
   /**
    * Normalized penalty for a candidate bearing that kinks beyond the smooth-
@@ -455,9 +477,11 @@ public class GreedyRoundTripPlanner {
             + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
 
           // Heading persistence: prefer candidates that keep turning gently
-          // instead of kinking at the via (see W_HEADING_PERSISTENCE).
+          // instead of kinking at the via — terrain-gated so constrained
+          // networks that force sharp macro-turns are exempt (see
+          // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX).
           if (!Double.isNaN(prevLegBearing)) {
-            cp.score += W_HEADING_PERSISTENCE
+            cp.score += W_HEADING_PERSISTENCE * headingTerrainFreedom(indirectnessEst)
               * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
           }
 

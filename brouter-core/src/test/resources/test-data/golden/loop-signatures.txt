@@ -5,6 +5,6 @@ greedy|dreieich|r8000|dir90|fastbike => nodes=1138 hash=b260a6bb4aeabbad dist=44
 greedy|rural_lozere|r8000|dir0|gravel => nodes=1336 hash=dc55bb74be6fa3d6 dist=49382 ascend=1049 cost=130779 err=null
 greedy|urban_berlin|r8000|dir0|fastbike => nodes=2115 hash=bbed4a0925395acd dist=51125 ascend=61 cost=72829 err=null
 iso_greedy|dreieich|r8000|dir0|fastbike => nodes=1592 hash=44a3575df76f7779 dist=50081 ascend=147 cost=79232 err=null
-iso_greedy|dreieich|r8000|dir90|fastbike => nodes=1059 hash=381ed83aa0d953d9 dist=40807 ascend=107 cost=77776 err=null
+iso_greedy|dreieich|r8000|dir90|fastbike => nodes=1108 hash=b1cf5b8be573bd5d dist=40085 ascend=105 cost=68583 err=null
 iso_greedy|rural_lozere|r8000|dir0|gravel => nodes=1436 hash=01cc82f0eb335184 dist=44601 ascend=754 cost=124197 err=null
 iso_greedy|urban_berlin|r8000|dir0|fastbike => nodes=2034 hash=405d8ff726080e89 dist=49688 ascend=64 cost=69206 err=null
