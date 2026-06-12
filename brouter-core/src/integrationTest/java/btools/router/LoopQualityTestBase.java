@@ -358,6 +358,12 @@ public abstract class LoopQualityTestBase {
         System.out.println("NULLWAY " + region.name() + " " + testLabel + " [" + variant
           + "] maxSingleNullEdge=" + longNull + " beelineInSpur=" + beelineSpur);
       }
+      // Opt-in shared-corridor crossing harvest (labeling pass before any
+      // detector change; see SharedCorridorProbe). Runs on every variant that
+      // produced a track — pure analysis, no extra routing.
+      if (Boolean.getBoolean("corridor.probe")) {
+        SharedCorridorProbe.run(track, testLabel, region.name(), variant, projectDir);
+      }
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
       // Stash the production-selector score for the quality gate (see checkVariantQuality).
       // null gateVerdict scores on geometry — the track already passed the strict
