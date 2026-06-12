@@ -153,8 +153,17 @@ public final class LoopQualityMetrics {
    *  attributed to a small detour loop / lasso rather than a far-apart structural
    *  crossing (outbound leg vs return leg). */
   static final double SMALL_LOOP_MAX_ARC_METERS = 4000.0;
-  /** Bound the O(n²) crossing scan: sample the shape to at most this many points. */
-  private static final int CROSS_SCAN_MAX_NODES = 3000;
+  /**
+   * Bound the O(n²) crossing scan: sample the shape to at most this many
+   * points. MUST match {@link RoundTripQualityGate}'s MAX_SHAPE_SCAN_NODES —
+   * stride decimation FABRICATES crossings by chord-cutting curvy geometry
+   * (root-caused twice: the 100km-formation-skips incident fixed the gate's
+   * cap 1500→10000 but left this one at 3000; on 2026-06-12 a clean Nice
+   * 100km track of 3,787 nodes read gateCount=0 but metricCount=57 — 57
+   * phantom crossings that drove two unnecessary mitigation rounds and fed
+   * phantom lasso severity into RouteChoiceScore ranking via crossingPoints).
+   */
+  private static final int CROSS_SCAN_MAX_NODES = 10000;
 
   /**
    * Detect transverse self-intersections (X-crossings) of the route and classify
