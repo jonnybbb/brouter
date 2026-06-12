@@ -73,6 +73,12 @@ public class GreedyRoundTripPlanner {
    * linearly from full at the baseline to zero at this estimate.
    */
   private static final double HEADING_TERRAIN_FADE_MAX = 2.0;
+  /**
+   * Distress brake: after this many closed-loop rejections in one plan, the
+   * heading term is disabled for the remainder — the planner is provably
+   * struggling to close, and shape preferences must yield to feasibility.
+   */
+  static final int HEADING_BRAKE_REJECTIONS = 2;
 
   /**
    * Terrain-freedom factor in [0,1] for the heading term: 1 at the calibrated
@@ -401,6 +407,16 @@ public class GreedyRoundTripPlanner {
     // Air-to-road factor, adaptive per plan (see MAX_INDIRECTNESS_EST):
     // starts at the calibrated baseline, learns from each routed leg.
     double indirectnessEst = ROAD_INDIRECTNESS;
+    // Distress brake for the heading-persistence term: in half-plane-blocked
+    // geographies (sea/lake) the way home IS the way out, and rewarding
+    // "keep heading" steers vias into the dead-end corridor — observed on
+    // coastal_nice_100km_gravel as a grind of same-way-back closure
+    // rejections ending in a 43-crossing weave. Closure rejections are the
+    // planner's own distress signal: after HEADING_BRAKE_REJECTIONS of them,
+    // the term is disabled for the rest of the plan. No terrain modeling —
+    // the indirectness gate provably missed this class (coastal legs are
+    // direct; estimate stayed 1.4-1.6).
+    int closureRejections = 0;
 
     for (int step = 1; step <= subRouteCount; step++) {
       if (System.currentTimeMillis() >= deadline) {
@@ -479,8 +495,9 @@ public class GreedyRoundTripPlanner {
           // Heading persistence: prefer candidates that keep turning gently
           // instead of kinking at the via — terrain-gated so constrained
           // networks that force sharp macro-turns are exempt (see
-          // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX).
-          if (!Double.isNaN(prevLegBearing)) {
+          // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX), and distress-
+          // braked once closures start failing (see closureRejections).
+          if (!Double.isNaN(prevLegBearing) && closureRejections < HEADING_BRAKE_REJECTIONS) {
             cp.score += W_HEADING_PERSISTENCE * headingTerrainFreedom(indirectnessEst)
               * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
           }
@@ -879,6 +896,7 @@ public class GreedyRoundTripPlanner {
               }
               result.addDiagnostic("closed loop rejected at step " + step
                 + ": " + reject + ", retrying");
+              closureRejections++;
               segments.remove(segments.size() - 1);
               totalDistance -= accepted.routeDistance;
               if (accepted.fromIsoCandidate) acceptedIsoLegs--;
