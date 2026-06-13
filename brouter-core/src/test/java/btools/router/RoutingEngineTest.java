@@ -116,6 +116,9 @@ public class RoutingEngineTest {
     RoutingContext rctx = new RoutingContext();
     rctx.startDirection = 90; // east, dreieich data runs out quickly
     rctx.roundTripDistance = 5000;
+    // This test asserts the HARD-reject contract at the data edge; the engine
+    // now defaults to lenient (return quality-failed routes with a warning).
+    rctx.roundTripStrictQuality = true;
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtEdge", rctx);
 
@@ -287,133 +290,6 @@ public class RoutingEngineTest {
         Assert.assertFalse(trackname + ": message must not contain direct_segment: " + msg,
           msg != null && msg.contains("direct_segment="));
       }
-    }
-  }
-
-  // mergeUserWaypointsIntoLoop inserts user waypoints and removes redundant circle points
-  @Test
-  public void mergeUserWaypointsIntoLoop() {
-    double searchRadius = 5000;
-    double startAngle = 90;
-    int targetPoints = 5;
-
-    RoutingEngine re = createDummyEngine(searchRadius);
-    List<OsmNodeNamed> wps = buildStartWaypointList();
-    re.buildPointsFromCircle(wps, startAngle, searchRadius, targetPoints);
-    Assert.assertEquals(6, wps.size());
-
-    List<OsmNodeNamed> userWps = new ArrayList<>();
-    userWps.add(createNode("via1", START_ILON + 50000, START_ILAT));
-
-    re.mergeUserWaypointsIntoLoop(wps, userWps, startAngle, targetPoints);
-
-    // 1 start + targetPoints intermediates (4 circle kept + 1 user) + 1 closing
-    Assert.assertEquals(targetPoints + 2, wps.size());
-    Assert.assertEquals("from", wps.get(0).name);
-    Assert.assertEquals("to_rt", wps.get(wps.size() - 1).name);
-
-    boolean foundUser = false;
-    for (OsmNodeNamed wp : wps) {
-      if ("via1".equals(wp.name)) foundUser = true;
-    }
-    Assert.assertTrue("user waypoint must be in the loop", foundUser);
-  }
-
-  @Test
-  public void mergeUserWaypointsEmptyList() {
-    double searchRadius = 5000;
-    RoutingEngine re = createDummyEngine(searchRadius);
-    List<OsmNodeNamed> wps = buildStartWaypointList();
-    re.buildPointsFromCircle(wps, 90, searchRadius, 5);
-    int sizeBefore = wps.size();
-
-    re.mergeUserWaypointsIntoLoop(wps, new ArrayList<>(), 90, 5);
-
-    Assert.assertEquals("no change when no user waypoints", sizeBefore, wps.size());
-  }
-
-  @Test
-  public void mergeUserWaypointsSortedByBearing() {
-    double searchRadius = 5000;
-    int targetPoints = 8;
-
-    RoutingEngine re = createDummyEngine(searchRadius);
-    List<OsmNodeNamed> wps = buildStartWaypointList();
-
-    OsmNodeNamed closing = new OsmNodeNamed(wps.get(0));
-    closing.name = "to_rt";
-    wps.add(closing);
-
-    List<OsmNodeNamed> userWps = new ArrayList<>();
-    userWps.add(createNode("viaEast", START_ILON + 50000, START_ILAT + 50000));
-    userWps.add(createNode("viaWest", START_ILON - 50000, START_ILAT + 50000));
-
-    re.mergeUserWaypointsIntoLoop(wps, userWps, 0, targetPoints);
-
-    // startAngle=0 (north): NW has negative relative bearing, NE has positive
-    Assert.assertEquals("from", wps.get(0).name);
-    Assert.assertEquals("viaWest", wps.get(1).name);
-    Assert.assertEquals("viaEast", wps.get(2).name);
-    Assert.assertEquals("to_rt", wps.get(3).name);
-  }
-
-  // User waypoints must never be silently dropped when targetPoints is small.
-  @Test
-  public void mergeUserWaypointsPreservesAllWhenOverTarget() {
-    double searchRadius = 5000;
-    int targetPoints = 3; // smaller than user waypoint count (5)
-
-    RoutingEngine re = createDummyEngine(searchRadius);
-    List<OsmNodeNamed> wps = buildStartWaypointList();
-    re.buildPointsFromCircle(wps, 0, searchRadius, targetPoints);
-
-    List<OsmNodeNamed> userWps = new ArrayList<>();
-    userWps.add(createNode("via1", START_ILON + 30000, START_ILAT + 30000));
-    userWps.add(createNode("via2", START_ILON + 30000, START_ILAT - 30000));
-    userWps.add(createNode("via3", START_ILON - 30000, START_ILAT - 30000));
-    userWps.add(createNode("via4", START_ILON - 30000, START_ILAT + 30000));
-    userWps.add(createNode("via5", START_ILON, START_ILAT + 30000));
-
-    re.mergeUserWaypointsIntoLoop(wps, userWps, 0, targetPoints);
-
-    int userPresent = 0;
-    for (OsmNodeNamed wp : wps) {
-      if (wp.name != null && wp.name.startsWith("via")) userPresent++;
-    }
-    Assert.assertEquals("all 5 user vias must survive merge", 5, userPresent);
-  }
-
-  // Bearing-order is deterministic regardless of input order.
-  @Test
-  public void mergeUserWaypointsBearingOrderIndependentOfInputOrder() {
-    double searchRadius = 5000;
-
-    RoutingEngine re = createDummyEngine(searchRadius);
-    List<OsmNodeNamed> wpsA = buildStartWaypointList();
-    OsmNodeNamed closingA = new OsmNodeNamed(wpsA.get(0));
-    closingA.name = "to_rt";
-    wpsA.add(closingA);
-
-    List<OsmNodeNamed> wpsB = buildStartWaypointList();
-    OsmNodeNamed closingB = new OsmNodeNamed(wpsB.get(0));
-    closingB.name = "to_rt";
-    wpsB.add(closingB);
-
-    OsmNodeNamed v1 = createNode("v1", START_ILON + 50000, START_ILAT + 50000);
-    OsmNodeNamed v2 = createNode("v2", START_ILON - 50000, START_ILAT + 50000);
-    OsmNodeNamed v3 = createNode("v3", START_ILON - 50000, START_ILAT - 50000);
-
-    List<OsmNodeNamed> orderedA = new ArrayList<>();
-    orderedA.add(v1); orderedA.add(v2); orderedA.add(v3);
-    List<OsmNodeNamed> orderedB = new ArrayList<>();
-    orderedB.add(v3); orderedB.add(v1); orderedB.add(v2);
-
-    re.mergeUserWaypointsIntoLoop(wpsA, orderedA, 0, 5);
-    re.mergeUserWaypointsIntoLoop(wpsB, orderedB, 0, 5);
-
-    Assert.assertEquals("loop sizes differ", wpsA.size(), wpsB.size());
-    for (int i = 0; i < wpsA.size(); i++) {
-      Assert.assertEquals("position " + i, wpsA.get(i).name, wpsB.get(i).name);
     }
   }
 
@@ -753,6 +629,190 @@ public class RoutingEngineTest {
     Assert.assertSame(nodeD, track.nodes.get(2));
     Assert.assertSame(nodeE, track.nodes.get(3));
     Assert.assertSame(nodeG, track.nodes.get(4));
+  }
+
+  /**
+   * Thin teardrop pinned at a generated via, ~2.5km arc on a ~24km track:
+   * out 1.2km north, cross 72m, back down a parallel arm, rejoining within
+   * ~24m of the divergence point. The arms are ~72m apart (beyond the 50m
+   * proximity threshold) so only the pinch pair matches — the shape the
+   * anti-reuse penalty produces at a dead-end via, which the symmetric
+   * back-and-forth remover cannot strip. Node indices: 0..2 corridor,
+   * 3 = pinch-out B, 4..7 = excursion (tip at index 5), 8 = pinch-return B2,
+   * 9..10 corridor.
+   */
+  private OsmTrack buildViaTeardropTrack() {
+    int baseLon = START_ILON;
+    int baseLat = START_ILAT;
+    OsmTrack track = new OsmTrack();
+    track.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 100000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 200000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat, (short) 0, null)); // B (pinch-out)
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 5400, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 10800, (short) 0, null)); // tip
+    track.nodes.add(OsmPathElement.create(baseLon + 206000, baseLat + 10800, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 206000, baseLat + 5400, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205300, baseLat + 100, (short) 0, null)); // B2 (~24m from B)
+    track.nodes.add(OsmPathElement.create(baseLon + 208000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 300000, baseLat, (short) 0, null));
+    return track;
+  }
+
+  // Via-pinned thin teardrop beyond the plain 1500m cap is removed when the
+  // span is pinned at a generated round-trip via (greedy planner placement).
+  @Test
+  public void removeMicroDetoursRemovesViaPinnedThinTeardrop() {
+    RoutingEngine re = createDummyEngine(5000);
+    OsmTrack track = buildViaTeardropTrack();
+    OsmPathElement pinchOut = track.nodes.get(3);
+    OsmPathElement afterSpur = track.nodes.get(9);
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    MatchedWaypoint via = createMatchedWaypoint("via2",
+      START_ILON + 205000, START_ILAT + 10800, START_ILON + 205000, START_ILAT + 10800);
+    via.generated = true; // greedy planner via — not a user waypoint
+    via.indexInTrack = 5;
+    wpts.add(via);
+
+    re.removeMicroDetours(track, 1500, wpts);
+
+    Assert.assertEquals("teardrop (arc ~2.5km > plain cap) removed via the via-pinned band",
+      6, track.nodes.size());
+    Assert.assertSame("pinch-out node survives", pinchOut, track.nodes.get(3));
+    Assert.assertSame("track continues after the removed spur", afterSpur, track.nodes.get(4));
+  }
+
+  // The same-size span enclosing real area (a fat petal — possibly a scenic
+  // sub-loop) is NOT removed: the via-pinned band requires thinness.
+  @Test
+  public void removeMicroDetoursKeepsFatViaPetal() {
+    RoutingEngine re = createDummyEngine(5000);
+    int baseLon = START_ILON;
+    int baseLat = START_ILAT;
+    OsmTrack track = new OsmTrack();
+    track.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 100000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 200000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat, (short) 0, null)); // B (pinch-out)
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 5600, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 5600, (short) 0, null)); // petal far corner
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 200, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205300, baseLat + 100, (short) 0, null)); // B2 (~24m from B)
+    track.nodes.add(OsmPathElement.create(baseLon + 208000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 300000, baseLat, (short) 0, null));
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    MatchedWaypoint via = createMatchedWaypoint("via2",
+      baseLon + 213600, baseLat + 5600, baseLon + 213600, baseLat + 5600);
+    via.generated = true;
+    via.indexInTrack = 5;
+    wpts.add(via);
+
+    re.removeMicroDetours(track, 1500, wpts);
+
+    Assert.assertEquals("fat petal (compactness ~0.8) survives the via-pinned band",
+      10, track.nodes.size());
+  }
+
+  // Without a generated via pinning the span, the extended band never opens:
+  // user waypoints (generated=false, non-"rt" name) keep legacy behaviour.
+  @Test
+  public void removeMicroDetoursKeepsLargeTeardropWithoutGeneratedVia() {
+    RoutingEngine re = createDummyEngine(5000);
+    OsmTrack track = buildViaTeardropTrack();
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    MatchedWaypoint userVia = createMatchedWaypoint("userVia",
+      START_ILON + 205000, START_ILAT + 10800, START_ILON + 205000, START_ILAT + 10800);
+    userVia.indexInTrack = 5; // generated stays false — a user-chosen destination
+    wpts.add(userVia);
+
+    re.removeMicroDetours(track, 1500, wpts);
+
+    Assert.assertEquals("user-via teardrop is the user's choice — kept (legacy cap applies)",
+      11, track.nodes.size());
+  }
+
+  // removeArtifactSpurSpans: generalized spur repair — removes thin
+  // near-revisit excursions even when NOT pinned at a generated via (the
+  // start-stem antenna class), keeps fat petals, never touches user vias.
+  @Test
+  public void removeArtifactSpurSpansRemovesThinSpurWithoutVia() {
+    RoutingEngine re = createDummyEngine(5000);
+    // Request context: ~24km loop requested; removing the 2.4km spur keeps the
+    // track at distR ~0.9, above the SPUR_REPAIR_MIN_DISTR floor.
+    re.routingContext.roundTripLength = 24000;
+    OsmTrack track = buildViaTeardropTrack();
+    OsmPathElement pinchOut = track.nodes.get(3);
+
+    re.removeArtifactSpurSpans(track, new ArrayList<>());
+
+    // Interior removed, both span endpoints kept (pinch-out + rejoin node,
+    // ~24m apart): 11 - 4 interior nodes = 7.
+    Assert.assertEquals("thin 2.5km spur removed without any via pinning it",
+      7, track.nodes.size());
+    Assert.assertSame("pinch-out node survives", pinchOut, track.nodes.get(3));
+  }
+
+  @Test
+  public void removeArtifactSpurSpansKeepsFatPetal() {
+    RoutingEngine re = createDummyEngine(5000);
+    int baseLon = START_ILON;
+    int baseLat = START_ILAT;
+    OsmTrack track = new OsmTrack();
+    track.nodes.add(OsmPathElement.create(baseLon, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 100000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 200000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205000, baseLat + 5600, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 5600, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 213600, baseLat + 200, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 205300, baseLat + 100, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 208000, baseLat, (short) 0, null));
+    track.nodes.add(OsmPathElement.create(baseLon + 300000, baseLat, (short) 0, null));
+
+    re.removeArtifactSpurSpans(track, new ArrayList<>());
+
+    Assert.assertEquals("fat petal (compactness ~0.8, normal cost) is scenic — kept",
+      10, track.nodes.size());
+  }
+
+  @Test
+  public void removeArtifactSpurSpansProtectsUserVia() {
+    RoutingEngine re = createDummyEngine(5000);
+    OsmTrack track = buildViaTeardropTrack();
+
+    List<MatchedWaypoint> wpts = new ArrayList<>();
+    wpts.add(createMatchedWaypoint("from", START_ILON, START_ILAT, START_ILON, START_ILAT));
+    MatchedWaypoint userVia = createMatchedWaypoint("userVia",
+      START_ILON + 205000, START_ILAT + 10800, START_ILON + 205000, START_ILAT + 10800);
+    userVia.indexInTrack = 5; // tip of the spur — the user asked to go there
+    wpts.add(userVia);
+    MatchedWaypoint to = createMatchedWaypoint("to", START_ILON + 300000, START_ILAT,
+      START_ILON + 300000, START_ILAT);
+    to.indexInTrack = track.nodes.size() - 1;
+    wpts.add(to);
+
+    re.removeArtifactSpurSpans(track, wpts);
+
+    Assert.assertEquals("span holds a user via — never repaired", 11, track.nodes.size());
+  }
+
+  // petalCompactness: thin out-and-back-ish spans near 0, round petals high.
+  @Test
+  public void petalCompactnessSeparatesThinTeardropFromFatPetal() {
+    OsmTrack thin = buildViaTeardropTrack();
+    double thinLoopDist = 0;
+    for (int j = 4; j <= 8; j++) {
+      thinLoopDist += thin.nodes.get(j).calcDistance(thin.nodes.get(j - 1));
+    }
+    double thinScore = RoutingEngine.petalCompactness(thin.nodes, 3, 8, thinLoopDist);
+    Assert.assertTrue("thin teardrop compactness " + thinScore + " below ceiling",
+      thinScore <= RoutingEngine.VIA_TEARDROP_MAX_COMPACTNESS);
+
+    // Degenerate span (fewer than 2 interior segments) is treated as fat (kept).
+    Assert.assertEquals(1.0, RoutingEngine.petalCompactness(thin.nodes, 3, 4, 600), 1e-9);
   }
 
   // --- Isochrone + combined strategy tests ---
@@ -1643,5 +1703,80 @@ public class RoutingEngineTest {
     Assert.assertFalse(none.hasStrongAxis);
     Assert.assertTrue(Double.isNaN(none.axisBearingDegrees));
     Assert.assertEquals(0.0, none.strength, 0.0);
+  }
+
+  // ---- via-pinned bulge detection -----------------------------------------
+
+  /** Node at (xMeters east, yMeters north) of the test origin. */
+  private static OsmPathElement bulgeNode(double xMeters, double yMeters) {
+    double[] kxky = CheapRuler.getLonLatToMeterScales(START_ILAT);
+    int ilon = START_ILON + (int) Math.round(xMeters / kxky[0]);
+    int ilat = START_ILAT + (int) Math.round(yMeters / kxky[1]);
+    return OsmPathElement.create(ilon, ilat, (short) 0, null);
+  }
+
+  /**
+   * Wide-mouth bulge (the Basel "Im Stein" shape): northbound road with a
+   * rectangular detour — 600m west, 400m north, 600m back east — whose mouth
+   * nodes are 400m apart. No ≤50m pinch exists, so removeMicroDetours cannot
+   * see it; findViaPinnedBulgeSpan must return exactly the mouth pair.
+   */
+  @Test
+  public void findViaPinnedBulgeSpan_wideMouthRectangle() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    for (int y = 0; y <= 500; y += 100) nodes.add(bulgeNode(0, y));          // 0-5, mouth in = 5
+    for (int x = -150; x >= -600; x -= 150) nodes.add(bulgeNode(x, 500));    // 6-9 west leg
+    nodes.add(bulgeNode(-600, 650));                                         // 10
+    nodes.add(bulgeNode(-600, 800));                                         // 11 = pinned via
+    nodes.add(bulgeNode(-600, 900));                                         // 12 apex corner
+    for (int x = -450; x <= 0; x += 150) nodes.add(bulgeNode(x, 900));       // 13-16, mouth out = 16
+    for (int y = 1000; y <= 1400; y += 100) nodes.add(bulgeNode(0, y));      // 17-21
+
+    int[] span = RoutingEngine.findViaPinnedBulgeSpan(nodes, 11, 0, nodes.size() - 1, 4000);
+
+    Assert.assertNotNull("bulge span should be detected", span);
+    Assert.assertEquals("span start should be the inbound mouth node", 5, span[0]);
+    Assert.assertEquals("span end should be the outbound mouth node", 16, span[1]);
+  }
+
+  /** Normal forward progression near a via (arc ≈ crow-fly) must not fire. */
+  @Test
+  public void findViaPinnedBulgeSpan_straightRoadIsClean() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    for (int y = 0; y <= 2000; y += 100) nodes.add(bulgeNode(0, y));
+
+    Assert.assertNull(RoutingEngine.findViaPinnedBulgeSpan(nodes, 10, 0, nodes.size() - 1, 4000));
+  }
+
+  /** A gentle curve (ratio well under 3x) must not fire either. */
+  @Test
+  public void findViaPinnedBulgeSpan_gentleCurveIsClean() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    // quarter-circle of radius 1000m: arc ≈ 1571m, chord ≈ 1414m, ratio ≈ 1.1
+    for (int k = 0; k <= 18; k++) {
+      double a = Math.PI / 2 * k / 18.0;
+      nodes.add(bulgeNode(1000 * Math.sin(a), 1000 - 1000 * Math.cos(a)));
+    }
+    Assert.assertNull(RoutingEngine.findViaPinnedBulgeSpan(nodes, 9, 0, nodes.size() - 1, 4000));
+  }
+
+  /**
+   * spanCostPerMeter sums positive per-edge cost deltas and skips the negative
+   * delta of a leg-boundary reset (planner-merged tracks reset cumulative cost
+   * to 0 at each via join).
+   */
+  @Test
+  public void spanCostPerMeter_skipsLegBoundaryReset() {
+    List<OsmPathElement> nodes = new ArrayList<>();
+    for (int k = 0; k <= 4; k++) nodes.add(bulgeNode(0, k * 100));
+    nodes.get(0).cost = 0;
+    nodes.get(1).cost = 150;
+    nodes.get(2).cost = 300;  // leg 1 ends here
+    nodes.get(3).cost = 10;   // leg 2 restarts cumulative cost
+    nodes.get(4).cost = 160;
+
+    // positive deltas: 150 + 150 + 150 = 450 over ~400m
+    double cpm = RoutingEngine.spanCostPerMeter(nodes, 0, 4);
+    Assert.assertEquals(450.0 / 400.0, cpm, 0.02);
   }
 }

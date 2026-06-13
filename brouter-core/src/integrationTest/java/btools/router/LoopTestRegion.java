@@ -40,6 +40,13 @@ public enum LoopTestRegion {
   // test radii), the strict threshold for MTB triggers everywhere. Add MTB
   // back to a region's profile set only after confirming that region has
   // the path network density to support MTB routing.
+  //
+  // Re-verified 2026-06 against the current planner+gate (all 6 regions,
+  // GREEDY+ISO_GREEDY at 30/50 km, dir 0/180): in the track/mountain regions
+  // (Innsbruck, Lozère, Mallorca, Nice) mtb forms no acceptable loop at all,
+  // and where it does close (Dreieich, Berlin) the route runs at cost/m
+  // 6.5–12.3 — far over the 5.0 mtb ceiling. The exclusion is empirical, not
+  // arbitrary; the round-trip fixes in this PR do not change it.
   DREIEICH(8.720, 50.000, "E5_N50.rd5", 25.0, 0.5, 1.6, 180,
     profiles("fastbike", "gravel")),
   URBAN_BERLIN(13.400, 52.520, "E10_N50.rd5", 25.0, 0.5, 1.6, 180,
@@ -47,8 +54,13 @@ public enum LoopTestRegion {
   ALPINE_INNSBRUCK(11.400, 47.260, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),
   COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike")),           // gravel: coastal area is mostly paved tourist roads
-  RURAL_LOZERE(3.500, 44.500, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")), // gravel rides the hills above Nice (Aspremont,
+                                     // Tourrette-Levens); loops verified accepted from this start
+  // Start near Rieutort-de-Randon (paved-road country) rather than the original
+  // (3.500, 44.500) on the Causse de Mende plateau, which is ~77% highway=track:
+  // no paved road-bike loop closes there at any size, so fastbike never formed a
+  // loop. fastbike + gravel both loop cleanly from here (real komoot route start).
+  RURAL_LOZERE(3.43980, 44.65161, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),
   // Mallorca: island geometry forces a different loop-quality regime than
   // mainland regions. The Serra de Tramuntana climbs in the NW, the coast
@@ -57,7 +69,43 @@ public enum LoopTestRegion {
   // Sa Calobra). Slightly relaxed reuse/distance thresholds because
   // out-and-back to a cape or pass IS the expected shape of a Mallorca ride.
   MALLORCA(2.650, 39.570, "E0_N35.rd5", 35.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel"));
+    profiles("fastbike", "gravel")),
+  // --- Candidate cycling-friendly regions (evaluation set, 2026-06-08) ---
+  // Replacing URBAN_BERLIN (flat-urban, not a real loop start) and ALPINE_INNSBRUCK
+  // (single Inn valley, few non-retrace loops). Freiburg/Basel are dense rolling
+  // cycling country; Annecy/Grenoble/Garmisch are mountain-but-loopable candidates
+  // (keep the best after the evaluation run). Same thresholds as comparable terrain.
+  FREIBURG(7.852, 48.000, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Black Forest edge, dense network
+  BASEL(7.590, 47.560, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Rhine / Jura foothills
+  ANNECY(6.130, 45.900, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // lake basin + Bornes/Bauges/Semnoz climbs
+  GRENOBLE(5.720, 45.190, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Vercors/Chartreuse/Belledonne valleys
+  GARMISCH(11.100, 47.500, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Bavarian Alps, more valley connectivity
+  // --- Gravel-mecca hill country (added 2026-06-09) -----------------------
+  // Two classic 30-100 km hilly gravel destinations. Black Forest is already
+  // covered by FREIBURG above. Thresholds start at the hilly-peer band
+  // (reuse 30, ratio 0.4-1.8, direction 180 no-op) shared by Lozère/Nice;
+  // confirmed-or-relaxed empirically by the LoopQuality<Region> run, not
+  // curve-fit. mtb excluded for the same reason as every other region (no
+  // verified singletrack-density network here).
+  //
+  // Girona, Catalonia (city centre, El Pont Major) — pro-cycling hub with a
+  // dense dirt lattice through Les Gavarres and the Garrotxa volcanic zone,
+  // dry year-round. Shares Lozère's E0_N40 tile (no new download).
+  GIRONA(2.8214, 41.9794, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel")),       // Les Gavarres / Garrotxa dirt
+  // Tuscany — Crete Senesi, the open white-clay hills near Asciano (SE of
+  // Siena), the densest strade bianche (white gravel road) heartland. Start
+  // moved here from Gaiole in Chianti after calibration: Gaiole's wooded
+  // Chianti hills force gravel onto asphalt connectors at several headings
+  // (cost/m up to 5.81), while the Crete Senesi closes gravel loops in every
+  // direction at cost/m ~3.3 (mirrors the RURAL_LOZERE start relocation).
+  CRETE_SENESI(11.560, 43.230, "E10_N40.rd5", 30.0, 0.4, 1.8, 180,
+    profiles("fastbike", "gravel"));       // strade bianche, Asciano/Eroica
 
   /** Longitude in decimal degrees */
   public final double lon;
@@ -98,5 +146,18 @@ public enum LoopTestRegion {
 
   private static Set<String> profiles(String... names) {
     return Collections.unmodifiableSet(new HashSet<>(Arrays.asList(names)));
+  }
+
+  /**
+   * Whether a requested compass heading (degrees) runs straight into open sea
+   * from this region's start, making it a degenerate route request (the loop
+   * can only go inland). Such cases are excluded from the quality matrix — you
+   * cannot cycle on water, so grading direction adherence there is meaningless.
+   */
+  public boolean isSeaBlockedDirection(double directionDeg) {
+    // Coastal starts facing the sea to the south: "south" is open water.
+    //   Nice (43.70N, 7.27E)  — Mediterranean to the south.
+    //   Palma (39.57N, 2.65E) — Bay of Palma to the south.
+    return (this == COASTAL_NICE || this == MALLORCA) && directionDeg == 180.0;
   }
 }

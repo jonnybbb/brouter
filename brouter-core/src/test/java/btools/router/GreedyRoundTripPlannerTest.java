@@ -1,11 +1,9 @@
 package btools.router;
 
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,31 +13,18 @@ import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmNode;
 
 /**
- * Integration tests for the greedy sub-route round-trip planner.
- * Tests require segment data in brouter-core/src/test/resources/test-data/segments/
- * and are skipped if data is absent.
+ * Fast unit tests for the greedy sub-route round-trip planner. These exercise
+ * pure helpers (scoring, sort, param parsing, fallback selection, the quality
+ * gate delegation) against bundled fixtures and never touch real segment data.
+ * The slow, segment-gated end-to-end tests live in {@code GreedyRoundTripPlannerIT}.
  */
 public class GreedyRoundTripPlannerTest {
 
-  private File segmentDir;
-  private File profileDir;
-
   @Before
   public void setup() {
-    segmentDir = new File("src/test/resources/test-data/segments");
-    profileDir = new File("misc/profiles2");
-    if (!profileDir.exists()) {
-      profileDir = new File("../misc/profiles2");
-    }
     // Classification now comes from the cost-model probe (PavedProfileProbeTest),
     // not the profile name; seed "fastbike" as paved for the gate-delegation case.
     RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
-  }
-
-  private boolean hasSegmentData() {
-    return segmentDir.exists() && segmentDir.isDirectory()
-      && segmentDir.listFiles() != null
-      && segmentDir.listFiles().length > 0;
   }
 
   @Test
@@ -177,6 +162,107 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
+  public void tierAliasesResolveThroughSetParams() {
+    // fromString is unit-tested in RoundTripAlgorithmTest; this pins the parser
+    // wiring (RoutingParamCollector → RoundTripAlgorithm.fromString) so the
+    // user-facing tier aliases actually reach rctx.roundTripAlgorithm.
+    String[][] cases = {
+      {"FAST", "WAYPOINT"}, {"BALANCED", "GREEDY"}, {"QUALITY", "ISO_GREEDY"},
+      {"quality", "ISO_GREEDY"}, {"bogus", "AUTO"},
+    };
+    for (String[] c : cases) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> p = new LinkedHashMap<>();
+      p.put("roundTripAlgorithm", c[0]);
+      new RoutingParamCollector().setParams(rctx, null, p);
+      Assert.assertEquals("alias " + c[0] + " must resolve to " + c[1],
+        RoundTripAlgorithm.valueOf(c[1]), rctx.roundTripAlgorithm);
+    }
+  }
+
+  @Test
+  public void roundTripPointsOutOfRangeClampsToDefault() {
+    // Valid range is [3,20]; anything outside (or non-integer) falls back to 5.
+    for (String v : new String[]{"2", "0", "21", "100", "-3"}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> p = new LinkedHashMap<>();
+      p.put("roundTripPoints", v);
+      new RoutingParamCollector().setParams(rctx, null, p);
+      Integer expectedClamp = 5;
+      Assert.assertEquals("roundTripPoints=" + v + " clamps to 5",
+        expectedClamp, rctx.roundTripPoints);
+    }
+    // An in-range value is preserved unchanged.
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripPoints", "8");
+    new RoutingParamCollector().setParams(rctx, null, p);
+    Integer expectedPoints = 8;
+    Assert.assertEquals(expectedPoints, rctx.roundTripPoints);
+  }
+
+  @Test
+  public void roundTripStrictQualityParsesBooleanWithDefaultFalse() {
+    Assert.assertTrue(strictQualityFor("1"));
+    Assert.assertFalse(strictQualityFor("0"));
+    Assert.assertFalse("malformed → default false", strictQualityFor("yes"));
+    // Absent → default false.
+    RoutingContext rctx = new RoutingContext();
+    new RoutingParamCollector().setParams(rctx, null, new LinkedHashMap<>());
+    Assert.assertFalse(rctx.roundTripStrictQuality);
+  }
+
+  private static boolean strictQualityFor(String v) {
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripStrictQuality", v);
+    new RoutingParamCollector().setParams(rctx, null, p);
+    return rctx.roundTripStrictQuality;
+  }
+
+  @Test
+  public void roundTripDensifyOverrideIsTriState() {
+    // The override is a Boolean: 1 → TRUE (force on), 0 → FALSE (force off),
+    // absent → null (engine default decides).
+    Assert.assertEquals(Boolean.TRUE, densifyFor("1"));
+    Assert.assertEquals("0 forces off (FALSE, distinct from unset)",
+      Boolean.FALSE, densifyFor("0"));
+    RoutingContext rctx = new RoutingContext();
+    new RoutingParamCollector().setParams(rctx, null, new LinkedHashMap<>());
+    Assert.assertNull("absent → unset", rctx.explicitViaDensifyOverride);
+  }
+
+  private static Boolean densifyFor(String v) {
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripDensify", v);
+    new RoutingParamCollector().setParams(rctx, null, p);
+    return rctx.explicitViaDensifyOverride;
+  }
+
+  @Test
+  public void nonPositiveRoundTripDistanceIsNulled() {
+    // Symmetric with roundTripLength: a non-positive roundTripDistance would
+    // become a zero/negative searchRadius (which silently disables the distance
+    // gate and ships a wrong-scale loop), so the parser must invalidate it and
+    // let the default radius apply.
+    for (String v : new String[]{"0", "-100", "-5000"}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> p = new LinkedHashMap<>();
+      p.put("roundTripDistance", v);
+      new RoutingParamCollector().setParams(rctx, null, p);
+      Assert.assertNull("roundTripDistance=" + v + " must null out", rctx.roundTripDistance);
+    }
+    // A positive value is preserved unchanged.
+    RoutingContext rctx = new RoutingContext();
+    Map<String, String> p = new LinkedHashMap<>();
+    p.put("roundTripDistance", "2500");
+    new RoutingParamCollector().setParams(rctx, null, p);
+    Integer expectedDistance = 2500;
+    Assert.assertEquals(expectedDistance, rctx.roundTripDistance);
+  }
+
+  @Test
   public void nonPositiveRoundTripLengthIsNulled() {
     // roundTripLength <= 0 must be discarded (null), not passed through.
     for (String v : new String[]{"0", "-5"}) {
@@ -237,6 +323,25 @@ public class GreedyRoundTripPlannerTest {
       GreedyRoundTripPlanner.isBetterFallback(false, 0.30, false, 0.20));
     Assert.assertFalse("equal error + same verdict is not strictly better",
       GreedyRoundTripPlanner.isBetterFallback(true, 0.20, true, 0.20));
+  }
+
+  @Test
+  public void betterFallbackPrefersLowerSoundnessRankAcrossAllThreeTiers() {
+    // 3-tier guarantee (int overload): accepted (0) > sound same-way-back corridor (1) > chaos (2),
+    // and the rank dominates geometric error. The boolean adapter collapses every rejection to
+    // severity 2, so it cannot express the middle tier — this is the only coverage of the
+    // "rideable corridor beats chaos" invariant the planner's fallback selection relies on
+    // (GreedyRoundTripPlanner.java:644).
+    Assert.assertTrue("sound corridor (worse error) beats chaos (better error)",
+      GreedyRoundTripPlanner.isBetterFallback(1, 0.90, 2, 0.10));
+    Assert.assertFalse("chaos (better error) does not beat sound corridor (worse error)",
+      GreedyRoundTripPlanner.isBetterFallback(2, 0.10, 1, 0.90));
+    Assert.assertTrue("accepted (worse error) beats sound corridor (better error)",
+      GreedyRoundTripPlanner.isBetterFallback(0, 0.90, 1, 0.10));
+    Assert.assertFalse("sound corridor (better error) does not beat accepted (worse error)",
+      GreedyRoundTripPlanner.isBetterFallback(1, 0.10, 0, 0.90));
+    Assert.assertTrue("same tier (corridor) → lower error wins",
+      GreedyRoundTripPlanner.isBetterFallback(1, 0.10, 1, 0.20));
   }
 
   @Test
@@ -303,7 +408,7 @@ public class GreedyRoundTripPlannerTest {
     // Successful greedy plans must produce road-snapped (SHAPING) waypoints.
     // A DIRECT entry would tell the routing engine to insert a beeline,
     // which violates the round-trip invariant.
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RoundTripCandidateProvider.RadialCandidateProvider());
 
     MatchedWaypoint startMwp = makeMatchedWaypoint(1000, 1000, 900, 900, 1100, 1100);
     // Even when the source MWP is marked DIRECT, copyMatchedWaypoint must
@@ -334,6 +439,33 @@ public class GreedyRoundTripPlannerTest {
       Assert.assertEquals("waypoint and crosspoint must coincide for " + m.name,
         m.crosspoint.ilat, m.waypoint.ilat);
     }
+    // Vias are planner-generated: the engine's via-pinned spur/teardrop cleanup
+    // (isNearGeneratedWaypoint) keys on the generated flag — greedy vias are
+    // named "via*", not "rt*", so without the flag the cleanup never activates.
+    // Start/closing copies of the user's start point stay non-generated.
+    Assert.assertFalse("'from' is the user's start, not generated", matched.get(0).generated);
+    Assert.assertTrue("'via1' must be flagged generated", matched.get(1).generated);
+    Assert.assertTrue("'via2' must be flagged generated", matched.get(2).generated);
+    Assert.assertFalse("'to' is the user's start, not generated", matched.get(3).generated);
+  }
+
+  @Test
+  public void pocketPenaltyRampsWithReachability() {
+    // No cloud (radial/iso-start candidates): no signal, no penalty.
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(-1), 1e-9);
+    // Junction-rich neighborhood and the well-connected expansion-edge
+    // half-disk (~12 cells) are both penalty-free.
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(25), 1e-9);
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(12), 1e-9);
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.pocketPenalty(10), 1e-9);
+    // Thin dead-end corridor saturates.
+    Assert.assertEquals(1.0, GreedyRoundTripPlanner.pocketPenalty(3), 1e-9);
+    Assert.assertEquals(1.0, GreedyRoundTripPlanner.pocketPenalty(0), 1e-9);
+    // Monotone ramp in between.
+    double p7 = GreedyRoundTripPlanner.pocketPenalty(7);
+    double p5 = GreedyRoundTripPlanner.pocketPenalty(5);
+    Assert.assertTrue("ramp must be monotone: p(7)=" + p7 + " p(5)=" + p5,
+      p7 > 0 && p5 > p7 && p5 < 1.0);
   }
 
   private static MatchedWaypoint makeMatchedWaypoint(int crossLon, int crossLat,
@@ -374,76 +506,6 @@ public class GreedyRoundTripPlannerTest {
     // (can't invoke plan() without segments, but constructors should succeed)
     Assert.assertNotNull(new CandidateScorer());
     Assert.assertNotNull(new CandidateScorer(1.0, 2.0, 0.5, 3.0, 1.5));
-  }
-
-  @Test
-  public void greedyRoundTripWithSegments() {
-    Assume.assumeTrue("Segment data required", hasSegmentData());
-
-    // Basel area: 47.5581, 7.5878
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((7.5878 + 180) * 1e6);
-    start.ilat = (int) ((47.5581 + 90) * 1e6);
-    start.name = "start";
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx.roundTripDistance = 8000; // ~50km loop
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
-
-    List<OsmNodeNamed> waypoints = new ArrayList<>();
-    waypoints.add(start);
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, waypoints, rctx, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(300000);
-
-    Assert.assertNull("No error expected", re.errorMessage);
-    Assert.assertNotNull("Track should be produced", re.foundTrack);
-    Assert.assertTrue("Track should have distance > 0", re.foundTrack.distance > 0);
-  }
-
-  @Test
-  public void deterministic() {
-    Assume.assumeTrue("Segment data required", hasSegmentData());
-
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((7.5878 + 180) * 1e6);
-    start.ilat = (int) ((47.5581 + 90) * 1e6);
-    start.name = "start";
-
-    RoutingContext rctx1 = new RoutingContext();
-    rctx1.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx1.roundTripDistance = 5000;
-    rctx1.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
-    rctx1.startDirection = 90; // East
-
-    List<OsmNodeNamed> wp1 = new ArrayList<>();
-    wp1.add(start);
-    RoutingEngine re1 = new RoutingEngine(null, null, segmentDir, wp1, rctx1, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re1.quite = true;
-    re1.doRun(300000);
-
-    RoutingContext rctx2 = new RoutingContext();
-    rctx2.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx2.roundTripDistance = 5000;
-    rctx2.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
-    rctx2.startDirection = 90;
-
-    OsmNodeNamed start2 = new OsmNodeNamed();
-    start2.ilon = start.ilon;
-    start2.ilat = start.ilat;
-    start2.name = "start";
-    List<OsmNodeNamed> wp2 = new ArrayList<>();
-    wp2.add(start2);
-    RoutingEngine re2 = new RoutingEngine(null, null, segmentDir, wp2, rctx2, RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re2.quite = true;
-    re2.doRun(300000);
-
-    if (re1.foundTrack != null && re2.foundTrack != null) {
-      Assert.assertEquals("Deterministic: same distance",
-        re1.foundTrack.distance, re2.foundTrack.distance);
-    }
   }
 
   // ---- Boundary-proximity weighting for back-and-forth penalty ----
@@ -537,7 +599,7 @@ public class GreedyRoundTripPlannerTest {
     // the planner used independent FALLBACK_* constants and would have
     // accepted this track (it has zero reuse and clean ratio).
     OsmTrack heavy = squarePathTrack(/*sideMeters*/ 5000);
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RoundTripCandidateProvider.RadialCandidateProvider());
     planner.setProfileName("fastbike");
     String reason = planner.qualityGateReason(heavy, heavy.distance);
     Assert.assertNotNull("planner rejects hostile-fraction routes", reason);
@@ -550,7 +612,7 @@ public class GreedyRoundTripPlannerTest {
   public void qualityGateReasonAcceptsCleanLoop() {
     // The same delegation accepts a clean paved loop.
     OsmTrack clean = squareResidentialTrack(/*sideMeters*/ 5000);
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null);
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RoundTripCandidateProvider.RadialCandidateProvider());
     planner.setProfileName("fastbike");
     Assert.assertNull("planner accepts clean residential loop",
       planner.qualityGateReason(clean, clean.distance));
@@ -606,6 +668,229 @@ public class GreedyRoundTripPlannerTest {
     m.wayKeyValues = src.wayKeyValues;
     m.costfactor = src.costfactor;
     return m;
+  }
+
+  // ======================================================================
+  // pickDiverseTopK — angular-diversity candidate selection (was untested).
+  // MIN_ANGULAR_SEPARATION_DEG = 30°, strict '<'. After the diversity pass
+  // culls near-bearing duplicates, a back-fill tops the result up to k.
+  // ======================================================================
+
+  private static RoundTripCandidateProvider.CandidatePoint cp(double bearing) {
+    RoundTripCandidateProvider.CandidatePoint p = new RoundTripCandidateProvider.CandidatePoint();
+    p.bearing = bearing;
+    return p;
+  }
+
+  private static List<RoundTripCandidateProvider.CandidatePoint> cps(double... bearings) {
+    List<RoundTripCandidateProvider.CandidatePoint> list = new ArrayList<>();
+    for (double b : bearings) list.add(cp(b));
+    return list;
+  }
+
+  @Test
+  public void pickDiverseTopK_cullsNearBearingCandidates() {
+    // 10° is within 30° of the already-picked 0° → culled; 200° is far → picked.
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 10, 200), 2);
+    Assert.assertEquals(2, picked.size());
+    Assert.assertEquals(0.0, picked.get(0).bearing, 1e-9);
+    Assert.assertEquals(200.0, picked.get(1).bearing, 1e-9);
+  }
+
+  @Test
+  public void pickDiverseTopK_backfillsWhenDiversityStarvesBelowK() {
+    // All three are within 30° of the first: only 0° survives the diversity
+    // pass, so the back-fill restores k by insertion order (adds 10°).
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 10, 20), 2);
+    Assert.assertEquals(2, picked.size());
+    Assert.assertEquals(0.0, picked.get(0).bearing, 1e-9);
+    Assert.assertEquals(10.0, picked.get(1).bearing, 1e-9);
+  }
+
+  @Test
+  public void pickDiverseTopK_diversityUsesAngularWraparound() {
+    // 350° and 10° are 20° apart across the 0/360 seam → 10° is culled even
+    // though its numeric distance from 350 is 340.
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(350, 10, 200), 2);
+    Assert.assertEquals(2, picked.size());
+    Assert.assertEquals(350.0, picked.get(0).bearing, 1e-9);
+    Assert.assertEquals(200.0, picked.get(1).bearing, 1e-9);
+  }
+
+  @Test
+  public void pickDiverseTopK_exactSeparationIsNotCulled() {
+    // Strict '<' separation: exactly 30° apart is kept (both survive).
+    List<RoundTripCandidateProvider.CandidatePoint> picked =
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 30), 2);
+    Assert.assertEquals(2, picked.size());
+  }
+
+  @Test
+  public void pickDiverseTopK_returnsAllWhenKExceedsSize() {
+    Assert.assertEquals(3,
+      GreedyRoundTripPlanner.pickDiverseTopK(cps(0, 90, 180), 5).size());
+  }
+
+  @Test
+  public void pickDiverseTopK_emptyAndZeroKAreEmpty() {
+    Assert.assertTrue(GreedyRoundTripPlanner.pickDiverseTopK(
+      new ArrayList<>(), 3).isEmpty());
+    Assert.assertTrue(GreedyRoundTripPlanner.pickDiverseTopK(
+      cps(0, 90), 0).isEmpty());
+  }
+
+  // ---- boundaryProximityWeight guard + clamp (the desired<=0 and beyond-end
+  //      branches the existing near/mid tests don't reach) -------------------
+
+  @Test
+  public void boundaryProximityWeight_nonPositiveDesiredReturnsFull() {
+    Assert.assertEquals("desired==0 guard → full weight",
+      1.0, GreedyRoundTripPlanner.boundaryProximityWeight(3500, 6500, 0), 1e-9);
+    Assert.assertEquals("negative desired guard → full weight",
+      1.0, GreedyRoundTripPlanner.boundaryProximityWeight(3500, 6500, -5000), 1e-9);
+  }
+
+  @Test
+  public void boundaryProximityWeight_positionsBeyondDesiredClampToBoundary() {
+    // firstPos/currentPos past desiredDistance: the (1-frac) term goes negative
+    // and is clamped to 0, so a beyond-end position reads as on-boundary → 1.0.
+    Assert.assertEquals(1.0,
+      GreedyRoundTripPlanner.boundaryProximityWeight(12000, 11000, 10000), 1e-9);
+  }
+
+  // ---- heading persistence (loop-shape term, 2026-06-11) -------------------
+
+  @Test
+  public void headingPersistence_withinQuotaIsFree() {
+    // 6 steps → quota = 1.5 × 60° = 90°: gentle continuation costs nothing.
+    Assert.assertEquals(0.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(90, 90, 6), 1e-9);
+    Assert.assertEquals(0.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(90, 150, 6), 1e-9);
+    Assert.assertEquals("wraparound handled",
+      0.0, GreedyRoundTripPlanner.headingPersistencePenalty(350, 30, 6), 1e-9);
+  }
+
+  @Test
+  public void headingPersistence_kinksAndReversalsPay() {
+    // 120° kink at quota 90° → excess 30/180.
+    Assert.assertEquals(30.0 / 180.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(0, 120, 6), 1e-9);
+    // Full reversal → excess 90/180 = 0.5 (the zigzag fingerprint).
+    Assert.assertEquals(0.5,
+      GreedyRoundTripPlanner.headingPersistencePenalty(0, 180, 6), 1e-9);
+    // Fewer steps → larger quota: the same 120° kink is free at 4 steps (quota 135°).
+    Assert.assertEquals(0.0,
+      GreedyRoundTripPlanner.headingPersistencePenalty(0, 120, 4), 1e-9);
+  }
+
+  @Test
+  public void headingPersistence_terrainGateFades() {
+    // Open network (baseline indirectness): full weight.
+    Assert.assertEquals(1.0, GreedyRoundTripPlanner.headingTerrainFreedom(1.3), 1e-9);
+    // Constrained terrain (Nice-class, observed ~2.0): term fully off —
+    // the network dictates the headings, fighting it ships weave (A/B:
+    // coastal_nice_100km_gravel went 0→43 crossings at full weight).
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.headingTerrainFreedom(2.0), 1e-9);
+    Assert.assertEquals(0.0, GreedyRoundTripPlanner.headingTerrainFreedom(2.5), 1e-9);
+    // Midpoint fades linearly.
+    Assert.assertEquals(0.5, GreedyRoundTripPlanner.headingTerrainFreedom(1.65), 1e-9);
+  }
+
+  // ---- leg-junction seam contiguity (loop-review backlog item 1) -----------
+
+  private static OsmTrack trackWithNodes(int[][] lonLat) {
+    OsmTrack t = new OsmTrack();
+    for (int[] p : lonLat) {
+      OsmNode n = new OsmNode(p[0], p[1]);
+      t.nodes.add(OsmPathElement.create(n.ilon, n.ilat, (short) 0, null));
+    }
+    return t;
+  }
+
+  @Test
+  public void seamGaps_contiguousLegsReportNothing() {
+    // Leg 2 starts exactly where leg 1 ends — the by-construction contract.
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack b = trackWithNodes(new int[][]{{188730000, 140000000}, {188740000, 140000000}});
+    Assert.assertTrue(GreedyRoundTripPlanner.seamGapsMeters(
+      java.util.Arrays.asList(a, b), null).isEmpty());
+  }
+
+  @Test
+  public void seamGaps_smallSnapOffsetTolerated() {
+    // ~35m offset (0.0005 deg lon at 50N) — below the 100m defect threshold.
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack b = trackWithNodes(new int[][]{{188730500, 140000000}, {188740000, 140000000}});
+    Assert.assertTrue(GreedyRoundTripPlanner.seamGapsMeters(
+      java.util.Arrays.asList(a, b), null).isEmpty());
+  }
+
+  @Test
+  public void seamGaps_spliceDefectReported() {
+    // Leg 2 starts ~700m away from leg 1's end (0.01 deg lon) — a glued
+    // non-adjacent endpoint, exactly what the safety net exists to surface.
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack b = trackWithNodes(new int[][]{{188830000, 140000000}, {188840000, 140000000}});
+    java.util.List<String> gaps =
+      GreedyRoundTripPlanner.seamGapsMeters(java.util.Arrays.asList(a), b);
+    Assert.assertEquals(1, gaps.size());
+    Assert.assertTrue("gap message names the leg: " + gaps.get(0),
+      gaps.get(0).contains("leg 2"));
+  }
+
+  @Test
+  public void seamGaps_emptyLegsSkipped() {
+    OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
+    OsmTrack empty = new OsmTrack();
+    OsmTrack b = trackWithNodes(new int[][]{{188730000, 140000000}, {188740000, 140000000}});
+    Assert.assertTrue(GreedyRoundTripPlanner.seamGapsMeters(
+      java.util.Arrays.asList(a, empty, b), null).isEmpty());
+  }
+
+  // ---- variety seed (ADR-0001): score-jitter hash properties ---------------
+
+  @Test
+  public void seededUnit_isDeterministicAndBounded() {
+    double a = GreedyRoundTripPlanner.seededUnit(3, 8_500_000, 47_500_000);
+    double b = GreedyRoundTripPlanner.seededUnit(3, 8_500_000, 47_500_000);
+    Assert.assertEquals("same seed + same salts must reproduce exactly", a, b, 0.0);
+    for (int seed = 1; seed <= 50; seed++) {
+      for (int salt = 0; salt < 20; salt++) {
+        double u = GreedyRoundTripPlanner.seededUnit(seed, salt, salt * 31 + 7);
+        Assert.assertTrue("unit must lie in [-1,1), got " + u, u >= -1.0 && u < 1.0);
+      }
+    }
+  }
+
+  @Test
+  public void seededUnit_variesAcrossSeedsAndCandidates() {
+    // Different seeds must jitter the same candidate differently — this is
+    // what makes seed N select a different loop variant than seed M.
+    double s1 = GreedyRoundTripPlanner.seededUnit(1, 8_500_000, 47_500_000);
+    double s2 = GreedyRoundTripPlanner.seededUnit(2, 8_500_000, 47_500_000);
+    Assert.assertNotEquals("seeds 1 and 2 must differ", s1, s2, 1e-12);
+    // The same seed must jitter different candidates differently — otherwise
+    // every candidate shifts by the same factor and the ranking never flips.
+    double c1 = GreedyRoundTripPlanner.seededUnit(5, 8_500_000, 47_500_000);
+    double c2 = GreedyRoundTripPlanner.seededUnit(5, 8_500_100, 47_500_000);
+    Assert.assertNotEquals("neighboring candidates must differ", c1, c2, 1e-12);
+  }
+
+  @Test
+  public void varietyJitter_factorStaysWithinAmplitude() {
+    // The multiplicative factor must stay inside 1 ± VARIETY_JITTER_AMPLITUDE,
+    // the bound the gate-pass-rate calibration (ADR-0001) is built on.
+    for (int seed = 1; seed <= 100; seed++) {
+      double factor = 1.0 + GreedyRoundTripPlanner.VARIETY_JITTER_AMPLITUDE
+        * GreedyRoundTripPlanner.seededUnit(seed, 8_500_000, 47_500_000);
+      Assert.assertTrue("factor out of bounds: " + factor,
+        factor >= 1.0 - GreedyRoundTripPlanner.VARIETY_JITTER_AMPLITUDE
+          && factor < 1.0 + GreedyRoundTripPlanner.VARIETY_JITTER_AMPLITUDE);
+    }
   }
 
 }

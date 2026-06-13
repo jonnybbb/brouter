@@ -1,6 +1,7 @@
 package btools.router;
 
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Test;
 
 import java.io.File;
@@ -45,6 +46,15 @@ import static org.junit.Assert.fail;
  */
 public class LoopGoldenSignatureTest {
 
+  // Fail a pathological/non-terminating routing case fast instead of hanging
+  // the whole suite. Normal cases finish in seconds-to-low-minutes; 5 min is a
+  // generous ceiling. withLookingForStuckThread dumps the stuck stack on timeout.
+  @Rule
+  public org.junit.rules.Timeout perTestTimeout = org.junit.rules.Timeout.builder()
+    .withTimeout(5, java.util.concurrent.TimeUnit.MINUTES)
+    .withLookingForStuckThread(true)
+    .build();
+
   /** Golden file, relative to the module dir (cwd during the test = brouter-core). */
   private static final String GOLDEN_PATH =
     "src/test/resources/test-data/golden/loop-signatures.txt";
@@ -70,9 +80,6 @@ public class LoopGoldenSignatureTest {
 
   @Test
   public void signaturesMatchGolden() throws Exception {
-    Assume.assumeTrue(
-      "Golden signature suite is opt-in — run with -Dgolden.tests=true",
-      Boolean.getBoolean("golden.tests"));
 
     File moduleDir = new File(".").getCanonicalFile();
     File projectDir = moduleDir.getParentFile();
@@ -148,6 +155,12 @@ public class LoopGoldenSignatureTest {
       rctx.startDirection = s.direction;
       rctx.roundTripDistance = s.searchRadius;
       rctx.roundTripAlgorithm = s.algorithm;
+      // Sign only gate-accepted clean loops, matching the sibling quality
+      // matrices (LoopGoldStandardTest / LoopQualityTest / RoundTripWeakCell…).
+      // Without this the lenient default would adopt QUALITY-failed best-effort
+      // loops (err=null), freezing a degraded loop into the golden instead of
+      // surfacing it as a regression (NO_TRACK).
+      rctx.roundTripStrictQuality = true;
 
       RoutingEngine re = new RoutingEngine(
         null, null, segDir, wplist, rctx,

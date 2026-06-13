@@ -17,8 +17,9 @@ import btools.util.CheapAngleMeter;
  *         + w_isoHostility * hostility            // 0 unless hostilityActive (paved profiles)
  *         + w_isoBonus    * isoContourDepthMismatch(sourceContour, step, totalSteps)
  *
- * The last three terms are the ISO-aware contribution: a bonus (lower score) for
- * candidates validated by the isochrone Dijkstra, a hostility penalty applied only
+ * The last three terms are the ISO-aware contribution: a bucket-density bonus
+ * (lower score) for candidates reached by a Dijkstra expansion — start-centered
+ * iso or per-step graph-native — a hostility penalty applied only
  * when {@link #setHostilityActive(boolean)} is on, and a contour-depth-mismatch
  * penalty. {@code hostility} is the contiguous-hostile-meters penalty when routed
  * leg data is available, else the cost-per-airmeter penalty.
@@ -233,16 +234,22 @@ public class CandidateScorer {
   }
 
   /**
-   * Bonus (subtracted from the score, so makes the candidate better) for an
-   * iso-validated candidate of acceptable bucket density. Plateaus at hits≥3
-   * — extra-dense buckets do NOT score better than typical-dense ones (we
-   * don't want to over-prefer urban-grid candidates). Sparse buckets
-   * (hits&lt;3) ramp down to 0 (fragility signal — one-shot road slivers).
-   * Radial candidates (no iso metadata) get 0.
+   * Bonus (subtracted from the score, so makes the candidate better) for a
+   * Dijkstra-expansion candidate of acceptable bucket density. Plateaus at
+   * hits≥3 — extra-dense buckets do NOT score better than typical-dense ones
+   * (we don't want to over-prefer urban-grid candidates). Sparse buckets
+   * (hits&lt;3) ramp down to 0 (fragility signal — one-shot road slivers,
+   * usually dead-end pockets that force the next leg to backtrack out).
+   *
+   * <p>Gated on bucket density ALONE: per-step graph-native candidates (the
+   * production GREEDY default) carry real {@code bucketHits} but a sentinel
+   * {@code costFromStart} — the former conjunctive guard zeroed the dead-end
+   * signal exactly on that path. {@code costFromStart} stays in the signature
+   * for callers/tests but no longer gates the bonus.
+   * Radial candidates (no density metadata) get 0.
    */
   double isoValidatedBonus(double costFromStart, int bucketHits) {
-    if (costFromStart == RoundTripCandidateProvider.NO_ISO_COST
-        || bucketHits == RoundTripCandidateProvider.NO_ISO_DENSITY) {
+    if (bucketHits == RoundTripCandidateProvider.NO_ISO_DENSITY) {
       return 0;
     }
     if (bucketHits >= 3) return 1.0;
@@ -313,18 +320,59 @@ public class CandidateScorer {
    * Penalty for misalignment with the direction preference.
    * Fades after step 2 (exploration phase only).
    */
+  /**
+   * Strengthen the direction preference so a round-trip keeps a coherent outward
+   * heading instead of wandering / doubling back into self-crossings. On by
+   * default; disable with {@code -Dloop.strongdir=false}. Strength and late-step
+   * retention are tunable via {@code -Dloop.dirmult} / {@code -Dloop.dirlate}.
+   */
+  static final boolean STRONG_DIRECTION = Boolean.parseBoolean(System.getProperty("loop.strongdir", "true"));
+  private static final double STRONG_DIRECTION_MULT = Double.parseDouble(System.getProperty("loop.dirmult", "2.5"));
+  /** Direction retention for steps &gt; 2 in strong mode (0 = off after step 2, lets closure win late). */
+  private static final double STRONG_DIRECTION_LATE = Double.parseDouble(System.getProperty("loop.dirlate", "0.3"));
+  /**
+   * Terrain-feasibility guard: scale the direction term's influence down when the
+   * requested heading is unreachable this step (the best candidate is far
+   * off-bearing — sea, no roads that way), so direction never forces a route
+   * into terrain it cannot traverse. The planner sets {@link #dirReferenceOffset}
+   * (best achievable |Δbearing|) each step. On by default; disable with
+   * {@code -Dloop.dirfeas=false}. Mountains keep direction (roads exist, just
+   * costlier) — only true blockage relaxes it.
+   */
+  static final boolean DIR_FEASIBILITY = Boolean.parseBoolean(System.getProperty("loop.dirfeas", "true"));
+  private double dirReferenceOffset = 0.0;
+
+  /** Best achievable |Δbearing| (deg) among this step's candidates; set by the planner. */
+  void setDirectionReferenceOffset(double deg) { this.dirReferenceOffset = deg; }
+
   double directionScore(double candidateBearing, DirectionPreference pref, int step) {
     if (pref == null || pref == DirectionPreference.ANY) return 0;
     double fade = directionFade(step);
     if (fade <= 0) return 0;
     double angleDiff = CheapAngleMeter.getDifferenceFromDirection(pref.bearing, candidateBearing);
-    return fade * (angleDiff / 180.0);
+    // Feasibility guard: scale the direction term's INFLUENCE down when the
+    // requested heading is unreachable this step (best candidate far off-bearing
+    // — sea/mountain), so direction stops forcing a bad route and clean-geometry
+    // / cost win instead. Scaling preserves relative ranking only when feasible;
+    // when blocked (best offset ≥ 90°) the term vanishes. (Subtracting the
+    // reference would NOT change per-step selection — it shifts all candidates
+    // equally — so we scale, not subtract.)
+    double feas = DIR_FEASIBILITY ? Math.max(0.0, 1.0 - dirReferenceOffset / 90.0) : 1.0;
+    double mult = STRONG_DIRECTION ? STRONG_DIRECTION_MULT : 1.0;
+    return mult * fade * feas * (angleDiff / 180.0);
   }
 
   /**
    * Direction preference fades: full weight at step 1, half at step 2, zero after.
+   * Strong-direction mode keeps a gentle outward pull through later steps so the
+   * loop stays coherent (loop-closure feasibility, w_loop, still dominates late).
    */
   double directionFade(int step) {
+    if (STRONG_DIRECTION) {
+      if (step <= 1) return 1.0;
+      if (step <= 2) return 0.8;
+      return STRONG_DIRECTION_LATE;
+    }
     if (step <= 1) return 1.0;
     if (step <= 2) return 0.5;
     return 0.0;

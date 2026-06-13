@@ -50,7 +50,7 @@ import btools.util.CheapAngleMeter;
  *   <li><b>LOLLIPOP</b> — a loop with a retraced terminal spur (e.g. a
  *       scenic spur to a cape, climb to a pass, valley with one access
  *       road). Accepted with a disclosure.</li>
- *   <li><b>SCENIC_OUT_AND_BACK</b> — essentially out-and-back along the
+ *   <li><b>OUT_AND_BACK</b> — essentially out-and-back along the
  *       same road. Accepted only when {@code allowSamewayback=true}.</li>
  *   <li><b>INVALID_RETRACE</b> — accidental backtracking in the middle of
  *       a loop. Always rejected.</li>
@@ -99,8 +99,19 @@ public final class RoundTripQualityGate {
   public static final int MAX_SELF_INTERSECTIONS = 5;
   /** Maximum hairpin-like turns allowed before a route is considered chaotic. */
   public static final int MAX_HAIRPIN_TURNS = 20;
-  /** Maximum number of nodes used for O(n²) shape scanning. */
-  private static final int MAX_SHAPE_SCAN_NODES = 1500;
+  /**
+   * Node cap above which the self-intersection scan falls back to stride
+   * decimation. Set high enough that it is only ever a degenerate-input guard:
+   * a 100km loop is ~3300 nodes, 250km ~8000, and the O(n²) scan with the
+   * {@link #countSelfIntersections} early-exit ceiling runs sub-second at this
+   * size. Decimation is NOT shape-preserving — stride sampling replaces curved
+   * sub-paths with straight chords, fabricating crossings on dense switchback
+   * tracks (gate=21 where the full-resolution count is 0; measured on the
+   * alpine/coastal 100km loops). It under-counts on other geometries. So the
+   * scan must run at full node resolution for any realistic loop and only
+   * decimate as a last-resort cost guard on pathological input.
+   */
+  private static final int MAX_SHAPE_SCAN_NODES = 10000;
   /** Ignore tiny digitization jitter when counting U-turns. */
   private static final int MIN_HAIRPIN_SEGMENT_METERS = 25;
 
@@ -227,6 +238,13 @@ public final class RoundTripQualityGate {
     "surface=concrete:plates",
     "surface=concrete:lanes",
     "surface=chipseal",
+    // Constructed stone paving — rough and slow but a road bike CAN ride it
+    // (cf. the cobbled sectors of Paris-Roubaix / the Tour of Flanders). These
+    // are bona fide paved infrastructure, not loose off-road surface, so they
+    // must not trip the hostile-stretch gate. The cost function may still mildly
+    // penalise them for comfort; rideability and routing-preference are separate.
+    "surface=pebblestone",
+    "surface=cobblestone",
   };
 
   /**
@@ -266,7 +284,7 @@ public final class RoundTripQualityGate {
    *
    * <p>{@code allowSamewayback=true} signals the cyclist explicitly asked
    * for an out-and-back; the gate then permits the
-   * {@link RouteShape#SCENIC_OUT_AND_BACK} shape.
+   * {@link RouteShape#OUT_AND_BACK} shape.
    */
   public static String validate(OsmTrack track, double desiredDistance, String profileName,
                                   boolean allowSamewayback) {
@@ -295,7 +313,7 @@ public final class RoundTripQualityGate {
    *       a scenic spur on a fastbike profile that's mostly track is still
    *       a bad route, no matter how iconic.</li>
    *   <li>{@link ReuseClassifier#classify Semantic reuse classification} —
-   *       decides STRICT_LOOP vs LOLLIPOP vs SCENIC_OUT_AND_BACK vs
+   *       decides STRICT_LOOP vs LOLLIPOP vs OUT_AND_BACK vs
    *       INVALID_RETRACE and produces the final accept/reject verdict.</li>
    * </ol>
    *
@@ -338,14 +356,15 @@ public final class RoundTripQualityGate {
                                                 boolean explicitViaMode, boolean allowFerries) {
     if (track == null || track.nodes == null) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("no track").build();
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, "no track").build();
     }
     int n = track.nodes.size();
     if (n < MIN_NODES) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("too few nodes (" + n + ", need ≥ " + MIN_NODES + ")")
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL,
+          "too few nodes (" + n + ", need ≥ " + MIN_NODES + ")")
         .build();
     }
 
@@ -353,8 +372,9 @@ public final class RoundTripQualityGate {
     int closure = track.nodes.get(0).calcDistance(track.nodes.get(n - 1));
     if (closure > MAX_CLOSURE_METERS) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason("closure=" + closure + "m exceeds " + MAX_CLOSURE_METERS + "m")
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL,
+          "closure=" + closure + "m exceeds " + MAX_CLOSURE_METERS + "m")
         .build();
     }
 
@@ -376,9 +396,10 @@ public final class RoundTripQualityGate {
       if (ratio < MIN_DISTANCE_RATIO || ratio > MAX_DISTANCE_RATIO) {
         if (!explicitViaMode) {
           return RoundTripQualityResult.builder()
-            .accepted(false).shape(RouteShape.INVALID_RETRACE)
-            .rejectionReason(String.format(Locale.US, "distance ratio %.2f outside [%.1f, %.1f]",
-              ratio, MIN_DISTANCE_RATIO, MAX_DISTANCE_RATIO))
+            .shape(RouteShape.INVALID_RETRACE)
+            .reject(RoundTripQualityResult.RejectionTier.QUALITY,
+              String.format(Locale.US, "distance ratio %.2f outside [%.1f, %.1f]",
+                ratio, MIN_DISTANCE_RATIO, MAX_DISTANCE_RATIO))
             .build();
         }
         explicitViaDistanceRatioMismatch = ratio;
@@ -393,8 +414,9 @@ public final class RoundTripQualityGate {
       for (MatchedWaypoint mwp : mwps) {
         if (mwp.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT) {
           return RoundTripQualityResult.builder()
-            .accepted(false).shape(RouteShape.INVALID_RETRACE)
-            .rejectionReason("track contains beeline (waypoint marked DIRECT)")
+            .shape(RouteShape.INVALID_RETRACE)
+            .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL,
+              "track contains beeline (waypoint marked DIRECT)")
             .build();
         }
       }
@@ -406,18 +428,30 @@ public final class RoundTripQualityGate {
     String synthetic = checkSyntheticSegments(track, allowFerries);
     if (synthetic != null) {
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason(synthetic)
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, synthetic)
         .build();
     }
 
     // 5. Geometry chaos: self-crossing spikes and repeated hairpins are
     //    user-visible failures even when every individual edge is routed.
+    //    Tiering (load-robustness, 2026-06-12): moderate chaos stays QUALITY —
+    //    the lenient product policy ships odd-but-rideable with a Warning. A
+    //    crossing EXPLOSION (> 2× the cap) is not rideable-odd; it is the
+    //    exhausted planner's weave residue (observed: coastal Nice 100km
+    //    gravel shipping 42-57 crossings when CPU contention truncated the
+    //    closure search) — STRUCTURAL, so lenient adoption, best-effort
+    //    fallbacks and AUTO children all refuse it and fall through to
+    //    cleaner candidates.
     String chaos = checkShapeChaos(track);
     if (chaos != null) {
+      RoundTripQualityResult.RejectionTier tier =
+        countSelfIntersections(track) > 2 * MAX_SELF_INTERSECTIONS
+          ? RoundTripQualityResult.RejectionTier.STRUCTURAL
+          : RoundTripQualityResult.RejectionTier.QUALITY;
       return RoundTripQualityResult.builder()
-        .accepted(false).shape(RouteShape.INVALID_RETRACE)
-        .rejectionReason(chaos)
+        .shape(RouteShape.INVALID_RETRACE)
+        .reject(tier, chaos)
         .build();
     }
 
@@ -429,8 +463,8 @@ public final class RoundTripQualityGate {
       String hostile = checkHostileSegmentsPaved(track);
       if (hostile != null) {
         return RoundTripQualityResult.builder()
-          .accepted(false).shape(RouteShape.INVALID_RETRACE)
-          .rejectionReason(hostile)
+          .shape(RouteShape.INVALID_RETRACE)
+          .reject(RoundTripQualityResult.RejectionTier.QUALITY, hostile)
           .build();
       }
     }
@@ -507,10 +541,41 @@ public final class RoundTripQualityGate {
     return null;
   }
 
+  /**
+   * Crossings whose segments lie within this arc distance of the route start
+   * or end are NOT counted (user labeling, 2026-06-11): leaving and returning
+   * through the same home neighborhood crosses the outbound path by
+   * construction — expected, not a defect.
+   */
+  static final double CROSSING_START_END_EXEMPT_M = 500;
+
+  /**
+   * Vertical-separation exemption (user labeling, 2026-06-11): a geometric
+   * crossing where either involved edge is a bridge or tunnel is not an
+   * at-grade crossing — the dominant false-positive classes were bridge-ramp
+   * loops (route crosses under its own bridge approach, e.g. a spiral ramp
+   * built to avoid stairs) and river crossings re-crossed on different
+   * bridges. Edge tags ride on the edge's END element ({@code message} of
+   * {@code nodes[i]} describes edge i-1→i); raw tracks without messages keep
+   * the historic behaviour (no exemption).
+   */
+  static boolean bridgeOrTunnelEdge(OsmPathElement edgeEnd) {
+    if (edgeEnd == null || edgeEnd.message == null || edgeEnd.message.wayKeyValues == null) {
+      return false;
+    }
+    String tags = edgeEnd.message.wayKeyValues;
+    return tags.contains("bridge=") || tags.contains("tunnel=");
+  }
+
   static int countSelfIntersections(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 4) return 0;
     List<OsmPathElement> nodes = sampledShapeNodes(track.nodes);
     int n = nodes.size();
+    double[] cum = new double[n];
+    for (int k = 1; k < n; k++) {
+      cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+    }
+    double perim = cum[n - 1];
     int crossings = 0;
     // Hard ceiling proportional to the threshold; routes that already
     // qualify as chaotic don't benefit from precise upper counting and
@@ -519,15 +584,274 @@ public final class RoundTripQualityGate {
     for (int i = 0; i < n - 1; i++) {
       OsmPathElement a1 = nodes.get(i);
       OsmPathElement a2 = nodes.get(i + 1);
+      boolean aExempt = cum[i + 1] <= CROSSING_START_END_EXEMPT_M
+        || cum[i] >= perim - CROSSING_START_END_EXEMPT_M
+        || bridgeOrTunnelEdge(a2);
       for (int j = i + 2; j < n - 1; j++) {
         // The first and last segments in a closed loop share the start/end
         // coordinate; that closure is not a self-crossing.
         if (i == 0 && j == n - 2) continue;
+        if (aExempt
+          || cum[j + 1] <= CROSSING_START_END_EXEMPT_M
+          || cum[j] >= perim - CROSSING_START_END_EXEMPT_M) continue;
         if (segmentsCross(a1, a2, nodes.get(j), nodes.get(j + 1))) {
+          if (bridgeOrTunnelEdge(nodes.get(j + 1))) continue; // vertically separated
           crossings++;
           if (crossings > absoluteCeiling) return crossings;
         }
       }
+    }
+    // The CCW scan above excludes segment pairs sharing an endpoint — but on a
+    // road network most genuine self-crossings happen AT a shared junction node
+    // (both passes ride through the same intersection), which made the count
+    // systematically blind to exactly the knots a cyclist sees on the map
+    // (observed: dreieich 50km fastbike W showing 2 visual knots, counted 1).
+    crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings, cum);
+    // Shared-corridor crossings: the route rides a short shared run (a roundabout
+    // arc, a few junction edges) and exits the opposite side. Every node in the
+    // run has a shared incident edge, so BOTH scans above exempt it — yet it is a
+    // real knot (Rond-Point de la Contamine; Diacquenods figure-eight). Computed
+    // on FULL-resolution nodes (sampling breaks the node-identity adjacency the
+    // run-grouping needs); additive without double-counting because the shared
+    // edges make these invisible to the segment/per-node scans. See sharedCorridors.
+    if (crossings <= absoluteCeiling) {
+      crossings += countCorridorCrossings(track.nodes);
+    }
+    return crossings;
+  }
+
+  /**
+   * Count node revisits where the second pass crosses the first TRANSVERSELY —
+   * the four incident path directions interleave around the shared node. A
+   * touch-and-turn (teardrop pinch: both pass-2 directions inside one sector
+   * of pass 1) and a same-edge retrace (shared neighbor) are NOT crossings;
+   * the former is the near-revisit detector's domain, the latter is reuse.
+   */
+  private static int countTransverseNodeRevisits(List<OsmPathElement> nodes, int ceiling, double[] cum) {
+    int n = nodes.size();
+    if (n < 5 || ceiling <= 0) return 0;
+    double perim = cum[n - 1];
+    Map<Long, int[]> first = new java.util.HashMap<>(n * 2);
+    int crossings = 0;
+    for (int k = 1; k < n - 1; k++) {
+      long id = nodes.get(k).getIdFromPos();
+      int[] prevIdx = first.get(id);
+      if (prevIdx == null) {
+        first.put(id, new int[]{k});
+        continue;
+      }
+      // Start/end exemption: revisits of a junction in the home zone are the
+      // expected leave-and-return weave, not a defect (see
+      // CROSSING_START_END_EXEMPT_M).
+      boolean kExempt = cum[k] <= CROSSING_START_END_EXEMPT_M
+        || cum[k] >= perim - CROSSING_START_END_EXEMPT_M;
+      for (int k1 : prevIdx) {
+        if (k - k1 <= 1) continue;
+        if (kExempt || cum[k1] <= CROSSING_START_END_EXEMPT_M) continue;
+        if (isTransverseRevisit(nodes, k1, k)) {
+          crossings++;
+          if (crossings >= ceiling) return crossings;
+        }
+      }
+      int[] grown = java.util.Arrays.copyOf(prevIdx, prevIdx.length + 1);
+      grown[prevIdx.length] = k;
+      first.put(id, grown);
+    }
+    return crossings;
+  }
+
+  // Package-visible: LoopQualityMetrics.detectCrossings reuses the same
+  // transversality test so the report metric and the gate cannot drift.
+  static boolean isTransverseRevisit(List<OsmPathElement> nodes, int k1, int k2) {
+    OsmPathElement p = nodes.get(k1);
+    OsmPathElement in1 = nodes.get(k1 - 1);
+    OsmPathElement out1 = nodes.get(k1 + 1);
+    OsmPathElement in2 = nodes.get(k2 - 1);
+    OsmPathElement out2 = nodes.get(k2 + 1);
+    // Shared-edge guard: a neighbor of pass 2 coinciding with a neighbor of
+    // pass 1 means the passes share an incident edge — retrace, not a crossing.
+    if (samePoint(in2, in1) || samePoint(in2, out1)
+        || samePoint(out2, in1) || samePoint(out2, out1)) {
+      return false;
+    }
+    // Degenerate zero-length neighbors cannot define a direction.
+    if (samePoint(in1, p) || samePoint(out1, p) || samePoint(in2, p) || samePoint(out2, p)) {
+      return false;
+    }
+    double b1 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), in1.getILon(), in1.getILat());
+    double b2 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), out1.getILon(), out1.getILat());
+    double c1 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), in2.getILon(), in2.getILat());
+    double c2 = CheapAngleMeter.getDirection(p.getILon(), p.getILat(), out2.getILon(), out2.getILat());
+    // Pass 1 splits the angular circle at b1/b2; pass 2 crosses transversely
+    // iff its two directions fall in DIFFERENT sectors.
+    boolean c1InSector = angleInSector(c1, b1, b2);
+    boolean c2InSector = angleInSector(c2, b1, b2);
+    return c1InSector != c2InSector;
+  }
+
+  /** Whether {@code x} lies in the clockwise sector from {@code from} to {@code to}. */
+  private static boolean angleInSector(double x, double from, double to) {
+    double span = (to - from + 360.0) % 360.0;
+    double off = (x - from + 360.0) % 360.0;
+    return off > 0 && off < span;
+  }
+
+  // ======================================================================
+  // Shared-corridor crossings — LIVE (wired into countSelfIntersections
+  // 2026-06-13, after the labeling pass below confirmed the rule).
+  //
+  // Annecy investigation (2026-06-11): a route that crosses itself THROUGH a
+  // shared run of edges (a roundabout arc, a few junction edges) defeats
+  // isTransverseRevisit's shared-edge guard at every node of the run, so the
+  // count was systematically blind to exactly the X-knots a cyclist sees
+  // (Rond-Point de la Contamine; Route des Diacquenods figure-eight). Matrix
+  // harvest: 16% of shipped AUTO loops carried at least one such candidate.
+  //
+  // Labeling pass (2026-06-13, AI vision panel over 275 corridors) settled two
+  // design points and the result was wired into countSelfIntersections:
+  //  - LENGTH BOUND (MAX_CORRIDOR_CROSS_M): above ~300m of shared run, even a
+  //    genuine geometric side-swap is dominated by the overlap and reads as
+  //    road reuse — already priced by reuse% / CorridorOverlapIndex, so it must
+  //    not also be counted as a crossing. Applied below.
+  //  - GEOMETRY NOT further guarded: the ~3% short borderline false positives
+  //    do NOT form a class separable from real crossings by local geometry (a
+  //    confirmed crossing sat at a 2.9° margin, below three reuse cases), so a
+  //    hand-tuned margin guard would overfit and create false negatives. Left
+  //    as accepted noise: +1 spurious crossing on ~3% of routes, well under the
+  //    MAX_SELF_INTERSECTIONS gate.
+  // ======================================================================
+
+  /**
+   * Upper bound on shared-run length (m) for a corridor to count as a crossing.
+   * Longer same-direction overlaps are road reuse, not knots (see section note).
+   */
+  static final double MAX_CORRIDOR_CROSS_M = 300;
+
+  /**
+   * Maximal shared corridors of a closed track: runs of >=2 consecutive node
+   * revisits (i.e. at least one shared EDGE — the single-node case stays with
+   * {@link #isTransverseRevisit}). Returns one {@code int[]{a1, a2, b1, b2,
+   * sameDir, crossing}} per run, where {@code a1..a2} is the pass-1 index
+   * span, {@code b1..b2} the pass-2 span, {@code sameDir} whether pass 2
+   * rides the run in the same direction (always true on oneway/roundabout
+   * edges), and {@code crossing} whether the loop transversally crosses
+   * itself through this run. {@code crossing} requires three things:
+   * same-direction (opposite-direction runs are a two-way retrace, the
+   * reuse/CorridorOverlapIndex domain — counting them would mislabel measured
+   * retraces like Route de Clermont), a shared run no longer than
+   * {@link #MAX_CORRIDOR_CROSS_M} (longer = reuse, not a knot), and a
+   * transversal side-swap ({@link #corridorCrosses}).
+   *
+   * <p>Caller passes FULL-resolution nodes: sampling breaks the node-identity
+   * adjacency this grouping relies on.
+   */
+  static List<int[]> sharedCorridors(List<OsmPathElement> nodes) {
+    List<int[]> out = new ArrayList<>();
+    int n = nodes.size();
+    if (n < 5) return out;
+    double[] cum = new double[n];
+    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+    double perim = cum[n - 1];
+
+    List<int[]> pairs = new ArrayList<>();
+    Map<Long, int[]> first = new java.util.HashMap<>(n * 2);
+    for (int k = 1; k < n - 1; k++) {
+      long id = nodes.get(k).getIdFromPos();
+      int[] prev = first.get(id);
+      if (prev != null) {
+        for (int k1 : prev) {
+          if (k - k1 <= 1) continue;
+          if (cum[k] <= CROSSING_START_END_EXEMPT_M || cum[k] >= perim - CROSSING_START_END_EXEMPT_M
+            || cum[k1] <= CROSSING_START_END_EXEMPT_M) continue;
+          pairs.add(new int[]{k1, k});
+        }
+        int[] grown = java.util.Arrays.copyOf(prev, prev.length + 1);
+        grown[prev.length] = k;
+        first.put(id, grown);
+      } else {
+        first.put(id, new int[]{k});
+      }
+    }
+    if (pairs.isEmpty()) return out;
+    pairs.sort((x, y) -> Integer.compare(x[0], y[0]));
+
+    List<int[]> run = new ArrayList<>();
+    for (int i = 0; i <= pairs.size(); i++) {
+      int[] p = i < pairs.size() ? pairs.get(i) : null;
+      int[] last = run.isEmpty() ? null : run.get(run.size() - 1);
+      if (p != null && (last == null
+        || (p[0] - last[0] <= 2 && Math.abs(p[1] - last[1]) <= 2))) {
+        run.add(p);
+        continue;
+      }
+      if (run.size() >= 2) {
+        int a1 = run.get(0)[0], a2 = run.get(run.size() - 1)[0];
+        int b1 = Integer.MAX_VALUE, b2 = -1;
+        for (int[] q : run) {
+          b1 = Math.min(b1, q[1]);
+          b2 = Math.max(b2, q[1]);
+        }
+        boolean sameDir = run.get(run.size() - 1)[1] > run.get(0)[1];
+        double runLen = cum[a2] - cum[a1];
+        boolean crossing = sameDir && runLen <= MAX_CORRIDOR_CROSS_M
+          && corridorCrosses(nodes, a1, a2, b1, b2);
+        out.add(new int[]{a1, a2, b1, b2, sameDir ? 1 : 0, crossing ? 1 : 0});
+      }
+      run = new ArrayList<>();
+      if (p != null) run.add(p);
+    }
+    return out;
+  }
+
+  /**
+   * Exact corridor-contracted transversality: does pass 2 (entering the shared
+   * run at node {@code a1} from {@code nodes[b1-1]}, exiting at {@code a2}
+   * toward {@code nodes[b2+1]}) cross pass 1's path (… {@code a1-1} → run →
+   * {@code a2+1} …)? Since pass 2 rides exactly ON pass 1's run, side-of-path
+   * propagates consistently along it, so the run contracts to its two end
+   * nodes: at each end, pass 1's outgoing and incoming rays split the angular
+   * circle, and pass 2 crosses iff its attachment falls in different sectors
+   * at the two ends (same outgoing-then-incoming boundary order at both ends
+   * keeps the sector orientation comparable). This is the corridor analogue of
+   * {@link #isTransverseRevisit}'s single-node test, with real node geometry —
+   * no centroid approximation.
+   */
+  private static boolean corridorCrosses(List<OsmPathElement> nodes, int a1, int a2, int b1, int b2) {
+    int n = nodes.size();
+    if (a1 - 1 < 0 || a2 + 1 >= n || b1 - 1 < 0 || b2 + 1 >= n) return false;
+    OsmPathElement e1 = nodes.get(a1), e2 = nodes.get(a2);
+    OsmPathElement in1 = nodes.get(a1 - 1), out1 = nodes.get(a2 + 1);
+    OsmPathElement in2 = nodes.get(b1 - 1), out2 = nodes.get(b2 + 1);
+    OsmPathElement c1next = nodes.get(a1 + 1), c2prev = nodes.get(a2 - 1);
+    // Shared approach/exit edge: the passes also share the edge OUTSIDE the
+    // run on that side — an extended retrace shape, not a crossing through it.
+    if (samePoint(in2, in1) || samePoint(out2, out1)) return false;
+    // Degenerate zero-length rays cannot define a sector.
+    if (samePoint(in1, e1) || samePoint(c1next, e1) || samePoint(in2, e1)
+      || samePoint(out1, e2) || samePoint(c2prev, e2) || samePoint(out2, e2)) {
+      return false;
+    }
+    boolean sideIn = angleInSector(
+      CheapAngleMeter.getDirection(e1.getILon(), e1.getILat(), in2.getILon(), in2.getILat()),
+      CheapAngleMeter.getDirection(e1.getILon(), e1.getILat(), c1next.getILon(), c1next.getILat()),
+      CheapAngleMeter.getDirection(e1.getILon(), e1.getILat(), in1.getILon(), in1.getILat()));
+    boolean sideOut = angleInSector(
+      CheapAngleMeter.getDirection(e2.getILon(), e2.getILat(), out2.getILon(), out2.getILat()),
+      CheapAngleMeter.getDirection(e2.getILon(), e2.getILat(), out1.getILon(), out1.getILat()),
+      CheapAngleMeter.getDirection(e2.getILon(), e2.getILat(), c2prev.getILon(), c2prev.getILat()));
+    return sideIn != sideOut;
+  }
+
+  /**
+   * Count over {@link #sharedCorridors}: one crossing per qualifying
+   * same-direction run. Added to {@link #countSelfIntersections} (see the call
+   * site there); pass FULL-resolution nodes.
+   */
+  static int countCorridorCrossings(List<OsmPathElement> nodes) {
+    int crossings = 0;
+    for (int[] c : sharedCorridors(nodes)) {
+      crossings += c[5];
+      if (crossings >= MAX_SELF_INTERSECTIONS * 4) break;
     }
     return crossings;
   }
@@ -944,7 +1268,28 @@ public final class RoundTripQualityGate {
 
   static boolean isHostileForPavedProfile(MessageData m) {
     String tags = m.wayKeyValues;
-    if (tags != null && isRoadBikeSuitablePavedTrack(tags)) return false;
+    if (tags != null) {
+      if (isRoadBikeSuitablePavedTrack(tags)) return false;
+      // A soft highway (path/footway/bridleway) carrying an explicit hard
+      // surface is paved cycleway infrastructure, rideable on a road bike — even
+      // when the cost function scores the surface as "unpaved" and pushes the
+      // costfactor over the threshold (fastbike treats surface=pebblestone like
+      // gravel, so a cobbled cycleway lands at costfactor ~15). The explicit
+      // surface tag is the more reliable rideability signal, so honour it BEFORE
+      // the costfactor check, which would otherwise reject it as hostile.
+      //
+      // The cost is intentionally NOT bounded here — cobbled cycleways are a
+      // deliberately high-cost-but-rideable case, and the cost function still
+      // penalises them for comfort. But a poor tracktype (grade2-5) is a
+      // stronger surface-quality signal than the surface tag and overrides it
+      // (e.g. a broken-asphalt grade3 forest path), exactly as the sibling
+      // isRoadBikeSuitablePavedTrack guards — so a rough-graded path does not
+      // get the rideability pass even if it carries an incidental hard surface.
+      if (hasSoftOverridableHighway(tags) && hasHardSurface(tags)
+          && !hasExplicitBicycleRestriction(tags) && !hasPoorTracktype(tags)) {
+        return false;
+      }
+    }
     if (m.costfactor > HOSTILE_COSTFACTOR_THRESHOLD) return true;
     if (tags == null) return false;
     for (String fragment : PAVED_PROFILE_HOSTILE_TAG_FRAGMENTS) {
@@ -952,8 +1297,13 @@ public final class RoundTripQualityGate {
         // Soft-highway fragments (path/footway/bridleway) are overridden
         // when the surface is hard: a path tagged surface=asphalt is paved
         // cycleway infrastructure, rideable on a road bike. Tracks /
-        // steps / surface=gravel and friends are NOT overridable.
-        if (isOverridableHostileTag(fragment) && hasHardSurface(tags)) {
+        // steps / surface=gravel and friends are NOT overridable. A poor
+        // tracktype (grade2-5) vetoes the override here too, symmetric with the
+        // pre-costfactor override above and the track case — so a rough-graded
+        // path stays hostile regardless of whether it lands on this low-cost
+        // branch or the costfactor branch.
+        if (isOverridableHostileTag(fragment) && hasHardSurface(tags)
+            && !hasPoorTracktype(tags)) {
           continue;
         }
         return true;
@@ -967,6 +1317,25 @@ public final class RoundTripQualityGate {
       if (s.equals(fragment)) return true;
     }
     return false;
+  }
+
+  private static boolean hasSoftOverridableHighway(String tags) {
+    for (String s : SOFT_HIGHWAY_OVERRIDABLE) {
+      if (tags.contains(s)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether the way carries a poor tracktype (grade2-5), a stronger
+   * surface-quality signal than the surface tag. Used to veto the
+   * "hard surface ⇒ rideable" overrides for both tracks and soft highways.
+   */
+  private static boolean hasPoorTracktype(String tags) {
+    return tags.contains("tracktype=grade2")
+      || tags.contains("tracktype=grade3")
+      || tags.contains("tracktype=grade4")
+      || tags.contains("tracktype=grade5");
   }
 
   private static boolean hasHardSurface(String tags) {
@@ -1014,11 +1383,7 @@ public final class RoundTripQualityGate {
     // tracktype=grade2|3|4|5 is a more-specific signal of poor riding
     // surface that overrides the surface tag (e.g. broken asphalt on a
     // grade2 forest road). Don't activate the cascade if those are set.
-    boolean poorTracktype = tags.contains("tracktype=grade2")
-      || tags.contains("tracktype=grade3")
-      || tags.contains("tracktype=grade4")
-      || tags.contains("tracktype=grade5");
-    if (poorTracktype) return false;
+    if (hasPoorTracktype(tags)) return false;
     boolean hardSurface = hasHardSurface(tags);
     boolean cycleNetwork = hasCycleNetworkTag(tags);
     return hardSurface
@@ -1128,12 +1493,15 @@ public final class RoundTripQualityGate {
         paved = probePavedFromCostModel(expctxWay);
       }
     }
-    // Only cache a real verdict. A null context (e.g. an AUTO-competition child
-    // engine built via copyRequestFields(), which omits expctxWay) cannot probe
-    // and returns the safe `false` default for its own immediate use — but it
-    // must NOT overwrite the parent's correct probed entry for this profile in
-    // the shared static cache, or every later isPavedProfile() lookup would wrongly
-    // bypass the hostile-surface gate.
+    // Only cache a verdict computed from a real probe context. A null expctxWay
+    // means we could not probe, so `paved` is just the safe `false` default for
+    // this call's own immediate use; writing it would poison the shared static
+    // cache and make later isPavedProfile() lookups wrongly bypass the
+    // hostile-surface gate. Note: AUTO-competition child engines do NOT have a
+    // null context here — each child re-parses its own profile (non-null
+    // expctxWay) and re-runs this probe, so it writes the same verdict
+    // idempotently rather than being skipped. The guard defends against any
+    // genuinely context-less caller, not against the AUTO children.
     if (profileName != null && expctxWay != null) {
       PAVED_CLASSIFICATION.put(profileName, paved);
     }

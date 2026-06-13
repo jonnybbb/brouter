@@ -14,6 +14,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -170,6 +171,7 @@ public final class OsmTrack {
   }
 
   public void buildMap() {
+    traveledEdgeKeys = null; // node list may have changed
     nodesMap = new CompactLongMap<>();
     for (OsmPathElement node : nodes) {
       long id = node.getIdFromPos();
@@ -278,7 +280,11 @@ public final class OsmTrack {
               last_pe = pe;
               t.nodes.add(pe);
             }
-            t.cost = last_pe.cost;
+            // last_pe is null only for a degenerate 0-node stored track; guard the
+            // deref so a corrupt/empty entry yields cost 0 instead of an NPE.
+            if (last_pe != null) {
+              t.cost = last_pe.cost;
+            }
             t.buildMap();
 
             // check cheecksums, too
@@ -351,7 +357,44 @@ public final class OsmTrack {
     return null;
   }
 
+  /**
+   * Lazily-built set of direction-insensitive keys for every consecutive node
+   * pair this track traveled. Detail-level agnostic: a raw track contributes
+   * junction-pair edges, a detailed track contributes its transfer-point
+   * sub-segments — callers test whichever granularity they walk at.
+   * Invalidated on mutation ({@link #buildMap}, {@link #appendTrack}).
+   */
+  private HashSet<Long> traveledEdgeKeys;
+
+  private static long traveledEdgeKey(long idA, long idB) {
+    long lo = Math.min(idA, idB);
+    long hi = Math.max(idA, idB);
+    // 128->64-bit mix; collision odds are negligible for a penalty heuristic.
+    long h = lo * 0x9E3779B97F4A7C15L + hi * 0xC2B2AE3D27D4EB4FL;
+    return h ^ (h >>> 32);
+  }
+
+  /**
+   * Whether this track actually traveled the segment between the two
+   * positions (in either direction). Unlike the both-endpoints
+   * {@link #containsNode} test, a fresh connector road between two
+   * separately-visited nodes is NOT a member — the anti-reuse refTrack
+   * penalty must only tax roads the track used, not every edge whose
+   * endpoints happen to lie on it.
+   */
+  public boolean containsTraveledSegment(long idA, long idB) {
+    if (traveledEdgeKeys == null) {
+      HashSet<Long> keys = new HashSet<>(Math.max(16, nodes.size() * 2));
+      for (int i = 1; i < nodes.size(); i++) {
+        keys.add(traveledEdgeKey(nodes.get(i - 1).getIdFromPos(), nodes.get(i).getIdFromPos()));
+      }
+      traveledEdgeKeys = keys;
+    }
+    return traveledEdgeKeys.contains(traveledEdgeKey(idA, idB));
+  }
+
   public void appendTrack(OsmTrack t) {
+    traveledEdgeKeys = null; // node list changes below
     int i = 0;
 
     int ourSize = nodes.size();
@@ -520,7 +563,11 @@ public final class OsmTrack {
           MatchedWaypoint mwpt = getMatchedWaypoint(nodeNr);
           if (mwpt != null && mwpt.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT) {
             input.cmd = VoiceHint.BL;
-            input.angle = (float) (nodeNr == 0 ? node.origin.message.turnangle : node.message.turnangle);
+            // node.origin.message can be null (see the fallback at the oldWay
+            // assignment above); fall back to node.message's turnangle rather
+            // than dereferencing a null origin message at nodeNr == 0.
+            input.angle = (float) (nodeNr == 0 && node.origin.message != null
+              ? node.origin.message.turnangle : node.message.turnangle);
             input.distanceToNext = node.calcDistance(node.origin);
           }
         }

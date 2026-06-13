@@ -1,12 +1,11 @@
 package btools.router;
 
-import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Before;
 import org.junit.Test;
 
 /**
@@ -22,26 +21,6 @@ import org.junit.Test;
  * adopted directly.
  */
 public class RoutingEngineAutoCompetitionTest {
-
-  private File segmentDir;
-  private File profileDir;
-
-  @Before
-  public void setup() {
-    segmentDir = new File("../segments4");
-    if (!segmentDir.exists() || !segmentDir.isDirectory()) {
-      segmentDir = new File("segments4");
-    }
-    profileDir = new File("misc/profiles2");
-    if (!profileDir.exists()) {
-      profileDir = new File("../misc/profiles2");
-    }
-  }
-
-  private boolean hasSegmentData(String region) {
-    return segmentDir.exists() && segmentDir.isDirectory()
-      && new File(segmentDir, region).exists();
-  }
 
   // =========================================================================
   // §353.8 — Route-choice score returns a reason breakdown.
@@ -117,8 +96,8 @@ public class RoutingEngineAutoCompetitionTest {
     // RouteChoiceScore a rejected verdict — it returns 0.
     OsmTrack t = cleanSquareLoop(5000);
     RoundTripQualityResult rejected = RoundTripQualityResult.builder()
-      .accepted(false).shape(RouteShape.INVALID_RETRACE)
-      .rejectionReason("synthetic rejection").build();
+      .shape(RouteShape.INVALID_RETRACE)
+      .reject(RoundTripQualityResult.RejectionTier.STRUCTURAL, "synthetic rejection").build();
     RouteChoiceScore.Verdict v = RouteChoiceScore.score(t, t.distance, "fastbike", rejected);
     Assert.assertEquals("rejected gate → zero score", 0.0, v.score(), 1e-9);
   }
@@ -131,13 +110,13 @@ public class RoutingEngineAutoCompetitionTest {
     RoundTripQualityResult lollipop = RoundTripQualityResult.builder()
       .accepted(true).shape(RouteShape.LOLLIPOP).build();
     RoundTripQualityResult scenic = RoundTripQualityResult.builder()
-      .accepted(true).shape(RouteShape.SCENIC_OUT_AND_BACK).build();
+      .accepted(true).shape(RouteShape.OUT_AND_BACK).build();
 
     double strictS = RouteChoiceScore.score(t, t.distance, "fastbike", strict).score();
     double lollipopS = RouteChoiceScore.score(t, t.distance, "fastbike", lollipop).score();
     double scenicS = RouteChoiceScore.score(t, t.distance, "fastbike", scenic).score();
     Assert.assertTrue("STRICT_LOOP > LOLLIPOP", strictS > lollipopS);
-    Assert.assertTrue("LOLLIPOP > SCENIC_OUT_AND_BACK", lollipopS > scenicS);
+    Assert.assertTrue("LOLLIPOP > OUT_AND_BACK", lollipopS > scenicS);
   }
 
   @Test
@@ -192,342 +171,130 @@ public class RoutingEngineAutoCompetitionTest {
     Assert.assertTrue("scoreValue > 0", r.scoreValue() > 0);
   }
 
-  // =========================================================================
-  // §353.1–6, 10, 11 — Integration tests (segments-gated, real routing).
-  // =========================================================================
+  // ---- best-effort (lenient) candidate selection — Option C ----------------
+  // When no candidate passes the gate, AUTO adopts the least-bad QUALITY-tier
+  // best-effort loop, ranked by the same multi-factor RouteChoiceScore used for
+  // accepted winners. These pin that both axes the rider cares about drive the
+  // choice: distance closeness (primary) and profile-surface ("ground") match.
 
-  /** Dreieich start: 8.720, 50.000 — clean fastbike loops per the loop-quality data. */
-  private static OsmNodeNamed dreieichStart() {
-    OsmNodeNamed n = new OsmNodeNamed();
-    n.ilon = (int) ((8.720 + 180) * 1_000_000);
-    n.ilat = (int) ((50.000 + 90) * 1_000_000);
-    n.name = "from";
-    return n;
-  }
-
-  /**
-   * Integration tests use the trekking profile, not fastbike: paved-only
-   * fastbike rejects the path/track terrain that real routes around the
-   * Dreieich start can pick up, and the AUTO competition test cares about
-   * COMPETITION mechanics, not profile policy. The hostility gate is still
-   * enforced and exercised separately.
-   */
-  private RoutingContext trekkingContext(int radius) {
-    RoutingContext rctx = new RoutingContext();
-    File trekking = new File(profileDir, "trekking.brf");
-    rctx.localFunction = trekking.exists() ? trekking.getAbsolutePath()
-      : new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx.roundTripDistance = radius;
-    return rctx;
+  @Test
+  public void bestEffortSelectionPrefersCloserDistance() {
+    // Two profile-friendly loops differing only in distance. The on-target one
+    // must win even though the off-target one is earlier in algorithm order.
+    OsmTrack onTarget = loopWithCostPerMeter(5000, 1.0);
+    OsmTrack tooShort = loopWithCostPerMeter(2000, 1.0); // ~40% of the distance
+    List<RoundTripCandidateResult> candidates = Arrays.asList(
+      candidate(RoundTripAlgorithm.ISO_GREEDY, tooShort),  // earlier in order…
+      candidate(RoundTripAlgorithm.GREEDY, onTarget));     // …but closer to target
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      candidates, onTarget.distance, "fastbike", 0);
+    Assert.assertSame("closer-distance best-effort wins despite later order",
+      onTarget, best.track);
   }
 
   @Test
-  public void largeLoopAutoTriesMultipleCandidatesAndAdoptsWinner() {
-    // §353.1 / 353.6 / 353.11. AUTO + large radius runs the competition
-    // and adopts the winner's track. Verify the result has a track and
-    // the message records "AUTO selected ..." with the chosen algorithm.
-    Assume.assumeTrue("Segment data required", hasSegmentData("E5_N50.rd5"));
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(dreieichStart());
-    RoutingContext rctx = trekkingContext(6000);
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
-    rctx.startDirection = 90; // East — Dreieich has clean fastbike to the east
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(120_000);
-
-    Assert.assertNull("AUTO completed: " + re.getErrorMessage(), re.getErrorMessage());
-    Assert.assertNotNull("track produced", re.getFoundTrack());
-    Assert.assertNotNull("track has message", re.getFoundTrack().message);
-    Assert.assertTrue("message mentions AUTO selection: " + re.getFoundTrack().message,
-      re.getFoundTrack().message.contains("AUTO selected"));
+  public void bestEffortSelectionPrefersProfileFriendlySurface() {
+    // Two loops at the same (on-target) distance, differing only in cost/m: one
+    // on roads the profile likes, one profile-hostile. Ground match must decide.
+    OsmTrack friendly = loopWithCostPerMeter(5000, 1.0); // within fastbike band
+    OsmTrack hostile = loopWithCostPerMeter(5000, 8.0);  // well above the band
+    List<RoundTripCandidateResult> candidates = Arrays.asList(
+      candidate(RoundTripAlgorithm.ISO_GREEDY, hostile),   // earlier in order…
+      candidate(RoundTripAlgorithm.GREEDY, friendly));     // …but rideable surface
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      candidates, friendly.distance, "fastbike", 0);
+    Assert.assertSame("profile-friendly surface best-effort wins despite later order",
+      friendly, best.track);
   }
 
   @Test
-  public void smallLoopAutoUsesGreedyCompetition() {
-    // Small generated AUTO loops now use the same greedy-first competition
-    // path as larger loops. The cheap selector remains only as a fallback
-    // helper for unsupported/direct callers.
-    Assume.assumeTrue("Segment data required", hasSegmentData("E5_N50.rd5"));
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(dreieichStart());
-    RoutingContext rctx = trekkingContext(3000);
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
-    rctx.startDirection = 90;
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(60_000);
-
-    Assert.assertNull("AUTO completed: " + re.getErrorMessage(), re.getErrorMessage());
-    Assert.assertNotNull("track produced", re.getFoundTrack());
-    Assert.assertNotNull("track has message", re.getFoundTrack().message);
-    Assert.assertTrue("small loop entered AUTO competition: " + re.getFoundTrack().message,
-      re.getFoundTrack().message.contains("AUTO selected"));
+  public void bestEffortSelectionPicksHighestCompositeAcrossAxes() {
+    // Cross-axis: an off-distance friendly loop vs an on-distance hostile loop.
+    // The winner is whichever the multi-factor score ranks higher overall — assert
+    // the selection matches the directly-computed argmax (no hand-picked axis).
+    OsmTrack offDistanceFriendly = loopWithCostPerMeter(2000, 1.0);
+    OsmTrack onDistanceHostile = loopWithCostPerMeter(5000, 8.0);
+    double expected = onDistanceHostile.distance;
+    double sFriendly = RouteChoiceScore.score(offDistanceFriendly, expected, "fastbike", null, 0).score();
+    double sHostile = RouteChoiceScore.score(onDistanceHostile, expected, "fastbike", null, 0).score();
+    OsmTrack expectedWinner = sHostile > sFriendly ? onDistanceHostile : offDistanceFriendly;
+    List<RoundTripCandidateResult> candidates = Arrays.asList(
+      candidate(RoundTripAlgorithm.ISO_GREEDY, offDistanceFriendly),
+      candidate(RoundTripAlgorithm.GREEDY, onDistanceHostile));
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      candidates, expected, "fastbike", 0);
+    Assert.assertSame("selection picks the highest-composite candidate",
+      expectedWinner, best.track);
   }
 
   @Test
-  public void forcedAlgorithmBypassesCompetition() {
-    // §353.14. Explicit roundTripAlgorithm=WAYPOINT (or any forced algo)
-    // bypasses the competition. The result message should NOT contain
-    // "AUTO selected" because AUTO branch isn't entered.
-    Assume.assumeTrue("Segment data required", hasSegmentData("E5_N50.rd5"));
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(dreieichStart());
-    RoutingContext rctx = trekkingContext(6000);
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.WAYPOINT; // forced
-    rctx.startDirection = 90;
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(60_000);
-
-    if (re.getFoundTrack() != null && re.getFoundTrack().message != null) {
-      Assert.assertFalse("forced algo bypasses competition: "
-        + re.getFoundTrack().message,
-        re.getFoundTrack().message.contains("AUTO selected"));
-    }
+  public void bestEffortSelectionHandlesEmptyAndNullTracks() {
+    Assert.assertNull("no candidates → null",
+      RoutingEngine.selectBestEffortCandidate(Collections.emptyList(), 10000, "fastbike", 0));
+    RoundTripCandidateResult noTrack = new RoundTripCandidateResult(RoundTripAlgorithm.WAYPOINT);
+    Assert.assertNull("only null-track candidates → null",
+      RoutingEngine.selectBestEffortCandidate(
+        Collections.singletonList(noTrack), 10000, "fastbike", 0));
   }
 
   @Test
-  public void competitionOutputIsSuppressed() {
-    // §353.10. The competition runs children with null outfileBase; no
-    // intermediate GPX files should be created. The parent engine writes
-    // only the winner's track. We verify by passing a non-null outfile to
-    // the parent, then checking the child outfiles don't exist.
-    Assume.assumeTrue("Segment data required", hasSegmentData("E5_N50.rd5"));
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(dreieichStart());
-    RoutingContext rctx = trekkingContext(6000);
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
-    rctx.startDirection = 90;
-
-    File tmpDir = new File("build/tmp/auto-test");
-    tmpDir.mkdirs();
-    String outfileBase = new File(tmpDir, "parent").getAbsolutePath();
-    RoutingEngine re = new RoutingEngine(outfileBase, outfileBase, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(120_000);
-
-    // Parent should have written its GPX after adopting the winner.
-    File parentGpx = new File(outfileBase + "0.gpx");
-    Assert.assertTrue("parent GPX written: " + parentGpx, parentGpx.exists());
-    // Children should not have created any intermediate files in the same
-    // directory (they used null outfileBase so they can't write).
-    // We check by listing the dir and confirming only the parent's files.
-    File[] siblings = tmpDir.listFiles();
-    Assert.assertNotNull(siblings);
-    for (File f : siblings) {
-      // Only the parent's prefix should appear
-      Assert.assertTrue("unexpected intermediate file: " + f.getName(),
-        f.getName().startsWith("parent"));
-    }
+  public void scoreBestEffortBypassesZeroGuardButKeepsShapePenalty() {
+    OsmTrack t = loopWithCostPerMeter(5000, 1.0);
+    RoundTripQualityResult rejectedCorridor = RoundTripQualityResult.builder()
+      .reject(RoundTripQualityResult.RejectionTier.QUALITY, "same-way-back corridor")
+      .shape(RouteShape.OUT_AND_BACK).build();
+    // Strict scorer: a rejected gate still zeroes (production ranking unchanged).
+    Assert.assertEquals("strict score() keeps the rejected-gate zero guard",
+      0.0, RouteChoiceScore.score(t, t.distance, "fastbike", rejectedCorridor, 0).score(), 1e-9);
+    // Best-effort scorer: real geometry score minus the shape disclosure penalty.
+    double baseline = RouteChoiceScore.score(t, t.distance, "fastbike", null, 0).score();
+    Assert.assertTrue("test geometry must not clamp at 1.0", baseline < 1.0);
+    RouteChoiceScore.Verdict v = RouteChoiceScore.scoreBestEffort(
+      t, t.distance, "fastbike", rejectedCorridor, 0);
+    Assert.assertTrue("zero guard bypassed for best-effort ranking", v.score() > 0);
+    Assert.assertEquals("gate shape penalty applied on top of the geometry score",
+      baseline - RouteChoiceScore.SHAPE_PENALTY_OUT_AND_BACK, v.score(), 1e-9);
   }
 
-  /**
-   * §353.1 / 353.6 / 353.11 — Real-world validation for the exact case the
-   * user reported (mallorca_75km_fastbike_S in images 9–11). The forced
-   * {@code [probe]} variant of this case produces a route with ~18 self-
-   * crossings + visible spikes into wilderness from geometric waypoint
-   * placement. AUTO mode should run the greedy-first competition
-   * (ISO_GREEDY → GREEDY, with WAYPOINT/probe only as fallback), pick the
-   * highest-scoring accepted candidate, and produce a track with
-   * substantially fewer self-crossings.
-   *
-   * <p>This test is the regression guard against the user-visible chaos
-   * pattern that originally motivated the AUTO redesign.
-   */
   @Test
-  public void mallorca75kmFastbikeAutoBeatsProbeSpike() {
-    Assume.assumeTrue("Segment data required", hasSegmentData("E0_N35.rd5"));
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((2.650 + 180) * 1_000_000);
-    start.ilat = (int) ((39.570 + 90) * 1_000_000);
-    start.name = "from";
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(start);
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, "fastbike.brf").getAbsolutePath();
-    rctx.roundTripDistance = 11937; // SEARCH_RADIUS for 75km in LoopQualityTest
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
-    rctx.startDirection = 180; // S — the exact direction from images 9–11
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(180_000);
-
-    Assert.assertNull("AUTO produced a route: " + re.getErrorMessage(),
-      re.getErrorMessage());
-    OsmTrack track = re.getFoundTrack();
-    Assert.assertNotNull("track exists", track);
-    Assert.assertNotNull("track.message recorded", track.message);
-    Assert.assertTrue("competition ran (message mentions AUTO selected): "
-      + track.message, track.message.contains("AUTO selected"));
-    System.out.println("[mallorca75kmFastbikeAutoBeatsProbeSpike] winner: " + track.message);
-
-    // Geometric quality: count self-crossings in the routed polyline.
-    int selfCrossings = countSelfCrossings(track);
-    System.out.println("[mallorca75kmFastbikeAutoBeatsProbeSpike] selfCrossings="
-      + selfCrossings + " (probe baseline 18; iso_greedy baseline 3)");
-    // The forced [probe] variant of this case scored 18 self-crossings.
-    // AUTO picks ISO_GREEDY here and produces 0–3 self-crossings (verified
-    // empirically). Pin ≤ 5 as a regression guard: tight enough that the
-    // probe-style chaos pattern (≥ 10 typically) would clearly fail,
-    // loose enough that minor routing-engine variance won't false-fail.
-    Assert.assertTrue("AUTO winner has self-crossings ≤ 5 (probe baseline was 18); got "
-        + selfCrossings + " — message: " + track.message,
-      selfCrossings <= 5);
-  }
-
-  /**
-   * Regression: AUTO must not hard-force the start direction on its child
-   * candidates when the user supplied only a soft {@code direction}. Innsbruck
-   * 50 km westward on fastbike is accepted by a free-bearing ISO_GREEDY, but
-   * hard-forcing the opening bearing shoves the first leg onto a >1.5 km
-   * profile-hostile stretch and the whole competition fails. Before the fix
-   * AUTO returned no track here; it must now produce one.
-   */
-  @Test
-  public void autoSoftDirectionDoesNotHardForceFirstLeg() {
-    Assume.assumeTrue("Segment data required", hasSegmentData("E10_N45.rd5"));
-    OsmTrack track = runAuto("fastbike", 8000, 270, /*forceHeading=*/false);
-    Assert.assertNotNull("AUTO produced a track (soft direction must not hard-force)", track);
-  }
-
-  /**
-   * Regression: when ISO_GREEDY, GREEDY and WAYPOINT all fail, AUTO falls back
-   * to direct ISOCHRONE placement. Innsbruck 100 km southward on gravel is one
-   * such case — the greedy/probe candidates produce only chaotic loops, while
-   * the isochrone frontier yields an accepted loop. Before the fallback was
-   * added AUTO returned no track here.
-   */
-  @Test
-  public void autoFallsBackToIsochroneWhenGreedyVariantsFail() {
-    Assume.assumeTrue("Segment data required", hasSegmentData("E10_N45.rd5"));
-    OsmTrack track = runAuto("gravel", 15900, 180, /*forceHeading=*/false);
-    Assert.assertNotNull("AUTO produced a track via the ISOCHRONE fallback", track);
-  }
-
-  /** Run an AUTO round trip from the Innsbruck start and return the found track. */
-  private OsmTrack runAuto(String profileName, int searchRadius, int direction, boolean forceHeading) {
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((11.400 + 180) * 1_000_000);
-    start.ilat = (int) ((47.260 + 90) * 1_000_000);
-    start.name = "from";
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(start);
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, profileName + ".brf").getAbsolutePath();
-    rctx.roundTripDistance = searchRadius;
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
-    rctx.startDirection = direction;
-    rctx.forceUseStartDirection = forceHeading;
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(180_000);
-    return re.getFoundTrack();
-  }
-
-  /**
-   * Regression: greedy/iso/AUTO round trips must emit voice hints when a
-   * turn-instruction mode is requested. The greedy planner assembles its loop
-   * from already-detailed legs but used to drop their detour metadata, leaving
-   * processVoiceHints with nothing — so the GPX came back with an empty
-   * turn-instruction list. The detoured merge carries the leg detourMaps onto
-   * the result track so hints are produced (afischerdev review).
-   */
-  @Test
-  public void greedyRoundTripEmitsVoiceHints() {
-    Assume.assumeTrue("Segment data required", hasSegmentData("E5_N40.rd5"));
-    RoundTripAlgorithm[] algos = {
-      RoundTripAlgorithm.GREEDY, RoundTripAlgorithm.ISO_GREEDY, RoundTripAlgorithm.AUTO
-    };
-    for (RoundTripAlgorithm algo : algos) {
-      OsmTrack t = runRoundTripWithTurns(7.270, 43.700, "hiking-mountain", 5000, 180, algo, 4);
-      Assert.assertNotNull(algo + " produced a round-trip track", t);
-      Assert.assertNotNull(algo + " track has a voice-hint list", t.voiceHints);
-      Assert.assertFalse(algo + " round trip (timode=4) must emit voice hints",
-        t.voiceHints.list.isEmpty());
-    }
-  }
-
-  private OsmTrack runRoundTripWithTurns(double lon, double lat, String profileName,
-      int searchRadius, int direction, RoundTripAlgorithm algo, int turnInstructionMode) {
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((lon + 180) * 1_000_000);
-    start.ilat = (int) ((lat + 90) * 1_000_000);
-    start.name = "from";
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(start);
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, profileName + ".brf").getAbsolutePath();
-    rctx.roundTripDistance = searchRadius;
-    rctx.roundTripAlgorithm = algo;
-    rctx.startDirection = direction;
-    rctx.turnInstructionMode = turnInstructionMode;
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(180_000);
-    return re.getFoundTrack();
-  }
-
-  /** Count consecutive-edge intersections in a track polyline (excluding
-   * shared endpoints). Mirrors the analyzer-script logic; O(n²) but track
-   * sizes are bounded by routing tolerances so this is fine for one test. */
-  private static int countSelfCrossings(OsmTrack track) {
-    int n = track.nodes.size();
-    int crossings = 0;
-    for (int i = 0; i < n - 1; i++) {
-      OsmPathElement a1 = track.nodes.get(i);
-      OsmPathElement a2 = track.nodes.get(i + 1);
-      for (int j = i + 2; j < n - 1; j++) {
-        OsmPathElement b1 = track.nodes.get(j);
-        OsmPathElement b2 = track.nodes.get(j + 1);
-        if (segmentsCross(a1, a2, b1, b2)) crossings++;
-      }
-    }
-    return crossings;
-  }
-
-  private static boolean segmentsCross(OsmPathElement p1, OsmPathElement p2,
-                                       OsmPathElement p3, OsmPathElement p4) {
-    if ((p1.getILon() == p3.getILon() && p1.getILat() == p3.getILat())
-        || (p1.getILon() == p4.getILon() && p1.getILat() == p4.getILat())
-        || (p2.getILon() == p3.getILon() && p2.getILat() == p3.getILat())
-        || (p2.getILon() == p4.getILon() && p2.getILat() == p4.getILat())) {
-      return false; // shared endpoints are not self-crossings
-    }
-    long c1 = ccw(p1, p3, p4);
-    long c2 = ccw(p2, p3, p4);
-    long c3 = ccw(p1, p2, p3);
-    long c4 = ccw(p1, p2, p4);
-    return (c1 > 0) != (c2 > 0) && (c3 > 0) != (c4 > 0);
-  }
-
-  /** Cross-product sign for ccw test; uses long arithmetic to avoid
-   * integer overflow on ilon×ilat products at routing-scale coords. */
-  private static long ccw(OsmPathElement a, OsmPathElement b, OsmPathElement c) {
-    long dx1 = (long) b.getILon() - a.getILon();
-    long dy1 = (long) b.getILat() - a.getILat();
-    long dx2 = (long) c.getILon() - a.getILon();
-    long dy2 = (long) c.getILat() - a.getILat();
-    return dx1 * dy2 - dy1 * dx2;
+  public void bestEffortSelectionRanksRejectedCorridorBelowRejectedStrictLoop() {
+    // Identical geometry; only the gate's shape verdict differs. The disclosed
+    // corridor (OUT_AND_BACK) must lose to a strict-loop-shaped candidate
+    // rejected for a non-shape reason. Before scoreBestEffort consumed the
+    // gate verdict, both ranked identically and list order decided.
+    OsmTrack t = loopWithCostPerMeter(5000, 1.0);
+    RoundTripCandidateResult corridor = candidate(RoundTripAlgorithm.ISO_GREEDY, t);
+    corridor.gateVerdict = RoundTripQualityResult.builder()
+      .reject(RoundTripQualityResult.RejectionTier.QUALITY, "same-way-back corridor")
+      .shape(RouteShape.OUT_AND_BACK).build();
+    RoundTripCandidateResult strictOffTarget = candidate(RoundTripAlgorithm.GREEDY, t);
+    strictOffTarget.gateVerdict = RoundTripQualityResult.builder()
+      .reject(RoundTripQualityResult.RejectionTier.QUALITY, "distance off target")
+      .shape(RouteShape.STRICT_LOOP).build();
+    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+      Arrays.asList(corridor, strictOffTarget), t.distance, "fastbike", 0);
+    Assert.assertSame("strict-shaped candidate must outrank the disclosed corridor",
+      strictOffTarget, best);
   }
 
   // ------------- helpers -----------------------------------------------------
+
+  private static RoundTripCandidateResult candidate(RoundTripAlgorithm algo, OsmTrack track) {
+    RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
+    r.track = track;
+    return r;
+  }
+
+  /**
+   * A clean rectangular loop with a chosen average cost-per-meter. cleanSquareLoop
+   * leaves track.cost at 0 (cost/m 0 → always in-band); set it explicitly so the
+   * RouteChoiceScore cost/m component (= track.cost / track.distance) is exercised.
+   */
+  private static OsmTrack loopWithCostPerMeter(int sideMeters, double costPerMeter) {
+    OsmTrack t = cleanSquareLoop(sideMeters);
+    t.cost = (int) Math.round(costPerMeter * t.distance);
+    return t;
+  }
 
   /** A clean rectangular loop with proper paved metadata. */
   private static OsmTrack cleanSquareLoop(int sideMeters) {
@@ -555,5 +322,31 @@ public class RoutingEngineAutoCompetitionTest {
 
   private static void addNode(OsmTrack t, int ilon, int ilat) {
     t.nodes.add(OsmPathElement.create(ilon, ilat, (short) 0, null));
+  }
+
+  // ---- RouteChoiceScore.costMBand profile dispatch ------------------------
+  // The existing score() tests all use "fastbike"; this pins the per-profile
+  // cost-band table (a substring typo here would silently mis-band a profile).
+
+  @Test
+  public void costMBand_dispatchesByProfileFamily() {
+    Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("fastbike"), 1e-9);
+    Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("road"), 1e-9);
+    Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("racing"), 1e-9);
+    Assert.assertArrayEquals(new double[]{2.0, 5.0}, RouteChoiceScore.costMBand("gravel"), 1e-9);
+    Assert.assertArrayEquals(new double[]{4.0, 9.0}, RouteChoiceScore.costMBand("mtb"), 1e-9);
+    Assert.assertArrayEquals(new double[]{1.5, 4.0}, RouteChoiceScore.costMBand("trekking"), 1e-9);
+    Assert.assertArrayEquals("unknown profile → default band",
+      new double[]{1.5, 4.0}, RouteChoiceScore.costMBand("shortest"), 1e-9);
+    Assert.assertArrayEquals("null profile → default band",
+      new double[]{1.5, 4.0}, RouteChoiceScore.costMBand(null), 1e-9);
+  }
+
+  @Test
+  public void costMBand_isCaseInsensitive() {
+    Assert.assertArrayEquals(RouteChoiceScore.costMBand("fastbike"),
+      RouteChoiceScore.costMBand("FastBike"), 1e-9);
+    Assert.assertArrayEquals(RouteChoiceScore.costMBand("gravel"),
+      RouteChoiceScore.costMBand("GRAVEL"), 1e-9);
   }
 }

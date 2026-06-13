@@ -156,6 +156,45 @@ public class RoundTripQualityGateTest {
   }
 
   @Test
+  public void rejectionTierSeparatesStructuralFromQuality() {
+    RoundTripQualityResult.RejectionTier Q = RoundTripQualityResult.RejectionTier.QUALITY;
+    RoundTripQualityResult.RejectionTier S = RoundTripQualityResult.RejectionTier.STRUCTURAL;
+
+    // QUALITY — rideable but suboptimal (engine warns by default):
+    // distance ratio below band (8km loop vs 20km target → 0.4)
+    assertEquals("ratio rejection is QUALITY", Q,
+      RoundTripQualityGate.evaluate(squareLoop(2000), 20000, "fastbike", false).getRejectionTier());
+    // profile-hostile surface (whole loop is highway=path on a paved profile)
+    assertEquals("hostile-surface rejection is QUALITY", Q,
+      RoundTripQualityGate.evaluate(squareLoopWithMessage(5000, msgWayTags("highway=path")),
+        20000, "fastbike", false).getRejectionTier());
+
+    // STRUCTURAL — broken / not a rideable loop (engine always hard-rejects):
+    // too few nodes
+    OsmTrack tiny = new OsmTrack();
+    tiny.nodes = new ArrayList<>();
+    tiny.nodes.add(makeNode(0, 0));
+    tiny.nodes.add(makeNode(1000, 0));
+    tiny.distance = 1000;
+    assertEquals("too-few-nodes is STRUCTURAL", S,
+      RoundTripQualityGate.evaluate(tiny, 20000, "fastbike", false).getRejectionTier());
+    // closure gap (last node 5km from start)
+    OsmTrack open = squareLoop(5000);
+    OsmPathElement last = open.nodes.get(open.nodes.size() - 1);
+    open.nodes.set(open.nodes.size() - 1, makeNodeRaw(last.getILon() + 5000, last.getILat()));
+    assertEquals("closure-gap is STRUCTURAL", S,
+      RoundTripQualityGate.evaluate(open, 20000, "fastbike", false).getRejectionTier());
+    // beeline (DIRECT-marked waypoint)
+    OsmTrack bl = squareLoop(5000);
+    bl.matchedWaypoints = new ArrayList<>();
+    MatchedWaypoint direct = new MatchedWaypoint();
+    direct.wpttype = MatchedWaypoint.WAYPOINT_TYPE_DIRECT;
+    bl.matchedWaypoints.add(direct);
+    assertEquals("beeline is STRUCTURAL", S,
+      RoundTripQualityGate.evaluate(bl, 20000, "fastbike", false).getRejectionTier());
+  }
+
+  @Test
   public void rejectsBeelineMarkedWaypoint() {
     OsmTrack t = squareLoop(5000);
     t.matchedWaypoints = new ArrayList<>();
@@ -342,6 +381,87 @@ public class RoundTripQualityGateTest {
     m.wayKeyValues = "highway=path surface=gravel";
     m.costfactor = 1.5f;
     assertTrue("path + gravel is unpaved, hostile",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  // ---- pebblestone / cobblestone — rideable constructed stone paving ------
+
+  @Test
+  public void pathWithPebblestoneSurfaceIsNotHostile() {
+    // surface=pebblestone is rough constructed stone paving (cobbles): slow
+    // but rideable on a road bike, and bona fide paved infrastructure. The
+    // fastbike cost function treats it as "unpaved" (costfactor ~15), so this
+    // exercises the exemption that must fire BEFORE the costfactor>4 check.
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=path surface=pebblestone";
+    m.costfactor = 15.0f;
+    assertFalse("path + pebblestone is rideable paved infrastructure, not hostile",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  @Test
+  public void footwayWithCobblestoneSurfaceIsNotHostile() {
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=footway surface=cobblestone";
+    m.costfactor = 15.0f;
+    assertFalse("footway + cobblestone is rideable paved infrastructure, not hostile",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  @Test
+  public void pebblestoneTrackWithoutPoorTracktypeIsNotHostile() {
+    // A plain highway=track surface=pebblestone (no grade2-5) is rideable.
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=track surface=pebblestone";
+    m.costfactor = 15.0f;
+    assertFalse("pebblestone track without a poor tracktype is rideable, not hostile",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  @Test
+  public void pebblestoneGrade2TrackStaysHostile() {
+    // tracktype=grade2 deliberately overrides the surface tag (the gate
+    // distrusts grade2-5 as genuinely rough riding regardless of surface),
+    // so a grade2 pebblestone forest track stays hostile.
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=track surface=pebblestone tracktype=grade2";
+    m.costfactor = 10.0f;
+    assertTrue("grade2 pebblestone track stays hostile (grade2 distrust)",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  @Test
+  public void pebblestonePathWithBicycleNoStaysHostile() {
+    // An explicit bicycle restriction is a legal denial that the surface
+    // exemption must not override.
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=path surface=pebblestone bicycle=no";
+    m.costfactor = 15.0f;
+    assertTrue("pebblestone path with bicycle=no stays hostile",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  @Test
+  public void grade3HardSurfacePathStaysHostileHighCost() {
+    // Symmetric with the track case: a poor tracktype (grade2-5) on a soft
+    // highway vetoes the hard-surface rideability exemption even when the cost
+    // function flags the surface as unpaved (high costfactor branch).
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=path surface=asphalt tracktype=grade3";
+    m.costfactor = 15.0f;
+    assertTrue("grade3 path stays hostile despite hard surface (poor-tracktype veto)",
+      RoundTripQualityGate.isHostileForPavedProfile(m));
+  }
+
+  @Test
+  public void grade2HardSurfacePathStaysHostileLowCost() {
+    // The low-cost branch: tracktype=grade2 is not itself a hostile fragment, so
+    // before the poor-tracktype guard this slipped through the override loop as
+    // "not hostile". It must stay hostile, symmetric with the grade2 track case.
+    MessageData m = new MessageData();
+    m.wayKeyValues = "highway=path surface=asphalt tracktype=grade2";
+    m.costfactor = 1.5f;
+    assertTrue("grade2 path stays hostile even on the low-cost branch (poor-tracktype veto)",
       RoundTripQualityGate.isHostileForPavedProfile(m));
   }
 
@@ -658,7 +778,7 @@ public class RoundTripQualityGateTest {
    * {@code scatteredHostileMeters} of additional hostile bursts on the
    * opposite side (broken up by non-hostile edges to avoid extending the
    * contiguous run). The geometry is loop-shaped to avoid tripping the
-   * reuse classifier as SCENIC_OUT_AND_BACK.
+   * reuse classifier as OUT_AND_BACK.
    */
   private static OsmTrack trackWithContiguousHostile(int totalMeters,
                                                      int contiguousHostileMeters,
@@ -936,5 +1056,576 @@ public class RoundTripQualityGateTest {
       RoundTripQualityGate.worstContiguousMetersAboveCostfactor(
         t, RoundTripQualityGate.SCORER_HOSTILE_COSTFACTOR_THRESHOLD),
       RoundTripQualityGate.worstContiguousCostlyMetersForScorer(t));
+  }
+
+  // ======================================================================
+  // Hairpin-turn chaos check (countHairpinTurns / MAX_HAIRPIN_TURNS)
+  //
+  // The whole hairpin branch of checkShapeChaos had zero coverage. These
+  // tests pin its three thresholds (count cap, 130° reversal angle, 25m
+  // jitter floor) with real-geometry tracks, plus the gate boundary at
+  // MAX_HAIRPIN_TURNS. Geometry is verified against the public counter so a
+  // generator mistake fails loudly rather than silently miscounting.
+  // ======================================================================
+
+  @Test
+  public void countHairpinTurns_shortTrackReturnsZero() {
+    // < 3 nodes: there is no interior vertex to turn at.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(makeNode(1000, 0));
+    assertEquals(0, RoundTripQualityGate.countHairpinTurns(t));
+  }
+
+  @Test
+  public void countHairpinTurns_gentleTurnBelowThresholdNotCounted() {
+    // A 120° turn is below the 130° reversal threshold → not a hairpin.
+    assertEquals(0, RoundTripQualityGate.countHairpinTurns(hairpinTriple(120, 1000)));
+  }
+
+  @Test
+  public void countHairpinTurns_sharpReversalAboveThresholdCounted() {
+    // A 140° turn is above the 130° threshold → a hairpin.
+    assertEquals(1, RoundTripQualityGate.countHairpinTurns(hairpinTriple(140, 1000)));
+  }
+
+  @Test
+  public void countHairpinTurns_skipsSubMinSegmentJitter() {
+    // A near-180° reversal whose legs are below MIN_HAIRPIN_SEGMENT_METERS
+    // (25m) is digitization jitter, not a real U-turn, and must be ignored.
+    // The same reversal with real-length legs IS counted — proving the skip
+    // is the only difference.
+    assertEquals("sub-25m reversal is jitter, not a hairpin",
+      0, RoundTripQualityGate.countHairpinTurns(hairpinTriple(175, 10)));
+    assertEquals("same reversal with real-length legs is a hairpin",
+      1, RoundTripQualityGate.countHairpinTurns(hairpinTriple(175, 1000)));
+  }
+
+  @Test
+  public void countHairpinTurns_countsEachReversalInSerpentine() {
+    // An open serpentine with T teeth has exactly T-1 interior reversals.
+    assertEquals(5, RoundTripQualityGate.countHairpinTurns(openSerpentine(6)));
+    assertEquals(20, RoundTripQualityGate.countHairpinTurns(openSerpentine(21)));
+  }
+
+  @Test
+  public void gate_hairpinsAtMaxAreNotChaosRejected() {
+    // Exactly MAX_HAIRPIN_TURNS (20): '>' not '>=', so it must NOT be a
+    // hairpin rejection. (The loop is otherwise clean and should pass.)
+    OsmTrack t = closedSerpentine(21); // 21 teeth → 20 reversals
+    assertEquals("fixture sanity", 20, RoundTripQualityGate.countHairpinTurns(t));
+    String reason = RoundTripQualityGate.validate(t, t.distance, "gravel");
+    assertFalse("20 hairpins (== MAX) must not be a hairpin rejection: " + reason,
+      reason != null && reason.contains("hairpin"));
+  }
+
+  @Test
+  public void gate_hairpinsAboveMaxRejectedAsChaotic() {
+    // One more reversal (21 > MAX 20) trips the chaos gate.
+    OsmTrack t = closedSerpentine(22); // 22 teeth → 21 reversals
+    assertEquals("fixture sanity", 21, RoundTripQualityGate.countHairpinTurns(t));
+    String reason = RoundTripQualityGate.validate(t, t.distance, "gravel");
+    assertNotNull(reason);
+    assertTrue("21 hairpins (> MAX) must reject as chaotic: " + reason,
+      reason.contains("hairpin"));
+  }
+
+  // ======================================================================
+  // Self-intersection chaos boundary (MAX_SELF_INTERSECTIONS = 5)
+  // ======================================================================
+
+  @Test
+  public void countSelfIntersections_exactCountAtAndAboveCap() {
+    // K independent bow-tie crossings → exactly K self-intersections.
+    assertEquals(5, RoundTripQualityGate.countSelfIntersections(openBowties(5)));
+    assertEquals(6, RoundTripQualityGate.countSelfIntersections(openBowties(6)));
+  }
+
+  @Test
+  public void gate_aboveMaxSelfIntersectionsRejectedAsChaotic() {
+    // 6 > MAX_SELF_INTERSECTIONS (5): the self-intersection branch of the
+    // chaos gate fires first (before hairpins / hostility), so this rejects
+    // with the self-intersections reason regardless of profile.
+    OsmTrack t = closedBowties(6);
+    assertEquals("fixture sanity", 6, RoundTripQualityGate.countSelfIntersections(t));
+    String reason = RoundTripQualityGate.validate(t, t.distance, "gravel");
+    assertNotNull(reason);
+    assertTrue("6 self-intersections (> MAX 5) must reject: " + reason,
+      reason.contains("self-intersections"));
+  }
+
+  @Test
+  public void gate_crossingExplosionIsStructural_moderateChaosStaysQuality() {
+    // Load-robustness tiering: > 2x MAX_SELF_INTERSECTIONS is the exhausted
+    // planner's weave residue (Nice 100km gravel shipped 42-57 crossings
+    // under CPU contention) - STRUCTURAL, never lenient-shipped. Moderate
+    // chaos (cap < x <= 2x cap) stays QUALITY (lenient ships with Warning).
+    OsmTrack moderate = closedBowties(6);
+    RoundTripQualityResult qm = RoundTripQualityGate.evaluate(
+      moderate, moderate.distance, "gravel", false, false, false);
+    assertFalse(qm.isAccepted());
+    assertEquals(RoundTripQualityResult.RejectionTier.QUALITY, qm.getRejectionTier());
+
+    OsmTrack explosion = closedBowties(11); // 11 > 2 x 5
+    RoundTripQualityResult qe = RoundTripQualityGate.evaluate(
+      explosion, explosion.distance, "gravel", false, false, false);
+    assertFalse(qe.isAccepted());
+    assertEquals(RoundTripQualityResult.RejectionTier.STRUCTURAL, qe.getRejectionTier());
+  }
+
+  // ======================================================================
+  // Node-shared crossings (the CCW scan's blind spot)
+  // ======================================================================
+
+  /** Track passing twice through node P=(0,0); the second pass enters from
+   *  {@code in2} and leaves to {@code out2} (coordinates in makeNode units).
+   *  Lead-in/lead-out keep P outside the CROSSING_START_END_EXEMPT_M home
+   *  zone (the expected leave-and-return weave near route start/end is
+   *  deliberately not counted), so these tests exercise pure transversality. */
+  private static OsmTrack twoPassesThroughNode(int in2x, int in2y, int out2x, int out2y) {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(-1200, 0));
+    t.nodes.add(makeNode(-700, 0));
+    t.nodes.add(makeNode(-200, 0));
+    t.nodes.add(makeNode(0, 0));      // P, pass 1: west → east
+    t.nodes.add(makeNode(200, 0));
+    t.nodes.add(makeNode(in2x, in2y));
+    t.nodes.add(makeNode(0, 0));      // P again
+    t.nodes.add(makeNode(out2x, out2y));
+    // Lead-out extends radially along the exit direction so it cannot cross
+    // the lead-in regardless of which exit the test variant chooses.
+    t.nodes.add(makeNode(2 * out2x, 2 * out2y));
+    t.nodes.add(makeNode(3 * out2x, 3 * out2y));
+    t.nodes.add(makeNode(4 * out2x, 4 * out2y));
+    return t;
+  }
+
+  @Test
+  public void countsTransverseCrossingAtSharedJunctionNode() {
+    // Pass 2 enters from the NE and exits to the S: the four directions
+    // interleave — a genuine X through the junction. The CCW scan alone
+    // counts 0 here (shared endpoint); the cyclist sees a knot.
+    OsmTrack t = twoPassesThroughNode(200, 200, 0, -200);
+    assertEquals("transverse pass through a shared node is a crossing",
+      1, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void touchAndTurnAtSharedNodeIsNotACrossing() {
+    // Pass 2 enters from the NE and exits to the NW: both directions on the
+    // same side of pass 1 — a teardrop pinch (near-revisit territory), not a
+    // crossing.
+    OsmTrack t = twoPassesThroughNode(200, 200, -200, 200);
+    assertEquals("tangential touch is not a crossing",
+      0, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void sameEdgeRetraceIsNotACrossing() {
+    // Out-and-back over the same edge: shared neighbor → reuse, not crossing.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(-200, 0));
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(makeNode(200, 0));
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(makeNode(-200, 0));
+    assertEquals("same-edge retrace is reuse, not a crossing",
+      0, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  // ======================================================================
+  // Shared-corridor crossings (DARK — countCorridorCrossings, not yet in
+  // countSelfIntersections; see the section comment in the gate)
+  // ======================================================================
+
+  /**
+   * Track riding a horizontal shared run twice (default 200m: 0→100→200, under
+   * {@link RoundTripQualityGate#MAX_CORRIDOR_CROSS_M}). Pass 1 enters from
+   * {@code in1} and exits to {@code out1}; pass 2 enters from {@code in2},
+   * rides the run in the SAME direction, and exits to {@code out2}. Lead-in/out
+   * keep the run outside the home zone (mirrors {@link #twoPassesThroughNode});
+   * the connector between the passes loops far north so it cannot cross
+   * anything itself.
+   */
+  private static OsmTrack twoPassesThroughCorridor(int in1x, int in1y, int out1x, int out1y,
+                                                   int in2x, int in2y, int out2x, int out2y) {
+    return twoPassesThroughCorridor(in1x, in1y, out1x, out1y, in2x, in2y, out2x, out2y, 200);
+  }
+
+  /** As above, with an explicit shared-run length {@code runEndX} (m) so the
+   *  MAX_CORRIDOR_CROSS_M length bound can be exercised. Run is 0 → runEndX/2 →
+   *  runEndX; attachments hang off the two ends. */
+  private static OsmTrack twoPassesThroughCorridor(int in1x, int in1y, int out1x, int out1y,
+                                                   int in2x, int in2y, int out2x, int out2y,
+                                                   int runEndX) {
+    int mid = runEndX / 2;
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(in1x * 4, in1y * 4));
+    t.nodes.add(makeNode(in1x * 3, in1y * 3));
+    t.nodes.add(makeNode(in1x * 2, in1y * 2));
+    t.nodes.add(makeNode(in1x, in1y));
+    t.nodes.add(makeNode(0, 0));            // run start, pass 1
+    t.nodes.add(makeNode(mid, 0));
+    t.nodes.add(makeNode(runEndX, 0));      // run end, pass 1
+    t.nodes.add(makeNode(runEndX + out1x, out1y));
+    // connector: far north, well clear of the run and all attachments
+    t.nodes.add(makeNode(runEndX + out1x, 5000));
+    t.nodes.add(makeNode(in2x, 5000));
+    t.nodes.add(makeNode(in2x, in2y));
+    t.nodes.add(makeNode(0, 0));            // run start, pass 2 (same direction)
+    t.nodes.add(makeNode(mid, 0));
+    t.nodes.add(makeNode(runEndX, 0));      // run end, pass 2
+    t.nodes.add(makeNode(runEndX + out2x, out2y));
+    t.nodes.add(makeNode(runEndX + out2x * 2, out2y * 2));
+    t.nodes.add(makeNode(runEndX + out2x * 3, out2y * 3));
+    t.nodes.add(makeNode(runEndX + out2x * 4, out2y * 4));
+    return t;
+  }
+
+  @Test
+  public void corridorCrossing_sideSwapThroughSharedRunCounts() {
+    // Pass 1: in from SW, out to E. Pass 2: in from NW, out to S — pass 2
+    // enters north of pass 1's path and leaves south of it: one crossing
+    // smeared along the shared run (the Rond-Point de la Contamine shape).
+    OsmTrack t = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, -300);
+    assertEquals("side swap through a shared run is a crossing",
+      1, RoundTripQualityGate.countCorridorCrossings(t.nodes));
+    // The corridor count is now wired into countSelfIntersections, so the gate
+    // sees this knot too (the segment/per-node scans alone are blind to it
+    // because every run node shares an incident edge).
+    assertEquals("countSelfIntersections now includes the corridor crossing",
+      1, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void corridorCrossing_sameSideExitDoesNotCount() {
+    // Pass 2 enters from the NW and exits to the N: both attachments on the
+    // same side of pass 1's path — riding the same stretch twice without
+    // crossing it (same-direction reuse, not a figure-eight).
+    OsmTrack t = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, 300);
+    assertEquals("same-side exit is reuse, not a crossing",
+      0, RoundTripQualityGate.countCorridorCrossings(t.nodes));
+  }
+
+  @Test
+  public void corridorCrossing_oppositeDirectionRetraceNeverCounts() {
+    // Out along the run, back along the run in the OPPOSITE direction (a
+    // two-way road retrace, the Route de Clermont shape): never a crossing
+    // here, even though the external attachments interleave by parity —
+    // that defect class belongs to reuse/CorridorOverlapIndex.
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(-800, -200));
+    t.nodes.add(makeNode(-400, -100));
+    t.nodes.add(makeNode(-200, -200));      // in from S
+    t.nodes.add(makeNode(0, 0));            // run start, pass 1
+    t.nodes.add(makeNode(300, 0));
+    t.nodes.add(makeNode(600, 0));          // run end, pass 1
+    t.nodes.add(makeNode(800, 200));        // lobe to the N
+    t.nodes.add(makeNode(700, 400));
+    t.nodes.add(makeNode(600, 0));          // run end, pass 2 (reversed)
+    t.nodes.add(makeNode(300, 0));
+    t.nodes.add(makeNode(0, 0));            // run start, pass 2
+    t.nodes.add(makeNode(-200, -300));      // out to S — interleaved by parity
+    t.nodes.add(makeNode(-400, -500));
+    t.nodes.add(makeNode(-600, -700));
+    assertEquals("opposite-direction retrace is never a corridor crossing",
+      0, RoundTripQualityGate.countCorridorCrossings(t.nodes));
+  }
+
+  @Test
+  public void corridorCrossing_sharedApproachEdgeExtendsRunIntoReuseLength() {
+    // Pass 2 shares pass 1's approach NODE, so the grouped run EXTENDS back over
+    // that shared approach (the verdict is taken at the extended ends, not via
+    // the shared-edge guard). With a realistic home-zone-clearing lead-in, that
+    // extension makes the total shared overlap exceed MAX_CORRIDOR_CROSS_M — so
+    // it reads as long road reuse, not a knot, and is not counted. (A clean
+    // sub-bound side-swap that DOES count is corridorCrossing_sideSwap...; the
+    // bound itself is corridorCrossing_longSharedRun....)
+    OsmTrack t = twoPassesThroughCorridor(-200, -200, 200, 0, -200, -200, 0, -300);
+    assertEquals("shared approach + run is a long overlap → reuse, not counted",
+      0, RoundTripQualityGate.countCorridorCrossings(t.nodes));
+  }
+
+  @Test
+  public void corridorCrossing_singleNodeRevisitIsNotACorridor() {
+    // A single shared node (no shared edge) stays the per-node detector's
+    // domain: countCorridorCrossings must not double-count it.
+    OsmTrack t = twoPassesThroughNode(200, 200, 0, -200);
+    assertEquals("single-node revisit is not a corridor",
+      0, RoundTripQualityGate.countCorridorCrossings(t.nodes));
+    assertEquals("per-node detector still owns the single-node X",
+      1, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void corridorCrossing_longSharedRunIsReuseNotCrossing() {
+    // Same side-swap geometry as the counting test, but the shared run is long
+    // (>MAX_CORRIDOR_CROSS_M). Per the labeling pass, a multi-hundred-metre
+    // same-direction overlap reads as road reuse (priced by reuse%), not a
+    // knot — so it must NOT count, even though it transversally crosses.
+    OsmTrack shortRun = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, -300, 200);
+    assertEquals("200m side-swap is within the bound — counts",
+      1, RoundTripQualityGate.countCorridorCrossings(shortRun.nodes));
+    OsmTrack longRun = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, -300, 600);
+    assertEquals("600m side-swap exceeds MAX_CORRIDOR_CROSS_M — reuse, not counted",
+      0, RoundTripQualityGate.countCorridorCrossings(longRun.nodes));
+  }
+
+  // ======================================================================
+  // Closure-gap boundary (MAX_CLOSURE_METERS = 400)
+  // ======================================================================
+
+  @Test
+  public void gate_closureJustUnderCapAccepted() {
+    OsmTrack t = squareLoopWithClosureGap(2500, 350);
+    int closure = t.nodes.get(0).calcDistance(t.nodes.get(t.nodes.size() - 1));
+    assertTrue("fixture closure should be < 400m, got " + closure, closure < 400);
+    assertNull("closure under cap must pass",
+      RoundTripQualityGate.validate(t, t.distance, "fastbike"));
+  }
+
+  @Test
+  public void gate_closureJustOverCapRejected() {
+    OsmTrack t = squareLoopWithClosureGap(2500, 450);
+    int closure = t.nodes.get(0).calcDistance(t.nodes.get(t.nodes.size() - 1));
+    assertTrue("fixture closure should be > 400m, got " + closure, closure > 400);
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertNotNull(reason);
+    assertTrue("closure over cap must reject: " + reason, reason.contains("closure"));
+  }
+
+  // ======================================================================
+  // Node-count boundary (MIN_NODES = 4)
+  // ======================================================================
+
+  @Test
+  public void gate_threeNodesRejectedAsTooFew() {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(makeNode(1500, 0));
+    t.nodes.add(makeNode(0, 0));
+    recomputeDistance(t);
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertNotNull(reason);
+    assertTrue("3 nodes (< MIN_NODES 4) is too few: " + reason,
+      reason.contains("too few nodes"));
+  }
+
+  @Test
+  public void gate_fourNodeLoopPassesNodeCountCheck() {
+    // n == MIN_NODES (4): a clean triangle loop must clear the count gate.
+    OsmTrack t = triangleLoop();
+    assertEquals("fixture sanity", 4, t.nodes.size());
+    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    assertFalse("4-node loop must pass the node-count check: " + reason,
+      reason != null && reason.contains("too few nodes"));
+  }
+
+  // ======================================================================
+  // Distance-ratio just-outside boundaries (MIN=0.5, MAX=1.8)
+  // (acceptsAtExactRatioBoundary already pins the at-boundary accept side;
+  //  these pin the strict '<' / '>' reject side.)
+  // ======================================================================
+
+  @Test
+  public void gate_ratioJustBelowMinRejected() {
+    OsmTrack t = squareLoop(2500);
+    String reason = RoundTripQualityGate.validate(t, t.distance / 0.49, "fastbike");
+    assertNotNull(reason);
+    assertTrue("ratio 0.49 (< MIN 0.5) must reject: " + reason, reason.contains("ratio"));
+  }
+
+  @Test
+  public void gate_ratioJustAboveMaxRejected() {
+    OsmTrack t = squareLoop(2500);
+    String reason = RoundTripQualityGate.validate(t, t.distance / 1.81, "fastbike");
+    assertNotNull(reason);
+    assertTrue("ratio 1.81 (> MAX 1.8) must reject: " + reason, reason.contains("ratio"));
+  }
+
+  @Test
+  public void gate_ratioJustInsideBandAccepted() {
+    OsmTrack t = squareLoop(2500);
+    assertNull("ratio 0.51 (> MIN) must pass",
+      RoundTripQualityGate.validate(t, t.distance / 0.51, "fastbike"));
+    assertNull("ratio 1.79 (< MAX) must pass",
+      RoundTripQualityGate.validate(t, t.distance / 1.79, "fastbike"));
+  }
+
+  // ======================================================================
+  // Contiguous-hostile boundary (MAX_CONTIGUOUS_HOSTILE_METERS = 1500)
+  //
+  // Chunk lengths scale ~1.19× at the encoded latitude, so we assert against
+  // the *measured* worst stretch rather than the nominal request, then check
+  // the gate decision is consistent with that measurement straddling the cap.
+  // ======================================================================
+
+  @Test
+  public void gate_contiguousHostileStraddlesCap() {
+    OsmTrack under = trackWithContiguousHostile(40000, 1100, 0);
+    OsmTrack over = trackWithContiguousHostile(40000, 1400, 0);
+    int wu = RoundTripQualityGate.worstContiguousHostileMetersPaved(under);
+    int wo = RoundTripQualityGate.worstContiguousHostileMetersPaved(over);
+    assertTrue("under-fixture must measure <= cap, got " + wu,
+      wu <= RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS);
+    assertTrue("over-fixture must measure > cap, got " + wo,
+      wo > RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS);
+
+    String ru = RoundTripQualityGate.validate(under, under.distance, "fastbike");
+    assertTrue("measured-under-cap must not be a contiguous rejection: " + ru,
+      ru == null || !ru.startsWith("contiguous"));
+    String ro = RoundTripQualityGate.validate(over, over.distance, "fastbike");
+    assertNotNull(ro);
+    assertTrue("measured-over-cap must reject as contiguous: " + ro,
+      ro.startsWith("contiguous"));
+  }
+
+  // ---- boundary-test geometry helpers -------------------------------------
+
+  /** Meters per {@code makeNode} x-unit and y-unit at the encoded latitude,
+   *  measured once so metric fixtures don't have to assume the scaling. */
+  private static final double X_UNIT_M =
+    makeNode(0, 0).calcDistance(makeNode(1000, 0)) / 1000.0;
+  private static final double Y_UNIT_M =
+    makeNode(0, 0).calcDistance(makeNode(0, 1000)) / 1000.0;
+
+  /** A node placed at an approximate metric offset (meters) from the origin. */
+  private static OsmPathElement metricNode(double mx, double my) {
+    return makeNode((int) Math.round(mx / X_UNIT_M), (int) Math.round(my / Y_UNIT_M));
+  }
+
+  private static void recomputeDistance(OsmTrack t) {
+    int d = 0;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      d += t.nodes.get(i - 1).calcDistance(t.nodes.get(i));
+    }
+    t.distance = d;
+  }
+
+  /**
+   * Three nodes forming a single turn of {@code turnDeg} between two legs of
+   * {@code legMeters}. The turn the gate measures equals {@code turnDeg}: the
+   * second leg's metric direction is rotated {@code turnDeg} off the first
+   * leg's heading, and bearings rotate identically with metric directions.
+   */
+  private static OsmTrack hairpinTriple(double turnDeg, double legMeters) {
+    double r = Math.toRadians(turnDeg);
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(metricNode(0, 0));
+    t.nodes.add(metricNode(legMeters, 0));
+    t.nodes.add(metricNode(legMeters + legMeters * Math.cos(r), legMeters * Math.sin(r)));
+    recomputeDistance(t);
+    return t;
+  }
+
+  /**
+   * Open switchback serpentine: {@code teeth+1} points alternating between
+   * x=0 and x=W while climbing in y. Each interior vertex is a ~173° reversal
+   * (well above the 130° threshold); each segment is hundreds of meters (well
+   * above the 25m floor). Adjacent segments occupy disjoint y-bands, so the
+   * comb has zero self-intersections. Result: exactly {@code teeth-1} hairpins.
+   */
+  private static OsmTrack openSerpentine(int teeth) {
+    final int W = 800, d = 60;
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    for (int k = 0; k <= teeth; k++) {
+      int x = (k % 2 == 1) ? W : 0;
+      t.nodes.add(makeNode(x, k * d));
+    }
+    recomputeDistance(t);
+    return t;
+  }
+
+  /**
+   * The serpentine closed into a loop by running around the outside (the side
+   * the last tooth exits toward, so the top vertex stays a straight ~0° pass,
+   * not an extra hairpin) and back to the origin. Closure ≈ 0, zero
+   * self-intersections, hairpins = {@code teeth-1}. Edges carry clean
+   * residential metadata so the loop is paved-profile-clean.
+   */
+  private static OsmTrack closedSerpentine(int teeth) {
+    final int W = 800, d = 60, M = 1200;
+    OsmTrack t = openSerpentine(teeth);
+    int topY = teeth * d;
+    boolean exitsRight = (teeth % 2 == 1); // last tooth ends at x=W heading east
+    int sideX = exitsRight ? (W + M) : (-M);
+    t.nodes.add(makeNode(sideX, topY));
+    t.nodes.add(makeNode(sideX, 0));
+    t.nodes.add(makeNode(0, 0)); // close
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = msgCostfactor(1.5f, "highway=residential surface=asphalt");
+    }
+    recomputeDistance(t);
+    return t;
+  }
+
+  /**
+   * {@code crossings} independent bow-tie X's stacked in disjoint y-bands.
+   * Each band's diagonals cross exactly once; the vertical inter-band
+   * connectors (at x=0) add none. Open track → exactly {@code crossings}
+   * self-intersections.
+   */
+  private static OsmTrack openBowties(int crossings) {
+    final int W = 500, H = 200, B = 400; // B > H keeps connectors clear of the X
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    for (int k = 0; k < crossings; k++) {
+      int yb = k * B;
+      t.nodes.add(makeNode(0, yb));        // P0
+      t.nodes.add(makeNode(W, yb + H));    // P1
+      t.nodes.add(makeNode(W, yb));        // P2
+      t.nodes.add(makeNode(0, yb + H));    // P3 (→ next P0 is the connector)
+    }
+    recomputeDistance(t);
+    return t;
+  }
+
+  /** The bow-tie stack closed back to the origin around the left side
+   *  (x &lt; 0, clear of the X bodies). Closure ≈ 0, crossings preserved. */
+  private static OsmTrack closedBowties(int crossings) {
+    final int H = 200, B = 400, M = 900;
+    OsmTrack t = openBowties(crossings);
+    int lastY = (crossings - 1) * B + H;
+    t.nodes.add(makeNode(-M, lastY));
+    t.nodes.add(makeNode(-M, 0));
+    t.nodes.add(makeNode(0, 0)); // close
+    recomputeDistance(t);
+    return t;
+  }
+
+  /** Clean square loop whose closing node is moved {@code gapMeters} east of
+   *  the start, leaving a measurable closure gap. Distance is recomputed so
+   *  the ratio check still passes when desired == actual. */
+  private static OsmTrack squareLoopWithClosureGap(int side, double gapMeters) {
+    OsmTrack t = squareLoop(side);
+    OsmPathElement close = metricNode(gapMeters, 0);
+    close.message = msgCostfactor(1.5f, "highway=residential surface=asphalt");
+    t.nodes.set(t.nodes.size() - 1, close);
+    recomputeDistance(t);
+    return t;
+  }
+
+  /** Near-equilateral triangle loop (4 nodes incl. close), clean residential
+   *  surface. Corner turns are ~120° (below the hairpin threshold). */
+  private static OsmTrack triangleLoop() {
+    OsmTrack t = new OsmTrack();
+    t.nodes = new ArrayList<>();
+    t.nodes.add(makeNode(0, 0));
+    t.nodes.add(metricNode(3000, 0));
+    t.nodes.add(metricNode(1500, 2600));
+    t.nodes.add(makeNode(0, 0));
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = msgCostfactor(1.5f, "highway=residential surface=asphalt");
+    }
+    recomputeDistance(t);
+    return t;
   }
 }

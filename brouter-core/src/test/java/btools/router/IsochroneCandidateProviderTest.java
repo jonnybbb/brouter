@@ -1,5 +1,6 @@
 package btools.router;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -315,6 +316,91 @@ public class IsochroneCandidateProviderTest {
     assertEquals("right of 18 is 19", 19, order[1]);
     assertEquals("left of 18 is 17", 17, order[2]);
     assertEquals("furthest is 36 - it should appear last", 0, order[order.length - 1]);
+  }
+
+  @Test
+  public void startAnchoredStrideOrderMatchesJavadocExample() {
+    // 4 buckets from 0: right (1), left (3), then the antipode (2) once → [0,1,3,2].
+    assertArrayEquals(new int[]{0, 1, 3, 2},
+      IsochroneCandidateProvider.startAnchoredStrideOrder(0, 4));
+  }
+
+  @Test
+  public void startAnchoredStrideOrderNonZeroStartEmitsAntipodeOnce() {
+    // From bucket 2 of 4: right (3), left (1), antipode (0) once → [2,3,1,0].
+    assertArrayEquals(new int[]{2, 3, 1, 0},
+      IsochroneCandidateProvider.startAnchoredStrideOrder(2, 4));
+  }
+
+  @Test
+  public void startAnchoredStrideOrderOddTotalHasNoAntipodeBranch() {
+    // Odd bucket count: right and left never coincide, so the order is a pure
+    // right/left interleave with no single-emit antipode step → [0,1,4,2,3].
+    assertArrayEquals(new int[]{0, 1, 4, 2, 3},
+      IsochroneCandidateProvider.startAnchoredStrideOrder(0, 5));
+  }
+
+  // ----- Root cause of the sparse-network (gravel) direction-collapse -----
+  // For a pool at or below POOL_CAP (24) every candidate is kept, so the
+  // start-anchored stride changes only the BUILD order — which candidatesForStep
+  // then re-sorts away by distance-to-target. Net: startDirection has no effect
+  // on the candidates a sub-cap (sparse, e.g. gravel) pool hands the planner.
+  // That is the iso half of why Nice gravel returns the same loop for every
+  // requested direction. The anchoring only bites once the pool exceeds
+  // POOL_CAP and truncation must choose which candidates survive.
+
+  private static boolean sameSequence(List<RoundTripCandidateProvider.CandidatePoint> a,
+                                      List<RoundTripCandidateProvider.CandidatePoint> b) {
+    if (a.size() != b.size()) return false;
+    for (int i = 0; i < a.size(); i++) {
+      if (a.get(i).ilon != b.get(i).ilon || a.get(i).ilat != b.get(i).ilat) return false;
+    }
+    return true;
+  }
+
+  @Test
+  public void subCapPoolReturnsSameCandidatesRegardlessOfStartDirection() {
+    // 8 candidates (< POOL_CAP 24) in distinct buckets at distinct air distances.
+    List<IsoCandidate> raw = new ArrayList<>();
+    int[] buckets = {0, 4, 9, 13, 18, 22, 27, 31};
+    int[] dists = {1100, 1450, 1800, 2150, 2500, 2850, 3100, 3200};
+    for (int i = 0; i < buckets.length; i++) raw.add(at(buckets[i], dists[i], 5, 100));
+
+    IsochroneCandidateProvider north = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 0, raw);
+    IsochroneCandidateProvider south = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 180, raw);
+    assertEquals("sub-cap pool keeps every candidate", buckets.length, north.poolSize());
+    assertEquals(buckets.length, south.poolSize());
+
+    List<RoundTripCandidateProvider.CandidatePoint> cN = north.candidatesForStep(
+      START_ILON, START_ILAT, 2000, 1, 5, START_ILON, START_ILAT, 0, null);
+    List<RoundTripCandidateProvider.CandidatePoint> cS = south.candidatesForStep(
+      START_ILON, START_ILAT, 2000, 1, 5, START_ILON, START_ILAT, 180, null);
+
+    assertTrue("sub-cap pool ignores startDirection — identical candidates N vs S "
+      + "(the iso direction-collapse mechanism)", sameSequence(cN, cS));
+  }
+
+  @Test
+  public void aboveCapPoolSelectionDependsOnStartDirection() {
+    // 30 candidates (> POOL_CAP 24): truncation now drops some, and the
+    // start-anchored stride decides WHICH survive — so the selected pool differs
+    // by direction. The anchoring works for DENSE pools (fastbike), which is
+    // exactly where direction already differentiates loops anyway.
+    List<IsoCandidate> raw = new ArrayList<>();
+    for (int b = 0; b < 30; b++) raw.add(at(b, 2000 + b * 10, 5, 100));
+
+    IsochroneCandidateProvider north = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 0, raw);
+    IsochroneCandidateProvider south = IsochroneCandidateProvider.fromPool(SEARCH_RADIUS, 180, raw);
+    assertEquals("pool truncated to cap", 24, north.poolSize());
+    assertEquals(24, south.poolSize());
+
+    List<RoundTripCandidateProvider.CandidatePoint> cN = north.candidatesForStep(
+      START_ILON, START_ILAT, 3000, 1, 5, START_ILON, START_ILAT, 0, null);
+    List<RoundTripCandidateProvider.CandidatePoint> cS = south.candidatesForStep(
+      START_ILON, START_ILAT, 3000, 1, 5, START_ILON, START_ILAT, 180, null);
+
+    assertFalse("above-cap: startDirection changes which candidates survive truncation",
+      sameSequence(cN, cS));
   }
 
   @Test

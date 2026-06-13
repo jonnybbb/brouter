@@ -207,7 +207,7 @@ public class FormatGpx extends Formatter {
       formatWaypointGpx(sb, poi, "poi");
     }
 
-    if (t.exportWaypoints) {
+    if (t.exportWaypoints && t.matchedWaypoints != null) {
       for (int i = 0; i <= t.matchedWaypoints.size() - 1; i++) {
         MatchedWaypoint wt = t.matchedWaypoints.get(i);
         if (i == 0) {
@@ -225,7 +225,7 @@ public class FormatGpx extends Formatter {
         }
       }
     }
-    if (t.exportCorrectedWaypoints) {
+    if (t.exportCorrectedWaypoints && t.matchedWaypoints != null) {
       sb.append("\n");
       for (int i = 0; i <= t.matchedWaypoints.size() - 1; i++) {
         MatchedWaypoint wt = t.matchedWaypoints.get(i);
@@ -276,7 +276,7 @@ public class FormatGpx extends Formatter {
       if (turnInstructionMode == 8) {
         if (mwpt != null &&
           !mwpt.name.startsWith("via") && !mwpt.name.startsWith("from") && !mwpt.name.startsWith("to")) {
-          sele += "<name>" + mwpt.name + "</name>";
+          sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
         }
       }
       boolean bNeedHeader = false;
@@ -286,7 +286,7 @@ public class FormatGpx extends Formatter {
 
           if (mwpt != null &&
             !mwpt.name.startsWith("via") && !mwpt.name.startsWith("from") && !mwpt.name.startsWith("to")) {
-            sele += "<name>" + mwpt.name + "</name>";
+            sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
           }
           sele += "<desc>" + hint.getCruiserMessageString() + "</desc>";
           sele += "<sym>" + hint.getCommandString(hint.cmd, turnInstructionMode) + "</sym>";
@@ -340,7 +340,7 @@ public class FormatGpx extends Formatter {
               // bNextDirect = true;
               sele += "<desc>beeline</desc>";
             } else {
-              sele += "<desc>" + mwpt.name + "</desc>";
+              sele += "<desc>" + StringUtils.escapeXml10(mwpt.name) + "</desc>";
             }
             if (mwpt.wpttype == MatchedWaypoint.WAYPOINT_TYPE_MEETING) {
               sele += "<type>via</type>";
@@ -384,7 +384,7 @@ public class FormatGpx extends Formatter {
         if (hint != null) {
           if (mwpt != null) {
             if (!mwpt.name.startsWith("via") && !mwpt.name.startsWith("from") && !mwpt.name.startsWith("to") && !mwpt.name.startsWith("rt")) {
-              sele += "<name>" + mwpt.name + "</name>";
+              sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
             }
             if (mwpt.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && bNextDirect) {
               sele += "<src>" + hint.getLocusSymbolString() + "</src><sym>pass_place</sym><type>Shaping</type>";
@@ -412,7 +412,7 @@ public class FormatGpx extends Formatter {
               sele = sele.substring(0, pos);
             }
             if (mwpt != null && !mwpt.name.startsWith("from"))
-              sele += "<name>" + mwpt.name + "</name>";
+              sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
             if (mwpt != null && mwpt.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT) {
               bNextDirect = true;
             }
@@ -426,7 +426,7 @@ public class FormatGpx extends Formatter {
               sele = sele.substring(0, pos);
             }
             if (mwpt != null && mwpt.name != null && !mwpt.name.startsWith("to"))
-              sele += "<name>" + mwpt.name + "</name>";
+              sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
             if (bNextDirect) {
               sele += "<src>beeline</src>";
             }
@@ -436,7 +436,7 @@ public class FormatGpx extends Formatter {
           } else {
             if (mwpt != null) {
               if (!mwpt.name.startsWith("via") && !mwpt.name.startsWith("from") && !mwpt.name.startsWith("to") && !mwpt.name.startsWith("rt")) {
-                sele += "<name>" + mwpt.name + "</name>";
+                sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
               }
               if (mwpt.wpttype == MatchedWaypoint.WAYPOINT_TYPE_DIRECT && bNextDirect) {
                 sele += "<src>beeline</src><sym>pass_place</sym><type>Shaping</type>";
@@ -460,7 +460,7 @@ public class FormatGpx extends Formatter {
                 }
                 bNextDirect = false;
               } else {
-                sele += "<name>" + mwpt.name + "</name>";
+                sele += "<name>" + StringUtils.escapeXml10(mwpt.name) + "</name>";
                 sele += "<sym>pass_place</sym><type>Via</type>";
               }
             }

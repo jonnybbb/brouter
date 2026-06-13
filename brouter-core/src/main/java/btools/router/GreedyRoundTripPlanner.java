@@ -33,6 +33,76 @@ public class GreedyRoundTripPlanner {
   private static final double DEFAULT_TOLERANCE = 0.05;
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final double ROAD_INDIRECTNESS = 1.3;
+  /**
+   * Adaptive indirectness bounds (root-caused on freiburg_100km_fastbike_N,
+   * 2026-06-11): the flat 1.3 air-to-road factor under-modeled an Elz-valley
+   * leg that routed at 2.0× air distance (25.7km against a 16.65km target),
+   * over-extending the loop and cornering the closure into a zigzag. The
+   * planner now updates a per-plan estimate from each routed leg's observed
+   * ratio (EMA, alpha 0.5), clamped to [ROAD_INDIRECTNESS, this max] — it can
+   * only become MORE conservative than the baseline, never more optimistic,
+   * so flat-terrain behaviour is unchanged.
+   */
+  private static final double MAX_INDIRECTNESS_EST = 2.5;
+  private static final double INDIRECTNESS_EMA_ALPHA = 0.5;
+
+  /**
+   * Heading-persistence term (loop-shape work, 2026-06-11): a smooth loop
+   * changes heading by ~360°/subRouteCount per step; a candidate whose bearing
+   * kinks beyond that quota (with {@link #HEADING_QUOTA_SLACK} slack for
+   * terrain) pays this weight × the normalized excess. Rounds via corners into
+   * sweeping arcs and discourages sharp heading reversals — the precursor of
+   * the zigzag/crossing mechanism root-caused on freiburg_100km_fastbike_N
+   * (a heading-monotone loop cannot self-intersect). Soft by design: terrain
+   * may force a sharp bend (valley exits), so this only tilts near-ties —
+   * never a hard rule (the beeline-gate lesson applies to shape rules too).
+   * Score scale is O(1-10); a full 180° reversal at slack-quota 90° costs
+   * 0.5 × weight.
+   */
+  private static final double W_HEADING_PERSISTENCE = 1.0;
+  /** Slack factor on the per-step heading quota (1.5 → 90° allowed at 6 steps). */
+  private static final double HEADING_QUOTA_SLACK = 1.5;
+  /**
+   * Terrain gate for the heading term (matrix A/B 2026-06-12): at full weight,
+   * constrained coastal/mountain cells blew up (coastal_nice_100km_gravel E/N
+   * went 0→43/0→42 crossings — terrain FORCES sharp macro-turns there, and
+   * penalizing them made legs weave instead), while open networks improved
+   * across the board (spurs −30%, lassos −25%). The per-plan adaptive
+   * indirectness estimate is a ready-made terrain-freedom signal: ~1.3 on
+   * open networks, →2.0+ where the graph forces indirect roads. Weight fades
+   * linearly from full at the baseline to zero at this estimate.
+   */
+  private static final double HEADING_TERRAIN_FADE_MAX = 2.0;
+  /**
+   * Distress brake: after this many closed-loop rejections in one plan, the
+   * heading term is disabled for the remainder — the planner is provably
+   * struggling to close, and shape preferences must yield to feasibility.
+   */
+  static final int HEADING_BRAKE_REJECTIONS = 2;
+
+  /**
+   * Terrain-freedom factor in [0,1] for the heading term: 1 at the calibrated
+   * indirectness baseline (open network), 0 at {@link #HEADING_TERRAIN_FADE_MAX}
+   * (terrain dictates the headings — do not fight it).
+   */
+  static double headingTerrainFreedom(double indirectnessEst) {
+    double f = (HEADING_TERRAIN_FADE_MAX - indirectnessEst)
+      / (HEADING_TERRAIN_FADE_MAX - ROAD_INDIRECTNESS);
+    return Math.max(0.0, Math.min(1.0, f));
+  }
+
+  /**
+   * Normalized penalty for a candidate bearing that kinks beyond the smooth-
+   * loop quota relative to the previous leg's bearing. 0 within quota; up to
+   * (180 − quota)/180 for a full reversal.
+   */
+  static double headingPersistencePenalty(double prevLegBearing, double candidateBearing,
+                                          int subRouteCount) {
+    double quota = HEADING_QUOTA_SLACK * 360.0 / Math.max(1, subRouteCount);
+    double delta = CheapAngleMeter.getDifferenceFromDirection(prevLegBearing, candidateBearing);
+    return Math.max(0, delta - quota) / 180.0;
+  }
+
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   /**
    * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
@@ -97,6 +167,14 @@ public class GreedyRoundTripPlanner {
   // Multiplier applied to the air-distance return estimate when deciding
   // whether to skip the return Dijkstra. > 1 means we skip less aggressively.
   private static final double RETURN_SKIP_SAFETY = 1.5;
+  /**
+   * When the profile-aware candidate snap relocates a via further than this
+   * from the original graph-native candidate node, the pre-routed leg (which
+   * ends at the original node) is discarded and the leg is re-routed. Below
+   * this the cached leg still effectively reaches the via (final waypoint
+   * matching catches within 250m).
+   */
+  private static final double VIA_RELOCATION_DROP_CACHED_LEG_M = 50;
 
   /**
    * Phase 2 v3 diagnostic: when {@code -Dgreedy.diagnostic=true} is set,
@@ -130,6 +208,25 @@ public class GreedyRoundTripPlanner {
   private final int maxAttempts;
 
   /**
+   * Round-trip variety seed (ADR-0001): the request's {@code alternativeidx},
+   * reused as a deterministic seed in round-trip mode. 0 means inert — the
+   * planner output is bit-identical to the unseeded baseline. Any value
+   * &gt;= 1 enables {@link #VARIETY_JITTER_AMPLITUDE multiplicative jitter}
+   * on the heuristic candidate score, so different seeds route different
+   * near-tie candidates while the direction focus stays untouched.
+   */
+  private int varietySeed;
+
+  /**
+   * Multiplicative amplitude of the variety-seed score jitter: score ×
+   * (1 + amplitude × unit), unit uniform in [-1, 1). ±10% flips only
+   * near-tie rankings — the calibration knob for the seed feature; tune it
+   * from full-matrix A/B evidence (divergence between seeds vs. gate
+   * pass-rate against seed 0), not by feel.
+   */
+  static final double VARIETY_JITTER_AMPLITUDE = 0.10;
+
+  /**
    * Active profile name, set by {@link RoutingEngine} before planning.
    * The planner's internal {@link #qualityGateReason fallback gate}
    * forwards to {@link RoundTripQualityGate#evaluate}, which needs the
@@ -138,6 +235,29 @@ public class GreedyRoundTripPlanner {
    * profile-agnostic defaults.
    */
   private String profileName;
+
+  /**
+   * Desirability reward weight for the round-trip heatmap experiment (issue #15).
+   * Subtracted (× the candidate's [0,1] desirability) from the candidate score so
+   * waypoints on profile-preferred terrain rank better.
+   *
+   * <p>Inert on the default routing path: only {@link DesirabilityCandidateProvider}
+   * (built solely when {@code roundTripDesirability} is set) assigns a non-zero
+   * {@code desirability}; every other provider leaves it at 0, so {@code 30 × 0}
+   * contributes nothing.
+   *
+   * <p>The value is intentionally <b>strong</b>, not a gentle nudge: the base
+   * {@link CandidateScorer#score} terms are normalized ratios weighted in the 0.5–3.0
+   * range, so a score is typically O(1–10). At 30 the desirability term meaningfully
+   * biases waypoint selection among the candidates the provider already constrained to
+   * the step's distance window — though how much it actually re-ranks depends on the
+   * stock spacing weights (notably {@code wPrev}); the measured route effect in the
+   * issue #15 study came with those relaxed, which this commit does not ship. Loop
+   * closure still pulls the final return leg back to the start. This is an exploratory
+   * experiment behind an off-by-default flag, not a tuned route-quality default; tuning
+   * it together with the spacing weights is future work.
+   */
+  private static final double DESIR_WEIGHT = 30.0;
 
   /**
    * Set the active profile name. Should be called by {@link RoutingEngine}
@@ -149,25 +269,39 @@ public class GreedyRoundTripPlanner {
     this.profileName = profileName;
   }
 
-  public GreedyRoundTripPlanner(RoutingEngine engine) {
-    this(engine, new RoundTripCandidateProvider.RadialCandidateProvider(),
-      new CandidateScorer(), DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
+  /**
+   * Pocket-avoidance weight on the candidate heuristic score. Applied to
+   * {@link #pocketPenalty}'s [0,1] output; at 2.0 a true pocket candidate
+   * (≤3 reachable cells) loses to any well-connected alternative whose other
+   * terms are within ~2 score units — strong enough to steer vias off
+   * dead-end small roads in residual areas (the root cause behind teardrop
+   * and stub artifacts), weak enough that a genuinely better-positioned
+   * pocket can still win when nothing else closes the loop.
+   */
+  static final double POCKET_PENALTY_WEIGHT = 2.0;
+  /** Reachable-cell count at/above which a candidate is fully safe (no penalty). */
+  static final int POCKET_SAFE_CELLS = 10;
+  /** Reachable-cell count at/below which the penalty saturates at 1.0. */
+  static final int POCKET_MIN_CELLS = 3;
+
+  /**
+   * [0,1] pocket penalty from the candidate's reachability-cell density
+   * (see {@link IsochroneExpansionResult#reachableCellsAround}): 0 at
+   * ≥{@link #POCKET_SAFE_CELLS} (junction-rich neighborhood, also clears a
+   * well-connected expansion-edge half-disk at ~12), 1 at
+   * ≤{@link #POCKET_MIN_CELLS} (thin dead-end corridor). Candidates without
+   * a cloud (-1: radial/iso-start providers) get 0 — no signal, no penalty.
+   */
+  static double pocketPenalty(int reachableCells) {
+    if (reachableCells < 0) return 0;
+    if (reachableCells >= POCKET_SAFE_CELLS) return 0;
+    if (reachableCells <= POCKET_MIN_CELLS) return 1.0;
+    return (POCKET_SAFE_CELLS - reachableCells) / (double) (POCKET_SAFE_CELLS - POCKET_MIN_CELLS);
   }
 
   public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider) {
     this(engine, provider, new CandidateScorer(),
       DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
-  }
-
-  /**
-   * Configure scorer/sub-route count/tolerance/max-attempts. Uses the default
-   * {@link RoundTripCandidateProvider.RadialCandidateProvider}; for QUALITY-tier
-   * callers, prefer the 6-arg ctor with an {@link IsochroneCandidateProvider}.
-   */
-  public GreedyRoundTripPlanner(RoutingEngine engine, CandidateScorer scorer,
-                                int subRouteCount, double tolerance, int maxAttempts) {
-    this(engine, new RoundTripCandidateProvider.RadialCandidateProvider(),
-      scorer, subRouteCount, tolerance, maxAttempts);
   }
 
   public GreedyRoundTripPlanner(RoutingEngine engine, RoundTripCandidateProvider provider,
@@ -189,6 +323,31 @@ public class GreedyRoundTripPlanner {
    */
   public void setHostilityActive(boolean active) {
     scorer.setHostilityActive(active);
+  }
+
+  /** Set the round-trip variety seed (ADR-0001). Negative values clamp to 0 (= inert). */
+  public void setVarietySeed(int seed) {
+    varietySeed = Math.max(0, seed);
+  }
+
+  /**
+   * Deterministic uniform value in [-1, 1) from a seed and two salts
+   * (splitmix64-style finalizer). Keyed on stable inputs only — candidate
+   * coordinates or fixed knob ids, never iteration order — so the same
+   * request + seed reproduces the same route. Shared by the greedy score
+   * jitter and the WAYPOINT/ISOCHRONE geometry knobs in
+   * {@link RoutingEngine#doWaypointBasedRoundTrip}.
+   */
+  static double seededUnit(int seed, int saltA, int saltB) {
+    long h = seed * 0x9E3779B97F4A7C15L;
+    h ^= saltA * 0xC2B2AE3D27D4EB4FL;
+    h ^= saltB * 0x165667B19E3779F9L;
+    h ^= h >>> 30;
+    h *= 0xBF58476D1CE4E5B9L;
+    h ^= h >>> 27;
+    h *= 0x94D049BB133111EBL;
+    h ^= h >>> 31;
+    return ((h >>> 11) / (double) (1L << 53)) * 2.0 - 1.0;
   }
 
   /**
@@ -245,6 +404,19 @@ public class GreedyRoundTripPlanner {
     double searchRadius = desiredDistance / 4.0;
     int prevIlon = -1;
     int prevIlat = -1;
+    // Air-to-road factor, adaptive per plan (see MAX_INDIRECTNESS_EST):
+    // starts at the calibrated baseline, learns from each routed leg.
+    double indirectnessEst = ROAD_INDIRECTNESS;
+    // Distress brake for the heading-persistence term: in half-plane-blocked
+    // geographies (sea/lake) the way home IS the way out, and rewarding
+    // "keep heading" steers vias into the dead-end corridor — observed on
+    // coastal_nice_100km_gravel as a grind of same-way-back closure
+    // rejections ending in a 43-crossing weave. Closure rejections are the
+    // planner's own distress signal: after HEADING_BRAKE_REJECTIONS of them,
+    // the term is disabled for the rest of the plan. No terrain modeling —
+    // the indirectness gate provably missed this class (coastal legs are
+    // direct; estimate stayed 1.4-1.6).
+    int closureRejections = 0;
 
     for (int step = 1; step <= subRouteCount; step++) {
       if (System.currentTimeMillis() >= deadline) {
@@ -262,7 +434,7 @@ public class GreedyRoundTripPlanner {
         totalAttempts++;
         if (System.currentTimeMillis() >= deadline) break;
 
-        double airRadius = localRadius / ROAD_INDIRECTNESS;
+        double airRadius = localRadius / indirectnessEst;
 
         // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
         List<RoundTripCandidateProvider.CandidatePoint> candidates =
@@ -274,16 +446,38 @@ public class GreedyRoundTripPlanner {
             cachedRefTrack);
         candidatesGenerated += candidates.size();
 
+        // Terrain-feasibility reference for the direction term: the best heading
+        // actually reachable this step. When the requested direction is blocked
+        // (sea/mountain), the best candidate is far off-bearing, and charging only
+        // the offset BEYOND it stops direction from forcing a bad route. No-op
+        // unless -Dloop.dirfeas (CandidateScorer leaves the reference unused).
+        double dirRef = 0.0;
+        if (dirPref != DirectionPreference.ANY && !candidates.isEmpty()) {
+          double best = 180.0;
+          for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
+            double diff = CheapAngleMeter.getDifferenceFromDirection(dirPref.bearing, cp.bearing);
+            if (diff < best) best = diff;
+          }
+          dirRef = best;
+        }
+        scorer.setDirectionReferenceOffset(dirRef);
+
+        // Previous leg's bearing for the heading-persistence term: NaN on
+        // step 1 (no previous leg — the start-direction term covers it).
+        double prevLegBearing = prevIlon >= 0
+          ? CheapAngleMeter.getDirection(prevIlon, prevIlat, currentIlon, currentIlat)
+          : Double.NaN;
+
         // Score using air-distance estimates — O(1) per candidate
         for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
-          double estimatedRouteDist = airDistToCp * ROAD_INDIRECTNESS;
+          double estimatedRouteDist = airDistToCp * indirectnessEst;
           double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
-          double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
+          double estimatedReturn = airDistToStart * indirectnessEst;
           double distFromStart = airDistToStart;
 
           double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * ROAD_INDIRECTNESS
+            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * indirectnessEst
             : -1;
 
           cp.score = scorer.score(
@@ -294,7 +488,28 @@ public class GreedyRoundTripPlanner {
             0.0, // can't estimate visited ratio without routing
             distFromStart, searchRadius,
             distFromPrevious,
-            cp.costFromStart, cp.bucketHits, cp.sourceContour);
+            cp.costFromStart, cp.bucketHits, cp.sourceContour)
+            - DESIR_WEIGHT * cp.desirability // issue #15: reward profile-desirable cells (lower score = better)
+            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
+
+          // Heading persistence: prefer candidates that keep turning gently
+          // instead of kinking at the via — terrain-gated so constrained
+          // networks that force sharp macro-turns are exempt (see
+          // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX), and distress-
+          // braked once closures start failing (see closureRejections).
+          if (!Double.isNaN(prevLegBearing) && closureRejections < HEADING_BRAKE_REJECTIONS) {
+            cp.score += W_HEADING_PERSISTENCE * headingTerrainFreedom(indirectnessEst)
+              * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
+          }
+
+          // Variety seed (ADR-0001): jitter the HEURISTIC score only — it
+          // perturbs which candidates get routed, while the routed-candidate
+          // comparison below stays purely quality-driven. Multiplicative, so
+          // it flips near-tie rankings without overriding clear winners;
+          // in sparse networks with no near-ties, variety is best-effort.
+          if (varietySeed > 0) {
+            cp.score *= 1.0 + VARIETY_JITTER_AMPLITUDE * seededUnit(varietySeed, cp.ilon, cp.ilat);
+          }
         }
 
         // Rank by score (lowest = best)
@@ -334,7 +549,14 @@ public class GreedyRoundTripPlanner {
         for (int r = 0; r < routeAttempts; r++) {
           RoundTripCandidateProvider.CandidatePoint cp = toRoute.get(r);
 
-          MatchedWaypoint toMwp = matchPoint(cp.ilon, cp.ilat, "greedy_to");
+          // Profile-aware snap for every candidate via: prefer a profile-
+          // compatible road near the candidate over the plain nearest way, so
+          // a via never commits the loop to a junk-road pocket (the via-pinned
+          // bulge source — see RoutingEngine.repairViaPinnedBulges). Graph-
+          // native candidates need this just as much as off-road radial
+          // points: their Dijkstra expansion terminates on whatever node hits
+          // the cost contour, which in a track pocket IS a junk road.
+          MatchedWaypoint toMwp = matchCandidatePointProfileAware(cp.ilon, cp.ilat);
           if (toMwp == null) continue;
 
           // Snap distance from the candidate coordinate to its routed-on-road
@@ -344,7 +566,16 @@ public class GreedyRoundTripPlanner {
           double snapDist = CheapRuler.distance(cp.ilon, cp.ilat, snappedIlon, snappedIlat);
           if (snapDist > airRadius * 0.5) continue;
 
+          // A pre-routed graph-native leg ends at the ORIGINAL candidate node;
+          // if the profile-aware snap relocated the via, that cached leg no
+          // longer reaches it. Drop the cache and route to the relocated point
+          // — one extra Dijkstra, paid only when a relocation actually fired.
           OsmTrack subTrack = cp.routedTrack;
+          if (subTrack != null && snapDist > VIA_RELOCATION_DROP_CACHED_LEG_M) {
+            engine.logInfo("greedy: candidate via relocated " + (int) snapDist
+              + "m to profile-friendly road, re-routing leg");
+            subTrack = null;
+          }
           if (subTrack == null) {
             subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, deadline);
           }
@@ -389,9 +620,9 @@ public class GreedyRoundTripPlanner {
           double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
             visitedEdges, totalDistance, desiredDistance, segLens);
           double airDistToStart = CheapRuler.distance(snappedIlon, snappedIlat, start.ilon, start.ilat);
-          double estimatedReturn = airDistToStart * ROAD_INDIRECTNESS;
+          double estimatedReturn = airDistToStart * indirectnessEst;
           double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, snappedIlon, snappedIlat) * ROAD_INDIRECTNESS
+            ? CheapRuler.distance(prevIlon, prevIlat, snappedIlon, snappedIlat) * indirectnessEst
             : -1;
           double snappedBearing = CheapRuler.getScaledBearing(
             currentIlon, currentIlat, snappedIlon, snappedIlat);
@@ -500,7 +731,7 @@ public class GreedyRoundTripPlanner {
           localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
           continue;
         }
-        if (metadataMissingTooHigh(detailedAccepted)) {
+        if (detailFidelityTooLow(detailedAccepted)) {
           result.addDiagnostic("step " + step + ": accepted leg still lacks metadata after retrack ("
             + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + "), retrying");
           localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
@@ -533,6 +764,19 @@ public class GreedyRoundTripPlanner {
         addVisitedEdges(accepted.track, visitedEdges, totalDistance);
         segments.add(accepted.track);
         totalDistance += accepted.routeDistance;
+        // Learn the observed air-to-road ratio of this leg (kept on undo —
+        // a routed leg is a real terrain measurement either way).
+        OsmPathElement legEnd = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
+        double legAir = CheapRuler.distance(currentIlon, currentIlat, legEnd.getILon(), legEnd.getILat());
+        if (legAir > 500) {
+          double observed = accepted.routeDistance / legAir;
+          indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
+            (1 - INDIRECTNESS_EMA_ALPHA) * indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
+          if (indirectnessEst > ROAD_INDIRECTNESS + 0.05) {
+            result.addDiagnostic(String.format(java.util.Locale.US,
+              "step %d: observed indirectness %.2f, estimate now %.2f", step, observed, indirectnessEst));
+          }
+        }
         if (accepted.fromIsoCandidate) acceptedIsoLegs++;
         else acceptedRadialLegs++;
 
@@ -553,7 +797,7 @@ public class GreedyRoundTripPlanner {
         int curIlon = currentMwp.crosspoint.getILon();
         int curIlat = currentMwp.crosspoint.getILat();
         double airDistToStart = CheapRuler.distance(curIlon, curIlat, start.ilon, start.ilat);
-        double minReturn = airDistToStart * ROAD_INDIRECTNESS;
+        double minReturn = airDistToStart * indirectnessEst;
 
         // Skip the return check only when closure is clearly out of reach AND
         // we still have multiple steps left. ROAD_INDIRECTNESS is a heuristic;
@@ -566,9 +810,13 @@ public class GreedyRoundTripPlanner {
           break;
         }
 
-        // One Dijkstra: return path to start.
-        OsmTrack returnTrack = timedFindTrack("greedy-return", currentMwp, startMwp,
-          buildRefTrack(segments), deadline);
+        // One Dijkstra: return path to start. When the fully-penalised return
+        // ships a self-crossing, routeReturnWithVariants escalates to
+        // relaxed-penalty variants and picks the best shape (extra Dijkstras
+        // are spent only on the defective case).
+        OsmTrack returnRef = buildRefTrack(segments);
+        OsmTrack returnTrack = routeReturnWithVariants(segments, returnRef,
+          currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
         returnChecksPerformed++;
         if (returnTrack != null && returnTrack.distance > 0) {
           double closedDistance = totalDistance + returnTrack.distance;
@@ -588,9 +836,12 @@ public class GreedyRoundTripPlanner {
             needDetail = true;
           }
           if (needDetail) {
-            // retrackForDetail ignores the refTrack arg (its guide track already
-            // fixes the node sequence), so don't pay for a buildRefTrack merge here.
-            returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
+            // Same fidelity-enforced detailing as committed forward legs: a
+            // failed retrack on the closing leg used to ship raw chord geometry
+            // (no fallback at all here). The reroute fallback reuses returnRef
+            // so the replacement return keeps the same anti-reuse poisoning.
+            returnTrack = detailWithFallback("greedy-return-detail-fallback",
+              returnTrack, currentMwp, startMwp, returnRef, deadline);
           }
           if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
             RoundTripQualityGate.HostileStretch returnHostile =
@@ -609,15 +860,26 @@ public class GreedyRoundTripPlanner {
           String reject = null;
           if (needDetail) {
             finalTrack = mergeSegmentsDetoured(segments, returnTrack);
-            reject = qualityGateReason(finalTrack, desiredDistance);
-            boolean gateAccepted = reject == null;
-            // Prefer a gate-accepted fallback over a gate-rejected one even at a
-            // higher geometric error; among same-status candidates keep the
-            // lowest error. Selecting by error alone could latch a rejected
-            // low-error loop and discard a usable accepted higher-error one.
+            reportSeamGaps(segments, returnTrack, result);
+            RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
+            reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
+            // Geometry-fidelity guard on the closing leg: when even the
+            // detailWithFallback reroute could not produce faithful geometry,
+            // do not close on it — route the rejection through the existing
+            // undo-and-retry machinery instead of shipping chord geometry.
+            if (reject == null && detailFidelityTooLow(returnTrack)) {
+              reject = "return leg geometry fidelity too low (chord "
+                + LoopQualityMetrics.maxSingleNullEdgeMeters(returnTrack) + "m, missing meta "
+                + formatPct(RoundTripQualityGate.missingMetadataFraction(returnTrack)) + ")";
+            }
+            int severity = fallbackSeverity(verdict);
+            // Prefer the soundest fallback (accepted > rideable corridor > chaos)
+            // even at a higher geometric error; among equal-soundness candidates
+            // keep the lowest error. Ranking by error alone could latch a
+            // low-error chaotic (self-intersecting) loop over a usable corridor.
             if (bestFallback == null
-                || isBetterFallback(gateAccepted, error, bestFallback.gateAccepted, bestFallback.error)) {
-              bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, gateAccepted);
+                || isBetterFallback(severity, error, bestFallback.severity, bestFallback.error)) {
+              bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, severity);
             }
           }
 
@@ -634,6 +896,7 @@ public class GreedyRoundTripPlanner {
               }
               result.addDiagnostic("closed loop rejected at step " + step
                 + ": " + reject + ", retrying");
+              closureRejections++;
               segments.remove(segments.size() - 1);
               totalDistance -= accepted.routeDistance;
               if (accepted.fromIsoCandidate) acceptedIsoLegs--;
@@ -714,9 +977,21 @@ public class GreedyRoundTripPlanner {
         startMwp, bestFallback.legTracks, desiredDistance, startDirection);
       result.setTotalDistanceMeters(bestFallback.track.distance);
       result.setWithinTolerance(false);
-      String reject = qualityGateReason(bestFallback.track, desiredDistance);
+      RoundTripQualityResult verdict = qualityGateVerdict(bestFallback.track, desiredDistance);
+      String reject = (verdict == null || verdict.isAccepted()) ? null : verdict.getRejectionReason();
       String reason = "best error=" + String.format("%.1f%%", bestFallback.error * 100);
-      result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
+      // Keep-when-forced: the soundest loop the planner could find is a rideable
+      // same-way-back corridor and nothing clean exists (else bestFallback would
+      // be rank-0 accepted). Don't degrade it into oblivion — flag it so the
+      // request gate accepts the forced corridor (disclosed) instead of dropping
+      // the route or shipping a chaotic alternative.
+      boolean forcedCorridor = bestFallback.severity == 1 && isForcedCorridorVerdict(verdict);
+      result.setForcedCorridorAccepted(forcedCorridor);
+      if (forcedCorridor) {
+        result.setFallbackReason("forced corridor (no clean alternative): " + reject + "; " + reason);
+      } else {
+        result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
+      }
       result.setSubRoutesChosen(bestFallback.legTracks.size());
       result.setAttemptsUsed(totalAttempts);
       stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
@@ -734,6 +1009,7 @@ public class GreedyRoundTripPlanner {
         returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
+        reportSeamGaps(segments, null, result);
         if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
           RoundTripQualityGate.HostileStretch forceHostile =
             RoundTripQualityGate.worstHostileStretchPaved(finalTrack);
@@ -777,10 +1053,36 @@ public class GreedyRoundTripPlanner {
   // Package-private for direct testing — see GreedyRoundTripPlannerTest's
   // Phase 1.5 delegation verification.
   String qualityGateReason(OsmTrack track, double desiredDistance) {
-    if (track == null || track.nodes == null || track.nodes.size() < 4) return "no track";
-    RoundTripQualityResult r = RoundTripQualityGate.evaluate(
-      track, desiredDistance, profileName, /*allowSamewayback*/ false);
+    RoundTripQualityResult r = qualityGateVerdict(track, desiredDistance);
+    if (r == null) return "no track";
     return r.isAccepted() ? null : r.getRejectionReason();
+  }
+
+  /** Full gate verdict (allowSamewayback=false), or {@code null} for a non-loop track. */
+  RoundTripQualityResult qualityGateVerdict(OsmTrack track, double desiredDistance) {
+    if (track == null || track.nodes == null || track.nodes.size() < 4) return null;
+    return RoundTripQualityGate.evaluate(
+      track, desiredDistance, profileName, /*allowSamewayback*/ false);
+  }
+
+  /**
+   * Fallback soundness rank (lower = better) for a gate verdict. A clean
+   * accepted loop (0) beats a structurally-sound but same-way-back loop —
+   * a parallel corridor or out-and-back (1) — which in turn beats a chaotic
+   * loop (2: self-intersections, beelines, hostile surface, mid-route zigzag).
+   * When the planner can find nothing clean, shipping the rideable corridor
+   * (rank 1) is far better than wandering into a 21-crossing chaos loop.
+   */
+  static int fallbackSeverity(RoundTripQualityResult verdict) {
+    if (verdict == null) return 3;
+    if (verdict.isAccepted()) return 0;
+    return verdict.getShape() == RouteShape.OUT_AND_BACK ? 1 : 2;
+  }
+
+  /** True when the verdict's sole defect is a same-way-back corridor (rank-1 sound). */
+  static boolean isForcedCorridorVerdict(RoundTripQualityResult verdict) {
+    return verdict != null && !verdict.isAccepted()
+      && verdict.getShape() == RouteShape.OUT_AND_BACK;
   }
 
   /**
@@ -854,7 +1156,7 @@ public class GreedyRoundTripPlanner {
       result.setReusedEdgeRatio(metrics.getRoadReusePercent() / 100.0);
       result.addDiagnostic("quality: " + metrics);
       // Also surface the semantic reuse classification — what SHAPE this
-      // loop is (STRICT_LOOP / LOLLIPOP / SCENIC_OUT_AND_BACK) and any
+      // loop is (STRICT_LOOP / LOLLIPOP / OUT_AND_BACK) and any
       // disclosures (e.g. "contains retraced scenic spur: 4.2km"). The
       // engine's final gate will reject INVALID_RETRACE before the result
       // is returned to the caller, so a classifier verdict here is for
@@ -911,6 +1213,134 @@ public class GreedyRoundTripPlanner {
    */
   // Package-private (not private) so RoutingIslandExceptionTest can drive the
   // unroutable-leg path directly via a RoutingEngine test double.
+  /**
+   * Cap on how much of a relaxed-penalty return variant may retrace the
+   * committed legs (node-membership length fraction). Bounds the trade this
+   * search is allowed to make: a bounded same-way-back stretch may replace a
+   * self-crossing return, a full retrace may not.
+   */
+  private static final double MAX_VARIANT_REUSE_FRACTION = 0.5;
+  /** Penalty step-down ladder tried when the fully-penalised return self-crosses. */
+  private static final double[] RETURN_VARIANT_FACTORS = {0.5, 0.0};
+
+  /**
+   * Scored return variants (loop-review backlog item 2, post-debunk scope):
+   * route the closing leg under the standard full anti-reuse penalty first;
+   * when — and only when — that return crosses the committed path (the
+   * shipped-teardrop fingerprint), re-route it with the refTrack penalty
+   * relaxed ({@link #RETURN_VARIANT_FACTORS}) and pick the best variant by
+   * (crossings, reuse fraction, distance error), lexicographically. Variants
+   * retracing more than {@link #MAX_VARIANT_REUSE_FRACTION} of their length
+   * are discarded. The clean common case costs zero extra Dijkstras and is
+   * bit-identical to the pre-variant behaviour.
+   */
+  private OsmTrack routeReturnWithVariants(List<OsmTrack> segments, OsmTrack returnRef,
+                                           MatchedWaypoint fromMwp, MatchedWaypoint toMwp,
+                                           long deadline, RoundTripResult result,
+                                           double totalDistance, double desiredDistance, int step) {
+    OsmTrack base = timedFindTrack("greedy-return", fromMwp, toMwp, returnRef, deadline);
+    if (base == null || base.distance <= 0) {
+      return base;
+    }
+    List<OsmPathElement> prefix =
+      segments.isEmpty() ? null : mergeSegmentsNoMap(segments, null).nodes;
+    int baseCrossings = countTentativeSelfIntersections(prefix, base);
+    if (baseCrossings == 0) {
+      return base;
+    }
+
+    List<OsmTrack> variants = new ArrayList<>();
+    List<double[]> scores = new ArrayList<>(); // {factor, crossings, reuseFraction, distError}
+    variants.add(base);
+    scores.add(new double[]{1.0, baseCrossings, reuseFraction(base, returnRef),
+      closedDistanceError(totalDistance, base.distance, desiredDistance)});
+
+    RoutingContext rc = engine.routingContext;
+    for (double factor : RETURN_VARIANT_FACTORS) {
+      OsmTrack variant;
+      double saved = rc.refTrackCostFactor;
+      try {
+        rc.refTrackCostFactor = factor;
+        variant = timedFindTrack("greedy-return-relaxed", fromMwp, toMwp, returnRef, deadline);
+      } finally {
+        rc.refTrackCostFactor = saved;
+      }
+      if (variant == null || variant.distance <= 0 || sameNodeSequence(variant, base)) {
+        continue;
+      }
+      double reuse = reuseFraction(variant, returnRef);
+      if (reuse > MAX_VARIANT_REUSE_FRACTION) {
+        continue;
+      }
+      variants.add(variant);
+      scores.add(new double[]{factor, countTentativeSelfIntersections(prefix, variant),
+        reuse, closedDistanceError(totalDistance, variant.distance, desiredDistance)});
+    }
+
+    int best = 0;
+    for (int i = 1; i < scores.size(); i++) {
+      double[] a = scores.get(i);
+      double[] b = scores.get(best);
+      if (a[1] != b[1] ? a[1] < b[1] : (a[2] != b[2] ? a[2] < b[2] : a[3] < b[3])) {
+        best = i;
+      }
+    }
+    if (best != 0) {
+      double[] s = scores.get(best);
+      String msg = "return variant factor=" + s[0] + " wins: crossings " + baseCrossings
+        + " -> " + (int) s[1] + ", reuse " + (int) (s[2] * 100) + "%, distErr "
+        + Math.round(s[3] * 100) + "%";
+      result.addDiagnostic("step " + step + ": " + msg);
+      engine.logInfo("greedy " + msg);
+    }
+    return variants.get(best);
+  }
+
+  /**
+   * Length fraction of {@code leg} whose segments run between nodes the
+   * reference track visited. Node membership (not traveled-edge membership)
+   * by design: the variant legs are raw junction sequences while the
+   * reference track is detailed, so consecutive-pair granularities differ;
+   * for a bounded-retrace MEASUREMENT the looser node test is the right
+   * trade (the penalty itself uses the strict edge test in OsmPath).
+   */
+  static double reuseFraction(OsmTrack leg, OsmTrack refTrack) {
+    if (leg == null || leg.nodes == null || leg.nodes.size() < 2 || refTrack == null) {
+      return 0;
+    }
+    double total = 0;
+    double reused = 0;
+    for (int i = 1; i < leg.nodes.size(); i++) {
+      OsmPathElement a = leg.nodes.get(i - 1);
+      OsmPathElement b = leg.nodes.get(i);
+      double d = a.calcDistance(b);
+      total += d;
+      if (refTrack.containsNode(a) && refTrack.containsNode(b)) {
+        reused += d;
+      }
+    }
+    return total > 0 ? reused / total : 0;
+  }
+
+  private static double closedDistanceError(double totalDistance, int returnDistance, double desiredDistance) {
+    return desiredDistance > 0
+      ? Math.abs(totalDistance + returnDistance - desiredDistance) / desiredDistance : 0;
+  }
+
+  private static boolean sameNodeSequence(OsmTrack a, OsmTrack b) {
+    if (a.nodes == null || b.nodes == null || a.nodes.size() != b.nodes.size()) {
+      return false;
+    }
+    for (int i = 0; i < a.nodes.size(); i++) {
+      OsmPathElement x = a.nodes.get(i);
+      OsmPathElement y = b.nodes.get(i);
+      if (x.getILon() != y.getILon() || x.getILat() != y.getILat()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   OsmTrack timedFindTrack(String name, MatchedWaypoint from, MatchedWaypoint to,
                                   OsmTrack refTrack, long deadline) {
     long now = System.currentTimeMillis();
@@ -947,25 +1377,75 @@ public class GreedyRoundTripPlanner {
 
   private OsmTrack detailAcceptedTrack(ScoredRoute accepted, MatchedWaypoint fromMwp,
                                        OsmTrack refTrack, long deadline) {
-    OsmTrack detailed = engine.retrackForDetail(accepted.track, fromMwp, accepted.toMwp, refTrack);
-    if (!metadataMissingTooHigh(detailed)) {
+    return detailWithFallback("greedy-sub-detail-fallback",
+      accepted.track, fromMwp, accepted.toMwp, refTrack, deadline);
+  }
+
+  /**
+   * Detail-retrack {@code leg} and, when the result's fidelity is too low
+   * (the retrack fell back to raw geometry somewhere — see
+   * {@link #detailFidelityTooLow}), re-route the leg once and retrack that.
+   * Returns the best track obtained; callers re-check fidelity and decide
+   * whether to commit, retry, or accept best-effort.
+   */
+  private OsmTrack detailWithFallback(String name, OsmTrack leg, MatchedWaypoint fromMwp,
+                                      MatchedWaypoint toMwp, OsmTrack refTrack, long deadline) {
+    OsmTrack detailed = engine.retrackForDetail(leg, fromMwp, toMwp, refTrack);
+    if (!detailFidelityTooLow(detailed)) {
       return detailed;
     }
 
-    OsmTrack rerouted = timedFindTrack("greedy-sub-detail-fallback", fromMwp, accepted.toMwp, refTrack, deadline);
+    OsmTrack rerouted = timedFindTrack(name, fromMwp, toMwp, refTrack, deadline);
     if (rerouted == null || rerouted.distance == 0) {
       return detailed;
     }
-    OsmTrack detailedRerouted = engine.retrackForDetail(rerouted, fromMwp, accepted.toMwp, refTrack);
-    if (DIAGNOSTIC && RoundTripQualityGate.isPavedProfile(profileName)) {
-      System.err.printf("[greedy-diag] detail fallback missingMetadata raw=%.1f%% rerouted=%.1f%%%n",
+    OsmTrack detailedRerouted = engine.retrackForDetail(rerouted, fromMwp, toMwp, refTrack);
+    if (DIAGNOSTIC) {
+      System.err.printf("[greedy-diag] detail fallback (%s) missingMeta raw=%.1f%%/chord %dm, rerouted=%.1f%%/chord %dm%n",
+        name,
         RoundTripQualityGate.missingMetadataFraction(detailed) * 100.0,
-        RoundTripQualityGate.missingMetadataFraction(detailedRerouted) * 100.0);
+        LoopQualityMetrics.maxSingleNullEdgeMeters(detailed),
+        RoundTripQualityGate.missingMetadataFraction(detailedRerouted) * 100.0,
+        LoopQualityMetrics.maxSingleNullEdgeMeters(detailedRerouted));
     }
     return detailedRerouted;
   }
 
-  private boolean metadataMissingTooHigh(OsmTrack track) {
+  /**
+   * Max length of a single untagged edge tolerated on a committed leg. In
+   * detail mode every link is subdivided at its OSM shape points and carries
+   * tags, so edges are short and tagged; one long null-tag edge is the chord
+   * fingerprint of a failed detail pass — the shipped geometry cuts straight
+   * across terrain where the real road curves (the user-visible "beeline").
+   * Ground-truthed on Lozère gravel (2026-06-09): flagged 300-950m chords all
+   * had a real curving road between the same endpoints.
+   */
+  // Package-visible: doRoundTrip's residual-chord disclosure uses the same
+  // threshold, so the advisory and the planner's fidelity retry never disagree
+  // about what counts as a chord.
+  static final int MAX_UNDETAILED_EDGE_METERS = 200;
+
+  /**
+   * Whether a detailed leg is unfit to commit. Two concerns, scoped
+   * differently:
+   * <ul>
+   *   <li><b>Chord fingerprint (all profiles)</b> — a long null-tag edge means
+   *       the detail pass fell back to raw geometry there and the shipped
+   *       polyline cuts straight across terrain (the user-visible "beeline").
+   *       Many SHORT null edges are visually fine (geometry still follows the
+   *       road shape), so the fingerprint, not the fraction, is the geometry
+   *       criterion. Keeping the fraction profile-agnostic was measured to
+   *       roughly double matrix runtime via unnecessary gravel reroutes and
+   *       contributed to an AUTO budget exhaustion no-route (grenoble 50km).</li>
+   *   <li><b>Metadata coverage (paved only)</b> — the gate's hostility check
+   *       needs verifiable tags; unverifiable distance above the ceiling is a
+   *       paved-profile safety concern, the original rationale.</li>
+   * </ul>
+   */
+  private boolean detailFidelityTooLow(OsmTrack track) {
+    if (LoopQualityMetrics.maxSingleNullEdgeMeters(track) > MAX_UNDETAILED_EDGE_METERS) {
+      return true;
+    }
     return RoundTripQualityGate.isPavedProfile(profileName)
       && RoundTripQualityGate.missingMetadataFraction(track) > RoundTripQualityGate.MAX_HOSTILE_FRACTION;
   }
@@ -975,6 +1455,24 @@ public class GreedyRoundTripPlanner {
   }
 
   // --- Waypoint matching ---
+
+  /**
+   * Profile-aware variant of {@link #matchPoint} for candidate-via targets:
+   * delegates to {@link RoutingEngine#profileAwareMatchPoint} (probe rings,
+   * cost-factor scored) with the same null-on-any-failure contract. Falls back
+   * to the plain nearest match when the probe matching throws or finds nothing,
+   * so candidate handling is never stricter than before.
+   */
+  private MatchedWaypoint matchCandidatePointProfileAware(int ilon, int ilat) {
+    try {
+      MatchedWaypoint mwp = engine.profileAwareMatchPoint(ilon, ilat, "greedy_to", 2000);
+      if (mwp != null) return mwp;
+    } catch (Exception e) {
+      engine.logInfo("matchCandidatePointProfileAware failed: " + e.getClass().getSimpleName()
+        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+    }
+    return matchPoint(ilon, ilat, "greedy_to");
+  }
 
   private MatchedWaypoint matchPoint(int ilon, int ilat, String name) {
     try {
@@ -990,6 +1488,13 @@ public class GreedyRoundTripPlanner {
       }
       return mwp;
     } catch (Exception e) {
+      // Return null on ANY failure so every caller's graceful recovery still
+      // works: the start site (~line 211) gives up this attempt, the candidate
+      // loop (~321) skips this candidate and tries the next, and the next-step
+      // site (~532) falls back to the accepted waypoint. Do NOT rethrow — a
+      // single missing-data candidate point must not abort the whole leg. The
+      // cause (incl. data-availability IllegalArgumentException from NodesCache)
+      // is logged so it is not silently lost when info logging is enabled.
       engine.logInfo("matchPoint(" + name + ") failed: " + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage()));
       return null;
@@ -1059,6 +1564,61 @@ public class GreedyRoundTripPlanner {
       }
       first = false;
       targetNodes.add(node);
+    }
+  }
+
+  /**
+   * Leg-junction seam gap above which the merged loop is considered to carry a
+   * synthetic splice defect. Adjacent legs share their junction node by
+   * construction (leg N+1 routes from leg N's matched endpoint), so any larger
+   * jump means some machinery (via relocation, cached-leg reuse, repair splice)
+   * glued non-adjacent endpoints — the merged track ships that jump as a
+   * silent straight edge that neither the DIRECT-waypoint nor the
+   * direct_segment marker ever sees.
+   */
+  static final int MAX_SEAM_GAP_METERS = 100;
+
+  /**
+   * Leg-junction contiguity check (loop-review backlog item 1). Returns one
+   * human-readable description per seam whose endpoints differ by more than
+   * {@link #MAX_SEAM_GAP_METERS}. Detection-only by the beeline-gate lesson
+   * (a geometric hard gate fired 1283x/run on legitimate chord geometry):
+   * callers log + attach diagnostics, never reject — by construction this
+   * should never fire, so any hit is a planner bug worth a grep-able trace.
+   */
+  static List<String> seamGapsMeters(List<OsmTrack> segments, OsmTrack finalSegment) {
+    List<String> gaps = new ArrayList<>();
+    OsmPathElement prevTail = null;
+    int leg = 0;
+    List<OsmTrack> all = new ArrayList<>(segments);
+    if (finalSegment != null) {
+      all.add(finalSegment);
+    }
+    for (OsmTrack seg : all) {
+      leg++;
+      if (seg == null || seg.nodes == null || seg.nodes.isEmpty()) {
+        continue;
+      }
+      OsmPathElement head = seg.nodes.get(0);
+      if (prevTail != null
+          && (prevTail.getILon() != head.getILon() || prevTail.getILat() != head.getILat())) {
+        int gap = prevTail.calcDistance(head);
+        if (gap > MAX_SEAM_GAP_METERS) {
+          gaps.add("seam before leg " + leg + ": " + gap + "m jump between leg endpoints");
+        }
+      }
+      prevTail = seg.nodes.get(seg.nodes.size() - 1);
+    }
+    return gaps;
+  }
+
+  /** Log + attach diagnostics for any seam gaps in the final loop assembly. */
+  private void reportSeamGaps(List<OsmTrack> segments, OsmTrack finalSegment, RoundTripResult result) {
+    for (String gap : seamGapsMeters(segments, finalSegment)) {
+      result.addDiagnostic("seam-contiguity: " + gap);
+      if (engine != null) {
+        engine.logInfo("greedy seam-contiguity defect: " + gap);
+      }
     }
   }
 
@@ -1323,6 +1883,12 @@ public class GreedyRoundTripPlanner {
     for (int i = 1; i < stack.size(); i++) {
       MatchedWaypoint mwp = stack.get(i);
       MatchedWaypoint viaMwp = copyMatchedWaypoint(mwp, "via" + i);
+      // Planner-placed via, not a user waypoint: the engine's via-pinned spur
+      // cleanup (removeMicroDetours / isNearGeneratedWaypoint) keys on this
+      // flag — the WAYPOINT algorithm's "rt*" name convention does not apply
+      // to greedy vias, so without the flag the relaxed-ratio and teardrop
+      // bands never activate on greedy-adopted loops.
+      viaMwp.generated = true;
       mwps.add(viaMwp);
     }
 
@@ -1391,24 +1957,43 @@ public class GreedyRoundTripPlanner {
    * of error), or — when both share the same gate verdict — when its geometric
    * error is lower. This prevents latching a gate-rejected low-error loop and
    * discarding a usable gate-accepted higher-error one.
+   *
+   * <p><b>Two-state convenience only:</b> this overload maps {@code accepted=false}
+   * to the chaos rank (2) and therefore <em>cannot express the middle tier</em>
+   * (severity 1 = sound same-way-back corridor). Callers that need the full
+   * three-tier preference (e.g. the production fallback selection at the
+   * {@code severity}-based call site) must use the {@code int} overload below.
    */
   static boolean isBetterFallback(boolean candidateAccepted, double candidateError,
                                   boolean incumbentAccepted, double incumbentError) {
-    if (candidateAccepted != incumbentAccepted) {
-      return candidateAccepted;
+    return isBetterFallback(candidateAccepted ? 0 : 2, candidateError,
+      incumbentAccepted ? 0 : 2, incumbentError);
+  }
+
+  /**
+   * Prefer the lower soundness rank (accepted &gt; sound corridor &gt; chaos);
+   * among equal ranks, the lower geometric error. This keeps a rideable
+   * same-way-back loop as the fallback instead of latching a low-error but
+   * chaotic (self-intersecting) loop the planner wandered into while retrying.
+   */
+  static boolean isBetterFallback(int candidateSeverity, double candidateError,
+                                  int incumbentSeverity, double incumbentError) {
+    if (candidateSeverity != incumbentSeverity) {
+      return candidateSeverity < incumbentSeverity;
     }
     return candidateError < incumbentError;
   }
 
   private Snapshot snapshotFallback(OsmTrack track, List<OsmTrack> segments, OsmTrack returnTrack,
-                                    List<MatchedWaypoint> waypointStack, double error, boolean gateAccepted) {
+                                    List<MatchedWaypoint> waypointStack, double error, int severity) {
     Snapshot snap = new Snapshot();
     snap.track = track;
     snap.waypointStack = new ArrayList<>(waypointStack);
     snap.legTracks = new ArrayList<>(segments);
     snap.legTracks.add(returnTrack);
     snap.error = error;
-    snap.gateAccepted = gateAccepted;
+    snap.severity = severity;
+    snap.gateAccepted = severity == 0;
     return snap;
   }
 
@@ -1418,6 +2003,8 @@ public class GreedyRoundTripPlanner {
     List<OsmTrack> legTracks;
     double error;
     boolean gateAccepted;
+    /** Fallback soundness rank — see {@link #fallbackSeverity}. */
+    int severity;
   }
 
   /**

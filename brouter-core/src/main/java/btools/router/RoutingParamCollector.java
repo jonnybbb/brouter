@@ -15,6 +15,17 @@ public class RoutingParamCollector {
   final static boolean DEBUG = false;
 
   /**
+   * Upper bound for the user-supplied {@code roundTripLength} (total loop length,
+   * metres) and {@code roundTripDistance} (search radius, metres). Far beyond any
+   * realistic loop, these only bound abusive/garbage values (e.g. Integer.MAX_VALUE)
+   * so a crafted request cannot drive a meaningless multi-thousand-km expansion
+   * before the engine's node-limit ceiling stops it. Over-max values are clamped
+   * (not rejected), preserving the "I want a big loop" intent at the maximum.
+   */
+  private static final int MAX_ROUNDTRIP_LENGTH_METERS = 500_000;   // 500 km loop
+  private static final int MAX_ROUNDTRIP_RADIUS_METERS = 200_000;   // ~1256 km loop
+
+  /**
    * get a list of points and optional extra info for the points
    *
    * @param lonLats  linked list separated by ';' or '|'
@@ -217,9 +228,23 @@ public class RoutingParamCollector {
           // (length / 2π); invalidate it so the roundTripDistance path is used.
           if (rctx.roundTripLength != null && rctx.roundTripLength <= 0) {
             rctx.roundTripLength = null;
+          } else if (rctx.roundTripLength != null && rctx.roundTripLength > MAX_ROUNDTRIP_LENGTH_METERS) {
+            System.err.println("clamping roundTripLength=" + rctx.roundTripLength
+              + " to max " + MAX_ROUNDTRIP_LENGTH_METERS + "m");
+            rctx.roundTripLength = MAX_ROUNDTRIP_LENGTH_METERS;
           }
         } else if (key.equals("roundTripDistance")) {
           rctx.roundTripDistance = parseIntParamOrNull(key, value);
+          // Symmetric with roundTripLength: a non-positive distance would yield a
+          // zero/negative searchRadius (and silently disable the distance gate),
+          // so invalidate it and let the default radius apply.
+          if (rctx.roundTripDistance != null && rctx.roundTripDistance <= 0) {
+            rctx.roundTripDistance = null;
+          } else if (rctx.roundTripDistance != null && rctx.roundTripDistance > MAX_ROUNDTRIP_RADIUS_METERS) {
+            System.err.println("clamping roundTripDistance=" + rctx.roundTripDistance
+              + " to max " + MAX_ROUNDTRIP_RADIUS_METERS + "m");
+            rctx.roundTripDistance = MAX_ROUNDTRIP_RADIUS_METERS;
+          }
         } else if (key.equals("roundTripDirectionAdd")) {
           rctx.roundTripDirectionAdd = parseIntParamOrNull(key, value);
         } else if (key.equals("roundTripPoints")) {
@@ -236,6 +261,17 @@ public class RoutingParamCollector {
         } else if (key.equals("allowSamewayback")) {
           Integer v = parseIntParamOrNull(key, value);
           rctx.allowSamewayback = v != null && v == 1;
+        } else if (key.equals("roundTripStrictQuality")) {
+          // Opt back into hard-rejecting QUALITY-tier failures (distance/chaos/
+          // hostile-surface/retrace). Default lenient: such routes are returned
+          // with a Warning: advisory so the user decides whether to ride them.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripStrictQuality = v != null && v == 1;
+        } else if (key.equals("roundTripDensify")) {
+          // Opt into "length-honoring" explicit-via densification (arc bulges between user
+          // vias). Off by default; engine still gates it to non-paved profiles. 0 forces off.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.explicitViaDensifyOverride = v != null && v == 1;
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
         } else if (key.equals("roundTripIsochrone")) {
@@ -246,6 +282,11 @@ public class RoutingParamCollector {
           if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
           }
+        } else if (key.equals("roundTripDesirability")) {
+          // Experimental profile-desirability heatmap for GREEDY round-trips (issue #15).
+          // Off by default; honoured only by the GREEDY algorithm.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripDesirability = v != null && v == 1;
         } else if (key.equals("alternativeidx")) {
           Integer v = parseIntParamOrNull(key, value);
           if (v != null) rctx.setAlternativeIdx(v);

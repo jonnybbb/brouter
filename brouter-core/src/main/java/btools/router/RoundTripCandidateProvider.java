@@ -70,6 +70,12 @@ public interface RoundTripCandidateProvider {
     public int ilat;
     public double bearing;
     public double score; // heuristic score — set by the planner during ranking
+    /**
+     * Normalized [0,1] profile-desirability of this candidate's cell (issue #15).
+     * Only {@link DesirabilityCandidateProvider} sets it; all other providers leave
+     * it at 0, so the planner's desirability reward is a no-op for them.
+     */
+    public double desirability;
     /** Dijkstra cost-units from the loop start to this candidate; {@link #NO_ISO_COST} = unavailable. */
     public double costFromStart = NO_ISO_COST;
     /** Population of this candidate's angular bucket in the isochrone; {@link #NO_ISO_DENSITY} = unavailable. */
@@ -82,6 +88,13 @@ public interface RoundTripCandidateProvider {
      * leg instead of routing to the candidate coordinate a second time.
      */
     public OsmTrack routedTrack;
+    /**
+     * Reachability-cloud cells occupied in the candidate's 5×5 neighborhood
+     * (0..25; see {@link IsochroneExpansionResult#reachableCellsAround}), or
+     * -1 when no cloud is available. Low values mark dead-end pockets / thin
+     * corridors — the placement signature behind teardrop and stub artifacts.
+     */
+    public int reachableCells = -1;
   }
 
   /**

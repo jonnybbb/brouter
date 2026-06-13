@@ -40,6 +40,107 @@ public class LoopQualityMetricsTest {
     Assert.assertEquals("out-and-back should have ~50% reuse", 50.0, reuse, 1.0);
   }
 
+  // ~metre→ilon/ilat factors at this latitude (~50°N): 1 m ≈ 11.7 ilon, 9 ilat.
+  private static OsmPathElement m(double xMeters, double yMeters) {
+    return OsmPathElement.create(
+      BASE_ILON + (int) Math.round(xMeters * 11.7),
+      BASE_ILAT + (int) Math.round(yMeters * 9.0), (short) 0, null);
+  }
+
+  @Test
+  public void parallelCorridorRaisesReuseAboveEdgeIdentity() {
+    // Out 2km east at y=0, then back 2km at y=25 — a parallel return on a
+    // DIFFERENT way (no shared node/edge). Edge identity sees ~0% reuse; the
+    // spatial corridor union must report substantial reuse so RouteChoiceScore
+    // ranks this below a clean loop.
+    List<OsmPathElement> nodes = new ArrayList<>();
+    double[][] corners = {{0, 0}, {2000, 0}, {2000, 25}, {0, 25}, {0, 0}};
+    nodes.add(m(corners[0][0], corners[0][1]));
+    for (int i = 1; i < corners.length; i++) {
+      double[] a = corners[i - 1], b = corners[i];
+      double len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      int steps = Math.max(1, (int) Math.ceil(len / 20.0));
+      for (int k = 1; k <= steps; k++) {
+        double s = (double) k / steps;
+        nodes.add(m(a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s));
+      }
+    }
+    double reuse = LoopQualityMetrics.computeRoadReusePercent(nodes);
+    Assert.assertTrue("parallel corridor should read substantial reuse, got " + reuse + "%",
+      reuse > 25.0);
+  }
+
+  // ---- beelineInSpurMeters: chord fingerprint + closure exclusion ----------
+
+  private static MessageData tagged() {
+    MessageData md = new MessageData();
+    md.wayKeyValues = "highway=track surface=gravel";
+    md.costfactor = 1.5f;
+    return md;
+  }
+
+  /**
+   * Loop with a dead-end spur at the start: out via one long (~480m) straight
+   * edge, tip hop, back on a parallel arm rejoining within ~49m of the start
+   * (arc ~985m — a near-revisit span), then a ~2km-sided square loop body.
+   * Every edge is tagged except, when {@code longEdgeTagged} is false, the
+   * long spur edge — the raw-fallback chord fingerprint.
+   */
+  private static OsmTrack spurLoop(boolean longEdgeTagged) {
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(480, 0));     // the long spur edge
+    t.nodes.add(m(480, 45));    // tip hop
+    t.nodes.add(m(20, 45));     // parallel return arm (~49m from start)
+    t.nodes.add(m(2000, 0));
+    t.nodes.add(m(2000, 2000));
+    t.nodes.add(m(0, 2000));
+    t.nodes.add(m(0, 0));
+    for (int i = 1; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = tagged();
+    }
+    if (!longEdgeTagged) {
+      t.nodes.get(1).message = null; // edge node0→node1 becomes null-way
+    }
+    return t;
+  }
+
+  @Test
+  public void beelineInSpurFlagsUntaggedChordInsideSpur() {
+    int[] d = LoopQualityMetrics.beelineInSpurDetail(spurLoop(false));
+    Assert.assertTrue("untagged ~480m chord inside the spur must be flagged, got " + d[0] + "m",
+      d[0] > 400 && d[0] < 560);
+    Assert.assertEquals("flagged edge start ilon", BASE_ILON, d[1]);
+    Assert.assertEquals("flagged edge end ilon (480m east)",
+      BASE_ILON + (int) Math.round(480 * 11.7), d[3]);
+  }
+
+  @Test
+  public void beelineInSpurIgnoresTaggedLongEdge() {
+    Assert.assertEquals("tagged long edge is a real road, not a chord",
+      0, LoopQualityMetrics.beelineInSpurMeters(spurLoop(true)));
+  }
+
+  @Test
+  public void beelineInSpurExcludesLoopOwnClosure() {
+    // A plain sub-10km loop closes start≈end with the full perimeter as the
+    // "arc" — that span is the loop's own closure, not a spur, and a long
+    // null edge in the loop body must NOT be flagged (regression guard:
+    // before the closure exclusion this false-fired on every loop under the
+    // 10km arc cap).
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(2400, 0));    // one long edge, left untagged below
+    t.nodes.add(m(2400, 2400));
+    t.nodes.add(m(0, 2400));
+    t.nodes.add(m(0, 0));
+    for (int i = 2; i < t.nodes.size(); i++) {
+      t.nodes.get(i).message = tagged();
+    }
+    Assert.assertEquals("loop closure is not a spur; long null edge outside any spur not flagged",
+      0, LoopQualityMetrics.beelineInSpurMeters(t));
+  }
+
   @Test
   public void distanceRatioExact() {
     OsmTrack track = new OsmTrack();
@@ -408,5 +509,203 @@ public class LoopQualityMetricsTest {
 
     LoopQualityMetrics m = LoopQualityMetrics.compute(track, 1000, 0);
     Assert.assertEquals("cost/m should be 3.0", 3.0, m.getAverageCostPerMeter(), 0.01);
+  }
+
+  // ---- computeCostMatchScore (pure, was untested) -------------------------
+
+  @Test
+  public void computeCostMatchScore_plateauFloorAndLinearMidpoint() {
+    // ≤ 0 → 0.0 (missing cost data is NOT scored as a perfect match).
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(0.0), 1e-9);
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(-1.0), 1e-9);
+    // Plateau at/below IDEAL (1.5) → 1.0.
+    Assert.assertEquals(1.0, LoopQualityMetrics.computeCostMatchScore(1.0), 1e-9);
+    Assert.assertEquals(1.0, LoopQualityMetrics.computeCostMatchScore(1.5), 1e-9);
+    // Floor at/above ZERO (4.0) → 0.0.
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(4.0), 1e-9);
+    Assert.assertEquals(0.0, LoopQualityMetrics.computeCostMatchScore(5.0), 1e-9);
+    // Linear between: (4.0 - 2.75) / (4.0 - 1.5) = 0.5.
+    Assert.assertEquals(0.5, LoopQualityMetrics.computeCostMatchScore(2.75), 1e-9);
+  }
+
+  // ---- lasso-crossing weighting in RouteChoiceScore (#9b) ------------------
+
+  /**
+   * A ~12km square loop; with {@code lasso} a small (~1.3km enclosed) detour
+   * loop on the bottom edge transversely crosses the outbound path once —
+   * the lasso classification target ({@code detectCrossings} → smallLoop).
+   */
+  private static OsmTrack lassoLoop(boolean lasso) {
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(1000, 0));
+    if (lasso) {
+      t.nodes.add(m(1400, 0));
+      t.nodes.add(m(1400, 300));
+      t.nodes.add(m(1100, 300));
+      t.nodes.add(m(1100, -100)); // crosses the (1000,0)-(1400,0) segment at (1100,0)
+      t.nodes.add(m(1600, -100));
+      t.nodes.add(m(1600, 0));
+    }
+    t.nodes.add(m(3000, 0));
+    t.nodes.add(m(3000, 3000));
+    t.nodes.add(m(0, 3000));
+    t.nodes.add(m(0, 0));
+    int dist = 0;
+    for (int i = 1; i < t.nodes.size(); i++) {
+      dist += t.nodes.get(i - 1).calcDistance(t.nodes.get(i));
+    }
+    t.distance = dist;
+    t.cost = dist * 2;
+    return t;
+  }
+
+  @Test
+  public void crossings_bridgeOrTunnelEdgeIsExempt() {
+    // User label (2026-06-11): a crossing where one pass rides a bridge or
+    // tunnel is vertically separated — e.g. a ramp loop built to avoid
+    // stairs, or re-crossing a river on a different bridge. Tag the edge
+    // that ENDS at (1100,-100) — the second crossing segment — as a bridge.
+    OsmTrack t = lassoLoop(true);
+    MessageData md = new MessageData();
+    md.wayKeyValues = "highway=secondary bridge=yes";
+    t.nodes.get(5).message = md; // edge (1100,300)->(1100,-100)
+    Assert.assertEquals("bridge crossing not counted by the metric",
+      0, LoopQualityMetrics.detectCrossings(t.nodes)[0]);
+    Assert.assertEquals("bridge crossing not counted by the gate",
+      0, RoundTripQualityGate.countSelfIntersections(t));
+    Assert.assertTrue("no marker either",
+      LoopQualityMetrics.crossingPoints(t.nodes).isEmpty());
+    // Tunnel works the same way.
+    md.wayKeyValues = "highway=secondary tunnel=yes";
+    Assert.assertEquals(0, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void crossings_startEndZoneIsExempt() {
+    // User label (2026-06-11): crossings at the very beginning/end of the
+    // route are the expected leave-and-return weave. Same lasso geometry,
+    // but shifted so the crossing sits ~150m from the route start.
+    OsmTrack t = new OsmTrack();
+    t.nodes.add(m(0, 0));
+    t.nodes.add(m(50, 0));
+    t.nodes.add(m(450, 0));
+    t.nodes.add(m(450, 300));
+    t.nodes.add(m(150, 300));
+    t.nodes.add(m(150, -100)); // crosses the (50,0)-(450,0) segment at (150,0), cum ~ 150m
+    t.nodes.add(m(650, -100));
+    t.nodes.add(m(650, 0));
+    t.nodes.add(m(3000, 0));
+    t.nodes.add(m(3000, 3000));
+    t.nodes.add(m(0, 3000));
+    t.nodes.add(m(0, 0));
+    Assert.assertEquals("home-zone crossing not counted",
+      0, LoopQualityMetrics.detectCrossings(t.nodes)[0]);
+    Assert.assertEquals(0, RoundTripQualityGate.countSelfIntersections(t));
+    // Control: the identical detour placed mid-edge (cum > 500m) IS counted.
+    Assert.assertEquals(1, LoopQualityMetrics.detectCrossings(lassoLoop(true).nodes)[0]);
+  }
+
+  @Test
+  public void detectCrossings_classifiesLassoBySmallEnclosedArc() {
+    int[] lasso = LoopQualityMetrics.detectCrossings(lassoLoop(true).nodes);
+    Assert.assertEquals("one crossing", 1, lasso[0]);
+    Assert.assertEquals("classified as lasso (enclosed ~1.3km <= 4km)", 1, lasso[1]);
+    int[] clean = LoopQualityMetrics.detectCrossings(lassoLoop(false).nodes);
+    Assert.assertEquals(0, clean[0]);
+  }
+
+  @Test
+  public void routeChoiceScore_lassoSurchargeIsRankingOnlyAndSizeFaded() {
+    OsmTrack track = lassoLoop(true);
+    RouteChoiceScore.Verdict v = RouteChoiceScore.score(track, track.distance, "gravel", null, -1);
+    boolean hasLassoReason = false;
+    for (RouteChoiceScore.Reason r : v.reasons()) {
+      if (r.label.startsWith("lasso crossings sev")) {
+        hasLassoReason = true;
+      }
+    }
+    Assert.assertTrue("lasso surcharge reason present: " + v.reasons(), hasLassoReason);
+    // Size-faded severity: the fixture's enclosed loop is ~1.3km of the 4km
+    // cap, so the surcharge must be strictly between 0 and the full extra
+    // (user label: a big-enough detour loop is fine — severity fades with size).
+    double expectedSeverity = 0;
+    for (double[] x : LoopQualityMetrics.crossingPoints(track.nodes)) {
+      if (x[2] <= LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS) {
+        expectedSeverity += 1.0 - x[2] / LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS;
+      }
+    }
+    Assert.assertTrue("severity in (0,1): " + expectedSeverity,
+      expectedSeverity > 0 && expectedSeverity < 1);
+    // Ranking-only: the crossing + lasso penalties are excluded from the soft
+    // quality floor (no teardrop in this geometry, so the gap is exactly #9 + #9b).
+    Assert.assertEquals(
+      RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION
+        + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA * expectedSeverity,
+      v.qualityScore() - v.score(), 1e-9);
+  }
+
+  @Test
+  public void lassoEffectiveWeightStaysInReviewBand() {
+    // Loop-review item 3 calls for lassos at 2-3× a structural crossing. With
+    // size fading this is the MAX effective weight (severity → 1 for a tiny
+    // circle); a near-cap loop fades toward 1× (user label: big = fine).
+    double maxEffective = (RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION
+      + RouteChoiceScore.SHAPE_PENALTY_LASSO_EXTRA) / RouteChoiceScore.SHAPE_PENALTY_PER_SELF_INTERSECTION;
+    Assert.assertTrue("max effective lasso weight " + maxEffective + " in [2,3]",
+      maxEffective >= 2.0 && maxEffective <= 3.0);
+  }
+
+  @Test
+  public void crossingPoints_locatesTheLassoIntersection() {
+    // The render-side highlighter must place the marker AT the crossing:
+    // the fixture's arms cross at x=1100m, y=0 (see lassoLoop).
+    java.util.List<double[]> pts = LoopQualityMetrics.crossingPoints(lassoLoop(true).nodes);
+    Assert.assertEquals(1, pts.size());
+    OsmPathElement expected = m(1100, 0);
+    OsmPathElement actual = OsmPathElement.create(
+      (int) Math.round((pts.get(0)[0] + 180.0) * 1e6),
+      (int) Math.round((pts.get(0)[1] + 90.0) * 1e6), (short) 0, null);
+    Assert.assertTrue("marker within 30m of the true crossing",
+      expected.calcDistance(actual) <= 30);
+    Assert.assertTrue("classified small (enclosed <= 4km)",
+      pts.get(0)[2] <= LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS);
+  }
+
+  // ---- fromFields rehydration (field-order transposition guard) -----------
+
+  @Test
+  public void fromFields_roundTripsEveryGetter() {
+    LoopQualityMetrics m = LoopQualityMetrics.fromFields(
+      12.5,   // roadReusePercent
+      1.05,   // distanceRatio
+      33.0,   // directionDeltaDegrees
+      21000,  // actualDistanceMeters
+      20000,  // requestedDistanceMeters
+      0.97,   // continuityScore
+      250,    // maxGapMeters
+      600,    // totalGapMeters
+      0.8,    // compactnessScore
+      1.4,    // averageCostPerMeter
+      120,    // closureDistanceMeters
+      2,      // spurCount
+      3200,   // worstSpurMeters
+      4,      // selfIntersections
+      1);     // smallLoopCrossings
+    Assert.assertEquals(12.5, m.getRoadReusePercent(), 1e-9);
+    Assert.assertEquals(1.05, m.getDistanceRatio(), 1e-9);
+    Assert.assertEquals(33.0, m.getDirectionDeltaDegrees(), 1e-9);
+    Assert.assertEquals(21000, m.getActualDistanceMeters());
+    Assert.assertEquals(20000, m.getRequestedDistanceMeters());
+    Assert.assertEquals(0.97, m.getContinuityScore(), 1e-9);
+    Assert.assertEquals(250, m.getMaxGapMeters());
+    Assert.assertEquals(600, m.getTotalGapMeters());
+    Assert.assertEquals(0.8, m.getCompactnessScore(), 1e-9);
+    Assert.assertEquals(1.4, m.getAverageCostPerMeter(), 1e-9);
+    Assert.assertEquals(120, m.getClosureDistanceMeters());
+    Assert.assertEquals(2, m.getSpurCount());
+    Assert.assertEquals(3200, m.getWorstSpurMeters());
+    Assert.assertEquals(4, m.getSelfIntersections());
+    Assert.assertEquals(1, m.getSmallLoopCrossings());
   }
 }

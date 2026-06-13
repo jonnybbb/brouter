@@ -19,7 +19,7 @@ package btools.router;
  *       iterated — so the internal slot layout never influences a routing
  *       decision.</li>
  *   <li>Occupancy is tracked with an explicit {@code used} flag, NOT a sentinel
- *       key: {@link #edgeKey}-style keys span the full 64-bit range, so any
+ *       key: edge keys (packed by ReuseClassifier's edge-key encoding) span the full 64-bit range, so any
  *       reserved key value (0L, -1L, MIN_VALUE, …) could be a real edge.</li>
  *   <li>{@code firstPos} can legitimately be {@code 0.0} (a 1-metre first edge
  *       at loop start), so presence is the {@code used} flag, NOT a sentinel
@@ -130,7 +130,13 @@ final class VisitedEdgeStore {
     }
   }
 
-  /** Decrement {@code key}'s count by one. Precondition: present with count &gt; 1. */
+  /**
+   * Decrement {@code key}'s count by one. Precondition: the key is present with
+   * count &gt; 1 — the sole caller ({@code removeVisitedEdges}) calls {@link #remove}
+   * instead when the count would reach 0, so this never drives a slot to a
+   * negative ("zombie") count in practice. The {@code used[i]} check keeps a
+   * stray call on an absent key a harmless no-op rather than corrupting a slot.
+   */
   void decrement(long key) {
     int i = slotOf(key);
     if (used[i]) {

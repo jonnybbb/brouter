@@ -48,6 +48,58 @@ public class BlendedCandidateProviderTest {
       candidates.get(0).routedTrack);
   }
 
+  @Test
+  public void emptyIsoYieldsGraphNativeOnly() {
+    IsochroneCandidateProvider emptyIso =
+      IsochroneCandidateProvider.fromPool(5000, 0, new ArrayList<>());
+    BlendedCandidateProvider blended = new BlendedCandidateProvider(
+      emptyIso, new SingleCandidateProvider(180028000, 50000000));
+
+    List<RoundTripCandidateProvider.CandidatePoint> c = blended.candidatesForStep(
+      180000000, 50000000, 1000, 1, 4, 180000000, 50000000, 0, null);
+
+    Assert.assertEquals(1, c.size());
+    Assert.assertEquals("only the graph-native candidate survives", 180028000, c.get(0).ilon);
+  }
+
+  @Test
+  public void emptyGraphNativeYieldsIsoOnly() {
+    List<IsoCandidate> raw = new ArrayList<>();
+    raw.add(new IsoCandidate(180014000, 50000000, 0, 1000, 1200, 0, 5, 100));
+    IsochroneCandidateProvider iso = IsochroneCandidateProvider.fromPool(5000, 0, raw);
+    BlendedCandidateProvider blended = new BlendedCandidateProvider(iso, new EmptyProvider());
+
+    List<RoundTripCandidateProvider.CandidatePoint> c = blended.candidatesForStep(
+      180000000, 50000000, 1000, 1, 4, 180000000, 50000000, 0, null);
+
+    Assert.assertEquals(1, c.size());
+    Assert.assertEquals("only the iso candidate survives", 180014000, c.get(0).ilon);
+  }
+
+  @Test
+  public void bothEmptyYieldsEmpty() {
+    IsochroneCandidateProvider emptyIso =
+      IsochroneCandidateProvider.fromPool(5000, 0, new ArrayList<>());
+    BlendedCandidateProvider blended = new BlendedCandidateProvider(emptyIso, new EmptyProvider());
+
+    List<RoundTripCandidateProvider.CandidatePoint> c = blended.candidatesForStep(
+      180000000, 50000000, 1000, 1, 4, 180000000, 50000000, 0, null);
+
+    Assert.assertTrue("both providers empty → no candidates", c.isEmpty());
+  }
+
+  private static final class EmptyProvider implements RoundTripCandidateProvider {
+    @Override
+    public List<CandidatePoint> candidatesForStep(
+      int fromIlon, int fromIlat, double airRadius,
+      int step, int totalSteps,
+      int startIlon, int startIlat,
+      double startDirection,
+      OsmTrack refTrack) {
+      return Collections.emptyList();
+    }
+  }
+
   private static final class SingleCandidateProvider implements RoundTripCandidateProvider {
     private final int ilon;
     private final int ilat;

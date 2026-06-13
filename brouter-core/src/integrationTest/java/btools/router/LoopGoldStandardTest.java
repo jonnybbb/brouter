@@ -2,6 +2,7 @@ package btools.router;
 
 import org.junit.AfterClass;
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -42,6 +43,15 @@ import static org.junit.Assert.assertTrue;
 @RunWith(Parameterized.class)
 public class LoopGoldStandardTest {
 
+  // Fail a pathological/non-terminating routing case fast instead of hanging
+  // the whole suite. Normal cases finish in seconds-to-low-minutes; 5 min is a
+  // generous ceiling. withLookingForStuckThread dumps the stuck stack on timeout.
+  @Rule
+  public org.junit.rules.Timeout perTestTimeout = org.junit.rules.Timeout.builder()
+    .withTimeout(5, java.util.concurrent.TimeUnit.MINUTES)
+    .withLookingForStuckThread(true)
+    .build();
+
   private static final String[] DEFAULT_PROFILES = {"fastbike"};
   private static final int[] TARGET_DISTANCES = {50000, 100000};
   private static final int[] SEARCH_RADII = {8000, 15900};
@@ -57,7 +67,7 @@ public class LoopGoldStandardTest {
   private static final double[] ALL_DIRECTIONS = {0, 90, 180, 270};
   private static final String[] ALL_DIR_LABELS = {"N", "E", "S", "W"};
 
-  private static final List<LoopQualityTest.LoopQualityResult> results = new ArrayList<>();
+  private static final List<LoopQualityResult> results = new ArrayList<>();
 
   @Parameterized.Parameter(0)
   public LoopTestRegion region;
@@ -99,9 +109,6 @@ public class LoopGoldStandardTest {
   public void setUp() throws Exception {
     // Opt-in: this suite is slow (>1h with full segment data) and is excluded from the
     // standard build. Run explicitly with -Dloop.tests=true (and segment data present).
-    Assume.assumeTrue(
-      "Loop quality tests are opt-in — run with -Dloop.tests=true",
-      Boolean.getBoolean("loop.tests"));
     projectDir = new File(".").getCanonicalFile().getParentFile();
   }
 
@@ -115,7 +122,7 @@ public class LoopGoldStandardTest {
     boolean anySucceeded = false;
 
     for (AlgorithmVariant v : VARIANTS) {
-      LoopQualityTest.LoopQualityResult result = runVariant(v.name, v.algorithm, segDir, profileFile);
+      LoopQualityResult result = runVariant(v.name, v.algorithm, segDir, profileFile);
 
       synchronized (results) {
         if (result != null) results.add(result);
@@ -164,7 +171,7 @@ public class LoopGoldStandardTest {
     Assume.assumeTrue("no algorithm produced a track for " + testLabel, anySucceeded);
   }
 
-  private LoopQualityTest.LoopQualityResult runVariant(
+  private LoopQualityResult runVariant(
     String variant, RoundTripAlgorithm algorithm, File segDir, File profileFile) {
     try {
       List<OsmNodeNamed> wplist = new ArrayList<>();
@@ -179,6 +186,9 @@ public class LoopGoldStandardTest {
       rctx.startDirection = (int) direction;
       rctx.roundTripDistance = searchRadius;
       rctx.roundTripAlgorithm = algorithm;
+      // Quality-measurement matrix — grade only gate-accepted clean loops
+      // (engine defaults to lenient-warn; strict keeps the gate hard here).
+      rctx.roundTripStrictQuality = true;
 
       RoutingEngine re = new RoutingEngine(
         null, null, segDir, wplist, rctx,
@@ -190,7 +200,7 @@ public class LoopGoldStandardTest {
       String error = re.getErrorMessage();
 
       if (error != null || track == null || track.nodes == null || track.nodes.isEmpty()) {
-        return new LoopQualityTest.LoopQualityResult(testLabel, region, targetDistanceMeters,
+        return new LoopQualityResult(testLabel, region, targetDistanceMeters,
           profileName, direction, null,
           error != null ? error : (track == null ? "no track" : "empty track"),
           null, variant);
@@ -216,7 +226,7 @@ public class LoopGoldStandardTest {
       writeTrackFiles(track, testLabel, variant, rctx);
 
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
-      return new LoopQualityTest.LoopQualityResult(testLabel, region, targetDistanceMeters,
+      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, extractCoordinates(track), variant);
     } catch (Exception e) {
       // Write to file since Gradle swallows stderr
@@ -226,7 +236,7 @@ public class LoopGoldStandardTest {
         e.printStackTrace(pw);
         pw.close();
       } catch (Exception ignored) {}
-      return new LoopQualityTest.LoopQualityResult(testLabel, region, targetDistanceMeters,
+      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, null, e.getMessage(), null, variant);
     }
   }

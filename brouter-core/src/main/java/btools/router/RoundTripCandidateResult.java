@@ -43,6 +43,15 @@ final class RoundTripCandidateResult {
   int acceptedIsoLegs;
   int acceptedRadialLegs;
   String errorMessage;
+  /**
+   * Keep-when-forced marker from the child planner
+   * ({@link RoundTripResult#isForcedCorridorAccepted()}): the loop is a rideable
+   * same-way-back corridor and the planner proved no clean alternative exists.
+   * The parent's re-gate must honor it (allow same-way-back) exactly like the
+   * direct routing path does — otherwise AUTO rejects a route the child engine
+   * accepted by design.
+   */
+  boolean forcedCorridorAccepted;
 
   RoundTripCandidateResult(RoundTripAlgorithm algorithm) {
     this.algorithm = algorithm;

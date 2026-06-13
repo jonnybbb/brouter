@@ -29,6 +29,28 @@ public final class RoutingContext {
     return alternativeIdx < min ? min : (alternativeIdx > max ? max : alternativeIdx);
   }
 
+  /**
+   * Variety seed for round-trip mode (ADR-0001): the raw {@code alternativeidx}
+   * value with only a lower clamp at 0. Unlike classic routing's enumerated
+   * 0–3 alternatives, round trips accept any value &gt;= 1 as a deterministic
+   * seed selecting one loop variant; 0 (or absent) is bit-identical to the
+   * unperturbed baseline. The seed never influences the start-direction draw.
+   */
+  public int getRoundTripSeed() {
+    return Math.max(0, alternativeIdx);
+  }
+
+  /**
+   * Multiplier on the anti-reuse refTrack penalty in
+   * {@link OsmPath#addAddionalPenalty}: a traveled refTrack edge costs an
+   * extra {@code linkdist × this factor}. 1.0 is the historic behaviour and
+   * exact at integer math (bit-identical costs); the greedy round-trip
+   * return-variant search lowers it (0.5 / 0.0) to offer retrace-tolerant
+   * closing legs when the fully-penalised return ships a self-crossing.
+   * Nothing outside the round-trip planner should ever set it ≠ 1.0.
+   */
+  public double refTrackCostFactor = 1.0;
+
   public int alternativeIdx = 0;
   public String localFunction;
   public long profileTimestamp;
@@ -227,6 +249,55 @@ public final class RoutingContext {
   public Integer roundTripPoints;
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
+  /**
+   * Quality-gate strictness for generated round-trips. When {@code false}
+   * (the default), a route that fails only a QUALITY check
+   * ({@link RoundTripQualityResult.RejectionTier#QUALITY}: distance off-target,
+   * self-crossing/hairpin chaos, profile-hostile surface, mid-route
+   * backtracking) is returned anyway with an advisory {@code Warning:} message
+   * so the user can decide whether to ride it. STRUCTURAL failures (broken /
+   * un-routable / not-a-loop) are always hard-rejected. When {@code true},
+   * QUALITY failures are hard-rejected too (the pre-existing behaviour), e.g.
+   * for the quality-measurement test matrices that must only grade clean loops.
+   * Settable via the request parameter {@code roundTripStrictQuality=1}.
+   */
+  public boolean roundTripStrictQuality;
+
+  /**
+   * Via-arc densification (see docs/features/roundtrip-via-loop-failure-analysis.md):
+   * when on, the explicit-via round-trip inserts generated "bulge" waypoints between
+   * consecutive user anchors, offset outward from the anchor centroid, so each leg follows
+   * the loop perimeter instead of cutting the chord. Opt-in; off by default.
+   * {@link #explicitViaDensifyAlpha} is the bulge offset as a fraction of the leg chord length.
+   *
+   * <p>This is the effective per-request flag, computed by {@code doExplicitViaRoundTrip}
+   * from {@link #explicitViaDensifyOverride}; callers normally set the override, not this.
+   */
+  public boolean explicitViaDensify;
+  /**
+   * Request densification of explicit-via legs. The engine computes the effective
+   * {@link #explicitViaDensify} as {@code Boolean.TRUE.equals(override) && !isPavedProfile}:
+   * <ul>
+   *   <li>{@code TRUE} → opt in, but still gated to non-paved profiles. Paved profiles
+   *       (road bike) keep the plain explicit-via route, because in sparse terrain a
+   *       retracing paved lollipop beats a one-way track loop the gate would reject.
+   *       {@code TRUE} does <b>not</b> bypass the paved-profile gate.</li>
+   *   <li>{@code FALSE} or {@code null} (default) → no densification.</li>
+   * </ul>
+   * Used by tests/measurement to compare both modes deterministically. Tests that need
+   * densification on a paved profile must set {@link #explicitViaDensify} directly.
+   */
+  public Boolean explicitViaDensifyOverride;
+  public double explicitViaDensifyAlpha = 0.5;
+  /**
+   * Max profile cost-factor a densification "bulge" point may snap to. A bulge is an
+   * optional nicety, so it is placed ONLY on a road the profile genuinely likes (near-ideal),
+   * not merely an accessible one — keeping it well below the lenient user-snap reject
+   * threshold. Where the only road outward is profile-hostile (e.g. a road bike facing a
+   * track), the bulge is dropped and that leg reverts to its baseline form. Profile-relative
+   * (cost-factor is per-profile), so gravel still accepts tracks it likes while fastbike does not.
+   */
+  public double explicitViaDensifyMaxCostFactor = 1.8;
 
   /**
    * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
@@ -239,6 +310,22 @@ public final class RoutingContext {
    * not copied into child contexts by {@link #copyRequestFields()}).
    */
   public boolean roundTripIsochrone;
+
+  /**
+   * Experimental profile-desirability heatmap for GREEDY round-trips (issue #15),
+   * settable via the request parameter {@code roundTripDesirability=1}. Off by
+   * default. When on, the GREEDY round-trip accumulates a coarse profile-cost-density
+   * grid during its isochrone expansion and biases waypoint placement toward
+   * high-desirability cells (see {@link DesirabilityCandidateProvider}).
+   *
+   * <p>Takes effect only when the GREEDY algorithm actually runs; inert for
+   * ISOCHRONE / ISO_GREEDY / WAYPOINT. Under the default AUTO algorithm a GREEDY
+   * child is spawned only when ISO_GREEDY does not clearly win the competition, so
+   * on good tile data this flag can be silently inert under AUTO — set
+   * {@code roundTripAlgorithm=GREEDY} explicitly to guarantee it is honoured. This
+   * is an exploratory infrastructure lever, not a tuned route-quality default.
+   */
+  public boolean roundTripDesirability;
 
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
 
@@ -637,6 +724,21 @@ public final class RoutingContext {
     c.roundTripPoints = this.roundTripPoints;
     c.allowSamewayback = this.allowSamewayback;
     c.roundTripAlgorithm = this.roundTripAlgorithm;
+    // Strictness must follow the parent into AUTO children: otherwise a strict
+    // request runs lenient children that adopt QUALITY best-effort tracks and
+    // report no errorMessage, so the parent's strict re-gate finds no winner
+    // but can only surface "unknown" instead of the child's real reason.
+    c.roundTripStrictQuality = this.roundTripStrictQuality;
+    // The desirability flag (issue #15) must reach the GREEDY child spawned by the
+    // AUTO competition, where it actually takes effect.
+    c.roundTripDesirability = this.roundTripDesirability;
+    // Densification request inputs (the effective explicitViaDensify flag is
+    // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
+    // AUTO children currently route a single waypoint and never densify, but
+    // copying these keeps a child consistent with the parent if that changes.
+    c.explicitViaDensifyOverride = this.explicitViaDensifyOverride;
+    c.explicitViaDensifyAlpha = this.explicitViaDensifyAlpha;
+    c.explicitViaDensifyMaxCostFactor = this.explicitViaDensifyMaxCostFactor;
     // roundTripIsochrone is intentionally NOT copied: doRoundTrip() resolves it
     // into roundTripAlgorithm before any child is spawned, so the algorithm
     // (copied above) is the single source of truth in child contexts.

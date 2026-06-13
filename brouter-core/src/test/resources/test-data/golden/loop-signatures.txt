@@ -1,10 +1,10 @@
 # Golden route signatures for GREEDY / ISO_GREEDY loop generation.
 # Regenerate with -Dgolden.tests=true -Dgolden.write=true on known-good code.
-greedy|dreieich|r8000|dir0|fastbike => nodes=1342 hash=83ee53893204157d dist=42200 ascend=156 cost=77102 err=null
-greedy|dreieich|r8000|dir90|fastbike => nodes=1106 hash=efa2c544156e9d95 dist=44739 ascend=137 cost=77189 err=null
-greedy|rural_lozere|r8000|dir0|gravel => nodes=1011 hash=a1401cbbd3ee8a80 dist=50337 ascend=1382 cost=163349 err=null
-greedy|urban_berlin|r8000|dir0|fastbike => nodes=2045 hash=88b52ee8f6dd44cf dist=48886 ascend=47 cost=68787 err=null
-iso_greedy|dreieich|r8000|dir0|fastbike => nodes=1252 hash=5f1d7fcf6aa311ce dist=46887 ascend=92 cost=90271 err=null
-iso_greedy|dreieich|r8000|dir90|fastbike => nodes=1279 hash=d1f12adabbbed928 dist=46532 ascend=128 cost=77498 err=null
-iso_greedy|rural_lozere|r8000|dir0|gravel => nodes=1514 hash=18dc114b6b3b3ebb dist=48595 ascend=1330 cost=146563 err=null
-iso_greedy|urban_berlin|r8000|dir0|fastbike => nodes=2221 hash=7e2365f768617f24 dist=47706 ascend=47 cost=64882 err=null
+greedy|dreieich|r8000|dir0|fastbike => nodes=1592 hash=44a3575df76f7779 dist=50081 ascend=147 cost=79232 err=null
+greedy|dreieich|r8000|dir90|fastbike => nodes=1138 hash=b260a6bb4aeabbad dist=44874 ascend=103 cost=79714 err=null
+greedy|rural_lozere|r8000|dir0|gravel => nodes=1336 hash=dc55bb74be6fa3d6 dist=49382 ascend=1049 cost=130779 err=null
+greedy|urban_berlin|r8000|dir0|fastbike => nodes=2115 hash=bbed4a0925395acd dist=51125 ascend=61 cost=72829 err=null
+iso_greedy|dreieich|r8000|dir0|fastbike => nodes=1592 hash=44a3575df76f7779 dist=50081 ascend=147 cost=79232 err=null
+iso_greedy|dreieich|r8000|dir90|fastbike => nodes=1108 hash=b1cf5b8be573bd5d dist=40085 ascend=105 cost=68583 err=null
+iso_greedy|rural_lozere|r8000|dir0|gravel => nodes=1436 hash=01cc82f0eb335184 dist=44601 ascend=754 cost=124197 err=null
+iso_greedy|urban_berlin|r8000|dir0|fastbike => nodes=2034 hash=405d8ff726080e89 dist=49688 ascend=64 cost=69206 err=null

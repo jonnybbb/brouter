@@ -102,6 +102,27 @@ public class ReuseClassifierTest {
   }
 
   /**
+   * Densify corners to ~{@code step}m edges (real routed tracks have short
+   * edges; the spatial corridor detector needs that granularity). Returns a
+   * stamped {@link OsmTrack}.
+   */
+  private static OsmTrack denseTrack(int[][] corners, int step) {
+    java.util.List<int[]> pts = new ArrayList<>();
+    pts.add(corners[0]);
+    for (int i = 1; i < corners.length; i++) {
+      int[] a = corners[i - 1], b = corners[i];
+      double len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      int n = Math.max(1, (int) Math.ceil(len / step));
+      for (int k = 1; k <= n; k++) {
+        double s = (double) k / n;
+        pts.add(new int[]{(int) Math.round(a[0] + (b[0] - a[0]) * s),
+          (int) Math.round(a[1] + (b[1] - a[1]) * s)});
+      }
+    }
+    return track(pts.toArray(new int[0][]));
+  }
+
+  /**
    * Lollipop: A → P (stem-out) → Q → R → P (loop body) → A (stem-back).
    * Stem of {@code stemMeters} on each side; loop body roughly a triangle.
    */
@@ -181,18 +202,18 @@ public class ReuseClassifierTest {
     OsmTrack t = outAndBack(10000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
     assertFalse("pure out-and-back rejected by default: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     assertNotNull(r.getRejectionReason());
   }
 
   @Test
   public void longStartEndRetraceAcceptedAsScenicWhenAllowed() {
     // Same out-and-back, with allowSamewayback=true → accepted as
-    // SCENIC_OUT_AND_BACK with a disclosure.
+    // OUT_AND_BACK with a disclosure.
     OsmTrack t = outAndBack(10000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("out-and-back accepted with allowSamewayback: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     assertTrue("out-and-back disclosure surfaced",
       r.getDisclosures().stream().anyMatch(d -> d.toLowerCase().contains("out-and-back")));
   }
@@ -228,7 +249,7 @@ public class ReuseClassifierTest {
   @Test
   public void startTouchingDominantSpurStillClassifiesAsLollipop() {
     // Regression: a lollipop whose DOMINANT retrace touches the START (not the
-    // end) used to be wrongly rejected as SCENIC_OUT_AND_BACK because
+    // end) used to be wrongly rejected as OUT_AND_BACK because
     // isStructuralLollipop's touchesStart branch skipped the hub node by one,
     // counting the start hub once (closing visit) instead of twice.
     //
@@ -258,7 +279,46 @@ public class ReuseClassifierTest {
     OsmTrack t = outAndBack(8000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("accepted: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
+  }
+
+  @Test
+  public void parallelReturnCorridorDowngradedToOutAndBack() {
+    // Out 3km east at y=0, then back 3km east at y=30 (a different "way" 30m
+    // over — NOT an edge-identity retrace). Edge identity sees ~0% reuse, but
+    // a cyclist rides the same corridor back. The spatial detector must catch
+    // it and the route must NOT be a clean STRICT_LOOP.
+    OsmTrack t = denseTrack(new int[][]{
+      {0, 0}, {3000, 0},     // outbound
+      {3000, 30},            // connector
+      {0, 30},               // parallel return, 30m over
+      {0, 0}                 // close
+    }, 25);
+    RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
+    assertFalse("parallel-corridor route must not be accepted as a clean loop: " + r,
+      r.isAccepted());
+    assertTrue("rejection cites the parallel corridor: " + r.getRejectionReason(),
+      r.getRejectionReason().toLowerCase().contains("parallel"));
+  }
+
+  @Test
+  public void shortParallelBitToleratedAsStem() {
+    // A clean rectangular loop whose only near-parallel section is a short
+    // (<300m) bit at the start/end — a forced exit corridor. This must remain
+    // a STRICT_LOOP (we don't punish loops for a few metres of shared access).
+    OsmTrack t = denseTrack(new int[][]{
+      {0, 0}, {120, 0},        // short outbound at y=0
+      {3000, 0},               // continue east (loop body, no parallel)
+      {3000, 3000},            // north
+      {0, 3000},               // west
+      {0, 30},                 // south to near start
+      {120, 30},               // short parallel bit (~120m, well under 300m cap)
+      {0, 0}                   // close
+    }, 25);
+    RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, false);
+    assertTrue("clean loop with only a short parallel bit accepted: " + r, r.isAccepted());
+    assertEquals(RouteShape.STRICT_LOOP, r.getShape());
   }
 
   @Test
@@ -276,11 +336,11 @@ public class ReuseClassifierTest {
   public void capeStyleSpurAcceptedAsLollipopOrScenic() {
     // Cape/dead-end corridor: route goes 4km out to a tip, then back.
     // The "loop body" is essentially zero — pure spur. With allowSamewayback
-    // true, the gate accepts it as SCENIC_OUT_AND_BACK and discloses.
+    // true, the gate accepts it as OUT_AND_BACK and discloses.
     OsmTrack t = outAndBack(4000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
     assertTrue("cape spur accepted with allowSamewayback: " + r, r.isAccepted());
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
   }
 
   @Test
@@ -346,11 +406,11 @@ public class ReuseClassifierTest {
   @Test
   public void scenicOutAndBackDoesNotPretendToBeLoop() {
     // Even with allowSamewayback=true, the result's shape must be
-    // SCENIC_OUT_AND_BACK — never STRICT_LOOP. A consumer that asks
+    // OUT_AND_BACK — never STRICT_LOOP. A consumer that asks
     // "is this a loop?" must get the correct answer.
     OsmTrack t = outAndBack(6000);
     RoundTripQualityResult r = ReuseClassifier.classify(t, t.distance, true);
-    assertEquals(RouteShape.SCENIC_OUT_AND_BACK, r.getShape());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
     org.junit.Assert.assertNotSame("out-and-back is not STRICT_LOOP",
       RouteShape.STRICT_LOOP, r.getShape());
   }
@@ -474,7 +534,7 @@ public class ReuseClassifierTest {
   @Test
   public void gateRejectsProfileHostileScenicSpur() {
     // Synthetic scenic-spur route but ALL edges carry highway=path. Even
-    // though structurally it's a SCENIC_OUT_AND_BACK that allowSamewayback
+    // though structurally it's a OUT_AND_BACK that allowSamewayback
     // would permit, fastbike must reject it as profile-hostile.
     OsmTrack t = outAndBack(6000);
     MessageData m = new MessageData();
@@ -518,5 +578,189 @@ public class ReuseClassifierTest {
     OsmTrack t = loopWithMidUTurn(3000);
     String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
     assertNotNull("legacy validate returns reason on reject", reason);
+  }
+
+  // ============ Previously-uncovered classifier branches ===================
+  // These exercise four code paths in classifyFromProfile that no existing
+  // fixture reached, plus direct coverage of the package-private helpers.
+
+  /**
+   * Branch 3 (reuseRatio ≥ {@link ReuseClassifier#OUT_AND_BACK_REUSE_RATIO}).
+   *
+   * <p><b>Reachability note.</b> A reuse ratio ≥ 0.85 is only attainable when
+   * some edges are traversed ≥ 3 times (edges traversed at most twice cap the
+   * ratio at 0.50). Those high-ordinal stretches are classified MID_ROUTE, so
+   * the cumulative mid-route cap (branch 2) rejects first — UNLESS the cap,
+   * which scales with {@code requestedDistance}, is large relative to the
+   * actual track. Through {@link RoundTripQualityGate#evaluate} the distance-
+   * ratio pre-check ([0.5, 1.8]) bounds {@code requested ≤ 1.8 × actual}, which
+   * makes branch 3 effectively unreachable in production. It is reachable only
+   * via the direct {@code classify()} API with {@code requested ≫ actual},
+   * which is what this test does to pin the OUT_AND_BACK verdict.
+   */
+  @Test
+  public void veryHighReuseClassifiesAsScenicOutAndBack_directApiOnly() {
+    OsmTrack t = repeatedOutAndBack(120, 10); // 10 traversals of one edge → 90% reuse
+    int requested = 100000;                   // ≫ actual (~1.2km) so mid-caps don't fire
+
+    RoundTripQualityResult rejected = ReuseClassifier.classify(t, requested, false);
+    assertTrue("fixture must reach the 0.85 band, got " + rejected.getTotalReuseRatio(),
+      rejected.getTotalReuseRatio() >= ReuseClassifier.OUT_AND_BACK_REUSE_RATIO);
+    assertEquals(RouteShape.OUT_AND_BACK, rejected.getShape());
+    assertFalse("very-high-reuse rejected by default: " + rejected, rejected.isAccepted());
+    assertTrue("reason cites retraced share: " + rejected.getRejectionReason(),
+      rejected.getRejectionReason().contains("retraced"));
+
+    RoundTripQualityResult accepted = ReuseClassifier.classify(t, requested, true);
+    assertTrue("accepted with allowSamewayback: " + accepted, accepted.isAccepted());
+    assertEquals(RouteShape.OUT_AND_BACK, accepted.getShape());
+    assertTrue("out-and-back disclosure surfaced: " + accepted.getDisclosures(),
+      accepted.getDisclosures().stream().anyMatch(d -> d.contains("same-way-back")));
+  }
+
+  /**
+   * Branch 2 (cumulative mid-route retrace) — three separate sub-cap detours
+   * whose sum exceeds the cap. Each detour alone passes the single-stretch
+   * cap (branch 1); together they trip the "zig-zags" rejection.
+   */
+  @Test
+  public void cumulativeMidRouteRetraceRejectedAsZigzag() {
+    int requested = 30000;  // midCap = 8% = 2400m; hard cap = ×1.25 band = 3000m
+    OsmTrack t = loopWithMidRetraces(20000, 2000, 1000, 4); // 4 × ~1km = ~4km > hard cap
+    RoundTripQualityResult r = ReuseClassifier.classify(t, requested, false);
+    assertFalse("cumulative mid-route retrace rejected: " + r, r.isAccepted());
+    assertEquals(RouteShape.INVALID_RETRACE, r.getShape());
+    assertTrue("reason cites the cumulative zig-zag branch, not single-stretch: "
+        + r.getRejectionReason(),
+      r.getRejectionReason().contains("cumulative")
+        || r.getRejectionReason().contains("zig-zag"));
+  }
+
+  /**
+   * Soft band (root-caused on freiburg_100km_fastbike_N): a marginal overage
+   * above the calibrated cap but within
+   * {@link ReuseClassifier#UNCLASSIFIED_REUSE_SOFT_BAND} is ACCEPTED with a
+   * disclosure — a hard reject at the exact boundary forced the planner into
+   * a three-crossing town zigzag over a 147m overage.
+   */
+  @Test
+  public void midRouteRetraceWithinSoftBandAcceptedWithDisclosure() {
+    int requested = 30000;  // midCap 2400m, hard cap 3000m
+    OsmTrack t = loopWithMidRetraces(20000, 2000, 1000, 3); // ~3km: over cap, in band
+    RoundTripQualityResult r = ReuseClassifier.classify(t, requested, false);
+    assertTrue("in-band retrace accepted: " + r, r.isAccepted());
+    boolean disclosed = false;
+    for (String d : r.getDisclosures()) {
+      if (d.contains("tolerance band")) disclosed = true;
+    }
+    assertTrue("band acceptance is disclosed: " + r.getDisclosures(), disclosed);
+  }
+
+  /**
+   * Branch 4 demotion: a STRUCTURAL lollipop (hub revisited → real closed loop
+   * body) whose loop body is below {@link ReuseClassifier#MIN_LOLLIPOP_LOOP_FRACTION}
+   * of the requested distance is demoted from LOLLIPOP to OUT_AND_BACK.
+   */
+  @Test
+  public void structuralLollipopWithTinyLoopBodyDemotedToScenic() {
+    int requested = 30000;
+    OsmTrack t = lollipop(3000, 1200); // ~4km loop body vs 30km requested → ~14% < 35%
+    RoundTripQualityResult r = ReuseClassifier.classify(t, requested, false);
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
+    assertFalse("tiny-loop lollipop demoted and rejected by default: " + r, r.isAccepted());
+    assertTrue("reason cites the small loop body: " + r.getRejectionReason(),
+      r.getRejectionReason().contains("loop body only"));
+  }
+
+  /**
+   * Branch 4 structural-lollipop disclosure (the {@code structuralLollipop ?}
+   * arm of the allowSamewayback accept path) — same tiny-loop lollipop, but
+   * with allowSamewayback=true it is accepted with the loop-body disclosure.
+   */
+  @Test
+  public void structuralLollipopTinyLoopBodyAcceptedWithSamewayback() {
+    int requested = 30000;
+    OsmTrack t = lollipop(3000, 1200);
+    RoundTripQualityResult r = ReuseClassifier.classify(t, requested, true);
+    assertTrue("accepted with allowSamewayback: " + r, r.isAccepted());
+    assertEquals(RouteShape.OUT_AND_BACK, r.getShape());
+    assertTrue("discloses the loop-body share: " + r.getDisclosures(),
+      r.getDisclosures().stream().anyMatch(d -> d.contains("loop body")));
+  }
+
+  // ---- Direct coverage of the package-private helpers ---------------------
+
+  @Test
+  public void analyzeTrack_cleanLoopHasNoReuseStretches() {
+    ReuseClassifier.TrackReuseProfile p = ReuseClassifier.analyzeTrack(cleanLoop(5000));
+    assertTrue("clean loop has no reuse stretches", p.stretches.isEmpty());
+    assertTrue("total distance computed", p.totalDistance > 0);
+  }
+
+  @Test
+  public void analyzeTrack_outAndBackHasOneStretchVisitedTwice() {
+    ReuseClassifier.TrackReuseProfile p = ReuseClassifier.analyzeTrack(outAndBack(9000));
+    assertEquals("the back-half is a single contiguous reuse stretch", 1, p.stretches.size());
+    assertEquals("each edge traversed exactly twice (out, back)",
+      2, p.stretches.get(0).maxVisitOrdinal);
+  }
+
+  @Test
+  public void analyzeTrack_nullAndTooShortYieldEmptyProfile() {
+    assertEquals(0.0, ReuseClassifier.analyzeTrack(null).totalDistance, 0.0);
+    assertTrue(ReuseClassifier.analyzeTrack(null).stretches.isEmpty());
+    OsmTrack single = new OsmTrack();
+    single.nodes = new ArrayList<>();
+    single.nodes.add(node(0, 0));
+    assertTrue("single-node track has no edges", ReuseClassifier.analyzeTrack(single).stretches.isEmpty());
+  }
+
+  @Test
+  public void classify_nullTrackRejectedAsEmpty() {
+    RoundTripQualityResult r = ReuseClassifier.classify(null, 10000, false);
+    assertFalse(r.isAccepted());
+    assertEquals(RouteShape.INVALID_RETRACE, r.getShape());
+    assertTrue("empty-track reason: " + r.getRejectionReason(),
+      r.getRejectionReason().contains("empty track"));
+  }
+
+  @Test
+  public void isStructuralLollipop_noBoundaryStretchReturnsFalse() {
+    // The only reuse is a mid-route U-turn (touches no boundary), so there is
+    // no dominant terminal stretch → not a lollipop.
+    OsmTrack t = loopWithMidUTurn(5000);
+    ReuseClassifier.TrackReuseProfile p = ReuseClassifier.analyzeTrack(t);
+    assertFalse(ReuseClassifier.isStructuralLollipop(p, t));
+  }
+
+  // ---- helpers for the new branch tests -----------------------------------
+
+  /** A single edge walked back and forth {@code oneWayTraversals} times; the
+   *  reuse ratio approaches {@code (oneWayTraversals-1)/oneWayTraversals}. */
+  private static OsmTrack repeatedOutAndBack(int segMeters, int oneWayTraversals) {
+    int[][] coords = new int[oneWayTraversals + 1][];
+    for (int i = 0; i <= oneWayTraversals; i++) {
+      coords[i] = new int[]{(i % 2 == 0) ? 0 : segMeters, 0};
+    }
+    return track(coords);
+  }
+
+  /** A large rectangular loop with {@code count} evenly-spaced out-and-back
+   *  detours hanging off the bottom edge — each a separate, mid-route,
+   *  visited-twice reuse stretch of ~{@code detourMeters}. */
+  private static OsmTrack loopWithMidRetraces(int width, int height, int detourMeters, int count) {
+    java.util.List<int[]> pts = new ArrayList<>();
+    pts.add(new int[]{0, 0});
+    for (int k = 0; k < count; k++) {
+      int xd = (int) ((double) width * (k + 1) / (count + 1));
+      pts.add(new int[]{xd, 0});
+      pts.add(new int[]{xd, -detourMeters}); // detour out
+      pts.add(new int[]{xd, 0});             // detour back (reuse)
+    }
+    pts.add(new int[]{width, 0});
+    pts.add(new int[]{width, height});
+    pts.add(new int[]{0, height});
+    pts.add(new int[]{0, 0}); // close
+    return track(pts.toArray(new int[0][]));
   }
 }
