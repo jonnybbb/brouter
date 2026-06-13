@@ -242,6 +242,13 @@ public final class LoopQualityMetrics {
       }
       prev.add(k);
     }
+    // Shared-corridor crossings (gate: RoundTripQualityGate.countSelfIntersections
+    // does the same) — knots through a short shared run that the two scans above
+    // miss because every run node has a shared incident edge. Run on FULL-res
+    // nodes (run-grouping needs node identity, which the sampling to pts breaks).
+    // Counted toward total only, not smallLoop: these are structural shared-run
+    // knots, not small detour lassos, so they must not inflate the lasso surcharge.
+    total += RoundTripQualityGate.countCorridorCrossings(nodes);
     return new int[]{total, smallLoop};
   }
 

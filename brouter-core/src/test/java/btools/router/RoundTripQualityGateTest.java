@@ -1242,15 +1242,26 @@ public class RoundTripQualityGateTest {
   // ======================================================================
 
   /**
-   * Track riding the shared run (0,0)→(300,0)→(600,0) twice. Pass 1 enters
-   * from {@code in1} and exits to {@code out1}; pass 2 enters from
-   * {@code in2}, rides the run in the SAME direction, and exits to
-   * {@code out2}. Lead-in/out keep the run outside the home zone (mirrors
-   * {@link #twoPassesThroughNode}); the connector between the passes loops
-   * far north so it cannot cross anything itself.
+   * Track riding a horizontal shared run twice (default 200m: 0→100→200, under
+   * {@link RoundTripQualityGate#MAX_CORRIDOR_CROSS_M}). Pass 1 enters from
+   * {@code in1} and exits to {@code out1}; pass 2 enters from {@code in2},
+   * rides the run in the SAME direction, and exits to {@code out2}. Lead-in/out
+   * keep the run outside the home zone (mirrors {@link #twoPassesThroughNode});
+   * the connector between the passes loops far north so it cannot cross
+   * anything itself.
    */
   private static OsmTrack twoPassesThroughCorridor(int in1x, int in1y, int out1x, int out1y,
                                                    int in2x, int in2y, int out2x, int out2y) {
+    return twoPassesThroughCorridor(in1x, in1y, out1x, out1y, in2x, in2y, out2x, out2y, 200);
+  }
+
+  /** As above, with an explicit shared-run length {@code runEndX} (m) so the
+   *  MAX_CORRIDOR_CROSS_M length bound can be exercised. Run is 0 → runEndX/2 →
+   *  runEndX; attachments hang off the two ends. */
+  private static OsmTrack twoPassesThroughCorridor(int in1x, int in1y, int out1x, int out1y,
+                                                   int in2x, int in2y, int out2x, int out2y,
+                                                   int runEndX) {
+    int mid = runEndX / 2;
     OsmTrack t = new OsmTrack();
     t.nodes = new ArrayList<>();
     t.nodes.add(makeNode(in1x * 4, in1y * 4));
@@ -1258,20 +1269,20 @@ public class RoundTripQualityGateTest {
     t.nodes.add(makeNode(in1x * 2, in1y * 2));
     t.nodes.add(makeNode(in1x, in1y));
     t.nodes.add(makeNode(0, 0));            // run start, pass 1
-    t.nodes.add(makeNode(300, 0));
-    t.nodes.add(makeNode(600, 0));          // run end, pass 1
-    t.nodes.add(makeNode(600 + out1x, out1y));
+    t.nodes.add(makeNode(mid, 0));
+    t.nodes.add(makeNode(runEndX, 0));      // run end, pass 1
+    t.nodes.add(makeNode(runEndX + out1x, out1y));
     // connector: far north, well clear of the run and all attachments
-    t.nodes.add(makeNode(600 + out1x, 5000));
+    t.nodes.add(makeNode(runEndX + out1x, 5000));
     t.nodes.add(makeNode(in2x, 5000));
     t.nodes.add(makeNode(in2x, in2y));
     t.nodes.add(makeNode(0, 0));            // run start, pass 2 (same direction)
-    t.nodes.add(makeNode(300, 0));
-    t.nodes.add(makeNode(600, 0));          // run end, pass 2
-    t.nodes.add(makeNode(600 + out2x, out2y));
-    t.nodes.add(makeNode(600 + out2x * 2, out2y * 2));
-    t.nodes.add(makeNode(600 + out2x * 3, out2y * 3));
-    t.nodes.add(makeNode(600 + out2x * 4, out2y * 4));
+    t.nodes.add(makeNode(mid, 0));
+    t.nodes.add(makeNode(runEndX, 0));      // run end, pass 2
+    t.nodes.add(makeNode(runEndX + out2x, out2y));
+    t.nodes.add(makeNode(runEndX + out2x * 2, out2y * 2));
+    t.nodes.add(makeNode(runEndX + out2x * 3, out2y * 3));
+    t.nodes.add(makeNode(runEndX + out2x * 4, out2y * 4));
     return t;
   }
 
@@ -1283,10 +1294,11 @@ public class RoundTripQualityGateTest {
     OsmTrack t = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, -300);
     assertEquals("side swap through a shared run is a crossing",
       1, RoundTripQualityGate.countCorridorCrossings(t.nodes));
-    // Fixture sanity: the per-node detector is blind here (shared-edge guard)
-    // — exactly the gap this dark counter closes.
-    assertEquals("per-node count stays blind (documents the gap)",
-      0, RoundTripQualityGate.countSelfIntersections(t));
+    // The corridor count is now wired into countSelfIntersections, so the gate
+    // sees this knot too (the segment/per-node scans alone are blind to it
+    // because every run node shares an incident edge).
+    assertEquals("countSelfIntersections now includes the corridor crossing",
+      1, RoundTripQualityGate.countSelfIntersections(t));
   }
 
   @Test
@@ -1326,17 +1338,17 @@ public class RoundTripQualityGateTest {
   }
 
   @Test
-  public void corridorCrossing_sharedApproachEdgeExtendsTheRun() {
-    // Pass 2 approaches the run over the SAME edge pass 1 used: those nodes
-    // are revisits too, so the grouped run EXTENDS to cover the shared
-    // approach, and the verdict is taken at the extended ends. Exit on the
-    // opposite side of the extended run → crossing; same side → reuse.
-    OsmTrack cross = twoPassesThroughCorridor(-200, -200, 200, 0, -200, -200, 0, -300);
-    assertEquals("opposite-side exit after an extended shared approach crosses",
-      1, RoundTripQualityGate.countCorridorCrossings(cross.nodes));
-    OsmTrack reuse = twoPassesThroughCorridor(-200, -200, 200, 0, -200, -200, 0, 300);
-    assertEquals("same-side exit after an extended shared approach is reuse",
-      0, RoundTripQualityGate.countCorridorCrossings(reuse.nodes));
+  public void corridorCrossing_sharedApproachEdgeExtendsRunIntoReuseLength() {
+    // Pass 2 shares pass 1's approach NODE, so the grouped run EXTENDS back over
+    // that shared approach (the verdict is taken at the extended ends, not via
+    // the shared-edge guard). With a realistic home-zone-clearing lead-in, that
+    // extension makes the total shared overlap exceed MAX_CORRIDOR_CROSS_M — so
+    // it reads as long road reuse, not a knot, and is not counted. (A clean
+    // sub-bound side-swap that DOES count is corridorCrossing_sideSwap...; the
+    // bound itself is corridorCrossing_longSharedRun....)
+    OsmTrack t = twoPassesThroughCorridor(-200, -200, 200, 0, -200, -200, 0, -300);
+    assertEquals("shared approach + run is a long overlap → reuse, not counted",
+      0, RoundTripQualityGate.countCorridorCrossings(t.nodes));
   }
 
   @Test
@@ -1348,6 +1360,20 @@ public class RoundTripQualityGateTest {
       0, RoundTripQualityGate.countCorridorCrossings(t.nodes));
     assertEquals("per-node detector still owns the single-node X",
       1, RoundTripQualityGate.countSelfIntersections(t));
+  }
+
+  @Test
+  public void corridorCrossing_longSharedRunIsReuseNotCrossing() {
+    // Same side-swap geometry as the counting test, but the shared run is long
+    // (>MAX_CORRIDOR_CROSS_M). Per the labeling pass, a multi-hundred-metre
+    // same-direction overlap reads as road reuse (priced by reuse%), not a
+    // knot — so it must NOT count, even though it transversally crosses.
+    OsmTrack shortRun = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, -300, 200);
+    assertEquals("200m side-swap is within the bound — counts",
+      1, RoundTripQualityGate.countCorridorCrossings(shortRun.nodes));
+    OsmTrack longRun = twoPassesThroughCorridor(-200, -200, 200, 0, -200, 200, 0, -300, 600);
+    assertEquals("600m side-swap exceeds MAX_CORRIDOR_CROSS_M — reuse, not counted",
+      0, RoundTripQualityGate.countCorridorCrossings(longRun.nodes));
   }
 
   // ======================================================================

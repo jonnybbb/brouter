@@ -607,6 +607,16 @@ public final class RoundTripQualityGate {
     // systematically blind to exactly the knots a cyclist sees on the map
     // (observed: dreieich 50km fastbike W showing 2 visual knots, counted 1).
     crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings, cum);
+    // Shared-corridor crossings: the route rides a short shared run (a roundabout
+    // arc, a few junction edges) and exits the opposite side. Every node in the
+    // run has a shared incident edge, so BOTH scans above exempt it — yet it is a
+    // real knot (Rond-Point de la Contamine; Diacquenods figure-eight). Computed
+    // on FULL-resolution nodes (sampling breaks the node-identity adjacency the
+    // run-grouping needs); additive without double-counting because the shared
+    // edges make these invisible to the segment/per-node scans. See sharedCorridors.
+    if (crossings <= absoluteCeiling) {
+      crossings += countCorridorCrossings(track.nodes);
+    }
     return crossings;
   }
 
@@ -687,20 +697,35 @@ public final class RoundTripQualityGate {
   }
 
   // ======================================================================
-  // Shared-corridor crossings — DARK (probe/telemetry only, 2026-06-12)
+  // Shared-corridor crossings — LIVE (wired into countSelfIntersections
+  // 2026-06-13, after the labeling pass below confirmed the rule).
   //
-  // NOT yet wired into countSelfIntersections: per the ADR-0002 discipline
-  // the matrix-wide candidate harvest (SharedCorridorProbe, build/corridor-
-  // probe/) must be labeled first. Flip = add countCorridorCrossings(nodes)
-  // to countSelfIntersections' sum once labeling confirms the rule and the
-  // shared-run length bound. Annecy investigation (2026-06-11): a route that
-  // crosses itself THROUGH a shared run of edges (a roundabout arc, a few
-  // junction edges) defeats isTransverseRevisit's shared-edge guard at every
-  // node of the run, so the count is systematically blind to exactly the
-  // X-knots a cyclist sees (Rond-Point de la Contamine; Route des
-  // Diacquenods figure-eight). Matrix harvest: 16% of shipped AUTO loops
-  // carry at least one such candidate.
+  // Annecy investigation (2026-06-11): a route that crosses itself THROUGH a
+  // shared run of edges (a roundabout arc, a few junction edges) defeats
+  // isTransverseRevisit's shared-edge guard at every node of the run, so the
+  // count was systematically blind to exactly the X-knots a cyclist sees
+  // (Rond-Point de la Contamine; Route des Diacquenods figure-eight). Matrix
+  // harvest: 16% of shipped AUTO loops carried at least one such candidate.
+  //
+  // Labeling pass (2026-06-13, AI vision panel over 275 corridors) settled two
+  // design points and the result was wired into countSelfIntersections:
+  //  - LENGTH BOUND (MAX_CORRIDOR_CROSS_M): above ~300m of shared run, even a
+  //    genuine geometric side-swap is dominated by the overlap and reads as
+  //    road reuse — already priced by reuse% / CorridorOverlapIndex, so it must
+  //    not also be counted as a crossing. Applied below.
+  //  - GEOMETRY NOT further guarded: the ~3% short borderline false positives
+  //    do NOT form a class separable from real crossings by local geometry (a
+  //    confirmed crossing sat at a 2.9° margin, below three reuse cases), so a
+  //    hand-tuned margin guard would overfit and create false negatives. Left
+  //    as accepted noise: +1 spurious crossing on ~3% of routes, well under the
+  //    MAX_SELF_INTERSECTIONS gate.
   // ======================================================================
+
+  /**
+   * Upper bound on shared-run length (m) for a corridor to count as a crossing.
+   * Longer same-direction overlaps are road reuse, not knots (see section note).
+   */
+  static final double MAX_CORRIDOR_CROSS_M = 300;
 
   /**
    * Maximal shared corridors of a closed track: runs of >=2 consecutive node
@@ -710,10 +735,12 @@ public final class RoundTripQualityGate {
    * span, {@code b1..b2} the pass-2 span, {@code sameDir} whether pass 2
    * rides the run in the same direction (always true on oneway/roundabout
    * edges), and {@code crossing} whether the loop transversally crosses
-   * itself through this run ({@link #corridorCrosses}; evaluated for
-   * same-direction runs only — opposite-direction runs are a retrace of a
-   * two-way road, the reuse/CorridorOverlapIndex domain, and counting them
-   * as crossings would mislabel measured retraces like Route de Clermont).
+   * itself through this run. {@code crossing} requires three things:
+   * same-direction (opposite-direction runs are a two-way retrace, the
+   * reuse/CorridorOverlapIndex domain — counting them would mislabel measured
+   * retraces like Route de Clermont), a shared run no longer than
+   * {@link #MAX_CORRIDOR_CROSS_M} (longer = reuse, not a knot), and a
+   * transversal side-swap ({@link #corridorCrosses}).
    *
    * <p>Caller passes FULL-resolution nodes: sampling breaks the node-identity
    * adjacency this grouping relies on.
@@ -765,7 +792,9 @@ public final class RoundTripQualityGate {
           b2 = Math.max(b2, q[1]);
         }
         boolean sameDir = run.get(run.size() - 1)[1] > run.get(0)[1];
-        boolean crossing = sameDir && corridorCrosses(nodes, a1, a2, b1, b2);
+        double runLen = cum[a2] - cum[a1];
+        boolean crossing = sameDir && runLen <= MAX_CORRIDOR_CROSS_M
+          && corridorCrosses(nodes, a1, a2, b1, b2);
         out.add(new int[]{a1, a2, b1, b2, sameDir ? 1 : 0, crossing ? 1 : 0});
       }
       run = new ArrayList<>();
@@ -814,9 +843,9 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * DARK count over {@link #sharedCorridors}: one crossing per qualifying
-   * same-direction run. Not part of {@link #countSelfIntersections} yet —
-   * see the section comment above for the flip condition.
+   * Count over {@link #sharedCorridors}: one crossing per qualifying
+   * same-direction run. Added to {@link #countSelfIntersections} (see the call
+   * site there); pass FULL-resolution nodes.
    */
   static int countCorridorCrossings(List<OsmPathElement> nodes) {
     int crossings = 0;
