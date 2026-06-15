@@ -103,6 +103,67 @@ public class GreedyRoundTripPlanner {
     return Math.max(0, delta - quota) / 180.0;
   }
 
+  // ---- Loop-convexity terms (root-cause fix for via-placement lobes) --------
+  // A clean round trip sweeps monotonically around the START by ~360/subRouteCount
+  // degrees per step, with a UNIMODAL distance-from-start (rise to apogee, fall to
+  // 0). The greedy per-step scorer (spreadPenalty + heading persistence) does not
+  // enforce either: heading persistence is about consecutive LEG bearings, not the
+  // angle swept around the start. Diagnosed on basel_80km_gravel_E, where via3
+  // landed at the SAME bearing-from-start as via2 (no angular progress) while its
+  // radius collapsed 18km→8km, then via4 climbed back to 9km — the radial dent IS
+  // the Lörrach lobe. These two terms make the loop convex by construction.
+  // Both fade with terrain freedom and are braked with closures, exactly like the
+  // heading-persistence term, so constrained/half-plane (coastal, valley) loops
+  // that cannot sweep a full circle are exempt. Weights are tunable for sweeps.
+  static final double W_LOOP_SWEEP =
+    Double.parseDouble(System.getProperty("loop.sweeppenalty", "4.0"));
+  static final double W_UNIMODAL_RADIUS =
+    Double.parseDouble(System.getProperty("loop.unimodalpenalty", "3.0"));
+
+  /** Signed angular delta from→to in (-180,180]. */
+  static double signedAngleDelta(double from, double to) {
+    return (to - from + 540.0) % 360.0 - 180.0;
+  }
+
+  /**
+   * Penalty for a candidate via that fails to advance the loop's angular sweep
+   * around the start. The previous leg (prevPrev→current, both as bearings FROM
+   * START) establishes the rotation sense; the candidate's incremental sweep
+   * (current→candidate, from start) should match {@code ±360/subRouteCount}.
+   * A stall (≈0) or backtrack (opposite sign) — the lobe signature — scores high.
+   * Returns 0 until rotation is established (prevPrev must be a real point clear
+   * of the start, and the prior sweep non-trivial). Capped to bound outliers.
+   */
+  static double loopSweepPenalty(int sLon, int sLat, int ppLon, int ppLat,
+                                 int curLon, int curLat, int cpLon, int cpLat,
+                                 int subRouteCount) {
+    if (CheapRuler.distance(sLon, sLat, ppLon, ppLat) < 500) return 0; // prevPrev ≈ start
+    double aPP = CheapAngleMeter.getDirection(sLon, sLat, ppLon, ppLat);
+    double aP = CheapAngleMeter.getDirection(sLon, sLat, curLon, curLat);
+    double established = signedAngleDelta(aPP, aP);
+    if (Math.abs(established) < 5.0) return 0; // rotation not clearly established
+    double rot = Math.signum(established);
+    double target = rot * (360.0 / Math.max(2, subRouteCount));
+    double aC = CheapAngleMeter.getDirection(sLon, sLat, cpLon, cpLat);
+    double inc = signedAngleDelta(aP, aC);
+    double dev = (inc - target) / Math.abs(target);
+    return Math.min(4.0, dev * dev);
+  }
+
+  /**
+   * Penalty for distance-from-start growing past the loop's apogee (phase ≥ 0.5):
+   * a unimodal loop only contracts toward home after the midpoint, so a candidate
+   * whose radius exceeds the previous via's radius is climbing back out (the via4
+   * bump). 0 before apogee or when contracting. Capped.
+   */
+  static double unimodalRadiusPenalty(double candRadius, double prevRadius,
+                                      int step, int subRouteCount) {
+    double phase = (double) step / Math.max(1, subRouteCount);
+    if (phase < 0.5 || prevRadius <= 0 || candRadius <= prevRadius) return 0;
+    double growth = (candRadius - prevRadius) / prevRadius;
+    return Math.min(4.0, growth * growth);
+  }
+
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   /**
    * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
@@ -147,6 +208,15 @@ public class GreedyRoundTripPlanner {
   // Weight applied to cost-per-meter when picking among routed candidates.
   // Magnitude is similar to scorer.score() output; 0.5 keeps both signals relevant.
   static final double COST_PER_METER_WEIGHT = 0.5;
+  /**
+   * "Super unattractive" penalty (user directive) added to a candidate whose via falls inside a
+   * detected dense box (a residential/town core), so the planner never places a turnaround/via in a
+   * city — the root cause of loops diving into towns. Large enough (≫ the ~1–3 score range) to push
+   * such candidates to the bottom, but finite so a town-only-reachable case still closes (graceful,
+   * no no-route). Active only when dense boxes are built (engine.routingContext.denseBoxes != null).
+   * Tunable via {@code loop.denseboxwppenalty}.
+   */
+  static final double DENSE_BOX_WP_PENALTY = Double.parseDouble(System.getProperty("loop.denseboxwppenalty", "100.0"));
   /**
    * Weight applied per self-intersection introduced by a tentative partial
    * loop. This is a placement-side signal: among otherwise similar routed
@@ -260,6 +330,39 @@ public class GreedyRoundTripPlanner {
   private static final double DESIR_WEIGHT = 30.0;
 
   /**
+   * Capsule prototype reward weights — INSTANCE fields read from system properties
+   * at construction, so a sweep harness can vary them per request in one JVM (each
+   * round-trip builds a fresh planner). Inert on the default path: only
+   * {@link CapsuleCandidateProvider} (built when {@code roundTripCapsule} is set)
+   * assigns non-zero capsule/elevation rewards.
+   *
+   * <ul>
+   *   <li>{@code capsuleWeight} ({@code -Dloop.capsule.weight}) — pull toward
+   *       boundary "portal" / open cells, away from dense interiors.</li>
+   *   <li>{@code elevWeight} ({@code -Dloop.capsule.elevweight}) — reward higher
+   *       ground (counter the flat-terrain bias).</li>
+   *   <li>{@code capsuleOvershootTol} ({@code -Dloop.capsule.overshoottol}) — fade
+   *       both rewards once a candidate's projected loop runs this fraction past
+   *       target (kills the over-distancing failure mode).</li>
+   *   <li>{@code capsulePhase2Scale} ({@code -Dloop.capsule.phase2}) — scale of the
+   *       reward applied in the Phase-2 routed re-score (the pick that actually
+   *       commits). **Default 0 (off).** The Basel/Freiburg sweep showed that letting
+   *       the reward override the committed pick over-steers (commits worse-routed
+   *       loops, more crossings, lower RCS). Phase-1-only — bias which candidates get
+   *       routed, then let routedScore commit — is RCS-neutral and reduces crossings.
+   *       Kept as a knob for experiments; >0 re-enables the (worse) override.</li>
+   * </ul>
+   */
+  private final double capsuleWeight =
+    Double.parseDouble(System.getProperty("loop.capsule.weight", "3.0"));
+  private final double elevWeight =
+    Double.parseDouble(System.getProperty("loop.capsule.elevweight", "1.5"));
+  private final double capsuleOvershootTol =
+    Double.parseDouble(System.getProperty("loop.capsule.overshoottol", "0.12"));
+  private final double capsulePhase2Scale =
+    Double.parseDouble(System.getProperty("loop.capsule.phase2", "0.0"));
+
+  /**
    * Set the active profile name. Should be called by {@link RoutingEngine}
    * during planner construction, immediately after the planner is
    * instantiated, so the internal fallback gate matches what the
@@ -313,6 +416,37 @@ public class GreedyRoundTripPlanner {
     this.subRouteCount = subRouteCount;
     this.tolerance = tolerance;
     this.maxAttempts = maxAttempts;
+  }
+
+  /**
+   * Overshoot guard for the capsule/elevation rewards: full reward at or under
+   * target, fading to 0 once the projected loop runs {@code capsuleOvershootTol}
+   * past target. Stops the steering from ever winning by over-distancing.
+   */
+  private double capsuleOvershootGate(double projectedTotal, double desiredDistance) {
+    if (desiredDistance <= 0) return 1.0;
+    double overshoot = projectedTotal / desiredDistance;
+    if (overshoot <= 1.0) return 1.0;
+    return Math.max(0.0, 1.0 - (overshoot - 1.0) / capsuleOvershootTol);
+  }
+
+  /**
+   * Combined capsule + elevation reward to SUBTRACT from a candidate score (lower
+   * = better). {@code gate} is the overshoot fade. Zero unless a
+   * {@link CapsuleCandidateProvider} populated the rewards (default path inert).
+   */
+  private double capsuleReward(RoundTripCandidateProvider.CandidatePoint cp, double gate) {
+    return gate * (capsuleWeight * cp.capsuleReward + elevWeight * cp.elevationReward);
+  }
+
+  /**
+   * User directive #3: make a candidate whose via lands inside a dense box (a town/residential core)
+   * "super unattractive" so the planner never turns a loop around inside a city. 0 when no boxes are
+   * built (default) → zero overhead and no behaviour change.
+   */
+  private double denseBoxWaypointPenalty(int ilon, int ilat) {
+    RoutingContext rc = engine.routingContext;
+    return (rc.denseBoxes != null && rc.isWithinDenseBox(ilon, ilat)) ? DENSE_BOX_WP_PENALTY : 0.0;
   }
 
   /**
@@ -468,6 +602,10 @@ public class GreedyRoundTripPlanner {
           ? CheapAngleMeter.getDirection(prevIlon, prevIlat, currentIlon, currentIlat)
           : Double.NaN;
 
+        // Current via's radius from start — fixed per step; the unimodal-radius
+        // term compares each candidate's radius against it.
+        double currentRadius = CheapRuler.distance(currentIlon, currentIlat, start.ilon, start.ilat);
+
         // Score using air-distance estimates — O(1) per candidate
         for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
@@ -480,6 +618,13 @@ public class GreedyRoundTripPlanner {
             ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * indirectnessEst
             : -1;
 
+          // Overshoot guard: fade the capsule/elevation rewards as a candidate's
+          // projected loop total runs past the target, so the steering never wins
+          // by over-distancing (the 80km→97km failure mode). On-or-under target ⇒
+          // full reward; CAPSULE_OVERSHOOT_TOL past target ⇒ zero.
+          double projectedTotal = totalDistance + estimatedRouteDist + estimatedReturn;
+          double capsuleGate = capsuleOvershootGate(projectedTotal, desiredDistance);
+
           cp.score = scorer.score(
             estimatedRouteDist, subTarget,
             totalDistance, estimatedReturn, desiredDistance,
@@ -490,7 +635,9 @@ public class GreedyRoundTripPlanner {
             distFromPrevious,
             cp.costFromStart, cp.bucketHits, cp.sourceContour)
             - DESIR_WEIGHT * cp.desirability // issue #15: reward profile-desirable cells (lower score = better)
-            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
+            - capsuleReward(cp, capsuleGate) // capsule prototype: steer out of dense interiors / reward higher ground
+            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells)
+            + denseBoxWaypointPenalty(cp.ilon, cp.ilat); // user #3: never place a via inside a town
 
           // Heading persistence: prefer candidates that keep turning gently
           // instead of kinking at the via — terrain-gated so constrained
@@ -498,8 +645,18 @@ public class GreedyRoundTripPlanner {
           // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX), and distress-
           // braked once closures start failing (see closureRejections).
           if (!Double.isNaN(prevLegBearing) && closureRejections < HEADING_BRAKE_REJECTIONS) {
-            cp.score += W_HEADING_PERSISTENCE * headingTerrainFreedom(indirectnessEst)
+            double terrainFreedom = headingTerrainFreedom(indirectnessEst);
+            cp.score += W_HEADING_PERSISTENCE * terrainFreedom
               * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
+            // Loop-convexity: keep the via sequence sweeping monotonically around
+            // the start and contracting after the apogee — kills radial-dent lobes
+            // (basel_80km via3) and clustered-via tangles. Same terrain/closure
+            // gating as heading persistence.
+            cp.score += W_LOOP_SWEEP * terrainFreedom
+              * loopSweepPenalty(start.ilon, start.ilat, prevIlon, prevIlat,
+                  currentIlon, currentIlat, cp.ilon, cp.ilat, subRouteCount);
+            cp.score += W_UNIMODAL_RADIUS * terrainFreedom
+              * unimodalRadiusPenalty(distFromStart, currentRadius, step, subRouteCount);
           }
 
           // Variety seed (ADR-0001): jitter the HEURISTIC score only — it
@@ -665,10 +822,18 @@ public class GreedyRoundTripPlanner {
 
           double costPerMeter = (double) subTrack.cost / subTrack.distance;
           double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
+          // Capsule prototype (H2 fix): apply the steering reward to the PICK that
+          // actually commits — Phase 1 only biased which candidates got routed, so
+          // the winner ignored the capsule. Gate on the now-known leg distance.
+          double routedProjectedTotal = totalDistance + subTrack.distance + estimatedReturn;
+          routedScore -= capsulePhase2Scale
+            * capsuleReward(cp, capsuleOvershootGate(routedProjectedTotal, desiredDistance));
           int tentativeSelfIntersections = countTentativeSelfIntersections(committedPrefixNodes, subTrack);
           if (tentativeSelfIntersections > 0) {
             routedScore += PARTIAL_SELF_INTERSECTION_WEIGHT * tentativeSelfIntersections;
           }
+          // User #3: a committed via inside a town core is "super unattractive".
+          routedScore += denseBoxWaypointPenalty(snappedIlon, snappedIlat);
 
           if (DIAGNOSTIC) {
             System.err.printf(
