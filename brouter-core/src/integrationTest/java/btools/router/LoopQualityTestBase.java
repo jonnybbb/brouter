@@ -92,6 +92,12 @@ public abstract class LoopQualityTestBase {
   // compositeScore, so the test oracle matches production selection.
   private final Map<String, Double> variantRcs = new HashMap<>();
 
+  // Per-variant cost/m for the GATE, with the DELIBERATE preference penalties backed out
+  // (elevation/steep cost + the residential penalty). The cost/m bar is a SURFACE-quality
+  // gate — a loop that prices higher only because it is correctly avoiding residential/steep
+  // must not trip it. Populated by runVariant, read by checkVariantQuality.
+  private final Map<String, Double> variantGateCostPerM = new HashMap<>();
+
   /**
    * Build the parameter rows for one region: the full distance × profile ×
    * direction cross-product. Unsupported profile×terrain combinations are not
@@ -248,9 +254,14 @@ public abstract class LoopQualityTestBase {
     // direction, so it does not apply to a direction-fulfilling route.
     boolean directionPrioritised = CandidateScorer.STRONG_DIRECTION
         && m.getDirectionDeltaDegrees() <= 45.0;
-    if (m.getAverageCostPerMeter() > maxCostPerM && !directionPrioritised) {
-      failures.add(String.format("%s: cost/m %.2f exceeds max %.2f for %s profile",
-        tag, m.getAverageCostPerMeter(), maxCostPerM, profileName));
+    // Gate on the SURFACE cost/m (deliberate elevation/steep + residential penalties backed out):
+    // a loop that prices higher only because it is correctly avoiding residential/steep is not on
+    // worse surfaces, so it must not trip this bar. Falls back to the raw metric if unavailable.
+    Double gateCostPerM = variantGateCostPerM.get(variant);
+    double effCostPerM = (gateCostPerM != null) ? gateCostPerM : m.getAverageCostPerMeter();
+    if (effCostPerM > maxCostPerM && !directionPrioritised) {
+      failures.add(String.format("%s: surface cost/m %.2f exceeds max %.2f for %s profile (raw %.2f)",
+        tag, effCostPerM, maxCostPerM, profileName, m.getAverageCostPerMeter()));
     }
     Double rcs = variantRcs.get(variant);
     if (rcs != null && rcs < MIN_RCS_PASS) {
@@ -288,6 +299,36 @@ public abstract class LoopQualityTestBase {
    * paved-coastal override (4.3), which was removed; Crete Senesi's
    * ISO_GREEDY-only 4.6 relaxation remains above the new baseline.
    */
+  /**
+   * Cost/m for the SURFACE-quality gate, with the deliberate preference penalties backed out so the
+   * bar measures the roads' surface cost, not the cost of intentionally avoiding things:
+   * <ul>
+   *   <li>elevation cost ({@code linkelevationcost}) — for gravel (consider_elevation off) this is
+   *       exactly the steep &gt;10% penalty; for fastbike it also covers normal climb, which is not a
+   *       surface property either. Removing it only relaxes the bar, so the default suite cannot
+   *       regress.</li>
+   *   <li>the residential penalty — {@code loop.residpenalty × metres on residential/living_street}
+   *       (only for gravel/fastbike, the profiles that carry the param).</li>
+   * </ul>
+   * Result: a loop that prices higher only because it correctly skirts residential/steep is judged on
+   * the surfaces it actually rides, not on the avoidance cost.
+   */
+  private static double surfaceCostPerMeter(OsmTrack track, String profileName) {
+    if (track == null || track.nodes == null || track.distance <= 0) return 0;
+    long elevCost = 0;
+    for (OsmPathElement n : track.nodes) {
+      if (n.message != null) elevCost += n.message.linkelevationcost;
+    }
+    double residPenalty = Double.parseDouble(System.getProperty("loop.residpenalty", "0"));
+    double residCost = 0;
+    if (residPenalty > 0 && ("gravel".equals(profileName) || "fastbike".equals(profileName))) {
+      double residLen = RoadCharacterScore.compute(track, profileName).residentialFrac * track.distance;
+      residCost = residPenalty * residLen;
+    }
+    double adjusted = track.cost - elevCost - residCost;
+    return Math.max(0, adjusted) / track.distance;
+  }
+
   private static double maxCostPerMeterForProfile(String profileName) {
     if (profileName == null) return 4.0;
     switch (profileName.toLowerCase()) {
@@ -326,6 +367,24 @@ public abstract class LoopQualityTestBase {
       // routes lenient (strictQuality=false) so the report draws exactly the
       // loop production AUTO would ship, not a strict-rejected blank.
       rctx.roundTripStrictQuality = strictQuality;
+
+      // Optional residential-penalty sweep (-Dloop.residpenalty=2.0). Drives the gravel/fastbike
+      // %residential_penalty% param via a request override, so the suite can exercise the
+      // village-interior-avoiding routing WITHOUT editing the shipped profile (default 0 = inert,
+      // routing identical). mtb has no such param, so it is left untouched.
+      // Density boxes power two independent levers: (a) waypoint steering — never place a loop via
+      // inside a town core (-Dloop.densebox); (b) the residential cost penalty inside boxes
+      // (-Dloop.residpenalty). Either one builds the boxes for the GREEDY round-trip.
+      double residPenalty = Double.parseDouble(System.getProperty("loop.residpenalty", "0"));
+      boolean denseBox = Boolean.getBoolean("loop.densebox") || residPenalty > 0;
+      if (denseBox) {
+        rctx.roundTripDenseResidential = true; // build boxes → waypoint steering active (all profiles)
+        if (residPenalty > 0 && ("gravel".equals(profileName) || "fastbike".equals(profileName))) {
+          Map<String, String> kv = new HashMap<>();
+          kv.put("residential_penalty", Double.toString(residPenalty));
+          rctx.keyValues = kv;
+        }
+      }
 
       String outPath = new File(outputDir.getRoot(), testLabel + "_" + variant).getAbsolutePath();
       RoutingEngine re = new RoutingEngine(
@@ -375,6 +434,7 @@ public abstract class LoopQualityTestBase {
       // penalised score() so it prefers the cleaner of two comparable candidates.
       variantRcs.put(variant,
         RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).qualityScore());
+      variantGateCostPerM.put(variant, surfaceCostPerMeter(track, profileName));
       double[][] coords = extractCoordinates(track);
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);

@@ -76,6 +76,19 @@ public interface RoundTripCandidateProvider {
      * it at 0, so the planner's desirability reward is a no-op for them.
      */
     public double desirability;
+    /**
+     * Capsule-steering reward [0,1] (urban-capsule loop prototype): 0 for dense
+     * capsule interiors, {@code OPEN_REWARD} for open countryside, 1 for boundary
+     * "portal" cells. Only {@link CapsuleCandidateProvider} sets it; every other
+     * provider leaves it at 0, so the planner's capsule reward is a no-op for them.
+     */
+    public double capsuleReward;
+    /**
+     * Elevation reward [0,1] (urban-capsule loop prototype): higher ground scores
+     * higher, to counter the greedy planner's flat-terrain bias. Only
+     * {@link CapsuleCandidateProvider} sets it; 0 for every other provider.
+     */
+    public double elevationReward;
     /** Dijkstra cost-units from the loop start to this candidate; {@link #NO_ISO_COST} = unavailable. */
     public double costFromStart = NO_ISO_COST;
     /** Population of this candidate's angular bucket in the isochrone; {@link #NO_ISO_DENSITY} = unavailable. */

@@ -239,6 +239,30 @@ public final class RoutingContext {
   private List<OsmNodeNamed> keepnogopoints = null;
   private OsmNodeNamed pendingEndpoint = null;
 
+  // Dense-area polygons (the "density boxes"): the residential penalty (way var
+  // residentialpenaltyclass) is applied by the engine ONLY inside these, so a residential
+  // connector in open country is never penalised — only village-interior touring is. Null = off;
+  // populated at round-trip time from the desirability grid (RoutingEngine).
+  public List<OsmNodeNamed> denseBoxes = null;
+  // Inside a dense box, turn cost and "leaving the road" (road-class change initialcost) are
+  // multiplied by these, so a town transit stays straight on the through-road instead of touring
+  // side streets. 1.0 = no amplification (default). Set by RoutingEngine when boxes are built.
+  public double denseBoxTurnFactor = 1.0;
+  public double denseBoxInitialFactor = 1.0;
+
+  /** True if (ilon,ilat) falls inside any dense box (bounding-circle pre-filter, then exact point-in-polygon). */
+  public boolean isWithinDenseBox(int ilon, int ilat) {
+    if (denseBoxes == null) return false;
+    for (OsmNodeNamed b : denseBoxes) {
+      if (b instanceof OsmNogoPolygon
+        && CheapRuler.distance(ilon, ilat, b.ilon, b.ilat) < b.radius
+        && ((OsmNogoPolygon) b).isWithin(ilon, ilat)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public Integer startDirection;
   public boolean startDirectionValid;
   public boolean forceUseStartDirection;
@@ -326,6 +350,30 @@ public final class RoutingContext {
    * is an exploratory infrastructure lever, not a tuned route-quality default.
    */
   public boolean roundTripDesirability;
+
+  /**
+   * Experimental urban-capsule loop planning for GREEDY round-trips, settable via
+   * the request parameter {@code roundTripCapsule=1}. Off by default. When on, the
+   * GREEDY round-trip accumulates the same coarse density/elevation grid as the
+   * desirability flag and uses {@link CapsuleCandidateProvider} to steer waypoints
+   * out of dense capsule interiors toward boundary "portal" cells, plus reward
+   * higher ground to counter the flat-terrain bias.
+   *
+   * <p>Same activation caveats as {@link #roundTripDesirability}: honoured only by
+   * the GREEDY algorithm; set {@code roundTripAlgorithm=GREEDY} explicitly to
+   * guarantee it takes effect under AUTO. If both flags are set, capsule wins.
+   */
+  public boolean roundTripCapsule;
+
+  /**
+   * Density-box residential penalty for GREEDY round-trips. When on, the GREEDY round-trip builds
+   * the coarse density grid, derives dense-area polygons ({@link #denseBoxes}), and the engine then
+   * applies the way var {@code residentialpenaltyclass} ONLY inside those boxes — so residential
+   * touring inside towns/cities is discouraged while sparse-country residential connectors stay
+   * free (avoids the constrained-terrain degradation a global residential penalty causes). Honoured
+   * by GREEDY only; needs the profile's {@code residential_penalty} param &gt; 0 to have any effect.
+   */
+  public boolean roundTripDenseResidential;
 
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
 
@@ -732,6 +780,14 @@ public final class RoutingContext {
     // The desirability flag (issue #15) must reach the GREEDY child spawned by the
     // AUTO competition, where it actually takes effect.
     c.roundTripDesirability = this.roundTripDesirability;
+    // The capsule flag must likewise reach the GREEDY child spawned by AUTO.
+    c.roundTripCapsule = this.roundTripCapsule;
+    // Density-box residential penalty: the flag reaches the GREEDY child; the derived boxes (built
+    // after the grid expansion) are read-only during leg routing, so aliasing the list is safe.
+    c.roundTripDenseResidential = this.roundTripDenseResidential;
+    c.denseBoxes = this.denseBoxes;
+    c.denseBoxTurnFactor = this.denseBoxTurnFactor;
+    c.denseBoxInitialFactor = this.denseBoxInitialFactor;
     // Densification request inputs (the effective explicitViaDensify flag is
     // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
     // AUTO children currently route a single waypoint and never densify, but

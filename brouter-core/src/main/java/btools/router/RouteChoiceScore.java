@@ -44,8 +44,13 @@ public final class RouteChoiceScore {
   // of the positive sum, so a clean STRICT_LOOP can score above 1.0 in raw
   // terms — clamped at the end.
 
-  /** Distance closeness to requested. */
-  static final double W_DISTANCE   = 0.25;
+  // Weights sum to 1.0. 2026-06-15 rebalance (user directive): "distance can be tolerated — an
+  // appealing route should score higher." Distance dropped 0.25→0.18 AND made tolerant (flat band,
+  // below), road-character lifted 0.07→0.17, cost/m down 0.08→0.05. Net: a clean, appealing loop now
+  // out-ranks one that buys a few % more distance by detouring through a town (e.g. basel_80km_E,
+  // where AUTO used to ship the Lörrach-dipping iso_greedy over the city-skirting greedy).
+  /** Distance closeness to requested (now tolerant — see the flat band in #1). */
+  static final double W_DISTANCE   = Double.parseDouble(System.getProperty("loop.wdistance", "0.18"));
   /** Road reuse / retrace penalty (low reuse = high score). */
   static final double W_REUSE      = 0.20;
   /** Closure quality (small closure gap = high score). */
@@ -54,10 +59,19 @@ public final class RouteChoiceScore {
   static final double W_CONTINUITY = 0.15;
   /** Compactness within reasonable range. */
   static final double W_COMPACTNESS = 0.10;
+  /**
+   * Road-CHARACTER preference (profile-aware highway desirability from the route's tags) — the
+   * "would a real cyclist want to ride this" dimension. Validated against the user's eye on the
+   * Basel/Freiburg matrix (residential-avoiding loops score higher). Now the dominant soft term so
+   * an appealing route out-ranks a marginally-better-distance one. Tunable via {@code -Dloop.charweight}.
+   */
+  static final double W_CHARACTER  = clamp01x(Double.parseDouble(System.getProperty("loop.charweight", "0.17")), 0.30);
   /** Profile-specific cost/m soft preference. */
-  static final double W_COSTM      = 0.15;
+  static final double W_COSTM      = 0.05;
   /** Direction delta — weak; capped so it cannot dominate. */
   static final double W_DIRECTION  = 0.05;
+
+  private static double clamp01x(double v, double hi) { return Math.max(0.0, Math.min(hi, v)); }
   /** Shape disclosure penalty: LOLLIPOP/SCENIC down-weight vs STRICT_LOOP. */
   static final double SHAPE_PENALTY_LOLLIPOP = 0.05;
   static final double SHAPE_PENALTY_OUT_AND_BACK   = 0.15;
@@ -293,10 +307,12 @@ public final class RouteChoiceScore {
     List<Reason> reasons = new ArrayList<>(8);
     double total = 0;
 
-    // 1. Distance closeness. score 1.0 when ratio ≈ 1.0, decays linearly to
-    //    0.0 at ratio difference ≥ 0.5 (i.e. half or 1.5×). Production-
-    //    neutral band.
-    double distScore = 1.0 - Math.min(1.0, Math.abs(m.getDistanceRatio() - 1.0) / 0.5);
+    // 1. Distance closeness — TOLERANT (user directive: distance can be tolerated). Flat 1.0 within
+    //    ±15% of target, then decays to 0.0 at ±50%. So a clean 0.95× loop and an on-target 0.98×
+    //    loop score identically on distance, and road-character decides between them — an appealing
+    //    route is no longer out-ranked just because it is a few % short.
+    double distDelta = Math.abs(m.getDistanceRatio() - 1.0);
+    double distScore = distDelta <= 0.15 ? 1.0 : 1.0 - Math.min(1.0, (distDelta - 0.15) / 0.35);
     double distContrib = W_DISTANCE * distScore;
     reasons.add(new Reason("distance ratio " + fmt(m.getDistanceRatio())
       + " (preferred band [0.5, 1.5])", W_DISTANCE, m.getDistanceRatio(), distContrib));
@@ -344,6 +360,16 @@ public final class RouteChoiceScore {
       + " (preferred band [" + fmt(band[0]) + ", " + fmt(band[1]) + "])",
       W_COSTM, costM, costMContrib));
     total += costMContrib;
+
+    // 6b. Road character — profile-aware highway desirability from the route's tags (not its cost,
+    //     which would be circular for a residential-penalising profile). Captures the rider-eye
+    //     "do I want to ride this" dimension that geometry terms miss.
+    if (W_CHARACTER > 0) {
+      double appeal = RoadCharacterScore.compute(track, profileName).appeal;
+      double charContrib = W_CHARACTER * appeal;
+      reasons.add(new Reason("road character " + fmt(appeal), W_CHARACTER, appeal, charContrib));
+      total += charContrib;
+    }
 
     // 7. Direction delta — weak. Score 1.0 at delta 0°, 0.0 at delta 180°.
     //    Direction is intentionally a small weight so it cannot dominate
