@@ -287,6 +287,11 @@ public class RoutingParamCollector {
           // Off by default; honoured only by the GREEDY algorithm.
           Integer v = parseIntParamOrNull(key, value);
           rctx.roundTripDesirability = v != null && v == 1;
+        } else if (key.equals("roundTripCapsule")) {
+          // Experimental urban-capsule loop planning for GREEDY round-trips.
+          // Off by default; honoured only by the GREEDY algorithm.
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripCapsule = v != null && v == 1;
         } else if (key.equals("alternativeidx")) {
           Integer v = parseIntParamOrNull(key, value);
           if (v != null) rctx.setAlternativeIdx(v);

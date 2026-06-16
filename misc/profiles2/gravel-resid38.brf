@@ -33,12 +33,6 @@ assign prefer_forests false # %prefer_forests% | Enable to prefer forest areas |
 assign prefer_rivers false # %prefer_rivers% | Enable to prefer river valleys | boolean
 assign avoid_towns false # %avoid_towns% | Enable to avoid urban areas | boolean
 assign avoid_noise false # %avoid_noise% | Enable to avoid noisy areas | boolean
-# Extra cost on residential + living_street, applied by the engine ONLY inside detected dense areas
-# ("density boxes"), so loops stop touring village/city interiors while a residential connector in
-# open country stays free. 0 = OFF (default; the way var below folds to 0). Needs the round-trip
-# density-box build (roundTripDenseResidential / loop.residpenalty in the suite). Service roads are
-# never penalised (legit gravel connectors).
-assign residential_penalty 0 # %residential_penalty% | Extra cost on residential/living_street INSIDE dense areas, to avoid village-interior touring (0=off, ~2.0=strong) | number
 
 # with engine defaults, long parts of routing to via points may be removed
 assign correctMisplacedViaPoints = false # %correctMisplacedViaPoints% | Set to true to remove detours due to via points (going back and forth on the same route) | boolean
@@ -257,10 +251,6 @@ assign townpenalty
         switch estimated_town_class=5  2.0
         switch estimated_town_class=6  2.2 1 1
 
-# Per-meter residential penalty handed to the engine; it is charged ONLY where the segment falls
-# inside a density box (see residential_penalty). 0 everywhere when the param is 0 (default).
-assign residentialpenaltyclass switch highway=residential|living_street residential_penalty 0
-
 assign costfactor
     multiply notcycleroutepenalty multiply noriverpenalty
     multiply notcyclewaypenalty multiply maxspeedpenalty
@@ -283,9 +273,9 @@ assign costfactor
     switch    highway=corridor                                  3.2
     switch    highway=road                                      2.8
     switch    highway=unclassified switch not any_cycleroute    2.6 1.4
-    switch    highway=living_street                             2.5
+    switch    highway=living_street                             3.8
     switch    highway=service switch service=                   2.4 3.0
-    switch    highway=residential switch not maxspeed=30        2.2 1.8
+    switch    highway=residential switch not maxspeed=30        3.8 3.8
     switch    highway=track                                     1.0
     switch    highway=path                                      pathpenalty
     switch    highway=steps                                     stepspenalty

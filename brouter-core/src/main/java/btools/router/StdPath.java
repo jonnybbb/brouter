@@ -87,6 +87,11 @@ final class StdPath extends OsmPath {
 
     // penalty for turning angle
     int turncost = (int) ((1. - cosangle) * turncostbase + 0.2); // e.g. turncost=90 -> 90 degree = 90m penalty
+    // Inside a dense box, turns cost much more so a town transit stays straight on the through-road
+    // instead of weaving through the residential grid (inDenseBoxAtSource is set per way by OsmPath).
+    if (inDenseBoxAtSource && rc.denseBoxTurnFactor > 1.0) {
+      turncost = (int) (turncost * rc.denseBoxTurnFactor);
+    }
 
     int newPrio = (int) rc.expctxWay.getPriorityClassifier();
     int oldPrio = lastpriorityclassifier;

@@ -2202,16 +2202,58 @@ public class RoutingEngine extends Thread {
     //     searchRadius AND hits >= 3)
     // Otherwise direction is preserved verbatim.
     // The desirability heatmap (issue #15) piggybacks on the isochrone expansion,
-    // so GREEDY also runs the expansion when the experimental flag is set — purely
-    // to build the grid (accumulation is scoped to this case so ISO_GREEDY does not
-    // pay to build a grid it never consumes).
-    boolean buildDesirabilityGrid = routingContext.roundTripDesirability
+    // so GREEDY also runs the expansion when an explicit experimental flag needs
+    // the grid. Accumulation is scoped to this case so default GREEDY and
+    // ISO_GREEDY do not pay to build a grid they never consume.
+    boolean buildDesirabilityGrid = (routingContext.roundTripDesirability || routingContext.roundTripCapsule
+        || routingContext.roundTripDenseResidential)
         && algo == RoundTripAlgorithm.GREEDY;
     accumulatingDesirabilityGrid = buildDesirabilityGrid;
     IsochroneExpansionResult iso = (algo == RoundTripAlgorithm.ISO_GREEDY || buildDesirabilityGrid)
       ? runIsochroneExpansion(start, searchRadius)
       : null;
     accumulatingDesirabilityGrid = false;
+    // Faithful capsule (leg-masking): turn the density grid into soft no-go polygons over
+    // dense interiors so routed LEGS avoid the spaghetti, crossing only at least-cost gaps
+    // (implicit portals/corridors). Off unless roundTripCapsule AND loop.capsule.nogoweight>0.
+    double capsuleNogoWeight = Double.parseDouble(System.getProperty("loop.capsule.nogoweight", "0"));
+    if (routingContext.roundTripCapsule && capsuleNogoWeight > 0 && !desirabilityGrid.isEmpty()) {
+      java.util.List<OsmNodeNamed> capsuleNogos = CapsuleNogoBuilder.build(
+        desirabilityGrid, DESIRABILITY_CELL, capsuleNogoWeight,
+        Double.parseDouble(System.getProperty("loop.capsule.densepercentile", "0.80")),
+        Integer.parseInt(System.getProperty("loop.capsule.mindensenodes", "10")),
+        Integer.parseInt(System.getProperty("loop.capsule.nogomincells", "4")));
+      if (!capsuleNogos.isEmpty()) {
+        if (routingContext.nogopoints == null) routingContext.nogopoints = new java.util.ArrayList<>();
+        routingContext.nogopoints.addAll(capsuleNogos);
+        logInfo("GREEDY: capsule leg-masking — " + capsuleNogos.size()
+          + " soft no-go polygons (weight " + capsuleNogoWeight + ")");
+      }
+    }
+    // Density-box residential penalty: derive dense-area polygons from the same grid; the engine
+    // applies the profile's residentialpenaltyclass only inside them (OsmPath + RoutingContext).
+    if (routingContext.roundTripDenseResidential && !desirabilityGrid.isEmpty()) {
+      java.util.Set<Long> dense = CapsuleNogoBuilder.classifyDense(desirabilityGrid,
+        Double.parseDouble(System.getProperty("loop.densebox.percentile", "0.88")),
+        Integer.parseInt(System.getProperty("loop.densebox.mindensenodes", "12")));
+      int minCells = Integer.parseInt(System.getProperty("loop.densebox.mincells", "2"));
+      // Split the greater-city blob into town-sized boxes (no 9 km mega-box).
+      int maxCells = Integer.parseInt(System.getProperty("loop.densebox.maxcells", "20"));
+      int tileCells = Integer.parseInt(System.getProperty("loop.densebox.tilecells", "5"));
+      java.util.List<java.util.Set<Long>> comps =
+        CapsuleNogoBuilder.splitOversized(CapsuleNogoBuilder.components(dense, minCells), maxCells, tileCells);
+      java.util.List<OsmNodeNamed> boxes = new java.util.ArrayList<>();
+      for (java.util.Set<Long> comp : comps) {
+        boxes.addAll(CapsuleNogoBuilder.polygonsFromCells(comp, DESIRABILITY_CELL, 1.0, minCells));
+      }
+      if (!boxes.isEmpty()) {
+        routingContext.denseBoxes = boxes;
+        routingContext.denseBoxTurnFactor = Double.parseDouble(System.getProperty("loop.densebox.turnfactor", "1.0"));
+        routingContext.denseBoxInitialFactor = Double.parseDouble(System.getProperty("loop.densebox.roadchangefactor", "1.0"));
+        logInfo("GREEDY: density boxes — " + boxes.size() + " (via-steer on; turn×"
+          + routingContext.denseBoxTurnFactor + ", leave-road×" + routingContext.denseBoxInitialFactor + ")");
+      }
+    }
     double effectiveDirection = direction;
     IsoAsymmetryBias bias = IsoAsymmetryBias.NONE;
     if (algo == RoundTripAlgorithm.ISO_GREEDY && direction < 0 && iso != null) {
@@ -2486,6 +2528,16 @@ public class RoutingEngine extends Thread {
                                                             IsochroneExpansionResult iso) {
     GraphNativeCandidateProvider graphNative = new GraphNativeCandidateProvider(this);
     if (algo != RoundTripAlgorithm.ISO_GREEDY) {
+      // Capsule wins if both experimental flags are set: it steers waypoints out
+      // of dense interiors AND rewards higher ground, a superset of the use case.
+      if (routingContext.roundTripCapsule && !desirabilityGrid.isEmpty()) {
+        CapsuleCandidateProvider capsule =
+          new CapsuleCandidateProvider(desirabilityGrid, graphNative, DESIRABILITY_CELL);
+        logInfo("GREEDY: capsule-guided candidate provider (" + desirabilityGrid.size()
+          + " cells, " + capsule.denseCellCount() + " dense, " + capsule.boundaryCellCount()
+          + " portal, elevation=" + (capsule.elevationActive() ? "on" : "off") + ")");
+        return capsule;
+      }
       if (routingContext.roundTripDesirability && !desirabilityGrid.isEmpty()) {
         logInfo("GREEDY: desirability-guided candidate provider (" + desirabilityGrid.size() + " cells)");
         return new DesirabilityCandidateProvider(desirabilityGrid, graphNative,
@@ -3915,9 +3967,17 @@ public class RoutingEngine extends Thread {
         double pref = costEff > 0 ? Math.min(1.0, 1.3 / costEff) : 1.0;
         long key = (long) (curIlon / DESIRABILITY_CELL) * 1_000_000L + (curIlat / DESIRABILITY_CELL);
         double[] cell = desirabilityGrid.get(key);
-        if (cell == null) { cell = new double[2]; desirabilityGrid.put(key, cell); }
+        // Slots: [nodeCount, prefSum, eleSum, eleCount]. nodeCount drives the
+        // capsule density classification; eleSum/eleCount the elevation reward.
+        if (cell == null) { cell = new double[4]; desirabilityGrid.put(key, cell); }
         cell[0] += 1;
         cell[1] += pref;
+        // Capsule prototype: accumulate elevation per cell (sentinels = no SRTM).
+        short selev = currentNode.selev;
+        if (selev != Short.MIN_VALUE && selev != -12345) {
+          cell[2] += selev / 4.0; // selev is in 1/4-meter units
+          cell[3] += 1;
+        }
       }
       if (dist > 50) { // skip very close nodes (noisy bearings)
         int pcost = path.cost;
@@ -6840,6 +6900,11 @@ public class RoutingEngine extends Thread {
 
   public OsmTrack getFoundTrack() {
     return foundTrack;
+  }
+
+  /** The last round-trip planning result (carries the planned loop waypoints), or null. */
+  public RoundTripResult getLastRoundTripResult() {
+    return lastRoundTripResult;
   }
 
   /**
