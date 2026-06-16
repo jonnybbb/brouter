@@ -115,10 +115,19 @@ public class GreedyRoundTripPlanner {
   // Both fade with terrain freedom and are braked with closures, exactly like the
   // heading-persistence term, so constrained/half-plane (coastal, valley) loops
   // that cannot sweep a full circle are exempt. Weights are tunable for sweeps.
+  //
+  // TIE-BREAKER strength (comparable to W_HEADING_PERSISTENCE = 1.0), NOT a
+  // distance-overriding force. An earlier 4.0/3.0 with a [0,4] penalty cap let
+  // the term reach +16 — ~25× heading persistence — which on constrained loops
+  // (Garmisch mountains, sparse-gravel Crete Senesi) overrode the distance terms
+  // and the planner shipped tiny under-distance loops (distR 0.34, gate fail).
+  // At tie-breaker strength the distance signal dominates whenever distance
+  // differs materially, while convexity still flips genuine near-ties (the
+  // Lörrach lobe). See loopSweepPenalty's [0,1] cap.
   static final double W_LOOP_SWEEP =
-    Double.parseDouble(System.getProperty("loop.sweeppenalty", "4.0"));
+    Double.parseDouble(System.getProperty("loop.sweeppenalty", "2.0"));
   static final double W_UNIMODAL_RADIUS =
-    Double.parseDouble(System.getProperty("loop.unimodalpenalty", "3.0"));
+    Double.parseDouble(System.getProperty("loop.unimodalpenalty", "1.5"));
 
   /** Signed angular delta from→to in (-180,180]. */
   static double signedAngleDelta(double from, double to) {
@@ -147,7 +156,7 @@ public class GreedyRoundTripPlanner {
     double aC = CheapAngleMeter.getDirection(sLon, sLat, cpLon, cpLat);
     double inc = signedAngleDelta(aP, aC);
     double dev = (inc - target) / Math.abs(target);
-    return Math.min(4.0, dev * dev);
+    return Math.min(1.0, dev * dev);
   }
 
   /**
@@ -161,7 +170,7 @@ public class GreedyRoundTripPlanner {
     double phase = (double) step / Math.max(1, subRouteCount);
     if (phase < 0.5 || prevRadius <= 0 || candRadius <= prevRadius) return 0;
     double growth = (candRadius - prevRadius) / prevRadius;
-    return Math.min(4.0, growth * growth);
+    return Math.min(1.0, growth * growth);
   }
 
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
