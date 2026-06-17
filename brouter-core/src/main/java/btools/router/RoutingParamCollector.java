@@ -292,6 +292,11 @@ public class RoutingParamCollector {
           // Off by default; honoured only by the GREEDY algorithm.
           Integer v = parseIntParamOrNull(key, value);
           rctx.roundTripCapsule = v != null && v == 1;
+        } else if (key.equals("roundTripSteerVias")) {
+          // Opt-in via-steering: keep GREEDY round-trip waypoints out of dense town/city cores.
+          // Off by default; honoured only by the GREEDY algorithm (costs one extra isochrone).
+          Integer v = parseIntParamOrNull(key, value);
+          rctx.roundTripSteerVias = v != null && v == 1;
         } else if (key.equals("alternativeidx")) {
           Integer v = parseIntParamOrNull(key, value);
           if (v != null) rctx.setAlternativeIdx(v);

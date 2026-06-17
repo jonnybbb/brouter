@@ -26,9 +26,6 @@ abstract class OsmPath implements OsmLinkHolder {
 
   protected OsmNode sourceNode;
   protected OsmNode targetNode;
-  // True when this way's start junction is inside a density box; amplifies turn + leaving-the-road
-  // cost (StdPath reads it). Set per way in computeCostfactor; default false = no amplification.
-  protected boolean inDenseBoxAtSource = false;
 
   protected OsmLink link;
   public OsmPathElement originElement;
@@ -152,16 +149,6 @@ abstract class OsmPath implements OsmLinkHolder {
     // calculate the costfactor inputs
     float costfactor = rc.expctxWay.getCostfactor();
     boolean isTrafficBackbone = cost == 0 && rc.expctxWay.getIsTrafficBackbone() > 0.f;
-    // Density-box residential penalty: per-meter extra cost the profile assigned to this way
-    // (residential/living_street → residential_penalty, else 0), applied below ONLY where the
-    // sub-segment falls inside a detected dense area. 0 (the default for every profile that does
-    // not set it) skips the box test entirely, so non-residential ways and normal routing are free.
-    float residPenaltyClass = (rc.denseBoxes == null) ? 0.f : rc.expctxWay.getResidentialPenaltyClass();
-    // Is the junction (way start) inside a dense box? Drives the extra turn + "leaving the road"
-    // (initialcost) cost the user wants inside towns, so a transit stays straight on the through-road
-    // instead of touring side streets. Read by StdPath (turn) and below (initialcost).
-    inDenseBoxAtSource = rc.denseBoxes != null
-      && rc.isWithinDenseBox(sourceNode.getILon(), sourceNode.getILat());
     int lastpriorityclassifier = priorityclassifier;
     priorityclassifier = (int) rc.expctxWay.getPriorityClassifier();
 
@@ -177,11 +164,6 @@ abstract class OsmPath implements OsmLinkHolder {
       }
 
       int iicost = (int) initialcost;
-      // "Leaving the road" inside a dense box (a road-class change) costs much more, so the route
-      // stays on the through-road instead of turning off into the residential grid.
-      if (inDenseBoxAtSource && rc.denseBoxInitialFactor > 1.0) {
-        iicost = (int) (iicost * rc.denseBoxInitialFactor);
-      }
       if (message != null) {
         message.linkinitcost += iicost;
       }
@@ -343,13 +325,6 @@ abstract class OsmPath implements OsmLinkHolder {
       }
 
       cost += (int) sectionCost;
-
-      // density-box residential penalty: only when this way is residential-penalised AND the
-      // sub-segment midpoint falls inside a dense box (a town/city core), so village-interior
-      // touring is discouraged while sparse-country residential connectors stay free.
-      if (residPenaltyClass > 0.f && rc.isWithinDenseBox((lon1 + lon2) >>> 1, (lat1 + lat2) >>> 1)) {
-        cost += (int) (dist * residPenaltyClass);
-      }
 
       // compute kinematic
       computeKinematic(rc, dist, delta_h, detailMode);

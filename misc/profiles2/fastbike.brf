@@ -30,11 +30,6 @@ assign consider_noise        = false  # %consider_noise% | Activate to prefer a 
 assign consider_river        = false  # %consider_river% | Activate to prefer a route along rivers, lakes, etc. | boolean
 assign consider_forest       = false  # %consider_forest% | Activate to prefer a route in forest or parks | boolean
 assign consider_town         = false  # %consider_town% | Activate to bypass cities / big towns as far as possible | boolean
-# Extra cost on residential/living_street, applied by the engine ONLY inside detected dense areas
-# ("density boxes"), so loops stop touring village/city interiors while open-country residential
-# connectors stay free. 0 = OFF (default; the way var below folds to 0). Needs the round-trip
-# density-box build (loop.residpenalty in the suite).
-assign residential_penalty   = 0      # %residential_penalty% | Extra cost on residential/living_street INSIDE dense areas (0=off, ~2.0=strong) | number
 
 
 # Change elevation parameters
@@ -235,10 +230,6 @@ assign town_penalty
      switch estimated_town_class=4  0.7
      switch estimated_town_class=5  0.8
      switch estimated_town_class=6  1 99 0
-
-# Per-meter residential penalty handed to the engine; charged ONLY inside a density box (see
-# residential_penalty). 0 everywhere when the param is 0 (default).
-assign residentialpenaltyclass switch isresidentialorliving residential_penalty 0
 
 assign costfactor
   switch and highway= not route=ferry  10000

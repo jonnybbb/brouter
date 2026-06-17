@@ -2206,7 +2206,7 @@ public class RoutingEngine extends Thread {
     // the grid. Accumulation is scoped to this case so default GREEDY and
     // ISO_GREEDY do not pay to build a grid they never consume.
     boolean buildDesirabilityGrid = (routingContext.roundTripDesirability || routingContext.roundTripCapsule
-        || routingContext.roundTripDenseResidential)
+        || routingContext.roundTripSteerVias)
         && algo == RoundTripAlgorithm.GREEDY;
     accumulatingDesirabilityGrid = buildDesirabilityGrid;
     IsochroneExpansionResult iso = (algo == RoundTripAlgorithm.ISO_GREEDY || buildDesirabilityGrid)
@@ -2230,28 +2230,18 @@ public class RoutingEngine extends Thread {
           + " soft no-go polygons (weight " + capsuleNogoWeight + ")");
       }
     }
-    // Density-box residential penalty: derive dense-area polygons from the same grid; the engine
-    // applies the profile's residentialpenaltyclass only inside them (OsmPath + RoutingContext).
-    if (routingContext.roundTripDenseResidential && !desirabilityGrid.isEmpty()) {
-      java.util.Set<Long> dense = CapsuleNogoBuilder.classifyDense(desirabilityGrid,
+    // Via-steering: derive a dense-area map (town/city cores) from the same grid; the round-trip
+    // planner penalises candidate vias placed inside it, so the loop keeps its turnarounds out of
+    // built-up cores. Opt-in (roundTripSteerVias); never consulted by the general per-segment engine.
+    if (routingContext.roundTripSteerVias && !desirabilityGrid.isEmpty()) {
+      routingContext.denseAreaMap = DenseAreaMap.fromDesirabilityGrid(desirabilityGrid, DESIRABILITY_CELL,
         Double.parseDouble(System.getProperty("loop.densebox.percentile", "0.88")),
-        Integer.parseInt(System.getProperty("loop.densebox.mindensenodes", "12")));
-      int minCells = Integer.parseInt(System.getProperty("loop.densebox.mincells", "2"));
-      // Split the greater-city blob into town-sized boxes (no 9 km mega-box).
-      int maxCells = Integer.parseInt(System.getProperty("loop.densebox.maxcells", "20"));
-      int tileCells = Integer.parseInt(System.getProperty("loop.densebox.tilecells", "5"));
-      java.util.List<java.util.Set<Long>> comps =
-        CapsuleNogoBuilder.splitOversized(CapsuleNogoBuilder.components(dense, minCells), maxCells, tileCells);
-      java.util.List<OsmNodeNamed> boxes = new java.util.ArrayList<>();
-      for (java.util.Set<Long> comp : comps) {
-        boxes.addAll(CapsuleNogoBuilder.polygonsFromCells(comp, DESIRABILITY_CELL, 1.0, minCells));
-      }
-      if (!boxes.isEmpty()) {
-        routingContext.denseBoxes = boxes;
-        routingContext.denseBoxTurnFactor = Double.parseDouble(System.getProperty("loop.densebox.turnfactor", "1.0"));
-        routingContext.denseBoxInitialFactor = Double.parseDouble(System.getProperty("loop.densebox.roadchangefactor", "1.0"));
-        logInfo("GREEDY: density boxes — " + boxes.size() + " (via-steer on; turn×"
-          + routingContext.denseBoxTurnFactor + ", leave-road×" + routingContext.denseBoxInitialFactor + ")");
+        Integer.parseInt(System.getProperty("loop.densebox.mindensenodes", "12")),
+        Integer.parseInt(System.getProperty("loop.densebox.mincells", "2")),
+        Integer.parseInt(System.getProperty("loop.densebox.maxcells", "20")),
+        Integer.parseInt(System.getProperty("loop.densebox.tilecells", "5")));
+      if (routingContext.denseAreaMap != null) {
+        logInfo("GREEDY: via-steering — " + routingContext.denseAreaMap.size() + " dense-area boxes");
       }
     }
     double effectiveDirection = direction;

@@ -222,7 +222,7 @@ public class GreedyRoundTripPlanner {
    * detected dense box (a residential/town core), so the planner never places a turnaround/via in a
    * city — the root cause of loops diving into towns. Large enough (≫ the ~1–3 score range) to push
    * such candidates to the bottom, but finite so a town-only-reachable case still closes (graceful,
-   * no no-route). Active only when dense boxes are built (engine.routingContext.denseBoxes != null).
+   * no no-route). Active only when the dense-area map is built (engine.routingContext.denseAreaMap != null).
    * Tunable via {@code loop.denseboxwppenalty}.
    */
   static final double DENSE_BOX_WP_PENALTY = Double.parseDouble(System.getProperty("loop.denseboxwppenalty", "100.0"));
@@ -455,7 +455,7 @@ public class GreedyRoundTripPlanner {
    */
   private double denseBoxWaypointPenalty(int ilon, int ilat) {
     RoutingContext rc = engine.routingContext;
-    return (rc.denseBoxes != null && rc.isWithinDenseBox(ilon, ilat)) ? DENSE_BOX_WP_PENALTY : 0.0;
+    return (rc.denseAreaMap != null && rc.denseAreaMap.contains(ilon, ilat)) ? DENSE_BOX_WP_PENALTY : 0.0;
   }
 
   /**

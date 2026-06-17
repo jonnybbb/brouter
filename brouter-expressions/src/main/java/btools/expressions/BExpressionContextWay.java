@@ -12,7 +12,7 @@ public final class BExpressionContextWay extends BExpressionContext implements T
   private boolean decodeForbidden = true;
 
   private static String[] buildInVariables =
-    {"costfactor", "turncost", "uphillcostfactor", "downhillcostfactor", "initialcost", "nodeaccessgranted", "initialclassifier", "trafficsourcedensity", "istrafficbackbone", "priorityclassifier", "classifiermask", "maxspeed", "uphillcost", "downhillcost", "uphillcutoff", "downhillcutoff", "uphillmaxslope", "downhillmaxslope", "uphillmaxslopecost", "downhillmaxslopecost", "residentialpenaltyclass"};
+    {"costfactor", "turncost", "uphillcostfactor", "downhillcostfactor", "initialcost", "nodeaccessgranted", "initialclassifier", "trafficsourcedensity", "istrafficbackbone", "priorityclassifier", "classifiermask", "maxspeed", "uphillcost", "downhillcost", "uphillcutoff", "downhillcutoff", "uphillmaxslope", "downhillmaxslope", "uphillmaxslopecost", "downhillmaxslopecost"};
 
   protected String[] getBuildInVariableNames() {
     return buildInVariables;
@@ -96,17 +96,6 @@ public final class BExpressionContextWay extends BExpressionContext implements T
 
   public float getDownhillmaxslopecost() {
     return getBuildInVariable(19);
-  }
-
-  /**
-   * Per-meter extra cost for this way that the ENGINE applies only inside a detected dense area
-   * (the "density box" residential penalty). The profile sets this to the residential penalty for
-   * residential/living_street ways and 0 otherwise; the engine multiplies it by distance and adds
-   * it only where the segment falls inside a dense box (see OsmPath + RoutingContext.denseBoxes), so
-   * a residential connector in open country is never penalised — only village-interior touring is.
-   */
-  public float getResidentialPenaltyClass() {
-    return getBuildInVariable(20);
   }
 
   public BExpressionContextWay(BExpressionMetaData meta) {

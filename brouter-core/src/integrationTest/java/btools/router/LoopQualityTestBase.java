@@ -300,18 +300,10 @@ public abstract class LoopQualityTestBase {
    * ISO_GREEDY-only 4.6 relaxation remains above the new baseline.
    */
   /**
-   * Cost/m for the SURFACE-quality gate, with the deliberate preference penalties backed out so the
-   * bar measures the roads' surface cost, not the cost of intentionally avoiding things:
-   * <ul>
-   *   <li>elevation cost ({@code linkelevationcost}) — for gravel (consider_elevation off) this is
-   *       exactly the steep &gt;10% penalty; for fastbike it also covers normal climb, which is not a
-   *       surface property either. Removing it only relaxes the bar, so the default suite cannot
-   *       regress.</li>
-   *   <li>the residential penalty — {@code loop.residpenalty × metres on residential/living_street}
-   *       (only for gravel/fastbike, the profiles that carry the param).</li>
-   * </ul>
-   * Result: a loop that prices higher only because it correctly skirts residential/steep is judged on
-   * the surfaces it actually rides, not on the avoidance cost.
+   * Cost/m for the SURFACE-quality gate, with elevation cost ({@code linkelevationcost}) backed out so
+   * the bar measures the roads' surface cost, not the cost of climbing: for fastbike it covers normal
+   * climb, which is not a surface property. Removing it only relaxes the bar, so the default suite
+   * cannot regress. A loop that prices higher only because it climbs is judged on the surfaces it rides.
    */
   private static double surfaceCostPerMeter(OsmTrack track, String profileName) {
     if (track == null || track.nodes == null || track.distance <= 0) return 0;
@@ -319,13 +311,7 @@ public abstract class LoopQualityTestBase {
     for (OsmPathElement n : track.nodes) {
       if (n.message != null) elevCost += n.message.linkelevationcost;
     }
-    double residPenalty = Double.parseDouble(System.getProperty("loop.residpenalty", "0"));
-    double residCost = 0;
-    if (residPenalty > 0 && ("gravel".equals(profileName) || "fastbike".equals(profileName))) {
-      double residLen = RoadCharacterScore.compute(track, profileName).residentialFrac * track.distance;
-      residCost = residPenalty * residLen;
-    }
-    double adjusted = track.cost - elevCost - residCost;
+    double adjusted = track.cost - elevCost;
     return Math.max(0, adjusted) / track.distance;
   }
 
@@ -368,22 +354,11 @@ public abstract class LoopQualityTestBase {
       // loop production AUTO would ship, not a strict-rejected blank.
       rctx.roundTripStrictQuality = strictQuality;
 
-      // Optional residential-penalty sweep (-Dloop.residpenalty=2.0). Drives the gravel/fastbike
-      // %residential_penalty% param via a request override, so the suite can exercise the
-      // village-interior-avoiding routing WITHOUT editing the shipped profile (default 0 = inert,
-      // routing identical). mtb has no such param, so it is left untouched.
-      // Density boxes power two independent levers: (a) waypoint steering — never place a loop via
-      // inside a town core (-Dloop.densebox); (b) the residential cost penalty inside boxes
-      // (-Dloop.residpenalty). Either one builds the boxes for the GREEDY round-trip.
-      double residPenalty = Double.parseDouble(System.getProperty("loop.residpenalty", "0"));
-      boolean denseBox = Boolean.getBoolean("loop.densebox") || residPenalty > 0;
-      if (denseBox) {
-        rctx.roundTripDenseResidential = true; // build boxes → waypoint steering active (all profiles)
-        if (residPenalty > 0 && ("gravel".equals(profileName) || "fastbike".equals(profileName))) {
-          Map<String, String> kv = new HashMap<>();
-          kv.put("residential_penalty", Double.toString(residPenalty));
-          rctx.keyValues = kv;
-        }
+      // Optional via-steering (-Dloop.steervias). Builds the dense-area map for the GREEDY round-trip
+      // so candidate vias inside town/city cores are penalised (never place a loop turnaround in a
+      // town). Off by default → the default suite routes exactly what production AUTO ships.
+      if (Boolean.getBoolean("loop.steervias")) {
+        rctx.roundTripSteerVias = true;
       }
 
       String outPath = new File(outputDir.getRoot(), testLabel + "_" + variant).getAbsolutePath();

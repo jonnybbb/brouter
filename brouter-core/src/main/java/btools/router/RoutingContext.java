@@ -239,29 +239,10 @@ public final class RoutingContext {
   private List<OsmNodeNamed> keepnogopoints = null;
   private OsmNodeNamed pendingEndpoint = null;
 
-  // Dense-area polygons (the "density boxes"): the residential penalty (way var
-  // residentialpenaltyclass) is applied by the engine ONLY inside these, so a residential
-  // connector in open country is never penalised — only village-interior touring is. Null = off;
-  // populated at round-trip time from the desirability grid (RoutingEngine).
-  public List<OsmNodeNamed> denseBoxes = null;
-  // Inside a dense box, turn cost and "leaving the road" (road-class change initialcost) are
-  // multiplied by these, so a town transit stays straight on the through-road instead of touring
-  // side streets. 1.0 = no amplification (default). Set by RoutingEngine when boxes are built.
-  public double denseBoxTurnFactor = 1.0;
-  public double denseBoxInitialFactor = 1.0;
-
-  /** True if (ilon,ilat) falls inside any dense box (bounding-circle pre-filter, then exact point-in-polygon). */
-  public boolean isWithinDenseBox(int ilon, int ilat) {
-    if (denseBoxes == null) return false;
-    for (OsmNodeNamed b : denseBoxes) {
-      if (b instanceof OsmNogoPolygon
-        && CheapRuler.distance(ilon, ilat, b.ilon, b.ilat) < b.radius
-        && ((OsmNogoPolygon) b).isWithin(ilon, ilat)) {
-        return true;
-      }
-    }
-    return false;
-  }
+  // Dense (town/city) areas for GREEDY via-steering. Null = off (general routing and non-steered
+  // round-trips). Built at round-trip time from the desirability grid (RoutingEngine) and consumed
+  // only by the round-trip planner — never by the general per-segment cost engine.
+  public DenseAreaMap denseAreaMap = null;
 
   public Integer startDirection;
   public boolean startDirectionValid;
@@ -366,14 +347,13 @@ public final class RoutingContext {
   public boolean roundTripCapsule;
 
   /**
-   * Density-box residential penalty for GREEDY round-trips. When on, the GREEDY round-trip builds
-   * the coarse density grid, derives dense-area polygons ({@link #denseBoxes}), and the engine then
-   * applies the way var {@code residentialpenaltyclass} ONLY inside those boxes — so residential
-   * touring inside towns/cities is discouraged while sparse-country residential connectors stay
-   * free (avoids the constrained-terrain degradation a global residential penalty causes). Honoured
-   * by GREEDY only; needs the profile's {@code residential_penalty} param &gt; 0 to have any effect.
+   * Via-steering for GREEDY round-trips (opt-in, request param {@code roundTripSteerVias=1}, default
+   * off). When on, the GREEDY round-trip builds the coarse density grid, derives a {@link DenseAreaMap}
+   * of town/city cores, and penalises candidate waypoints placed inside those areas — so the planned
+   * loop keeps its vias out of built-up cores. Honoured by GREEDY only; costs one extra isochrone
+   * expansion to build the grid, which is why it is opt-in.
    */
-  public boolean roundTripDenseResidential;
+  public boolean roundTripSteerVias;
 
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
 
@@ -782,12 +762,10 @@ public final class RoutingContext {
     c.roundTripDesirability = this.roundTripDesirability;
     // The capsule flag must likewise reach the GREEDY child spawned by AUTO.
     c.roundTripCapsule = this.roundTripCapsule;
-    // Density-box residential penalty: the flag reaches the GREEDY child; the derived boxes (built
-    // after the grid expansion) are read-only during leg routing, so aliasing the list is safe.
-    c.roundTripDenseResidential = this.roundTripDenseResidential;
-    c.denseBoxes = this.denseBoxes;
-    c.denseBoxTurnFactor = this.denseBoxTurnFactor;
-    c.denseBoxInitialFactor = this.denseBoxInitialFactor;
+    // Via-steering flag reaches the GREEDY child spawned by AUTO; the derived dense-area map (built
+    // after the grid expansion) is read-only during leg routing, so aliasing the reference is safe.
+    c.roundTripSteerVias = this.roundTripSteerVias;
+    c.denseAreaMap = this.denseAreaMap;
     // Densification request inputs (the effective explicitViaDensify flag is
     // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
     // AUTO children currently route a single waypoint and never densify, but
