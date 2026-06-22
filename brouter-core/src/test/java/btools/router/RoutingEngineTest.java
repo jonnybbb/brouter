@@ -58,8 +58,18 @@ public class RoutingEngineTest {
       outputDir.getRoot(), "testtrack", new RoutingContext());
     Assert.assertNull("routing failed: " + re.getErrorMessage(), re.getErrorMessage());
 
-    Assert.assertFalse("general routing must not flip into round-trip edge-membership",
+    // The gate is real, not a no-op: a ROUTING-mode engine leaves roundTrip=false,
+    // while a round-trip engine's constructor (engineMode=4) turns it on. Asserting
+    // only the false side would just restate the field default; the true side below
+    // verifies the constructor actually drives the node-vs-edge membership switch.
+    Assert.assertFalse("ROUTING-mode engine must not enable the edge-membership gate",
       re.routingContext.roundTrip);
+    RoutingContext rtCtx = new RoutingContext();
+    rtCtx.startDirection = 0;
+    rtCtx.roundTripDistance = 1000;
+    RoutingEngine rtEngine = calcRoundTrip(8.720, 50.000, "rtGateCheck", rtCtx);
+    Assert.assertTrue("round-trip engine constructor must enable the edge-membership gate",
+      rtEngine.routingContext.roundTrip);
 
     OsmTrack alt = re.getFoundTrack();
     Assert.assertNotNull("alternative track expected", alt);

@@ -97,6 +97,7 @@ public class AlternativeRefTrackMembershipTest {
     Assume.assumeTrue("segments4 missing: " + segDir.getAbsolutePath(), segDir.isDirectory());
 
     List<Row> rows = new ArrayList<>();
+    int tiledPairs = 0;
     for (Object[] p : PAIRS) {
       double flon = (Double) p[0];
       double flat = (Double) p[1];
@@ -109,6 +110,7 @@ public class AlternativeRefTrackMembershipTest {
           || !new File(segDir, tileFor(tlon, tlat)).exists()) {
         continue; // tile or profile not provisioned locally
       }
+      tiledPairs++;
 
       File dir = outputDir.newFolder();
       // 1) primary (writes t0.gpx; no refTrack, so the roundTrip flag is irrelevant here)
@@ -129,7 +131,15 @@ public class AlternativeRefTrackMembershipTest {
         overlapWithPrimary(altNode, primary), overlapWithPrimary(altEdge, primary)));
     }
 
-    Assume.assumeFalse("no comparable A->B alternatives routed (tiles/profiles unavailable)", rows.isEmpty());
+    // Skip only when NO pair had its tiles + profile provisioned (offline / partial CI).
+    // If tiles WERE present but produced no comparable alternative, that is a degenerate
+    // corpus, not a missing-data skip — fail loudly so the "18 real pairs" claim in the
+    // class javadoc cannot silently pass on zero pairs.
+    Assume.assumeTrue("no tiles/profiles provisioned for any pair — nothing to compare", tiledPairs > 0);
+    System.out.println("REFTRACK-MEMBERSHIP: " + rows.size() + " comparable pairs from "
+      + tiledPairs + " tiled pairs (of " + PAIRS.length + ")");
+    Assert.assertFalse("tiles present but no comparable A->B alternative produced — corpus degenerate",
+      rows.isEmpty());
 
     int differ = 0;
     int edgeCheaper = 0;

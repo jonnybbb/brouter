@@ -89,7 +89,9 @@ public class DesirabilityCandidateProvider implements RoundTripCandidateProvider
     for (int i = 0; i < n; i++) {
       double d = CheapRuler.distance(fromIlon, fromIlat, cellIlon[i], cellIlat[i]);
       if (d < lo || d > hi) continue;
-      double bearing = CheapAngleMeter.getDirection(fromIlon, fromIlat, cellIlon[i], cellIlat[i]);
+      // cos(lat)-scaled bearing to match the convention of prevLegBearing and the
+      // graph-native/isochrone providers (raw getDirection distorts ~10-15° off the equator).
+      double bearing = CheapRuler.getScaledBearing(fromIlon, fromIlat, cellIlon[i], cellIlat[i]);
       if (dirBias && CheapAngleMeter.getDifferenceFromDirection(startDirection, bearing) > DIRECTION_TOLERANCE_DEG) {
         continue;
       }
