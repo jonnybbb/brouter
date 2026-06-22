@@ -14,24 +14,34 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /**
- * Proof harness for ADR-0003: the edge-membership anti-reuse penalty never worsens a
- * general (non-round-trip) {@code alternativeidx} route, and removes node-membership's
- * false-positive connector penalties.
+ * Guards the round-trip-only gating of the refTrack anti-reuse penalty: the
+ * edge-membership form ({@link OsmTrack#containsTraveledSegment}) is applied only in
+ * round-trip mode, while general (non-round-trip) {@code alternativeidx} routing keeps
+ * the historic both-endpoints {@link OsmTrack#containsNode} test. This test proves that
+ * gating is safe and that the historic behaviour is preserved.
  *
- * <p>It uses {@link RoutingContext#roundTrip} as a zero-code-change lever: the SAME
- * A&rarr;B {@code alternativeidx=1} request is routed once with the flag off (historic
- * both-endpoints {@code containsNode} test) and once on (edge {@code containsTraveledSegment}
- * test), isolating exactly the membership change (engineMode stays ROUTING in both).
+ * <p><b>Lever.</b> {@link RoutingContext#roundTrip} flips ONLY that membership test, so
+ * the SAME A&rarr;B {@code alternativeidx=1} request can be routed once with the flag off
+ * (node-membership) and once on (edge-membership), isolating the change (engineMode stays
+ * ROUTING in both).
  *
- * <p>For each pair it measures the alternative's penalised cost, real distance, and
- * <em>overlap with the primary</em> (fraction of the alternative's traveled edges the
- * primary also drove &mdash; the divergence metric). It then asserts the subset lemma
- * empirically (edge cost never exceeds node cost) and that divergence is preserved in
- * aggregate, and renders the largest-gap pair to
- * {@code build/reports/loops/reftrack-example.{geojson,html}} as the before/after picture.
+ * <p><b>Subset lemma.</b> For a raw refTrack, an edge-penalised link is always
+ * node-penalised too (its endpoints are consecutive track nodes, hence both on the track),
+ * but not vice versa &mdash; node-membership additionally taxes "chord" connectors between
+ * two non-adjacent track nodes that the track never drove. So edge-penalised &sube;
+ * node-penalised: retrace-avoidance is identical and the optimal alternative is never
+ * costlier under edge-membership.
  *
- * <p>Integration test: needs real {@code segments4} tiles (Dreieich E5_N50, Freiburg
- * E5_N45); {@link Assume}-skips when they are absent. Run:
+ * <p><b>Empirical finding.</b> Over a Berlin-grid + Dreieich + Freiburg corpus the two
+ * tests produce byte-identical alternatives ({@code differ=0}, {@code costViolations=0}):
+ * general alternatives see no benefit, because a shortest-path primary has no exploitable
+ * chords (a cheap shortcut would already be in the primary). Chords only arise when the
+ * refTrack self-approaches &mdash; the signature of a round-trip &mdash; which is where the
+ * edge form is enabled. Hence the gate is the correct permanent design, and this test
+ * stays as a regression guard for the lemma and for general-alternative invariance.
+ *
+ * <p>Integration test: needs real {@code segments4} tiles; {@link Assume}-skips when they
+ * are absent. Run:
  * <pre>./gradlew :brouter-core:integrationTest --tests 'btools.router.AlternativeRefTrackMembershipTest'
  *   -Dloop.segments.nodownload=true --rerun-tasks</pre>
  */
@@ -183,7 +193,7 @@ public class AlternativeRefTrackMembershipTest {
     wplist.add(named("to", tlon, tlat));
     RoutingContext rctx = new RoutingContext();
     rctx.localFunction = profileFile.getAbsolutePath();
-    rctx.roundTrip = roundTrip; // the experimental lever (ADR-0003)
+    rctx.roundTrip = roundTrip; // the lever: flips ONLY the refTrack membership test
     String out = new File(dir, "t").getAbsolutePath();
     RoutingEngine re = new RoutingEngine(out, out, segDir, wplist, rctx); // ROUTING mode
     re.doRun(0);
