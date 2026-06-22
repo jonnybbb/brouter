@@ -280,7 +280,7 @@ abstract class OsmPath implements OsmLinkHolder {
       }
       linkdisttotal += dist;
 
-      if (refTrack != null && !refTrackSegMissing
+      if (rc.roundTrip && refTrack != null && !refTrackSegMissing
           && !refTrack.containsTraveledSegment(
             ((long) lon1) << 32 | lat1, ((long) lon2) << 32 | lat2)) {
         refTrackSegMissing = true;
@@ -359,16 +359,20 @@ abstract class OsmPath implements OsmLinkHolder {
 
       if (transferNode == null) {
         // *** penalty for being part of the reference track
-        // Edge membership, not both-endpoints node membership: the old
-        // containsNode(target) && containsNode(source) test also taxed fresh
-        // connector roads between two separately-visited nodes — roads the
-        // reference track never traveled. A link is reused when every walked
-        // sub-segment matched (detailed refTrack) or its junction pair is a
-        // recorded edge (raw refTrack). refTrackCostFactor is 1.0 (exact
-        // integer math, historic cost) everywhere except the round-trip
-        // return-variant search.
-        if (refTrack != null && (!refTrackSegMissing
-            || refTrack.containsTraveledSegment(sourceNode.getIdFromPos(), targetNode.getIdFromPos()))) {
+        // Round-trip uses EDGE membership, not both-endpoints node membership:
+        // the historic containsNode(target) && containsNode(source) test also
+        // taxed fresh connector roads between two separately-visited nodes —
+        // roads the reference track never traveled. A link is reused when every
+        // walked sub-segment matched (detailed refTrack) or its junction pair is
+        // a recorded edge (raw refTrack). General routing (incl. alternativeidx
+        // alternatives) keeps the historic node-membership test so its output is
+        // unchanged; refTrackCostFactor is 1.0 there (exact integer math, historic
+        // cost) and only the round-trip return-variant search lowers it.
+        boolean reusedRefTrackEdge = refTrack != null && (rc.roundTrip
+          ? (!refTrackSegMissing
+             || refTrack.containsTraveledSegment(sourceNode.getIdFromPos(), targetNode.getIdFromPos()))
+          : (refTrack.containsNode(targetNode) && refTrack.containsNode(sourceNode)));
+        if (reusedRefTrackEdge) {
           int reftrackcost = (int) (linkdisttotal * rc.refTrackCostFactor + 0.5);
           cost += reftrackcost;
         }

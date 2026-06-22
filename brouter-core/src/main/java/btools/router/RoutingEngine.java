@@ -285,6 +285,7 @@ public class RoutingEngine extends Thread {
     this.routingContext = rc;
     this.engineMode = engineMode;
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
+      rc.roundTrip = true;
       applyRoundTripProfileDefaults(rc);
     }
 

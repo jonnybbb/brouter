@@ -51,6 +51,17 @@ public final class RoutingContext {
    */
   public double refTrackCostFactor = 1.0;
 
+  /**
+   * True while this context drives round-trip (loop) generation (engineMode 4).
+   * Gates the anti-reuse refTrack penalty in {@link OsmPath#addAddionalPenalty}
+   * to its edge-membership form (a link is reused only when the refTrack actually
+   * traveled it). General routing (incl. alternativeidx alternatives) keeps the
+   * historic both-endpoints node-membership test so its output is unchanged. Set
+   * in the {@link RoutingEngine} constructor for every round-trip engine (parent
+   * and AUTO children) and carried into child contexts by {@link #copyRequestFields()}.
+   */
+  public boolean roundTrip = false;
+
   public int alternativeIdx = 0;
   public String localFunction;
   public long profileTimestamp;
@@ -752,6 +763,9 @@ public final class RoutingContext {
     c.roundTripPoints = this.roundTripPoints;
     c.allowSamewayback = this.allowSamewayback;
     c.roundTripAlgorithm = this.roundTripAlgorithm;
+    // AUTO children are round-trip engines too, so the edge-membership refTrack
+    // gate must follow the parent (the child constructor sets it again from engineMode).
+    c.roundTrip = this.roundTrip;
     // Strictness must follow the parent into AUTO children: otherwise a strict
     // request runs lenient children that adopt QUALITY best-effort tracks and
     // report no errorMessage, so the parent's strict re-gate finds no winner

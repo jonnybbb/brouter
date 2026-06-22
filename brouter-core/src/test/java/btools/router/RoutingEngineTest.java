@@ -44,6 +44,35 @@ public class RoutingEngineTest {
     Assert.assertTrue("result content mismatch", a1.exists());
   }
 
+  // Pins the historic node-membership refTrack anti-reuse penalty for GENERAL
+  // (non-round-trip) alternative routing. The round-trip edge-membership penalty
+  // (OsmPath: containsTraveledSegment) is gated behind RoutingContext.roundTrip,
+  // so a plain alternative must reuse the OLD both-endpoints containsNode test and
+  // its output must be unchanged. When that gate is later lifted (made global),
+  // re-capture this golden: any change in cost/node-count is the alternative-route
+  // delta to review before flipping the default.
+  @Test
+  public void generalAlternativeRefTrackPenaltyIsHistoric() throws Exception {
+    copyResourceToDir("/testtrack0.gpx", outputDir.getRoot());
+    RoutingEngine re = calcRouteEngine(8.720897, 50.002515, 8.723658, 49.997510,
+      outputDir.getRoot(), "testtrack", new RoutingContext());
+    Assert.assertNull("routing failed: " + re.getErrorMessage(), re.getErrorMessage());
+
+    Assert.assertFalse("general routing must not flip into round-trip edge-membership",
+      re.routingContext.roundTrip);
+
+    OsmTrack alt = re.getFoundTrack();
+    Assert.assertNotNull("alternative track expected", alt);
+    Assert.assertTrue("alternative should be a real track", alt.nodes.size() > 2);
+    Assert.assertEquals("alternative-route cost (historic node-membership refTrack penalty)",
+      GOLDEN_ALT_COST, alt.cost);
+  }
+
+  // Captured 2026-06-22 with the refTrack edge-membership change gated behind
+  // RoutingContext.roundTrip (i.e. the historic containsNode penalty for general
+  // routing). See generalAlternativeRefTrackPenaltyIsHistoric.
+  private static final int GOLDEN_ALT_COST = 1327;
+
   @Test
   public void routeDestinationPointFarOff() {
     String msg = calcRoute(8.720897, 50.002515, 16.723658, 49.997510, outputDir.getRoot(), "notrack", new RoutingContext());
@@ -1464,6 +1493,10 @@ public class RoutingEngineTest {
   }
 
   private String calcRoute(double flon, double flat, double tlon, double tlat, File dir, String trackname, RoutingContext rctx) {
+    return calcRouteEngine(flon, flat, tlon, tlat, dir, trackname, rctx).getErrorMessage();
+  }
+
+  private RoutingEngine calcRouteEngine(double flon, double flat, double tlon, double tlat, File dir, String trackname, RoutingContext rctx) {
     String out = new File(dir, trackname).getAbsolutePath();
 
     List<OsmNodeNamed> wplist = new ArrayList<>();
@@ -1490,7 +1523,7 @@ public class RoutingEngineTest {
 
     re.doRun(0);
 
-    return re.getErrorMessage();
+    return re;
   }
 
   // --- Phase 2.0: iso-asymmetry bearing computation -----------------------
