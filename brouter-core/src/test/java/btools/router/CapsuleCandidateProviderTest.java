@@ -10,6 +10,7 @@ import java.util.Map;
 import btools.router.RoundTripCandidateProvider.CandidatePoint;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -132,7 +133,7 @@ public class CapsuleCandidateProviderTest {
     list.add(cp);
     CapsuleCandidateProvider p = new CapsuleCandidateProvider(grid, new StubFallback(list), CELL);
 
-    assertTrue("flat grid → elevation lever off", !p.elevationActive());
+    assertFalse("flat grid → elevation lever off", p.elevationActive());
     p.candidatesForStep(0, 0, 1000, 1, 5, 0, 0, -1, null);
     assertEquals(0.0, cp.elevationReward, 1e-9);
   }

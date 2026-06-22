@@ -835,7 +835,7 @@ public class GreedyRoundTripPlannerTest {
     // non-adjacent endpoint, exactly what the safety net exists to surface.
     OsmTrack a = trackWithNodes(new int[][]{{188720000, 140000000}, {188730000, 140000000}});
     OsmTrack b = trackWithNodes(new int[][]{{188830000, 140000000}, {188840000, 140000000}});
-    java.util.List<String> gaps =
+    List<String> gaps =
       GreedyRoundTripPlanner.seamGapsMeters(java.util.Arrays.asList(a), b);
     Assert.assertEquals(1, gaps.size());
     Assert.assertTrue("gap message names the leg: " + gaps.get(0),

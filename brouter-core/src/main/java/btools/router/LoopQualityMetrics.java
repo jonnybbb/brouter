@@ -183,7 +183,7 @@ public final class LoopQualityMetrics {
     if (full <= CROSS_SCAN_MAX_NODES) {
       pts = nodes;
     } else {
-      pts = new java.util.ArrayList<>(CROSS_SCAN_MAX_NODES);
+      pts = new ArrayList<>(CROSS_SCAN_MAX_NODES);
       double step = (double) (full - 1) / (CROSS_SCAN_MAX_NODES - 1);
       for (int k = 0; k < CROSS_SCAN_MAX_NODES; k++) {
         int idx = (int) Math.round(k * step);
@@ -271,7 +271,7 @@ public final class LoopQualityMetrics {
     if (full <= CROSS_SCAN_MAX_NODES) {
       pts = nodes;
     } else {
-      pts = new java.util.ArrayList<>(CROSS_SCAN_MAX_NODES);
+      pts = new ArrayList<>(CROSS_SCAN_MAX_NODES);
       double step = (double) (full - 1) / (CROSS_SCAN_MAX_NODES - 1);
       for (int k = 0; k < CROSS_SCAN_MAX_NODES; k++) {
         int idx = (int) Math.round(k * step);

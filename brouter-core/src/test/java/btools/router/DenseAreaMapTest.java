@@ -1,6 +1,8 @@
 package btools.router;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Collections;
@@ -53,7 +55,7 @@ public class DenseAreaMapTest {
       grid, CELL, /*densePercentile*/ 0.5, /*minDenseNodes*/ 12,
       /*minCells*/ 2, /*maxCells*/ 20, /*tileCells*/ 5);
 
-    assertTrue("dense cluster yields a box", map != null);
+    assertNotNull("dense cluster yields a box", map);
     // a point inside cell (201,301) is inside the built box
     assertTrue("box covers the cluster interior", map.contains(201 * CELL + 2500, 301 * CELL + 2500));
     // a point far away is outside
@@ -63,15 +65,15 @@ public class DenseAreaMapTest {
   @Test
   public void fromDesirabilityGridReturnsNullWhenNoDenseArea() {
     // empty grid -> no map
-    assertTrue("empty grid yields no map",
-      DenseAreaMap.fromDesirabilityGrid(new HashMap<>(), CELL, 0.5, 12, 2, 20, 5) == null);
+    assertNull("empty grid yields no map",
+      DenseAreaMap.fromDesirabilityGrid(new HashMap<>(), CELL, 0.5, 12, 2, 20, 5));
 
     // a scatter of low-node-count cells (all below the absolute floor) -> no dense area
     Map<Long, double[]> sparse = new HashMap<>();
     for (int cx = 200; cx <= 210; cx++) {
       sparse.put(cellKey(cx, 300), new double[]{1, 0, 0, 0});
     }
-    assertTrue("sparse grid yields no map",
-      DenseAreaMap.fromDesirabilityGrid(sparse, CELL, 0.5, 12, 2, 20, 5) == null);
+    assertNull("sparse grid yields no map",
+      DenseAreaMap.fromDesirabilityGrid(sparse, CELL, 0.5, 12, 2, 20, 5));
   }
 }

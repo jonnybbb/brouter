@@ -229,7 +229,7 @@ public class RoutingEngine extends Thread {
   private static final int DESIRABILITY_TOP_K = 10; // candidate cells offered per greedy step
   // Package-private so the round-trip desirability wiring test can assert the grid
   // was actually populated (i.e. the flag-on path was exercised end-to-end).
-  final java.util.HashMap<Long, double[]> desirabilityGrid = new java.util.HashMap<>();
+  final Map<Long, double[]> desirabilityGrid = new HashMap<>();
   // True only while an isochrone expansion is being run specifically to build the
   // GREEDY desirability grid. Keeps the accumulation off the ISO_GREEDY expansion,
   // which would otherwise populate a grid that buildCandidateProvider then discards.
@@ -1386,12 +1386,12 @@ public class RoutingEngine extends Thread {
     // competition outcome. Score breakdown is in the route-choice verdict.
     StringBuilder summary = new StringBuilder(256);
     summary.append("AUTO selected ").append(winner.algorithm)
-      .append(" (score ").append(String.format(java.util.Locale.US, "%.3f", winner.scoreValue()))
+      .append(" (score ").append(String.format(Locale.US, "%.3f", winner.scoreValue()))
       .append(") after ").append(all.size()).append(" candidate(s) in ").append(totalMs).append("ms.");
     for (RoundTripCandidateResult r : all) {
       if (r == winner) continue;
       summary.append(" Also tried ").append(r.algorithm).append(": ")
-        .append(r.accepted() ? String.format(java.util.Locale.US, "score %.3f", r.scoreValue())
+        .append(r.accepted() ? String.format(Locale.US, "score %.3f", r.scoreValue())
                              : (r.errorMessage == null ? "no track" : "rejected"))
         .append('.');
     }
@@ -2218,13 +2218,13 @@ public class RoutingEngine extends Thread {
     // (implicit portals/corridors). Off unless roundTripCapsule AND loop.capsule.nogoweight>0.
     double capsuleNogoWeight = Double.parseDouble(System.getProperty("loop.capsule.nogoweight", "0"));
     if (routingContext.roundTripCapsule && capsuleNogoWeight > 0 && !desirabilityGrid.isEmpty()) {
-      java.util.List<OsmNodeNamed> capsuleNogos = CapsuleNogoBuilder.build(
+      List<OsmNodeNamed> capsuleNogos = CapsuleNogoBuilder.build(
         desirabilityGrid, DESIRABILITY_CELL, capsuleNogoWeight,
         Double.parseDouble(System.getProperty("loop.capsule.densepercentile", "0.80")),
         Integer.parseInt(System.getProperty("loop.capsule.mindensenodes", "10")),
         Integer.parseInt(System.getProperty("loop.capsule.nogomincells", "4")));
       if (!capsuleNogos.isEmpty()) {
-        if (routingContext.nogopoints == null) routingContext.nogopoints = new java.util.ArrayList<>();
+        if (routingContext.nogopoints == null) routingContext.nogopoints = new ArrayList<>();
         routingContext.nogopoints.addAll(capsuleNogos);
         logInfo("GREEDY: capsule leg-masking — " + capsuleNogos.size()
           + " soft no-go polygons (weight " + capsuleNogoWeight + ")");
@@ -2474,7 +2474,7 @@ public class RoutingEngine extends Thread {
     } else {
       n = 6;
     }
-    if (profileName != null && profileName.toLowerCase(java.util.Locale.US).contains("mtb")) {
+    if (profileName != null && profileName.toLowerCase(Locale.US).contains("mtb")) {
       n++;
     }
     return Math.max(3, Math.min(6, n));

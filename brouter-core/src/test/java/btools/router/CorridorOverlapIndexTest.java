@@ -1,6 +1,7 @@
 package btools.router;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import org.junit.Test;
 
@@ -48,7 +49,7 @@ public class CorridorOverlapIndexTest {
 
   /** Densify a polyline so edges are short (≈ every `step` m) — mimics real routed tracks. */
   private static OsmTrack denseTrack(double[][] corners, double step) {
-    ArrayList<double[]> out = new ArrayList<>();
+    List<double[]> out = new ArrayList<>();
     out.add(corners[0]);
     for (int i = 1; i < corners.length; i++) {
       double[] a = corners[i - 1], b = corners[i];
@@ -148,7 +149,7 @@ public class CorridorOverlapIndexTest {
   public void stackedSwitchbackClimbNotFlagged() {
     // 8 hairpin limbs, each 400 m long, stacked 60 m apart in plan (anti-parallel).
     // Limb k runs east on even k, west on odd k, at y = 60*k.
-    java.util.List<double[]> corners = new java.util.ArrayList<>();
+    List<double[]> corners = new ArrayList<>();
     corners.add(new double[]{0, 0});
     for (int k = 0; k < 8; k++) {
       double y = 60.0 * (k + 1);

@@ -660,7 +660,7 @@ public class LoopQualityMetricsTest {
   public void crossingPoints_locatesTheLassoIntersection() {
     // The render-side highlighter must place the marker AT the crossing:
     // the fixture's arms cross at x=1100m, y=0 (see lassoLoop).
-    java.util.List<double[]> pts = LoopQualityMetrics.crossingPoints(lassoLoop(true).nodes);
+    List<double[]> pts = LoopQualityMetrics.crossingPoints(lassoLoop(true).nodes);
     Assert.assertEquals(1, pts.size());
     OsmPathElement expected = m(1100, 0);
     OsmPathElement actual = OsmPathElement.create(

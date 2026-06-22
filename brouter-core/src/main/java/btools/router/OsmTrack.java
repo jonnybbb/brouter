@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmPos;
@@ -364,7 +365,7 @@ public final class OsmTrack {
    * sub-segments — callers test whichever granularity they walk at.
    * Invalidated on mutation ({@link #buildMap}, {@link #appendTrack}).
    */
-  private HashSet<Long> traveledEdgeKeys;
+  private Set<Long> traveledEdgeKeys;
 
   private static long traveledEdgeKey(long idA, long idB) {
     long lo = Math.min(idA, idB);
@@ -384,7 +385,7 @@ public final class OsmTrack {
    */
   public boolean containsTraveledSegment(long idA, long idB) {
     if (traveledEdgeKeys == null) {
-      HashSet<Long> keys = new HashSet<>(Math.max(16, nodes.size() * 2));
+      Set<Long> keys = new HashSet<>(Math.max(16, nodes.size() * 2));
       for (int i = 1; i < nodes.size(); i++) {
         keys.add(traveledEdgeKey(nodes.get(i - 1).getIdFromPos(), nodes.get(i).getIdFromPos()));
       }

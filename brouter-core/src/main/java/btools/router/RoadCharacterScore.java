@@ -58,77 +58,93 @@ public final class RoadCharacterScore {
   private static double desirability(int fam, String highway) {
     boolean none = (highway == null || highway.isEmpty());
     switch (fam) {
-      case FAM_ROAD: // smooth-paved-loving: arterials good, tracks bad
-        if (none) return 0.55;
-        switch (highway) {
-          case "cycleway": return 1.00;
-          case "tertiary": case "tertiary_link": return 0.92;
-          case "secondary": case "secondary_link": return 0.85;
-          case "unclassified": return 0.72;
-          case "primary": case "primary_link": return 0.62;
-          case "residential": return 0.60;
-          case "living_street": return 0.52;
-          case "service": return 0.50;
-          case "trunk": case "trunk_link": return 0.25;
-          case "track": return 0.25;
-          case "path": case "bridleway": return 0.12;
-          case "pedestrian": case "steps": return 0.10;
-          case "motorway": case "motorway_link": return 0.00;
-          default: return 0.55;
-        }
-      case FAM_MTB: // path/track-loving, even more than gravel
-        if (none) return 0.50;
-        switch (highway) {
-          case "path": case "track": case "bridleway": return 1.00;
-          case "cycleway": return 0.80;
-          case "unclassified": return 0.70;
-          case "service": return 0.60;
-          case "tertiary": case "tertiary_link": return 0.55;
-          case "living_street": return 0.45;
-          case "residential": return 0.40;
-          case "footway": return 0.55;
-          case "secondary": case "secondary_link": return 0.30;
-          case "pedestrian": case "steps": return 0.30;
-          case "primary": case "primary_link": return 0.15;
-          case "trunk": case "trunk_link": return 0.05;
-          case "motorway": case "motorway_link": return 0.00;
-          default: return 0.55;
-        }
-      case FAM_TREKKING: // balanced
-        if (none) return 0.55;
-        switch (highway) {
-          case "cycleway": case "path": return 0.95;
-          case "track": return 0.85;
-          case "unclassified": return 0.80;
-          case "tertiary": case "tertiary_link": return 0.75;
-          case "service": return 0.62;
-          case "residential": return 0.60;
-          case "living_street": return 0.60;
-          case "secondary": case "secondary_link": return 0.55;
-          case "bridleway": case "footway": return 0.65;
-          case "pedestrian": case "steps": return 0.40;
-          case "primary": case "primary_link": return 0.35;
-          case "trunk": case "trunk_link": return 0.10;
-          case "motorway": case "motorway_link": return 0.00;
-          default: return 0.60;
-        }
-      default: // FAM_GRAVEL: track/quiet-loving, dislikes arterials + village-interior touring
-        if (none) return 0.50;
-        switch (highway) {
-          case "track": case "path": case "bridleway": case "footway": return 1.00;
-          case "cycleway": return 0.95;
-          case "unclassified": return 0.85;
-          case "service": return 0.72;
-          case "tertiary": case "tertiary_link": return 0.68;
-          case "living_street": return 0.58;
-          case "residential": return 0.45;   // rideable, but touring village interiors is the dislike
-          case "secondary": case "secondary_link": return 0.38;
-          case "pedestrian": case "steps": return 0.30;
-          case "primary": case "primary_link": return 0.20;
-          case "trunk": case "trunk_link": return 0.05;
-          case "motorway": case "motorway_link": return 0.00;
-          default: return 0.55;
-        }
+      case FAM_ROAD:     return desirabilityRoad(highway, none);
+      case FAM_MTB:      return desirabilityMtb(highway, none);
+      case FAM_TREKKING: return desirabilityTrekking(highway, none);
+      default:           return desirabilityGravel(highway, none); // FAM_GRAVEL
+    }
+  }
+
+  // smooth-paved-loving: arterials good, tracks bad
+  private static double desirabilityRoad(String highway, boolean none) {
+    if (none) return 0.55;
+    switch (highway) {
+      case "cycleway": return 1.00;
+      case "tertiary": case "tertiary_link": return 0.92;
+      case "secondary": case "secondary_link": return 0.85;
+      case "unclassified": return 0.72;
+      case "primary": case "primary_link": return 0.62;
+      case "residential": return 0.60;
+      case "living_street": return 0.52;
+      case "service": return 0.50;
+      case "trunk": case "trunk_link": return 0.25;
+      case "track": return 0.25;
+      case "path": case "bridleway": return 0.12;
+      case "pedestrian": case "steps": return 0.10;
+      case "motorway": case "motorway_link": return 0.00;
+      default: return 0.55;
+    }
+  }
+
+  // path/track-loving, even more than gravel
+  private static double desirabilityMtb(String highway, boolean none) {
+    if (none) return 0.50;
+    switch (highway) {
+      case "path": case "track": case "bridleway": return 1.00;
+      case "cycleway": return 0.80;
+      case "unclassified": return 0.70;
+      case "service": return 0.60;
+      case "tertiary": case "tertiary_link": return 0.55;
+      case "living_street": return 0.45;
+      case "residential": return 0.40;
+      case "footway": return 0.55;
+      case "secondary": case "secondary_link": return 0.30;
+      case "pedestrian": case "steps": return 0.30;
+      case "primary": case "primary_link": return 0.15;
+      case "trunk": case "trunk_link": return 0.05;
+      case "motorway": case "motorway_link": return 0.00;
+      default: return 0.55;
+    }
+  }
+
+  // balanced
+  private static double desirabilityTrekking(String highway, boolean none) {
+    if (none) return 0.55;
+    switch (highway) {
+      case "cycleway": case "path": return 0.95;
+      case "track": return 0.85;
+      case "unclassified": return 0.80;
+      case "tertiary": case "tertiary_link": return 0.75;
+      case "service": return 0.62;
+      case "residential": return 0.60;
+      case "living_street": return 0.60;
+      case "secondary": case "secondary_link": return 0.55;
+      case "bridleway": case "footway": return 0.65;
+      case "pedestrian": case "steps": return 0.40;
+      case "primary": case "primary_link": return 0.35;
+      case "trunk": case "trunk_link": return 0.10;
+      case "motorway": case "motorway_link": return 0.00;
+      default: return 0.60;
+    }
+  }
+
+  // track/quiet-loving, dislikes arterials + village-interior touring
+  private static double desirabilityGravel(String highway, boolean none) {
+    if (none) return 0.50;
+    switch (highway) {
+      case "track": case "path": case "bridleway": case "footway": return 1.00;
+      case "cycleway": return 0.95;
+      case "unclassified": return 0.85;
+      case "service": return 0.72;
+      case "tertiary": case "tertiary_link": return 0.68;
+      case "living_street": return 0.58;
+      case "residential": return 0.45;   // rideable, but touring village interiors is the dislike
+      case "secondary": case "secondary_link": return 0.38;
+      case "pedestrian": case "steps": return 0.30;
+      case "primary": case "primary_link": return 0.20;
+      case "trunk": case "trunk_link": return 0.05;
+      case "motorway": case "motorway_link": return 0.00;
+      default: return 0.55;
     }
   }
 
