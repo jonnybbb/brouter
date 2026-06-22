@@ -20,10 +20,10 @@ package btools.router;
  *   <li>{@link #score} — the {@link RouteChoiceScore.Verdict} for ranking;
  *       null if the candidate failed before scoring was attempted.</li>
  *   <li>{@link #runtimeMillis} — wall-clock of this candidate's attempt.</li>
- *   <li>{@link #routedIsoCandidates}/{@link #routedRadialCandidates} —
+ *   <li>{@link #routedIsoCandidates}/{@link #routedNonIsoCandidates} —
  *       telemetry: how many candidates of each provenance the greedy
  *       planner actually routed (not just generated).</li>
- *   <li>{@link #acceptedIsoLegs}/{@link #acceptedRadialLegs} — how many of
+ *   <li>{@link #acceptedIsoLegs}/{@link #acceptedNonIsoLegs} — how many of
  *       those routed candidates were accepted into the final loop. "Low
  *       iso usage" should be measured by accepted, not routed.</li>
  *   <li>{@link #errorMessage} — set when the candidate failed (engine error,
@@ -39,9 +39,9 @@ final class RoundTripCandidateResult {
   RouteChoiceScore.Verdict score;
   long runtimeMillis;
   int routedIsoCandidates;
-  int routedRadialCandidates;
+  int routedNonIsoCandidates;
   int acceptedIsoLegs;
-  int acceptedRadialLegs;
+  int acceptedNonIsoLegs;
   String errorMessage;
   /**
    * Keep-when-forced marker from the child planner
@@ -75,9 +75,9 @@ final class RoundTripCandidateResult {
       return algorithm + ": no track";
     }
     return String.format(java.util.Locale.US,
-      "%s: accepted=%s, track=%dm, gateShape=%s, score=%.3f, runtime=%dms, isoRouted=%d, radialRouted=%d",
+      "%s: accepted=%s, track=%dm, gateShape=%s, score=%.3f, runtime=%dms, isoRouted=%d, nonIsoRouted=%d",
       algorithm, accepted(), track.distance,
       gateVerdict == null ? "?" : gateVerdict.getShape(),
-      scoreValue(), runtimeMillis, routedIsoCandidates, routedRadialCandidates);
+      scoreValue(), runtimeMillis, routedIsoCandidates, routedNonIsoCandidates);
   }
 }

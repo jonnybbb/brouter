@@ -17,7 +17,7 @@ import java.util.Set;
  * the least-cost path through when a crossing is unavoidable (implicit corridors).
  *
  * <p>Unlike {@link CapsuleCandidateProvider} (waypoint steering only), this masks the
- * interior during leg routing. The soft weight (finite, not NaN) keeps the start capsule
+ * interior during leg routing. The soft weight keeps the start capsule
  * penalised-but-exitable ("leave town fast").
  *
  * <p>Polygons follow the spec's morphology so they hug the actual dense shape instead of
@@ -50,11 +50,11 @@ public final class CapsuleNogoBuilder {
   }
 
   /**
-   * Build soft/hard no-go polygons from an explicit cell set (4-connected components →
-   * exact rectilinear boundary trace). {@code nogoWeight} may be {@code Double.NaN} for a
-   * HARD block — used by the working-graph contraction to skip the interior quadrants
-   * while the carved-out ring+cross corridors stay routable. No morphological closing is
-   * applied here, so a carved skeleton is preserved.
+   * Build soft no-go polygons from an explicit cell set (4-connected components →
+   * exact rectilinear boundary trace). Unlike {@link #build}, this applies no
+   * morphological closing, so the caller's exact cell shape is preserved.
+   * {@code nogoWeight} makes each polygon a soft (penalised-but-passable) no-go; both
+   * callers ({@link #build} and {@link DenseAreaMap}) pass finite weights.
    */
   public static List<OsmNodeNamed> polygonsFromCells(Set<Long> cells, int cellSize,
                                                      double nogoWeight, int minComponentCells) {
@@ -106,11 +106,6 @@ public final class CapsuleNogoBuilder {
     Set<Long> dense = new HashSet<>();
     for (Map.Entry<Long, double[]> e : grid.entrySet()) if (e.getValue()[0] >= thr) dense.add(e.getKey());
     return dense;
-  }
-
-  /** Morphological closing (dilate then erode) — fills 1-cell gaps/notches. */
-  public static Set<Long> closing(Set<Long> cells) {
-    return erode(dilate(cells));
   }
 
   /**

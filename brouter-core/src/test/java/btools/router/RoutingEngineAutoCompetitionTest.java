@@ -25,7 +25,7 @@ public class RoutingEngineAutoCompetitionTest {
   // =========================================================================
   // §353.8 — Route-choice score returns a reason breakdown.
   // §353.7 — Direction weak: cannot dominate other factors.
-  // §353.12 — ISO/radial telemetry fields available on RoundTripResult.
+  // §353.12 — iso/non-iso telemetry fields available on RoundTripResult.
   // §353.13 — Low-iso classification uses accepted legs, not routed.
   // §353.14 — Existing forced algorithm tests still work (covered by other suites).
   // These are pure-logic tests that run unconditionally.
@@ -134,23 +134,23 @@ public class RoutingEngineAutoCompetitionTest {
   }
 
   @Test
-  public void roundTripResultExposesIsoRadialTelemetry() {
-    // §353.12. The RoundTripResult model carries iso/radial routed +
+  public void roundTripResultExposesIsoNonIsoTelemetry() {
+    // §353.12. The RoundTripResult model carries iso/non-iso routed +
     // accepted counters; default 0.
     RoundTripResult r = new RoundTripResult();
     Assert.assertEquals(0, r.getRoutedIsoCandidates());
-    Assert.assertEquals(0, r.getRoutedRadialCandidates());
+    Assert.assertEquals(0, r.getRoutedNonIsoCandidates());
     Assert.assertEquals(0, r.getAcceptedIsoLegs());
-    Assert.assertEquals(0, r.getAcceptedRadialLegs());
+    Assert.assertEquals(0, r.getAcceptedNonIsoLegs());
 
     r.setRoutedIsoCandidates(12);
-    r.setRoutedRadialCandidates(8);
+    r.setRoutedNonIsoCandidates(8);
     r.setAcceptedIsoLegs(3);
-    r.setAcceptedRadialLegs(2);
+    r.setAcceptedNonIsoLegs(2);
     Assert.assertEquals(12, r.getRoutedIsoCandidates());
-    Assert.assertEquals(8, r.getRoutedRadialCandidates());
+    Assert.assertEquals(8, r.getRoutedNonIsoCandidates());
     Assert.assertEquals(3, r.getAcceptedIsoLegs());
-    Assert.assertEquals(2, r.getAcceptedRadialLegs());
+    Assert.assertEquals(2, r.getAcceptedNonIsoLegs());
   }
 
   @Test

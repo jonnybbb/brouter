@@ -1323,9 +1323,9 @@ public class RoutingEngine extends Thread {
       if (child.lastRoundTripResult != null) {
         RoundTripResult cr = child.lastRoundTripResult;
         r.routedIsoCandidates = cr.getRoutedIsoCandidates();
-        r.routedRadialCandidates = cr.getRoutedRadialCandidates();
+        r.routedNonIsoCandidates = cr.getRoutedNonIsoCandidates();
         r.acceptedIsoLegs = cr.getAcceptedIsoLegs();
-        r.acceptedRadialLegs = cr.getAcceptedRadialLegs();
+        r.acceptedNonIsoLegs = cr.getAcceptedNonIsoLegs();
         // Keep-when-forced: the child accepted a same-way-back corridor because
         // nothing clean exists. Without carrying this, the re-gate below would
         // reject the track the child engine accepted by design (the direct

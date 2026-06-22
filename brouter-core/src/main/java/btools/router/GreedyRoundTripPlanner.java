@@ -514,22 +514,21 @@ public class GreedyRoundTripPlanner {
     int candidatesRouted = 0;
     int returnChecksPerformed = 0;
     // Auto-quality-redesign §132: track start-iso vs non-start-iso candidates
-    // separately. The public telemetry fields still say "radial" for
-    // compatibility; in production GREEDY those counters now represent
-    // per-step graph-native candidates.
+    // separately. The "nonIso" counters represent per-step graph-native (and
+    // legacy radial) candidates in production GREEDY.
     // Candidate source is identified via the existing
     // {@link RoundTripCandidateProvider.CandidatePoint#costFromStart} sentinel:
     // a start-iso candidate has costFromStart != NO_ISO_COST; per-step
     // graph-native and legacy radial candidates use the sentinel.
     int routedIso = 0;
-    int routedRadial = 0;
+    int routedNonIso = 0;
     int acceptedIsoLegs = 0;
-    int acceptedRadialLegs = 0;
+    int acceptedNonIsoLegs = 0;
 
     MatchedWaypoint startMwp = matchPoint(start.ilon, start.ilat, "greedy_start");
     if (startMwp == null) {
       result.setFallbackReason("start point not on road network");
-      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
       return result;
     }
 
@@ -765,7 +764,7 @@ public class GreedyRoundTripPlanner {
           // Dijkstra attempted, not what succeeded.
           boolean isIsoCandidate =
             cp.costFromStart != RoundTripCandidateProvider.NO_ISO_COST;
-          if (isIsoCandidate) routedIso++; else routedRadial++;
+          if (isIsoCandidate) routedIso++; else routedNonIso++;
           if (subTrack == null || subTrack.distance == 0) continue;
 
           // Recompute scoring inputs from the SNAPPED endpoint (toMwp.crosspoint).
@@ -956,7 +955,7 @@ public class GreedyRoundTripPlanner {
           }
         }
         if (accepted.fromIsoCandidate) acceptedIsoLegs++;
-        else acceptedRadialLegs++;
+        else acceptedNonIsoLegs++;
 
         // Record previous waypoint position for next step's Silesian scoring.
         // Save old values so we can restore on undo.
@@ -1078,7 +1077,7 @@ public class GreedyRoundTripPlanner {
               segments.remove(segments.size() - 1);
               totalDistance -= accepted.routeDistance;
               if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-              else acceptedRadialLegs--;
+              else acceptedNonIsoLegs--;
               removeVisitedEdges(accepted.track, visitedEdges);
               waypointStack.remove(waypointStack.size() - 1);
               currentMwp = waypointStack.get(waypointStack.size() - 1);
@@ -1106,7 +1105,7 @@ public class GreedyRoundTripPlanner {
             result.addDiagnostic("loop closed at step " + step
               + ", total=" + (int) closedDistance + "m"
               + ", error=" + String.format("%.1f%%", error * 100));
-            stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
+            stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
             return result;
           }
 
@@ -1117,7 +1116,7 @@ public class GreedyRoundTripPlanner {
             segments.remove(segments.size() - 1);
             totalDistance -= accepted.routeDistance;
             if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-            else acceptedRadialLegs--;
+            else acceptedNonIsoLegs--;
             removeVisitedEdges(accepted.track, visitedEdges);
             waypointStack.remove(waypointStack.size() - 1);
             currentMwp = waypointStack.get(waypointStack.size() - 1);
@@ -1172,7 +1171,7 @@ public class GreedyRoundTripPlanner {
       }
       result.setSubRoutesChosen(bestFallback.legTracks.size());
       result.setAttemptsUsed(totalAttempts);
-      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
       return result;
     }
 
@@ -1203,13 +1202,13 @@ public class GreedyRoundTripPlanner {
         result.setFallbackReason(reject == null ? "forced closure" : DEGRADED_FALLBACK_PREFIX + reject + "; forced closure");
         result.setSubRoutesChosen(segments.size());
         result.setAttemptsUsed(totalAttempts);
-        stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
+        stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
         return result;
       }
     }
 
     result.setFallbackReason("could not build any loop");
-    stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedRadial, acceptedIsoLegs, acceptedRadialLegs);
+    stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
     return result;
   }
 
@@ -1296,16 +1295,16 @@ public class GreedyRoundTripPlanner {
   private static void stampTelemetry(RoundTripResult result, long planStart,
                                      int candidatesGenerated, int candidatesRouted,
                                      int returnChecksPerformed,
-                                     int routedIso, int routedRadial,
-                                     int acceptedIsoLegs, int acceptedRadialLegs) {
+                                     int routedIso, int routedNonIso,
+                                     int acceptedIsoLegs, int acceptedNonIsoLegs) {
     // Delegate base counters to the 5-arg overload (not the 9-arg one — that
     // would recurse forever). Sed-rename caught this site too; the explicit
     // 5-arg overload name avoids the trap.
     stampBaseTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed);
     result.setRoutedIsoCandidates(routedIso);
-    result.setRoutedRadialCandidates(routedRadial);
+    result.setRoutedNonIsoCandidates(routedNonIso);
     result.setAcceptedIsoLegs(acceptedIsoLegs);
-    result.setAcceptedRadialLegs(acceptedRadialLegs);
+    result.setAcceptedNonIsoLegs(acceptedNonIsoLegs);
   }
 
   private static void stampBaseTelemetry(RoundTripResult result, long planStart,
