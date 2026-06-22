@@ -607,8 +607,12 @@ public class GreedyRoundTripPlanner {
 
         // Previous leg's bearing for the heading-persistence term: NaN on
         // step 1 (no previous leg — the start-direction term covers it).
+        // Must use the cos(lat)-scaled bearing so it shares the convention of
+        // cp.bearing (set by the graph-native/isochrone providers via
+        // CheapRuler.getScaledBearing); the raw CheapAngleMeter.getDirection
+        // would distort the kink angle by ~10-15° off the equator.
         double prevLegBearing = prevIlon >= 0
-          ? CheapAngleMeter.getDirection(prevIlon, prevIlat, currentIlon, currentIlat)
+          ? CheapRuler.getScaledBearing(prevIlon, prevIlat, currentIlon, currentIlat)
           : Double.NaN;
 
         // Current via's radius from start — fixed per step; the unimodal-radius
