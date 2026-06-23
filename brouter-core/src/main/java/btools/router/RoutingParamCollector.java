@@ -214,88 +214,77 @@ public class RoutingParamCollector {
         } else if (key.equals("pois")) {
           rctx.poipoints = readPoisList(value);
         } else if (key.equals("heading")) {
-          // Pre-existing shared param: keep the historic throw-on-malformed
-          // contract (general routing); the lenient parseIntParamOrNull is for
-          // the new round-trip params only.
+          // Every integer param fails loud on malformed input (Integer.parseInt/
+          // valueOf throws), the historic upstream contract — one consistent rule
+          // for general and round-trip params alike.
           rctx.startDirection = Integer.valueOf(value);
           rctx.forceUseStartDirection = true;
         } else if (key.equals("direction")) {
           rctx.startDirection = Integer.valueOf(value);
         } else if (key.equals("roundTripLength")) {
-          rctx.roundTripLength = parseIntParamOrNull(key, value);
+          rctx.roundTripLength = Integer.valueOf(value);
           // A non-positive length would yield a zero/negative searchRadius
           // (length / 2π); invalidate it so the roundTripDistance path is used.
-          if (rctx.roundTripLength != null && rctx.roundTripLength <= 0) {
+          if (rctx.roundTripLength <= 0) {
             rctx.roundTripLength = null;
-          } else if (rctx.roundTripLength != null && rctx.roundTripLength > MAX_ROUNDTRIP_LENGTH_METERS) {
+          } else if (rctx.roundTripLength > MAX_ROUNDTRIP_LENGTH_METERS) {
             System.err.println("clamping roundTripLength=" + rctx.roundTripLength
               + " to max " + MAX_ROUNDTRIP_LENGTH_METERS + "m");
             rctx.roundTripLength = MAX_ROUNDTRIP_LENGTH_METERS;
           }
         } else if (key.equals("roundTripDistance")) {
-          rctx.roundTripDistance = parseIntParamOrNull(key, value);
+          rctx.roundTripDistance = Integer.valueOf(value);
           // Symmetric with roundTripLength: a non-positive distance would yield a
           // zero/negative searchRadius (and silently disable the distance gate),
           // so invalidate it and let the default radius apply.
-          if (rctx.roundTripDistance != null && rctx.roundTripDistance <= 0) {
+          if (rctx.roundTripDistance <= 0) {
             rctx.roundTripDistance = null;
-          } else if (rctx.roundTripDistance != null && rctx.roundTripDistance > MAX_ROUNDTRIP_RADIUS_METERS) {
+          } else if (rctx.roundTripDistance > MAX_ROUNDTRIP_RADIUS_METERS) {
             System.err.println("clamping roundTripDistance=" + rctx.roundTripDistance
               + " to max " + MAX_ROUNDTRIP_RADIUS_METERS + "m");
             rctx.roundTripDistance = MAX_ROUNDTRIP_RADIUS_METERS;
           }
         } else if (key.equals("roundTripDirectionAdd")) {
-          rctx.roundTripDirectionAdd = parseIntParamOrNull(key, value);
+          rctx.roundTripDirectionAdd = Integer.valueOf(value);
         } else if (key.equals("roundTripPoints")) {
-          rctx.roundTripPoints = parseIntParamOrNull(key, value);
-          if (rctx.roundTripPoints == null || rctx.roundTripPoints < 3 || rctx.roundTripPoints > 20) {
-            // parseIntParamOrNull already logs non-integer input; log the
-            // out-of-range case too so a silently-ignored value is visible.
-            if (rctx.roundTripPoints != null) {
-              System.err.println("ignoring out-of-range parameter roundTripPoints=" + value
-                + " (valid range [3,20]); using default 5");
-            }
+          rctx.roundTripPoints = Integer.valueOf(value);
+          if (rctx.roundTripPoints < 3 || rctx.roundTripPoints > 20) {
+            System.err.println("ignoring out-of-range parameter roundTripPoints=" + value
+              + " (valid range [3,20]); using default 5");
             rctx.roundTripPoints = 5;
           }
         } else if (key.equals("allowSamewayback")) {
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.allowSamewayback = v != null && v == 1;
+          rctx.allowSamewayback = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripStrictQuality")) {
           // Opt back into hard-rejecting QUALITY-tier failures (distance/chaos/
           // hostile-surface/retrace). Default lenient: such routes are returned
           // with a Warning: advisory so the user decides whether to ride them.
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.roundTripStrictQuality = v != null && v == 1;
+          rctx.roundTripStrictQuality = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripDensify")) {
           // Opt into "length-honoring" explicit-via densification (arc bulges between user
           // vias). Off by default; engine still gates it to non-paved profiles. 0 forces off.
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.explicitViaDensifyOverride = v != null && v == 1;
+          rctx.explicitViaDensifyOverride = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
         } else if (key.equals("roundTripIsochrone")) {
           // roundTripIsochrone=1 is a shortcut for roundTripAlgorithm=ISOCHRONE.
           // An explicit roundTripAlgorithm always wins, regardless of parameter order.
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.roundTripIsochrone = v != null && v == 1;
+          rctx.roundTripIsochrone = (Integer.parseInt(value) == 1);
           if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
           }
         } else if (key.equals("roundTripDesirability")) {
           // Experimental profile-desirability heatmap for GREEDY round-trips (issue #15).
           // Off by default; honoured only by the GREEDY algorithm.
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.roundTripDesirability = v != null && v == 1;
+          rctx.roundTripDesirability = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripCapsule")) {
           // Experimental urban-capsule loop planning for GREEDY round-trips.
           // Off by default; honoured only by the GREEDY algorithm.
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.roundTripCapsule = v != null && v == 1;
+          rctx.roundTripCapsule = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripSteerVias")) {
           // Opt-in via-steering: keep GREEDY round-trip waypoints out of dense town/city cores.
           // Off by default; honoured only by the GREEDY algorithm (costs one extra isochrone).
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.roundTripSteerVias = v != null && v == 1;
+          rctx.roundTripSteerVias = (Integer.parseInt(value) == 1);
         } else if (key.equals("alternativeidx")) {
           rctx.setAlternativeIdx(Integer.parseInt(value));
         } else if (key.equals("turnInstructionMode")) {
@@ -322,21 +311,6 @@ public class RoutingParamCollector {
         }
         // ignore other params
       }
-    }
-  }
-
-  /**
-   * Parse an integer round-trip parameter, returning {@code null} (and logging)
-   * on malformed input instead of throwing. The values come from untrusted URL
-   * query parameters; an unchecked {@link NumberFormatException} would surface
-   * as an opaque HTTP 500 indistinguishable from a real server crash.
-   */
-  private static Integer parseIntParamOrNull(String key, String value) {
-    try {
-      return Integer.valueOf(value);
-    } catch (NumberFormatException ex) {
-      System.err.println("ignoring non-integer parameter " + key + "=" + value);
-      return null;
     }
   }
 

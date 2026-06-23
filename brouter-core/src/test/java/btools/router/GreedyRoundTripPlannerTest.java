@@ -205,7 +205,7 @@ public class GreedyRoundTripPlannerTest {
   public void roundTripStrictQualityParsesBooleanWithDefaultFalse() {
     Assert.assertTrue(strictQualityFor("1"));
     Assert.assertFalse(strictQualityFor("0"));
-    Assert.assertFalse("malformed → default false", strictQualityFor("yes"));
+    // Malformed input fails loud (see malformedRoundTripParamsFailLoud).
     // Absent → default false.
     RoutingContext rctx = new RoutingContext();
     new RoutingParamCollector().setParams(rctx, null, new LinkedHashMap<>());
@@ -275,10 +275,12 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
-  public void malformedRoundTripParamsDoNotThrow() {
-    // A non-integer value on a round-trip URL parameter is untrusted client input;
-    // it must be ignored (logged) rather than thrown as NumberFormatException, which
-    // the server surfaces as an opaque HTTP 500 indistinguishable from a real crash.
+  public void malformedRoundTripParamsFailLoud() {
+    // A non-integer value on an integer round-trip URL parameter throws
+    // NumberFormatException, matching the historic upstream contract
+    // (Integer.parseInt/valueOf) used for every integer param. Malformed input
+    // surfaces as an error rather than a silently default-substituted route, so
+    // the whole collector has one consistent fail-loud parsing contract.
     String[] intParams = {
       "roundTripLength", "roundTripDistance", "roundTripDirectionAdd",
       "roundTripPoints", "roundTripIsochrone", "allowSamewayback"};
@@ -286,15 +288,13 @@ public class GreedyRoundTripPlannerTest {
       RoutingContext rctx = new RoutingContext();
       Map<String, String> params = new LinkedHashMap<>();
       params.put(key, "not-a-number");
-      // Must not throw.
-      new RoutingParamCollector().setParams(rctx, null, params);
+      try {
+        new RoutingParamCollector().setParams(rctx, null, params);
+        Assert.fail("malformed " + key + " must throw NumberFormatException");
+      } catch (NumberFormatException expected) {
+        // expected — fail loud
+      }
     }
-    // The malformed value must leave the field at its safe default.
-    RoutingContext rctx = new RoutingContext();
-    Map<String, String> params = new LinkedHashMap<>();
-    params.put("roundTripLength", "12km");
-    new RoutingParamCollector().setParams(rctx, null, params);
-    Assert.assertNull("malformed roundTripLength must not be set", rctx.roundTripLength);
   }
 
   // --- fallback-selection rule (gate-accept-aware) ---
