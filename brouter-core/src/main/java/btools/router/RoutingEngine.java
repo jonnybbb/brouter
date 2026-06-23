@@ -1396,10 +1396,15 @@ public class RoutingEngine extends Thread {
                              : (r.errorMessage == null ? "no track" : "rejected"))
         .append('.');
     }
-    if (foundTrack.message == null || foundTrack.message.isEmpty()) {
-      foundTrack.message = summary.toString();
-    } else {
-      foundTrack.message += " " + summary.toString();
+    if (foundTrack != null) {
+      // foundTrack is nullable here (a best-effort winner can carry no track —
+      // see the null-guards above at adoption and the warning block); only
+      // attach the AUTO summary when there is a track to annotate.
+      if (foundTrack.message == null || foundTrack.message.isEmpty()) {
+        foundTrack.message = summary.toString();
+      } else {
+        foundTrack.message += " " + summary.toString();
+      }
     }
     // Keep messageList.get(0) in sync with the just-extended message so the
     // GPX <brouter:info> / comment block reflects the AUTO summary too.

@@ -479,7 +479,8 @@ public class GreedyRoundTripPlanner {
    * coordinates or fixed knob ids, never iteration order — so the same
    * request + seed reproduces the same route. Shared by the greedy score
    * jitter and the WAYPOINT/ISOCHRONE geometry knobs in
-   * {@link RoutingEngine#doWaypointBasedRoundTrip}.
+   * {@code RoutingEngine.doWaypointBasedRoundTrip} (a private method, so not a
+   * resolvable {@code @link} target from here).
    */
   static double seededUnit(int seed, int saltA, int saltB) {
     long h = seed * 0x9E3779B97F4A7C15L;
