@@ -1190,6 +1190,11 @@ public class RoutingEngineTest {
   @Test
   public void placeWaypointsFromIsochronePicksCandidateMatchingPlacementRadius() {
     RoutingEngine re = createDummyEngine(0);
+    // This test pins the base airDist->candidate selection; neutralise the
+    // directional bulge so the per-direction target radius stays at
+    // searchRadius regardless of startDirection (the bulge is covered by
+    // placeWaypointsFromIsochroneBulgesTowardStartDirection).
+    System.setProperty("loop.isochrone.dirbulge", "0");
 
     List<OsmNodeNamed> wps = new ArrayList<>();
     OsmNodeNamed start = new OsmNodeNamed();
@@ -1249,6 +1254,75 @@ public class RoutingEngineTest {
     Assert.assertEquals("airDist-aware selection should prefer the 1000m contour over the 3000m frontier",
       4, contourHits);
     Assert.assertEquals(0, frontierHits);
+    System.clearProperty("loop.isochrone.dirbulge");
+  }
+
+  @Test
+  public void placeWaypointsFromIsochroneBulgesTowardStartDirection() {
+    // Same synthetic frontier as the test above (per bucket: a far frontier-max
+    // at 3000m and a near 25%-contour at 1000m), but with the directional bulge
+    // ON and startDirection = 0. The bulge must push the placement radius OUT in
+    // the heading direction (so the aligned bucket picks the far 3000m candidate)
+    // and pull it IN on the opposite side (so the anti-heading bucket picks the
+    // near 1000m candidate) — i.e. the loop bulges toward the requested heading.
+    RoutingEngine re = createDummyEngine(0);
+    System.setProperty("loop.isochrone.dirbulge", "0.5");
+    try {
+      List<OsmNodeNamed> wps = new ArrayList<>();
+      OsmNodeNamed start = new OsmNodeNamed();
+      start.name = "from";
+      start.ilon = START_ILON;
+      start.ilat = START_ILAT;
+      wps.add(start);
+
+      double searchRadius = 2000;
+      // bearing 0 = +ilat (the heading), bearing 180 = -ilat (opposite).
+      int[][] frontierCoords = {
+        {START_ILON, START_ILAT + 60_000},
+        {START_ILON + 50_000, START_ILAT},
+        {START_ILON, START_ILAT - 60_000},
+        {START_ILON - 50_000, START_ILAT},
+      };
+      int[][] contourCoords = {
+        {START_ILON, START_ILAT + 20_000},
+        {START_ILON + 16_000, START_ILAT},
+        {START_ILON, START_ILAT - 20_000},
+        {START_ILON - 16_000, START_ILAT},
+      };
+      double[][] frontier = new double[4][];
+      List<IsoCandidate> candidates = new ArrayList<>();
+      int[] buckets = {0, 9, 18, 27};
+      double[] bearings = {0, 90, 180, 270};
+      for (int i = 0; i < 4; i++) {
+        frontier[i] = new double[]{bearings[i], 3000, 3900, 5, frontierCoords[i][0], frontierCoords[i][1]};
+        candidates.add(new IsoCandidate(frontierCoords[i][0], frontierCoords[i][1],
+          bearings[i], 3000, 3900, buckets[i], 5, 100));
+        candidates.add(new IsoCandidate(contourCoords[i][0], contourCoords[i][1],
+          bearings[i], 1000, 1300, buckets[i], 5, 25));
+      }
+
+      re.placeWaypointsFromIsochrone(wps, frontier, candidates, searchRadius, 0, 5);
+
+      // North (heading) waypoint should be the far frontier-max; south (opposite)
+      // should be the near contour. Measure each by air-distance from start.
+      double northDist = -1, southDist = -1;
+      for (int i = 1; i < wps.size() - 1; i++) {
+        OsmNodeNamed w = wps.get(i);
+        double dLat = (w.ilat - START_ILAT) / 1e6 * 111320.0;
+        double dLon = (w.ilon - START_ILON) / 1e6 * 111320.0;
+        double dist = Math.sqrt(dLat * dLat + dLon * dLon);
+        if (Math.abs(dLon) < Math.abs(dLat)) { // a north/south waypoint
+          if (dLat > 0) northDist = dist;
+          else southDist = dist;
+        }
+      }
+      Assert.assertTrue("a north (heading) and a south waypoint should both be placed, got north="
+        + northDist + " south=" + southDist, northDist > 0 && southDist > 0);
+      Assert.assertTrue("bulge must place the heading-direction waypoint farther out than the opposite "
+        + "(north=" + northDist + "m vs south=" + southDist + "m)", northDist > southDist + 500);
+    } finally {
+      System.clearProperty("loop.isochrone.dirbulge");
+    }
   }
 
   // --- Reachability-aware waypoint placement tests ---

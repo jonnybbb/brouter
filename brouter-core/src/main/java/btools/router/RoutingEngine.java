@@ -4273,13 +4273,30 @@ public class RoutingEngine extends Thread {
     }
     double normalization = selected.length / factorSum;
 
+    // Directional bulge: bias the placement radius toward startDirection so the
+    // loop heads that way (a cardioid) instead of encircling evenly — this is
+    // what lets ISOCHRONE honour the requested direction, which the bare
+    // even-spread frontier sampling cannot. Mean-preserving: the per-direction
+    // factors are renormalised to average 1.0, so the loop's overall size — and
+    // therefore the distance gate — is unchanged; only its shape shifts toward
+    // the heading. loop.isochrone.dirbulge=0 reproduces the legacy even ring.
+    double dirBulgeAlpha = Double.parseDouble(System.getProperty("loop.isochrone.dirbulge", "0.35"));
+    double[] dirBulge = new double[selected.length];
+    double dirBulgeSum = 0;
+    for (int i = 0; i < selected.length; i++) {
+      dirBulge[i] = 1.0 + dirBulgeAlpha * Math.cos(Math.toRadians(selected[i] - startDirection));
+      dirBulgeSum += dirBulge[i];
+    }
+    double dirBulgeNorm = dirBulgeSum > 0 ? selected.length / dirBulgeSum : 1.0;
+
     double maxDist = searchRadius * 1.5;
     double minDist = searchRadius * 0.15;
     int roadNativeCount = 0;
     int syntheticCount = 0;
     double bucketSize = 360.0 / 36; // matches runIsochroneExpansion
     for (int i = 0; i < selected.length; i++) {
-      double factor = Math.max(0.5, Math.min(2.0, rawFactors[i] * normalization));
+      double factor = Math.max(0.5, Math.min(2.0,
+        rawFactors[i] * normalization * dirBulge[i] * dirBulgeNorm));
       double airDist = baseRadius * factor;
       airDist = Math.max(minDist, Math.min(maxDist, airDist));
 
