@@ -227,7 +227,10 @@ public class CandidateScorer {
     if (sourceContour == RoundTripCandidateProvider.NO_ISO_CONTOUR) return 0;
     // Preferred contour by step phase, ramping 100 → 25 across totalSteps.
     // Step 1 wants frontier (100); final step wants near-in (25).
-    double phaseFraction = totalSteps <= 1 ? 0.0 : (step - 1.0) / (totalSteps - 1.0);
+    // Clamp to [0,1] so an out-of-contract step (step<1 or step>totalSteps) can
+    // never push `preferred` outside its [25,100] design range.
+    double phaseFraction = totalSteps <= 1 ? 0.0
+      : Math.max(0.0, Math.min(1.0, (step - 1.0) / (totalSteps - 1.0)));
     double preferred = 100 - 75 * phaseFraction;  // 100 at step 1 → 25 at last step
     double diff = Math.abs(sourceContour - preferred);
     return Math.min(1.0, diff / 75.0);

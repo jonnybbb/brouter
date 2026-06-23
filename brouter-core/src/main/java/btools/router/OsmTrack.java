@@ -67,6 +67,7 @@ public final class OsmTrack {
 
   public void addNode(OsmPathElement node) {
     nodes.add(0, node);
+    traveledEdgeKeys = null; // node list changed; drop the lazily-built edge cache
   }
 
   public void registerDetourForId(long id, OsmPathElement detour) {
@@ -363,7 +364,7 @@ public final class OsmTrack {
    * pair this track traveled. Detail-level agnostic: a raw track contributes
    * junction-pair edges, a detailed track contributes its transfer-point
    * sub-segments — callers test whichever granularity they walk at.
-   * Invalidated on mutation ({@link #buildMap}, {@link #appendTrack}).
+   * Invalidated on mutation ({@link #addNode}, {@link #buildMap}, {@link #appendTrack}).
    */
   private Set<Long> traveledEdgeKeys;
 

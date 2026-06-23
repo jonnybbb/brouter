@@ -3753,8 +3753,11 @@ public class RoutingEngine extends Thread {
     return costError - AIR_REACH_BONUS_WEIGHT * airReachBonus;
   }
 
-  /** {@code clamp(dist / searchRadius, 0, 1)}. */
+  /** {@code clamp(dist / searchRadius, 0, 1)}; 0 when searchRadius is non-positive (avoids a 0/0 NaN). */
   static double clampedAirReachBonus(double dist, double searchRadius) {
+    if (searchRadius <= 0.0) {
+      return 0.0;
+    }
     return Math.min(1.0, Math.max(0.0, dist / searchRadius));
   }
 

@@ -162,8 +162,10 @@ public final class RouteChoiceScore {
     if (profileName == null) return new double[]{1.5, 4.0};
     String n = profileName.toLowerCase(Locale.ROOT);
     // "road" must match as a whole word, not a substring: profiles like
-    // "Trekking-SmallRoads" are NOT paved-friendly racing profiles. This mirrors
-    // the whole-token "road" handling in RoundTripQualityGate.isPavedProfile.
+    // "Trekking-SmallRoads" are NOT paved-friendly racing profiles. The same
+    // whole-token name convention classifies the bike family in
+    // RoadCharacterScore.family. (RoundTripQualityGate decides paved-ness from the
+    // profile cost model now, not the name, so it is deliberately not referenced here.)
     if (n.contains("fastbike") || n.matches(".*\\broad\\b.*") || n.contains("racing")) {
       return new double[]{1.2, 3.0};   // tight band: paved-friendly profiles
     }

@@ -674,13 +674,18 @@ public class GreedyRoundTripPlanner {
               * unimodalRadiusPenalty(distFromStart, currentRadius, step, subRouteCount);
           }
 
-          // Variety seed (ADR-0001): jitter the HEURISTIC score only — it
-          // perturbs which candidates get routed, while the routed-candidate
-          // comparison below stays purely quality-driven. Multiplicative, so
-          // it flips near-tie rankings without overriding clear winners;
-          // in sparse networks with no near-ties, variety is best-effort.
+          // Variety seed (= request alternativeidx): jitter the HEURISTIC score
+          // only — it perturbs which candidates get routed, while the routed-
+          // candidate comparison below stays purely quality-driven. The jitter is
+          // ±VARIETY_JITTER_AMPLITUDE of the score MAGNITUDE, added (not multiplied),
+          // so a positive unit always raises the score (= worse rank) regardless of
+          // the score's sign. A bare multiply would invert the effect once the
+          // desirability/capsule terms drive the score negative. It flips near-tie
+          // rankings without overriding clear winners; in sparse networks with no
+          // near-ties, variety is best-effort.
           if (varietySeed > 0) {
-            cp.score *= 1.0 + VARIETY_JITTER_AMPLITUDE * seededUnit(varietySeed, cp.ilon, cp.ilat);
+            cp.score += VARIETY_JITTER_AMPLITUDE * Math.abs(cp.score)
+              * seededUnit(varietySeed, cp.ilon, cp.ilat);
           }
         }
 
@@ -1918,8 +1923,6 @@ public class GreedyRoundTripPlanner {
    *
    * @param trackStartCumDist cumulative loop distance at the start of {@code track}
    * @param desiredDistance   target total loop distance (for proximity normalisation)
-   */
-  /**
    * @param segLens SAFE-5 precomputed per-segment distances ({@code segLens[i-1]}
    *                = distance from node i-1 to i), or {@code null} to compute
    *                inline. When non-null it must equal {@code calcDistance} for
