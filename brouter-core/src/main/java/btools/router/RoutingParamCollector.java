@@ -214,14 +214,13 @@ public class RoutingParamCollector {
         } else if (key.equals("pois")) {
           rctx.poipoints = readPoisList(value);
         } else if (key.equals("heading")) {
-          Integer v = parseIntParamOrNull(key, value);
-          if (v != null) {
-            rctx.startDirection = v;
-            rctx.forceUseStartDirection = true;
-          }
+          // Pre-existing shared param: keep the historic throw-on-malformed
+          // contract (general routing); the lenient parseIntParamOrNull is for
+          // the new round-trip params only.
+          rctx.startDirection = Integer.valueOf(value);
+          rctx.forceUseStartDirection = true;
         } else if (key.equals("direction")) {
-          Integer v = parseIntParamOrNull(key, value);
-          if (v != null) rctx.startDirection = v;
+          rctx.startDirection = Integer.valueOf(value);
         } else if (key.equals("roundTripLength")) {
           rctx.roundTripLength = parseIntParamOrNull(key, value);
           // A non-positive length would yield a zero/negative searchRadius
@@ -298,14 +297,11 @@ public class RoutingParamCollector {
           Integer v = parseIntParamOrNull(key, value);
           rctx.roundTripSteerVias = v != null && v == 1;
         } else if (key.equals("alternativeidx")) {
-          Integer v = parseIntParamOrNull(key, value);
-          if (v != null) rctx.setAlternativeIdx(v);
+          rctx.setAlternativeIdx(Integer.parseInt(value));
         } else if (key.equals("turnInstructionMode")) {
-          Integer v = parseIntParamOrNull(key, value);
-          if (v != null) rctx.turnInstructionMode = v;
+          rctx.turnInstructionMode = Integer.parseInt(value);
         } else if (key.equals("timode")) {
-          Integer v = parseIntParamOrNull(key, value);
-          if (v != null) rctx.turnInstructionMode = v;
+          rctx.turnInstructionMode = Integer.parseInt(value);
         } else if (key.equals("turnInstructionFormat")) {
           if ("osmand".equalsIgnoreCase(value)) {
             rctx.turnInstructionMode = 3;
@@ -313,11 +309,9 @@ public class RoutingParamCollector {
             rctx.turnInstructionMode = 2;
           }
         } else if (key.equals("exportWaypoints")) {
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.exportWaypoints = v != null && v == 1;
+          rctx.exportWaypoints = (Integer.parseInt(value) == 1);
         } else if (key.equals("exportCorrectedWaypoints")) {
-          Integer v = parseIntParamOrNull(key, value);
-          rctx.exportCorrectedWaypoints = v != null && v == 1;
+          rctx.exportCorrectedWaypoints = (Integer.parseInt(value) == 1);
         } else if (key.equals("format")) {
           rctx.outputFormat = ((String) value).toLowerCase();
         } else if (key.equals("trackFormat")) {
