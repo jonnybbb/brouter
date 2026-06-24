@@ -9,9 +9,11 @@ import java.util.Set;
 import btools.util.CheapRuler;
 
 /**
- * Road-native candidate provider for the QUALITY tier. Takes a pool of {@link IsoCandidate}s
- * captured during a start-centered isochrone expansion and returns the candidates that fall
- * within the planner's target sub-leg air-distance window at each step.
+ * Road-native candidate provider for the ISO_GREEDY planner. Takes a pool of
+ * {@link IsoCandidate}s captured during a single start-centered isochrone expansion and
+ * returns the candidates that fall within the planner's target sub-leg air-distance window
+ * at each step. In production this provider is not used on its own: it is the iso half of a
+ * {@link BlendedCandidateProvider}, which appends per-step graph-native candidates.
  *
  * <p>The pool is filtered once at construction (drop too-close, dedupe identical positions,
  * limit to a diverse 12-24 candidates per spec) and then queried unchanged for each step.
