@@ -903,9 +903,8 @@ public class GreedyRoundTripPlanner {
         }
 
         sortByRoutedScore(routedCandidates);
-        ScoredRoute accepted = routedCandidates.isEmpty() ? null : routedCandidates.get(0);
 
-        if (accepted == null) {
+        if (routedCandidates.isEmpty()) {
           // No routable candidate at this radius — gentle shrink so we don't
           // jump past viable radii. The aggressive halving below applies only
           // when the route is too long.
@@ -915,128 +914,206 @@ public class GreedyRoundTripPlanner {
           continue;
         }
 
-        result.addDiagnostic("step " + step + ": routed " + (int) accepted.routeDistance
-          + "m (target " + (int) subTarget + "m)"
-          + ", reuse=" + String.format("%.1f%%", accepted.visitedRatio * 100));
-
-        // --- Phase 3: Accept sub-route, advance position ---
-        // Phase 2 v3: upgrade the committed sub-track from single-pass
-        // (fast, no per-edge MessageData) to detailed via the engine's
-        // retracking pass. The quality gate's paved-profile hostility
-        // check requires wayKeyValues on every edge; single-pass tracks
-        // don't have them, so without this step the gate would either
-        // bypass hostility (under suspect-tolerance) or trip the
-        // missing-metadata floor. One Dijkstra per committed leg (5-6
-        // per loop) — negligible vs the candidate scoring loop above.
-        // SAFE-6: reuse cachedRefTrack instead of rebuilding it. segments is
-        // not mutated between its construction (top of step) and here:
-        // segments.add happens below, and every attempt-loop continue path
-        // that could re-reach this point either never added a leg or added
-        // then undid it, restoring step-start content. Routing/retrack treat
-        // the refTrack as read-only (a fresh OsmTrack is built internally),
-        // which the code already relies on by reusing cachedRefTrack across
-        // all candidate sub-routes — so the merged content here is identical.
-        OsmTrack refBeforeAccept = cachedRefTrack;
-        OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, deadline);
-        if (detailedAccepted == null || detailedAccepted.distance == 0) {
-          result.addDiagnostic("step " + step + ": accepted leg could not be detailed, retrying");
-          localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
-          continue;
-        }
-        if (detailFidelityTooLow(detailedAccepted)) {
-          result.addDiagnostic("step " + step + ": accepted leg still lacks metadata after retrack ("
-            + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + "), retrying");
-          localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
-          continue;
-        }
-        // Phase 2 v3 hostility post-check. The scorer cannot see hostility
-        // while choosing candidates (single-pass tracks lack metadata),
-        // but the FINAL gate will reject any leg with a contiguous hostile
-        // stretch over the cap. Doing the check here lets the planner
-        // backoff + retry with a different candidate instead of
-        // committing to a hostile leg and losing the whole loop. Skipped
-        // on non-paved profiles where the predicate would over-flag.
-        if (RoundTripQualityGate.isPavedProfile(profileName)) {
-          RoundTripQualityGate.HostileStretch hostileStretch =
-            RoundTripQualityGate.worstHostileStretchPaved(detailedAccepted);
-          if (hostileStretch.meters > RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS) {
-            result.addDiagnostic("step " + step + ": accepted leg has " + hostileStretch.meters
-              + "m contiguous hostile stretch (over " + RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS
-              + "), retrying with smaller radius");
-            localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
-            continue;
-          }
-        }
-        accepted.track = detailedAccepted;
-        accepted.routeDistance = detailedAccepted.distance;
-        addVisitedEdges(accepted.track, visitedEdges, totalDistance);
-        segments.add(accepted.track);
-        totalDistance += accepted.routeDistance;
-        // Learn the observed air-to-road ratio of this leg (kept on undo —
-        // a routed leg is a real terrain measurement either way).
-        OsmPathElement legEnd = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
-        double legAir = CheapRuler.distance(currentIlon, currentIlat, legEnd.getILon(), legEnd.getILat());
-        if (legAir > 500) {
-          double observed = accepted.routeDistance / legAir;
-          indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
-            (1 - INDIRECTNESS_EMA_ALPHA) * indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
-          if (indirectnessEst > ROAD_INDIRECTNESS + 0.05) {
-            result.addDiagnostic(String.format(java.util.Locale.US,
-              "step %d: observed indirectness %.2f, estimate now %.2f", step, observed, indirectnessEst));
-          }
-        }
-        if (accepted.fromIsoCandidate) acceptedIsoLegs++;
-        else acceptedNonIsoLegs++;
-
+        // --- Phase 3+4: closure-aware trial loop over the ranked routed
+        // candidates (the "Step 3" the ranked list was built for, previously
+        // unimplemented). Historically only the top-ranked candidate was
+        // tried; a closure rejection or too-long projection undid the leg
+        // and paid a WHOLE fresh attempt — re-expansion, re-matching,
+        // re-routing K candidates — although ranks 1..K-1 were already
+        // routed and in hand. Now those runner-ups are tried in score order
+        // (each costs at most one return Dijkstra plus detailing); only when
+        // the whole ranked list fails does the attempt loop shrink the
+        // radius and regenerate.
+        //
+        // Work ordering per trial (cheap-reject-first): the RAW single-pass
+        // leg is committed and the length (too-long) decision made BEFORE
+        // the detail retrack. A too-long undo — the most common rejection —
+        // now costs zero detail Dijkstras (it used to discard 1-3 of them).
+        // Detailing, and the paved-hostility/fidelity checks that need
+        // per-edge metadata, run only for legs that survive the length
+        // decision; the quality gate still only ever sees fully detailed
+        // geometry.
+        boolean legCommitted = false;
+        boolean tooLongSeen = false;
         // Record previous waypoint position for next step's Silesian scoring.
-        // Save old values so we can restore on undo.
+        // Saved once per attempt so every trial's undo can restore it.
         int savedPrevIlon = prevIlon;
         int savedPrevIlat = prevIlat;
-        prevIlon = currentIlon;
-        prevIlat = currentIlat;
+        // SAFE-6: reuse cachedRefTrack instead of rebuilding it. segments is
+        // not mutated between its construction (top of step) and here beyond
+        // this trial loop's own add/undo pairs, which always restore
+        // step-start content before the next detail call. Routing/retrack
+        // treat the refTrack as read-only (a fresh OsmTrack is built
+        // internally).
+        OsmTrack refBeforeAccept = cachedRefTrack;
 
-        // Use actual track endpoint for next step
-        OsmPathElement lastNode = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
-        MatchedWaypoint nextMwp = matchPoint(lastNode.getILon(), lastNode.getILat(), "greedy_next");
-        currentMwp = (nextMwp != null) ? nextMwp : accepted.toMwp;
-        waypointStack.add(currentMwp);
+        for (int trial = 0; trial < routedCandidates.size(); trial++) {
+          if (System.currentTimeMillis() >= deadline) break;
+          ScoredRoute accepted = routedCandidates.get(trial);
 
-        // --- Phase 4: Check loop closure (ONE return Dijkstra per step) ---
-        int curIlon = currentMwp.crosspoint.getILon();
-        int curIlat = currentMwp.crosspoint.getILat();
-        double airDistToStart = CheapRuler.distance(curIlon, curIlat, start.ilon, start.ilat);
-        double minReturn = airDistToStart * indirectnessEst;
+          result.addDiagnostic("step " + step + (trial > 0 ? " trial " + (trial + 1) : "")
+            + ": routed " + (int) accepted.routeDistance
+            + "m (target " + (int) subTarget + "m)"
+            + ", reuse=" + String.format("%.1f%%", accepted.visitedRatio * 100));
 
-        // Skip the return check only when closure is clearly out of reach AND
-        // we still have multiple steps left. ROAD_INDIRECTNESS is a heuristic;
-        // constrained networks can force much longer returns, so apply a safety
-        // factor and never skip on the last two steps where closure matters.
-        boolean isLateStep = step >= subRouteCount - 1;
-        if (!isLateStep
-          && totalDistance + minReturn * RETURN_SKIP_SAFETY < desiredDistance * (1 - tolerance)) {
-          candidateFound = true;
-          break;
-        }
+          // Tentatively commit the RAW single-pass leg.
+          segments.add(accepted.track);
+          totalDistance += accepted.routeDistance;
+          if (accepted.fromIsoCandidate) acceptedIsoLegs++;
+          else acceptedNonIsoLegs++;
+          prevIlon = currentIlon;
+          prevIlat = currentIlat;
 
-        // One Dijkstra: return path to start. When the fully-penalised return
-        // ships a self-crossing, routeReturnWithVariants escalates to
-        // relaxed-penalty variants and picks the best shape (extra Dijkstras
-        // are spent only on the defective case).
-        OsmTrack returnRef = buildRefTrack(segments);
-        OsmTrack returnTrack = routeReturnWithVariants(segments, returnRef,
-          currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
-        returnChecksPerformed++;
-        if (returnTrack != null && returnTrack.distance > 0) {
+          // Use actual track endpoint for next step
+          OsmPathElement lastNode = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
+          MatchedWaypoint nextMwp = matchPoint(lastNode.getILon(), lastNode.getILat(), "greedy_next");
+          currentMwp = (nextMwp != null) ? nextMwp : accepted.toMwp;
+          waypointStack.add(currentMwp);
+
+          // Learn the observed air-to-road ratio of this leg (kept on undo —
+          // a routed leg is a real terrain measurement either way).
+          double legAir = CheapRuler.distance(currentIlon, currentIlat, lastNode.getILon(), lastNode.getILat());
+          if (legAir > 500) {
+            double observed = accepted.routeDistance / legAir;
+            indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
+              (1 - INDIRECTNESS_EMA_ALPHA) * indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
+            if (indirectnessEst > ROAD_INDIRECTNESS + 0.05) {
+              result.addDiagnostic(String.format(java.util.Locale.US,
+                "step %d: observed indirectness %.2f, estimate now %.2f", step, observed, indirectnessEst));
+            }
+          }
+
+          // --- Closure check (ONE return Dijkstra per trial) ---
+          double airDistToStart = CheapRuler.distance(
+            currentMwp.crosspoint.getILon(), currentMwp.crosspoint.getILat(), start.ilon, start.ilat);
+          double minReturn = airDistToStart * indirectnessEst;
+
+          // Skip the return check only when closure is clearly out of reach AND
+          // we still have multiple steps left. ROAD_INDIRECTNESS is a heuristic;
+          // constrained networks can force much longer returns, so apply a safety
+          // factor and never skip on the last two steps where closure matters.
+          boolean isLateStep = step >= subRouteCount - 1;
+          boolean returnChecked = isLateStep
+            || totalDistance + minReturn * RETURN_SKIP_SAFETY >= desiredDistance * (1 - tolerance);
+          OsmTrack returnTrack = null;
+          OsmTrack returnRef = null;
+          if (returnChecked) {
+            // One Dijkstra: return path to start. When the fully-penalised return
+            // ships a self-crossing, routeReturnWithVariants escalates to
+            // relaxed-penalty variants and picks the best shape (extra Dijkstras
+            // are spent only on the defective case).
+            returnRef = buildRefTrack(segments);
+            returnTrack = routeReturnWithVariants(segments, returnRef,
+              currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
+            returnChecksPerformed++;
+
+            // Too long → undo the RAW sub-route (no detail work paid yet) and
+            // try the next ranked candidate.
+            if (returnTrack != null && returnTrack.distance > 0
+                && totalDistance + returnTrack.distance > desiredDistance * (1 + tolerance)) {
+              result.addDiagnostic("step " + step + ": projected "
+                + (int) (totalDistance + returnTrack.distance)
+                + "m exceeds desired " + (int) desiredDistance + "m, trying next candidate");
+              tooLongSeen = true;
+              segments.remove(segments.size() - 1);
+              totalDistance -= accepted.routeDistance;
+              if (accepted.fromIsoCandidate) acceptedIsoLegs--;
+              else acceptedNonIsoLegs--;
+              waypointStack.remove(waypointStack.size() - 1);
+              currentMwp = waypointStack.get(waypointStack.size() - 1);
+              prevIlon = savedPrevIlon;
+              prevIlat = savedPrevIlat;
+              continue;
+            }
+          }
+
+          // Length decision passed — NOW pay for detail. Phase 2 v3: upgrade
+          // the committed sub-track from single-pass (fast, no per-edge
+          // MessageData) to detailed via the engine's retracking pass. The
+          // quality gate's paved-profile hostility check requires
+          // wayKeyValues on every edge; single-pass tracks don't have them,
+          // so without this step the gate would either bypass hostility
+          // (under suspect-tolerance) or trip the missing-metadata floor.
+          OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, deadline);
+          String detailReject = null;
+          if (detailedAccepted == null || detailedAccepted.distance == 0) {
+            detailReject = "accepted leg could not be detailed";
+          } else if (detailFidelityTooLow(detailedAccepted)) {
+            detailReject = "accepted leg still lacks metadata after retrack ("
+              + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + ")";
+          } else if (RoundTripQualityGate.isPavedProfile(profileName)) {
+            // Phase 2 v3 hostility post-check. The scorer cannot see hostility
+            // while choosing candidates (single-pass tracks lack metadata),
+            // but the FINAL gate will reject any leg with a contiguous hostile
+            // stretch over the cap. Checking here lets the planner move to the
+            // next candidate instead of committing a hostile leg and losing
+            // the whole loop. Skipped on non-paved profiles where the
+            // predicate would over-flag.
+            RoundTripQualityGate.HostileStretch hostileStretch =
+              RoundTripQualityGate.worstHostileStretchPaved(detailedAccepted);
+            if (hostileStretch.meters > RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS) {
+              detailReject = "accepted leg has " + hostileStretch.meters
+                + "m contiguous hostile stretch (over "
+                + RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS + ")";
+            }
+          }
+          if (detailReject != null) {
+            result.addDiagnostic("step " + step + ": " + detailReject + ", trying next candidate");
+            segments.remove(segments.size() - 1);
+            totalDistance -= accepted.routeDistance;
+            if (accepted.fromIsoCandidate) acceptedIsoLegs--;
+            else acceptedNonIsoLegs--;
+            waypointStack.remove(waypointStack.size() - 1);
+            currentMwp = waypointStack.get(waypointStack.size() - 1);
+            prevIlon = savedPrevIlon;
+            prevIlat = savedPrevIlat;
+            continue;
+          }
+
+          // Swap the detailed leg in (identical node sequence; distance can
+          // shift marginally) and register its edges for reuse scoring.
+          double rawLegDistance = accepted.routeDistance;
+          accepted.track = detailedAccepted;
+          accepted.routeDistance = detailedAccepted.distance;
+          segments.set(segments.size() - 1, detailedAccepted);
+          totalDistance += detailedAccepted.distance - rawLegDistance;
+          addVisitedEdges(accepted.track, visitedEdges, totalDistance - accepted.routeDistance);
+
+          if (!returnChecked || returnTrack == null || returnTrack.distance == 0) {
+            // Either closure is clearly out of reach with steps to spare, or
+            // the return was not routable within budget — keep the leg
+            // (legacy behaviour) and let the next step / force-close handle
+            // closure.
+            legCommitted = true;
+            break;
+          }
+
+          // Recompute the closure numbers against the DETAILED leg distance
+          // (the length decision above used the raw track).
           double closedDistance = totalDistance + returnTrack.distance;
           double error = Math.abs(closedDistance - desiredDistance) / desiredDistance;
+          if (closedDistance > desiredDistance * (1 + tolerance)) {
+            // The detail swap nudged the total over the cap — too long after all.
+            result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
+              + "m exceeds desired " + (int) desiredDistance + "m after detailing, trying next candidate");
+            tooLongSeen = true;
+            segments.remove(segments.size() - 1);
+            totalDistance -= accepted.routeDistance;
+            if (accepted.fromIsoCandidate) acceptedIsoLegs--;
+            else acceptedNonIsoLegs--;
+            removeVisitedEdges(accepted.track, visitedEdges);
+            waypointStack.remove(waypointStack.size() - 1);
+            currentMwp = waypointStack.get(waypointStack.size() - 1);
+            prevIlon = savedPrevIlon;
+            prevIlat = savedPrevIlat;
+            continue;
+          }
 
           // Phase 2 v3: detail the closing return leg before either snapshot
           // or final commit — both paths feed the quality gate which needs
-          // per-edge MessageData.
-          // Detail the closing return leg before snapshotting or committing —
-          // both feed the quality gate, which needs per-edge MessageData. Also
-          // re-detail when the current best fallback was gate-rejected, so we
-          // keep searching for a gate-accepted closure even at higher error.
+          // per-edge MessageData. Also re-detail when the current best
+          // fallback was gate-rejected, so we keep searching for a
+          // gate-accepted closure even at higher error.
           boolean needDetail = (bestFallback == null || error < bestFallback.error)
             || (error <= tolerance)
             || (bestFallback != null && !bestFallback.gateAccepted);
@@ -1083,7 +1160,7 @@ public class GreedyRoundTripPlanner {
           if (error <= tolerance) {
             if (reject != null) {
               result.addDiagnostic("closed loop rejected at step " + step
-                + ": " + reject + ", retrying");
+                + ": " + reject + ", trying next candidate");
               closureRejections++;
               segments.remove(segments.size() - 1);
               totalDistance -= accepted.routeDistance;
@@ -1092,11 +1169,8 @@ public class GreedyRoundTripPlanner {
               removeVisitedEdges(accepted.track, visitedEdges);
               waypointStack.remove(waypointStack.size() - 1);
               currentMwp = waypointStack.get(waypointStack.size() - 1);
-              currentIlon = currentMwp.crosspoint.getILon();
-              currentIlat = currentMwp.crosspoint.getILat();
               prevIlon = savedPrevIlon;
               prevIlat = savedPrevIlat;
-              localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
               continue;
             }
 
@@ -1115,30 +1189,25 @@ public class GreedyRoundTripPlanner {
             return result;
           }
 
-          // Too long → undo sub-route, aggressively shrink radius, retry.
-          if (closedDistance > desiredDistance * (1 + tolerance)) {
-            result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
-              + "m exceeds desired " + (int) desiredDistance + "m, shrinking radius");
-            segments.remove(segments.size() - 1);
-            totalDistance -= accepted.routeDistance;
-            if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-            else acceptedNonIsoLegs--;
-            removeVisitedEdges(accepted.track, visitedEdges);
-            waypointStack.remove(waypointStack.size() - 1);
-            currentMwp = waypointStack.get(waypointStack.size() - 1);
-            currentIlon = currentMwp.crosspoint.getILon();
-            currentIlat = currentMwp.crosspoint.getILat();
-            prevIlon = savedPrevIlon;
-            prevIlat = savedPrevIlat;
-            localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_TOO_LONG);
-            continue;
-          }
-
-          // Between (1-tol) and (1+tol) but not within tol? → too short, continue
+          // Between (1-tol) and (1+tol) but not within tol → too short:
+          // keep the leg and continue with the next step.
+          legCommitted = true;
+          break;
         }
 
-        candidateFound = true;
-        break;
+        if (legCommitted) {
+          candidateFound = true;
+          break;
+        }
+
+        // Every routed candidate failed its length/detail/closure checks —
+        // restore step-start state is already done per trial; shrink the
+        // radius (aggressively when length was the dominant failure) and
+        // regenerate candidates.
+        currentIlon = currentMwp.crosspoint.getILon();
+        currentIlat = currentMwp.crosspoint.getILat();
+        localRadius = Math.max(MIN_LOCAL_RADIUS_M,
+          localRadius * (tooLongSeen ? BACKOFF_FACTOR_TOO_LONG : BACKOFF_FACTOR_NO_CANDIDATE));
       }
 
       if (!candidateFound) {
