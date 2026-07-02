@@ -138,7 +138,38 @@ Every accepted-leg/return retrack (`detailed=true`) and every subsequent routing
 ## 3b. Conceptual alternative worth prototyping: skeleton-first placement
 The per-(step,attempt) cost drivers (expansion, K matches+routings, tentative scans, return checks, undo cycles) all exist because vias are chosen one at a time with commit-and-undo. The codebase already computes a start-centered isochrone with 36 direction buckets × 3 cost contours (ISO_GREEDY pool). An alternative: choose ALL vias upfront from that one expansion at ~subTarget spacing along the requested rotation (with the same convexity/heading terms as a global filter), route the S legs once (in parallel per F7), then repair only the failing legs locally. This collapses the multiplicative structure to ~S+1 routed legs + a small repair budget, and the existing quality gate remains the arbiter. Route-quality risk is real (less adaptive to terrain discovered en route — the indirectness EMA information arrives too late), so it should compete against the tuned greedy on the scenario corpus rather than replace it outright; but it is the shape of a planner whose worst case is seconds, not minutes.
 
-## 4. Suggested roadmap
+## 4. Implementation status (this branch)
+
+Implemented in three commits on `claude/greedy-round-trip-perf-epbs3d`
+("thread the request budget", "cut redundant search work", "parallel AUTO
+greedy children"):
+
+- **F1/F2/F11 + F8b** — request-deadline threading through doRun → ladder →
+  plan() → timedFindTrack → expansion loop (which also honours the watchdog
+  kill flag now); distance-scaled per-Dijkstra caps; bounded force-close
+  grace; remaining-budget fallback doRouting; startTime anchoring (bulge
+  repairs actually run on servers now).
+- **F3** — planner legs run goal-directed at the profile's `pass1coefficient`.
+- **F8.1/F8.2** — the gate's chaos-tier double scan removed; the segment-pair
+  crossing scan uses a spatial-hash grid above 512 segments with proven exact
+  parity (`SelfIntersectionGridEquivalenceTest`).
+- **F4/F4b** — closure-aware trial loop over the ranked routed candidates;
+  raw-leg-first ordering so too-long undos pay zero detail Dijkstras.
+- **F5** — per-step reuse of the largest with-refTrack expansion across
+  backoff attempts; the step-1 expansion cache is bounded.
+- **F6-lite** — Phase-1 scoring uses expansion-compiled real leg distances
+  where available.
+- **F7** — ISO_GREEDY ∥ GREEDY AUTO children with sequential-policy parity
+  and terminate-on-unentitled.
+
+Not implemented (needs scenario-corpus validation before shipping):
+the full return-distance oracle (F6, distance-from-start grid) and the
+skeleton-first placement prototype (§3b). Golden signatures
+(`LoopGoldenSignatureTest`) must be re-captured on tiles: F3, F4/F4b, F5,
+F6-lite and the budget gates deliberately change which candidate wins in
+scenarios that previously hit caps or exhausted attempts.
+
+## 5. Suggested roadmap (original)
 
 | Order | Change | Size | Wall-clock effect | Route-output risk |
 |---|---|---|---|---|
