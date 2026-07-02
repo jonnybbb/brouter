@@ -201,6 +201,31 @@ public class RoutingEngine extends Thread {
   // doRun() so the WAYPOINT/ISOCHRONE/greedy-fallthrough doRouting() calls are
   // bounded. 0 (the CLI default) keeps the legacy no-timeout behaviour.
   private long roundTripRoutingBudgetMs;
+  /**
+   * Absolute wall-clock deadline (epoch ms) for the whole round-trip request,
+   * set once by doRun(). Every retry layer (subRouteCount ladder, Phase 2.1
+   * axis retry, ISO_GREEDY→GREEDY recursion, fallback doRouting) and the
+   * isochrone expansion loop consult it, so the retry machinery can no longer
+   * multiply the request budget into minutes. 0 = unbounded (CLI / doRun(0)).
+   */
+  volatile long roundTripRequestDeadline;
+
+  /** Milliseconds left until {@link #roundTripRequestDeadline} (MAX_VALUE when unbounded). */
+  long remainingRequestBudgetMs() {
+    return roundTripRequestDeadline == 0
+      ? Long.MAX_VALUE
+      : roundTripRequestDeadline - System.currentTimeMillis();
+  }
+
+  /**
+   * Per-call wall-clock bound for the next {@link #runIsochroneExpansion}
+   * (epoch ms, 0 = none), set/cleared by the greedy planner around
+   * candidatesForStep. The expansion loop historically had NO time or
+   * termination check at all — only cost/geo/node caps — so a single
+   * dense-area expansion (up to 1.5M pops) could neither respect the plan
+   * deadline nor be killed by the watchdog.
+   */
+  volatile long transientExpansionDeadline;
   public SearchBoundary boundary;
 
   public boolean quite = false;
@@ -253,6 +278,13 @@ public class RoutingEngine extends Thread {
   // spawned candidate still gets a usable slice.
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
   private static final long MIN_CHILD_BUDGET_MS = 5_000;
+  /**
+   * Minimum remaining request budget worth starting another subRouteCount
+   * ladder rung, Phase-2.1 retry or ISO_GREEDY→GREEDY recursion for. Below
+   * this a fresh plan() could not route even a couple of legs, so the time is
+   * better left to the fallback/adoption path.
+   */
+  private static final long MIN_LADDER_RUNG_BUDGET_MS = 3_000;
   /**
    * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
    * via points in round-trip mode. Routing-time micro-detour and back-and-forth
@@ -401,6 +433,20 @@ public class RoutingEngine extends Thread {
         // the legacy unbounded behaviour for the CLI.
         this.maxRunningTime = maxRunningTime;
         roundTripRoutingBudgetMs = maxRunningTime;
+        // Anchor the engine clock for searches that run outside doRouting /
+        // timedFindTrack (e.g. the repairViaPinnedBulges connector search in
+        // the greedy bypass path). Before this, engine.startTime stayed 0 in
+        // that path, so with maxRunningTime > 0 the connector's timeout check
+        // (now - startTime > budget) fired instantly and every bulge repair
+        // silently failed on servers.
+        this.startTime = System.currentTimeMillis();
+        // Absolute wall-clock deadline for the WHOLE round-trip request. This
+        // is what the greedy planner ladder, the isochrone expansions and the
+        // fallback doRouting consult so retries can never multiply the
+        // request budget (the historical minutes-long worst case). 0 keeps
+        // untimed callers (CLI, doRun(0) tests) unbounded.
+        roundTripRequestDeadline = maxRunningTime > 0
+          ? this.startTime + maxRunningTime : 0;
         doRoundTrip();
         break;
       default:
@@ -1914,24 +1960,35 @@ public class RoutingEngine extends Thread {
       ? Math.min(maxSnapDist, VIA_RELOCATION_LOOP_FRACTION * roundTripSearchRadius)
       : maxSnapDist;
     OsmNode orig = new OsmNode(ilon, ilat);
-    List<OsmNode> points = new ArrayList<>();
-    points.add(new OsmNode(ilon, ilat));
-    for (double ring : VIA_SNAP_PROBE_RINGS) {
-      if (ring > relocationCap) continue; // ring would only yield over-cap candidates
-      for (double bearing = 0; bearing < 360; bearing += 45) {
-        int[] p = CheapRuler.destination(ilon, ilat, ring, bearing);
-        points.add(new OsmNode(p[0], p[1]));
-      }
-    }
-    List<MatchedWaypoint> mwps = batchMatchToRoads(points, maxSnapDist, name);
-    if (mwps == null) return null;
+    // Match the plain point FIRST and probe the rings only when it is
+    // actually hostile. The rings exist purely for the hostile-snap escape;
+    // matching all 17 points up front paid ~16 extra road matches per routed
+    // candidate (~240 candidate snaps per plan) on the common non-hostile
+    // path. Skipping the orig entry in the ring loop below is
+    // behavior-identical: its score (origCf*1000 + snapDist) can never beat
+    // the incumbent-initialized bestScore of origCf*1000.
+    List<OsmNode> plainPoint = new ArrayList<>(1);
+    plainPoint.add(new OsmNode(ilon, ilat));
+    List<MatchedWaypoint> plainMatch = batchMatchToRoads(plainPoint, maxSnapDist, name);
+    if (plainMatch == null) return null;
 
-    MatchedWaypoint origMatch = isRoadSnap(mwps.get(0)) ? mwps.get(0) : null;
+    MatchedWaypoint origMatch = isRoadSnap(plainMatch.get(0)) ? plainMatch.get(0) : null;
     double origCf = origMatch != null ? snapCandidateCostFactor(origMatch) : Double.MAX_VALUE;
 
     MatchedWaypoint best = origMatch;
     double bestCf = origCf;
     if (origMatch == null || origCf >= VIA_SNAP_HOSTILE_COSTFACTOR) {
+      List<OsmNode> points = new ArrayList<>();
+      for (double ring : VIA_SNAP_PROBE_RINGS) {
+        if (ring > relocationCap) continue; // ring would only yield over-cap candidates
+        for (double bearing = 0; bearing < 360; bearing += 45) {
+          int[] p = CheapRuler.destination(ilon, ilat, ring, bearing);
+          points.add(new OsmNode(p[0], p[1]));
+        }
+      }
+      List<MatchedWaypoint> mwps = points.isEmpty()
+        ? new ArrayList<>() : batchMatchToRoads(points, maxSnapDist, name);
+      if (mwps == null) mwps = new ArrayList<>(); // probe failure: keep the plain match
       // KNOWN INCONSISTENCY, kept for now: the incumbent is scored WITHOUT its
       // snap-distance term while the probe alternatives pay costFactor*1000 +
       // distance (the sibling start-snapper scores the incumbent with the full
@@ -2302,7 +2359,10 @@ public class RoutingEngine extends Thread {
     if (isDegradedGreedyResult(result)
         && direction >= 0
         && frontierAxis.hasStrongAxis
-        && isPerpendicularToAxis(direction, frontierAxis.axisBearingDegrees)) {
+        && isPerpendicularToAxis(direction, frontierAxis.axisBearingDegrees)
+        // Request-budget gate: the axis retry re-runs the whole subRouteCount
+        // ladder — only worth starting when the request can still fund it.
+        && remainingRequestBudgetMs() >= MIN_LADDER_RUNG_BUDGET_MS) {
       phase21Triggered = true;
       phase21RetryDir = chooseAxisBearing(frontierAxis.axisBearingDegrees, direction);
       logInfo("ISO_GREEDY: Phase 2.1 axis retry — user direction " + (int) direction
@@ -2421,7 +2481,15 @@ public class RoutingEngine extends Thread {
         routingContext.waypointCatchingRange = 250;
         roundTripSearchRadius = searchRadius;
         try {
-          doRouting(roundTripRoutingBudgetMs);
+          // Fund the fallback re-route with the REMAINING request budget, not
+          // the full original one (which would let the fallback alone double
+          // the request wall clock). A small floor keeps a spent budget from
+          // guaranteeing failure right at the finish line.
+          long fallbackBudget = roundTripRoutingBudgetMs <= 0
+            ? roundTripRoutingBudgetMs
+            : Math.min(roundTripRoutingBudgetMs,
+                Math.max(MIN_LADDER_RUNG_BUDGET_MS, remainingRequestBudgetMs()));
+          doRouting(fallbackBudget);
         } catch (Exception e) {
           logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
           throw e;
@@ -2433,9 +2501,19 @@ public class RoutingEngine extends Thread {
       // ISO_GREEDY only fails over to plain GREEDY if it also failed; otherwise
       // ISO_GREEDY's planner already added graph-native per-step candidates
       // when the start-centered iso pool was insufficient (see buildCandidateProvider).
-      if (algo == RoundTripAlgorithm.ISO_GREEDY) {
+      if (algo == RoundTripAlgorithm.ISO_GREEDY
+          && remainingRequestBudgetMs() >= MIN_LADDER_RUNG_BUDGET_MS) {
         logInfo("ISO_GREEDY produced no loop, falling back to GREEDY with graph-native candidates");
         doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.GREEDY);
+      } else if (algo == RoundTripAlgorithm.ISO_GREEDY) {
+        // Same recursion, but the request budget is spent — adopt/report what
+        // we have instead of starting another multi-plan GREEDY ladder.
+        logInfo("ISO_GREEDY produced no loop and request budget is exhausted ("
+          + remainingRequestBudgetMs() + "ms left), skipping GREEDY fallback ladder");
+        errorMessage = "greedy round trip planner produced no acceptable loop within the request budget"
+          + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason());
+        lastRejectedTrack = result == null ? null : result.getTrack();
+        foundTrack = null;
       } else {
         // Adopt the planner's best-effort loop (if any) and hand it up to the
         // uniform quality gate in doRoundTrip, which is the single place that
@@ -3942,7 +4020,24 @@ public class RoutingEngine extends Thread {
     int cellDivLat = Math.max(1, (int) (REACHABILITY_CELL_M / cellKxKy[1]));
     java.util.Set<Long> visitedCells = new java.util.HashSet<>(4096);
 
+    long expansionDeadline = transientExpansionDeadline;
+    if (roundTripRequestDeadline > 0) {
+      expansionDeadline = expansionDeadline > 0
+        ? Math.min(expansionDeadline, roundTripRequestDeadline) : roundTripRequestDeadline;
+    }
+
     for (;;) {
+      // Wall-clock + watchdog guard (same contract as _findTrack's pop loop):
+      // stop expanding and return the partial frontier — callers already
+      // handle sparse candidate sets gracefully, and a partial frontier beats
+      // an un-killable multi-second expansion overrunning every deadline.
+      if (terminated
+          || (expansionDeadline > 0 && System.currentTimeMillis() > expansionDeadline)) {
+        logInfo("isochrone: expansion stopped early (" + (terminated ? "terminated" : "deadline")
+          + ") after " + nodesExpanded + " nodes");
+        break;
+      }
+
       OsmPath path = isoOpenSet.popLowestKeyValue();
       if (path == null) break;
       if (path.airdistance == -1) continue; // invalidated
@@ -4534,12 +4629,24 @@ public class RoutingEngine extends Thread {
                                            IsoAsymmetryBias bias) {
     RoundTripResult result = null;
     for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount)) {
+      // Request-budget gate on the retry ladder: each plan() used to get a
+      // fresh 30s deadline regardless of remaining request budget, so the
+      // ladder alone could run ~4x the requested timeout. Stop starting new
+      // rungs once the request budget cannot fund a useful plan anymore.
+      long remaining = remainingRequestBudgetMs();
+      if (remaining < MIN_LADDER_RUNG_BUDGET_MS) {
+        logInfo("greedy: request budget exhausted (" + remaining
+          + "ms left), skipping remaining subRouteCount ladder");
+        break;
+      }
       logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
       planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(routingContext.getProfileName()));
       planner.setProfileName(routingContext.getProfileName());
       planner.setVarietySeed(routingContext.getRoundTripSeed());
+      planner.setExternalDeadline(roundTripRequestDeadline == 0
+        ? Long.MAX_VALUE : roundTripRequestDeadline);
       result = planner.plan(start, desiredDistance, tryDirection);
       if (result != null) {
         result.setIsoAsymmetryBearingApplied(bias.applied);

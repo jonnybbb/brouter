@@ -183,6 +183,20 @@ public class GreedyRoundTripPlanner {
 
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   /**
+   * Salvage margin past the request deadline for the force-close leg only: a
+   * nearly-complete loop is worth a bounded overrun, an unbounded one is not.
+   */
+  private static final long FORCE_CLOSE_GRACE_PAST_BUDGET_MS = 2000;
+  /**
+   * Per-Dijkstra budget scaling: base + per-air-km allowance, capped at
+   * {@link #SUB_ROUTE_TIMEOUT_MS}. A flat 10s cap let two pathological
+   * searches eat 2/3 of a 30s plan; with goal-directed legs (see
+   * {@link #timedFindTrack}) a healthy leg finishes far below its scaled cap,
+   * so a stuck search is cut off in proportion to what it could possibly need.
+   */
+  private static final long FIND_TRACK_BASE_BUDGET_MS = 2000;
+  private static final long FIND_TRACK_BUDGET_MS_PER_AIR_KM = 700;
+  /**
    * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
    * (subRouteCount × maxAttempts × MAX_ROUTE_ATTEMPTS × SUB_ROUTE_TIMEOUT_MS)
    * blows past 20 minutes; this is the safety net. Each timedFindTrack call
@@ -469,6 +483,21 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
+   * Absolute wall-clock ceiling (epoch ms) imposed by the caller — the
+   * request-level deadline. plan()'s own {@link #DEFAULT_PLAN_DEADLINE_MS}
+   * used to be the ONLY bound, so the subRouteCount ladder, the Phase-2.1
+   * axis retry, the ISO_GREEDY→GREEDY recursion and the AUTO children each
+   * multiplied a fresh 30s per plan into a minutes-long worst case. The
+   * effective plan deadline is the minimum of both. Defaults to unbounded
+   * for direct callers and tests ({@code <= 0} also means unbounded).
+   */
+  private long externalDeadline = Long.MAX_VALUE;
+
+  public void setExternalDeadline(long deadlineMillis) {
+    externalDeadline = deadlineMillis <= 0 ? Long.MAX_VALUE : deadlineMillis;
+  }
+
+  /**
    * Deterministic uniform value in [-1, 1) from a seed and two salts
    * (splitmix64-style finalizer). Keyed on stable inputs only — candidate
    * coordinates or fixed knob ids, never iteration order — so the same
@@ -494,7 +523,7 @@ public class GreedyRoundTripPlanner {
    */
   public RoundTripResult plan(OsmNodeNamed start, double desiredDistance, double startDirection) {
     long planStart = System.currentTimeMillis();
-    long deadline = planStart + DEFAULT_PLAN_DEADLINE_MS;
+    long deadline = Math.min(planStart + DEFAULT_PLAN_DEADLINE_MS, externalDeadline);
     RoundTripResult result = new RoundTripResult();
     double subTarget = desiredDistance / subRouteCount;
     // SAFE-3: primitive open-addressing store replacing the former
@@ -575,13 +604,22 @@ public class GreedyRoundTripPlanner {
         double airRadius = localRadius / indirectnessEst;
 
         // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
-        List<RoundTripCandidateProvider.CandidatePoint> candidates =
-          candidateProvider.candidatesForStep(
+        // Bound the provider's graph expansion by the plan deadline (and a
+        // per-call ceiling): the expansion loop historically ran with no time
+        // check at all, so a dense-area expansion could overrun every budget.
+        List<RoundTripCandidateProvider.CandidatePoint> candidates;
+        engine.transientExpansionDeadline = Math.min(deadline,
+          System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS);
+        try {
+          candidates = candidateProvider.candidatesForStep(
             currentIlon, currentIlat, airRadius,
             step, subRouteCount,
             start.ilon, start.ilat,
             startDirection,
             cachedRefTrack);
+        } finally {
+          engine.transientExpansionDeadline = 0;
+        }
         candidatesGenerated += candidates.size();
 
         // Terrain-feasibility reference for the direction term: the best heading
@@ -1136,9 +1174,16 @@ public class GreedyRoundTripPlanner {
     }
 
     // Last resort: force-close. Allow up to 10s here even past the planner
-    // deadline — without a closing leg the planner has nothing usable to return.
+    // deadline — without a closing leg the planner has nothing usable to
+    // return. The grace is bounded by the REQUEST deadline (plus a small
+    // salvage margin): pre-budget-threading this grace was uncapped and let a
+    // plan overrun the request budget it never knew about.
     if (!segments.isEmpty()) {
       long forceCloseDeadline = Math.max(deadline, System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS);
+      if (externalDeadline != Long.MAX_VALUE) {
+        forceCloseDeadline = Math.min(forceCloseDeadline,
+          externalDeadline + FORCE_CLOSE_GRACE_PAST_BUDGET_MS);
+      }
       OsmTrack returnTrack = timedFindTrack("greedy-force-close",
         currentMwp, startMwp, buildRefTrack(segments), forceCloseDeadline);
       returnChecksPerformed++;
@@ -1478,12 +1523,32 @@ public class GreedyRoundTripPlanner {
       engine.logInfo(name + ": deadline exceeded, skipping (remaining " + remaining + "ms)");
       return null;
     }
-    long budget = Math.min(SUB_ROUTE_TIMEOUT_MS, remaining);
+    // Distance-scaled per-call cap (see FIND_TRACK_BASE_BUDGET_MS): a short
+    // candidate leg is never allowed to burn the flat 10s worst case.
+    double airKm = (from != null && to != null && from.crosspoint != null && to.crosspoint != null)
+      ? CheapRuler.distance(from.crosspoint.ilon, from.crosspoint.ilat,
+          to.crosspoint.ilon, to.crosspoint.ilat) / 1000.0
+      : Double.MAX_VALUE;
+    long scaledCap = airKm == Double.MAX_VALUE ? SUB_ROUTE_TIMEOUT_MS
+      : Math.min(SUB_ROUTE_TIMEOUT_MS,
+          FIND_TRACK_BASE_BUDGET_MS + (long) (FIND_TRACK_BUDGET_MS_PER_AIR_KM * airKm));
+    long budget = Math.min(scaledCap, remaining);
     long savedStartTime = engine.startTime;
     long savedMaxRunningTime = engine.maxRunningTime;
+    double savedAirDistanceCostFactor = engine.airDistanceCostFactor;
     try {
       engine.startTime = now;
       engine.maxRunningTime = budget;
+      // Goal-directed search for planner legs. The greedy path historically
+      // inherited the field default 0.0 — a full omnidirectional Dijkstra per
+      // leg (cost-disk ~quadratic in leg distance), while normal routing runs
+      // a directed pass at the profile's pass1coefficient (~linear corridor).
+      // Candidate legs don't need exact optimality: they are re-scored on
+      // their routed result and the accepted leg is detail-retracked anyway,
+      // so the profile's own pass-1 heuristic strength is the right tool.
+      // Negative/zero coefficients (profiles that disable pass 1) keep the
+      // exact search.
+      engine.airDistanceCostFactor = Math.max(0.0, engine.routingContext.pass1coefficient);
       return engine.findTrack(name, from, to, null, refTrack, false);
     } catch (IllegalArgumentException | RoutingIslandException e) {
       // A watchdog kill surfaces as IllegalArgumentException; propagate it so
@@ -1501,6 +1566,7 @@ public class GreedyRoundTripPlanner {
     } finally {
       engine.startTime = savedStartTime;
       engine.maxRunningTime = savedMaxRunningTime;
+      engine.airDistanceCostFactor = savedAirDistanceCostFactor;
     }
   }
 

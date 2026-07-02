@@ -443,15 +443,15 @@ public final class RoundTripQualityGate {
     //    closure search) — STRUCTURAL, so lenient adoption, best-effort
     //    fallbacks and AUTO children all refuse it and fall through to
     //    cleaner candidates.
-    String chaos = checkShapeChaos(track);
+    ChaosCheck chaos = checkShapeChaos(track);
     if (chaos != null) {
       RoundTripQualityResult.RejectionTier tier =
-        countSelfIntersections(track) > 2 * MAX_SELF_INTERSECTIONS
+        chaos.selfIntersections > 2 * MAX_SELF_INTERSECTIONS
           ? RoundTripQualityResult.RejectionTier.STRUCTURAL
           : RoundTripQualityResult.RejectionTier.QUALITY;
       return RoundTripQualityResult.builder()
         .shape(RouteShape.INVALID_RETRACE)
-        .reject(tier, chaos)
+        .reject(tier, chaos.reason)
         .build();
     }
 
@@ -526,17 +526,33 @@ public final class RoundTripQualityGate {
     return tags.contains("route=ferry") || tags.contains("ferry=");
   }
 
-  private static String checkShapeChaos(OsmTrack track) {
+  /**
+   * Chaos verdict carrying the crossing count so {@link #evaluate}'s tier
+   * decision can reuse it — the tier check used to re-run the full
+   * bounded-quadratic {@link #countSelfIntersections} a second time on
+   * exactly the rejection path that triggers planner retries.
+   */
+  private static final class ChaosCheck {
+    final String reason;
+    final int selfIntersections;
+
+    ChaosCheck(String reason, int selfIntersections) {
+      this.reason = reason;
+      this.selfIntersections = selfIntersections;
+    }
+  }
+
+  private static ChaosCheck checkShapeChaos(OsmTrack track) {
     int selfIntersections = countSelfIntersections(track);
     if (selfIntersections > MAX_SELF_INTERSECTIONS) {
-      return "route has " + selfIntersections + " self-intersections (max "
-        + MAX_SELF_INTERSECTIONS + ") — chaotic loop geometry";
+      return new ChaosCheck("route has " + selfIntersections + " self-intersections (max "
+        + MAX_SELF_INTERSECTIONS + ") — chaotic loop geometry", selfIntersections);
     }
 
     int hairpins = countHairpinTurns(track);
     if (hairpins > MAX_HAIRPIN_TURNS) {
-      return "route has " + hairpins + " hairpin turns (max "
-        + MAX_HAIRPIN_TURNS + ") — chaotic loop geometry";
+      return new ChaosCheck("route has " + hairpins + " hairpin turns (max "
+        + MAX_HAIRPIN_TURNS + ") — chaotic loop geometry", selfIntersections);
     }
     return null;
   }
