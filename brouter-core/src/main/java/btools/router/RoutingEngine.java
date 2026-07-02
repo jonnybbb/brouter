@@ -1178,22 +1178,63 @@ public class RoutingEngine extends Thread {
     long deadline = t0 + (maxRunningTime > 0 ? maxRunningTime : DEFAULT_AUTO_BUDGET_MS);
     List<RoundTripCandidateResult> results = new ArrayList<>(3);
 
-    // 1. ISO_GREEDY.
-    RoundTripCandidateResult isoGreedyR = runChildCandidate(
-      RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
+    // 1+2. ISO_GREEDY and GREEDY children run CONCURRENTLY on isolated child
+    // engines (the server model is one engine per request thread anyway, and
+    // runChildCandidate already builds a fully isolated engine + context).
+    // Selection POLICY is unchanged from the sequential version: the GREEDY
+    // result is consulted only when ISO_GREEDY is weak/marginal/failed — a
+    // strong ISO_GREEDY discards the speculative GREEDY run exactly as the
+    // sequential code never started it. This halves the wall clock of AUTO's
+    // dominant path (both greedy families used to run back to back) at the
+    // cost of one speculative child's CPU when ISO_GREEDY is strong.
+    RoundTripCandidateResult[] parallel = new RoundTripCandidateResult[2];
+    RoutingEngine[] greedyEngineOut = new RoutingEngine[1];
+    Thread greedyThread = null;
+    if (System.currentTimeMillis() < deadline) {
+      greedyThread = new Thread(() ->
+        parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction,
+          deadline, greedyEngineOut),
+        "roundtrip-auto-greedy");
+      greedyThread.start();
+    }
+    parallel[0] = runChildCandidate(RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
+    // Sequential-entitlement timestamp: the sequential competition decided
+    // whether to START GREEDY right after ISO_GREEDY completed. Recording the
+    // decision instant here (before the join) keeps the accounting identical:
+    // a budget that would have skipped GREEDY sequentially discards the
+    // speculative result too, so a tiny budget still runs/counts exactly one
+    // candidate.
+    boolean greedyEntitled = System.currentTimeMillis() < deadline;
+    if (greedyThread != null) {
+      if (!greedyEntitled && greedyEngineOut[0] != null) {
+        // The speculative child's result can no longer be consulted — kill it
+        // so the join below returns promptly instead of waiting out the
+        // child's minimum budget slice.
+        greedyEngineOut[0].terminate();
+      }
+      try {
+        greedyThread.join();
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    RoundTripCandidateResult isoGreedyR = parallel[0] != null
+      ? parallel[0] : new RoundTripCandidateResult(RoundTripAlgorithm.ISO_GREEDY);
     results.add(isoGreedyR);
     logInfo("AUTO candidate: " + isoGreedyR);
 
-    // 2. If ISO_GREEDY was weak/marginal/failed, run GREEDY for comparison.
-    //    The spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY
-    //    is weak — we use the same single threshold for both signals.
+    // If ISO_GREEDY was weak/marginal/failed, consult GREEDY for comparison.
+    // The spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY
+    // is weak — we use the same single threshold for both signals.
     boolean isoGreedyWeak = !isoGreedyR.accepted()
       || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;
-    if (isoGreedyWeak && System.currentTimeMillis() < deadline) {
-      RoundTripCandidateResult greedyR = runChildCandidate(
-        RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
-      results.add(greedyR);
-      logInfo("AUTO candidate: " + greedyR);
+    if (isoGreedyWeak && greedyEntitled && parallel[1] != null) {
+      results.add(parallel[1]);
+      logInfo("AUTO candidate: " + parallel[1]);
+    } else if (parallel[1] != null) {
+      logInfo("AUTO: speculative GREEDY child discarded ("
+        + (isoGreedyWeak ? "past deadline at decision point" : "ISO_GREEDY strong")
+        + ") — policy parity with the sequential competition");
     }
 
     // 3. Compare accepted greedy candidates; pick highest score.
@@ -1352,6 +1393,19 @@ public class RoutingEngine extends Thread {
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
                                                      double searchRadius, double direction,
                                                      long deadline) {
+    return runChildCandidate(algo, searchRadius, direction, deadline, null);
+  }
+
+  /**
+   * As above, additionally publishing the child engine into
+   * {@code engineOut[0]} as soon as it is constructed, so a concurrent
+   * coordinator can {@link #terminate()} a speculative child whose result is
+   * no longer needed (the volatile kill flag is honoured per search pop and
+   * per expansion pop).
+   */
+  private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
+                                                     double searchRadius, double direction,
+                                                     long deadline, RoutingEngine[] engineOut) {
     long t0 = System.currentTimeMillis();
     RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
     try {
@@ -1378,6 +1432,9 @@ public class RoutingEngine extends Thread {
       RoutingEngine child = new RoutingEngine(null, null, segmentDir, childWps, childCtx,
         BROUTER_ENGINEMODE_ROUNDTRIP);
       child.quite = true;
+      if (engineOut != null) {
+        engineOut[0] = child;
+      }
       // Give the child only the remaining shared budget (floored so a spawned
       // candidate still gets a usable slice), not the full request timeout.
       long budget = childCandidateBudgetMs(deadline, System.currentTimeMillis());

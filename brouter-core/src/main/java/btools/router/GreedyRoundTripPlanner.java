@@ -658,7 +658,14 @@ public class GreedyRoundTripPlanner {
         // Score using air-distance estimates — O(1) per candidate
         for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
           double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
-          double estimatedRouteDist = airDistToCp * indirectnessEst;
+          // Exact-when-known leg distance (F6-lite): graph-native candidates
+          // carry the expansion-compiled leg, whose distance is the routed
+          // truth — strictly better than the air*indirectness guess the
+          // estimate otherwise is. Fewer mis-ranked candidates means fewer
+          // too-long undo cycles downstream.
+          double estimatedRouteDist = (cp.routedTrack != null && cp.routedTrack.distance > 0)
+            ? cp.routedTrack.distance
+            : airDistToCp * indirectnessEst;
           double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
           double estimatedReturn = airDistToStart * indirectnessEst;
           double distFromStart = airDistToStart;
