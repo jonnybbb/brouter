@@ -1196,44 +1196,54 @@ public class RoutingEngine extends Thread {
         parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction,
           deadline, greedyEngineOut),
         "roundtrip-auto-greedy");
+      // Daemon: a discarded speculative child must never delay JVM exit (CLI).
+      greedyThread.setDaemon(true);
       greedyThread.start();
     }
     parallel[0] = runChildCandidate(RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
-    // Sequential-entitlement timestamp: the sequential competition decided
-    // whether to START GREEDY right after ISO_GREEDY completed. Recording the
-    // decision instant here (before the join) keeps the accounting identical:
-    // a budget that would have skipped GREEDY sequentially discards the
-    // speculative result too, so a tiny budget still runs/counts exactly one
-    // candidate.
+    RoundTripCandidateResult isoGreedyR = parallel[0] != null
+      ? parallel[0] : new RoundTripCandidateResult(RoundTripAlgorithm.ISO_GREEDY);
+    // Whether GREEDY will be consulted is fully decidable BEFORE the join:
+    // the spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY is
+    // weak (same single threshold for both signals), and the sequential
+    // competition decided whether to START GREEDY right after ISO_GREEDY
+    // completed — recording the entitlement instant here keeps the budget
+    // accounting identical (a tiny budget still runs/counts exactly one
+    // candidate). Deciding now means a STRONG ISO_GREEDY never waits out the
+    // speculative child: it is terminated instead, so AUTO latency on the
+    // good path stays that of ISO_GREEDY alone.
+    boolean isoGreedyWeak = !isoGreedyR.accepted()
+      || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;
     boolean greedyEntitled = System.currentTimeMillis() < deadline;
+    boolean greedyNeeded = isoGreedyWeak && greedyEntitled;
     if (greedyThread != null) {
       RoutingEngine greedyChild = greedyEngineOut.get();
-      if (!greedyEntitled && greedyChild != null) {
-        // The speculative child's result can no longer be consulted — kill it
-        // so the join below returns promptly instead of waiting out the
-        // child's minimum budget slice.
+      if (!greedyNeeded && greedyChild != null) {
+        // The speculative child's result will not be consulted — kill it so
+        // the bounded join below returns promptly (the volatile flag aborts
+        // its searches/expansions within ~one heap pop).
         greedyChild.terminate();
       }
       try {
-        greedyThread.join();
+        if (greedyNeeded) {
+          greedyThread.join();
+        } else {
+          // Bounded wait covers only the terminated child's unwinding; if it
+          // overstays, move on — the daemon thread's late result is discarded
+          // anyway and cannot block JVM exit.
+          greedyThread.join(2000);
+        }
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
       }
     }
-    RoundTripCandidateResult isoGreedyR = parallel[0] != null
-      ? parallel[0] : new RoundTripCandidateResult(RoundTripAlgorithm.ISO_GREEDY);
     results.add(isoGreedyR);
     logInfo("AUTO candidate: " + isoGreedyR);
 
-    // If ISO_GREEDY was weak/marginal/failed, consult GREEDY for comparison.
-    // The spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY
-    // is weak — we use the same single threshold for both signals.
-    boolean isoGreedyWeak = !isoGreedyR.accepted()
-      || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;
-    if (isoGreedyWeak && greedyEntitled && parallel[1] != null) {
+    if (greedyNeeded && parallel[1] != null) {
       results.add(parallel[1]);
       logInfo("AUTO candidate: " + parallel[1]);
-    } else if (parallel[1] != null) {
+    } else if (greedyThread != null) {
       logInfo("AUTO: speculative GREEDY child discarded ("
         + (isoGreedyWeak ? "past deadline at decision point" : "ISO_GREEDY strong")
         + ") — policy parity with the sequential competition");
