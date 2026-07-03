@@ -201,6 +201,31 @@ public class RoutingEngine extends Thread {
   // doRun() so the WAYPOINT/ISOCHRONE/greedy-fallthrough doRouting() calls are
   // bounded. 0 (the CLI default) keeps the legacy no-timeout behaviour.
   private long roundTripRoutingBudgetMs;
+  /**
+   * Absolute wall-clock deadline (epoch ms) for the whole round-trip request,
+   * set once by doRun(). Every retry layer (subRouteCount ladder, Phase 2.1
+   * axis retry, ISO_GREEDY→GREEDY recursion, fallback doRouting) and the
+   * isochrone expansion loop consult it, so the retry machinery can no longer
+   * multiply the request budget into minutes. 0 = unbounded (CLI / doRun(0)).
+   */
+  volatile long roundTripRequestDeadline;
+
+  /** Milliseconds left until {@link #roundTripRequestDeadline} (MAX_VALUE when unbounded). */
+  long remainingRequestBudgetMs() {
+    return roundTripRequestDeadline == 0
+      ? Long.MAX_VALUE
+      : roundTripRequestDeadline - System.currentTimeMillis();
+  }
+
+  /**
+   * Per-call wall-clock bound for the next {@link #runIsochroneExpansion}
+   * (epoch ms, 0 = none), set/cleared by the greedy planner around
+   * candidatesForStep. The expansion loop historically had NO time or
+   * termination check at all — only cost/geo/node caps — so a single
+   * dense-area expansion (up to 1.5M pops) could neither respect the plan
+   * deadline nor be killed by the watchdog.
+   */
+  volatile long transientExpansionDeadline;
   public SearchBoundary boundary;
 
   public boolean quite = false;
@@ -253,6 +278,42 @@ public class RoutingEngine extends Thread {
   // spawned candidate still gets a usable slice.
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
   private static final long MIN_CHILD_BUDGET_MS = 5_000;
+  /**
+   * Minimum remaining request budget worth starting another subRouteCount
+   * ladder rung, Phase-2.1 retry or ISO_GREEDY→GREEDY recursion for. Below
+   * this a fresh plan() could not route even a couple of legs, so the time is
+   * better left to the fallback/adoption path.
+   */
+  private static final long MIN_LADDER_RUNG_BUDGET_MS = 3_000;
+  /**
+   * Product sizing (2026-07): loops up to this length must work with the
+   * standard request budget; anything longer requires the caller to opt in
+   * with a raised timeout (see the gate in doRoundTrip).
+   */
+  static final double MAX_STANDARD_LOOP_METERS = 200_000;
+  /** Minimum request budget accepted for loops above {@link #MAX_STANDARD_LOOP_METERS}. */
+  static final long LONG_LOOP_MIN_BUDGET_MS = 120_000;
+  /**
+   * Unwind margin for the parallel AUTO GREEDY child join: how long past its
+   * own budget the request thread waits for the child to stop before
+   * terminating it and moving on. Bounds the join so a wedged or
+   * budget-overshooting child can never hang the request thread.
+   */
+  private static final long AUTO_CHILD_JOIN_UNWIND_MS = 3_000;
+  /**
+   * Global bound on how many AUTO round-trip requests may run their speculative
+   * GREEDY child IN PARALLEL at once (a non-blocking permit pool). Routing is
+   * CPU-bound, so this caps the extra CPU-bound threads the parallelism adds
+   * across the whole JVM: default is spare cores ({@code cores - 1}), so a
+   * single-core box never parallelizes and a busy multi-core box stops
+   * spawning children once the spare cores are taken (each such request runs
+   * GREEDY sequentially instead). Tunable via {@code -DroundTripParallelAutoPermits};
+   * set 0 to force fully-sequential AUTO competition (zero oversubscription).
+   */
+  private static final java.util.concurrent.Semaphore PARALLEL_AUTO_SEMAPHORE =
+    new java.util.concurrent.Semaphore(Math.max(0,
+      Integer.getInteger("roundTripParallelAutoPermits",
+        Runtime.getRuntime().availableProcessors() - 1)));
   /**
    * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
    * via points in round-trip mode. Routing-time micro-detour and back-and-forth
@@ -397,6 +458,20 @@ public class RoutingEngine extends Thread {
         // the legacy unbounded behaviour for the CLI.
         this.maxRunningTime = maxRunningTime;
         roundTripRoutingBudgetMs = maxRunningTime;
+        // Anchor the engine clock for searches that run outside doRouting /
+        // timedFindTrack (e.g. the repairViaPinnedBulges connector search in
+        // the greedy bypass path). Before this, engine.startTime stayed 0 in
+        // that path, so with maxRunningTime > 0 the connector's timeout check
+        // (now - startTime > budget) fired instantly and every bulge repair
+        // silently failed on servers.
+        this.startTime = System.currentTimeMillis();
+        // Absolute wall-clock deadline for the WHOLE round-trip request. This
+        // is what the greedy planner ladder, the isochrone expansions and the
+        // fallback doRouting consult so retries can never multiply the
+        // request budget (the historical minutes-long worst case). 0 keeps
+        // untimed callers (CLI, doRun(0) tests) unbounded.
+        roundTripRequestDeadline = maxRunningTime > 0
+          ? this.startTime + maxRunningTime : 0;
         doRoundTrip();
         break;
       default:
@@ -780,6 +855,24 @@ public class RoutingEngine extends Thread {
         }
         doExplicitViaRoundTrip(searchRadius, direction);
       } else {
+        // Product sizing gate: the standard loop class is 40-100km and up to
+        // 200km must work without special action; ABOVE 200km the caller must
+        // explicitly ask for a longer calculation by raising the request
+        // timeout (server: -DmaxRunningTime, embedders: doRun budget). A
+        // default 60s budget cannot fund a good 200km+ loop, so failing fast
+        // with instructions beats a guaranteed degraded result. Untimed
+        // callers (budget <= 0, e.g. CLI) are already explicit and pass.
+        double requestedLoopMeters = 2 * Math.PI * searchRadius;
+        if (requestedLoopMeters > MAX_STANDARD_LOOP_METERS
+            && maxRunningTime > 0 && maxRunningTime < LONG_LOOP_MIN_BUDGET_MS) {
+          errorMessage = "round trips above " + (int) (MAX_STANDARD_LOOP_METERS / 1000)
+            + "km need an explicitly increased calculation budget: requested "
+            + Math.round(requestedLoopMeters / 1000.0) + "km with a "
+            + (maxRunningTime / 1000) + "s timeout; raise maxRunningTime to at least "
+            + (LONG_LOOP_MIN_BUDGET_MS / 1000) + "s";
+          logInfo(errorMessage);
+          return;
+        }
         // Resolve the roundTripIsochrone shortcut into the canonical
         // roundTripAlgorithm ONCE, so the algorithm is the single source of
         // truth from here down and the boolean never has to propagate to child
@@ -1104,22 +1197,115 @@ public class RoutingEngine extends Thread {
     long deadline = t0 + (maxRunningTime > 0 ? maxRunningTime : DEFAULT_AUTO_BUDGET_MS);
     List<RoundTripCandidateResult> results = new ArrayList<>(3);
 
-    // 1. ISO_GREEDY.
-    RoundTripCandidateResult isoGreedyR = runChildCandidate(
-      RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
+    // 1+2. ISO_GREEDY and GREEDY children run CONCURRENTLY on isolated child
+    // engines (the server model is one engine per request thread anyway, and
+    // runChildCandidate already builds a fully isolated engine + context).
+    // Selection POLICY is unchanged from the sequential version: the GREEDY
+    // result is consulted only when ISO_GREEDY is weak/marginal/failed — a
+    // strong ISO_GREEDY discards the speculative GREEDY run exactly as the
+    // sequential code never started it. This halves the wall clock of AUTO's
+    // dominant path (both greedy families used to run back to back) at the
+    // cost of one speculative child's CPU when ISO_GREEDY is strong.
+    RoundTripCandidateResult[] parallel = new RoundTripCandidateResult[2];
+    java.util.concurrent.atomic.AtomicReference<RoutingEngine> greedyEngineOut =
+      new java.util.concurrent.atomic.AtomicReference<>();
+    Thread greedyThread = null;
+    // Load-aware parallelism: routing is CPU-bound, so spawning the speculative
+    // GREEDY child unconditionally would 2x the CPU-bound threads per AUTO
+    // round trip. Under concurrent load that oversubscribes the cores and makes
+    // BOTH searches run slower against their wall-clock deadlines — a net loss.
+    // Gate the child on a NON-BLOCKING permit from a global pool sized to the
+    // spare cores (roundTripParallelAutoPermits, default cores-1): when the box
+    // has spare CPU the child runs in parallel (single-request latency win);
+    // when the pool is saturated the acquire fails and GREEDY runs sequentially
+    // below — bounding the extra CPU load instead of blindly oversubscribing.
+    boolean parallelPermit = System.currentTimeMillis() < deadline
+      && PARALLEL_AUTO_SEMAPHORE.tryAcquire();
+    if (parallelPermit) {
+      greedyThread = new Thread(() -> {
+        try {
+          parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction,
+            deadline, greedyEngineOut);
+        } finally {
+          PARALLEL_AUTO_SEMAPHORE.release();
+        }
+      }, "roundtrip-auto-greedy");
+      // Daemon: a discarded speculative child must never delay JVM exit (CLI).
+      greedyThread.setDaemon(true);
+      greedyThread.start();
+    }
+    parallel[0] = runChildCandidate(RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
+    RoundTripCandidateResult isoGreedyR = parallel[0] != null
+      ? parallel[0] : new RoundTripCandidateResult(RoundTripAlgorithm.ISO_GREEDY);
+    // Whether GREEDY will be consulted is fully decidable BEFORE the join:
+    // the spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY is
+    // weak (same single threshold for both signals), and the sequential
+    // competition decided whether to START GREEDY right after ISO_GREEDY
+    // completed — recording the entitlement instant here keeps the budget
+    // accounting identical (a tiny budget still runs/counts exactly one
+    // candidate). Deciding now means a STRONG ISO_GREEDY never waits out the
+    // speculative child: it is terminated instead, so AUTO latency on the
+    // good path stays that of ISO_GREEDY alone.
+    boolean isoGreedyWeak = !isoGreedyR.accepted()
+      || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;
+    boolean greedyEntitled = System.currentTimeMillis() < deadline;
+    boolean greedyNeeded = isoGreedyWeak && greedyEntitled;
+    if (greedyThread != null) {
+      RoutingEngine greedyChild = greedyEngineOut.get();
+      if (!greedyNeeded && greedyChild != null) {
+        // The speculative child's result will not be consulted — kill it so
+        // the bounded join below returns promptly (the volatile flag aborts
+        // its searches/expansions within ~one heap pop).
+        greedyChild.terminate();
+      }
+      // ALWAYS bound the join. Even a needed child must not hang the request
+      // thread: its own budget ends at the shared deadline, so wait only up to
+      // the remaining budget plus an unwind margin. If it overstays that
+      // (overshot its budget, or wedged in a path slow to honor termination),
+      // terminate it and give it a final short window — never block forever.
+      // A discarded child gets only the unwind margin.
+      long joinBudgetMs = greedyNeeded
+        ? Math.max(0L, deadline - System.currentTimeMillis()) + AUTO_CHILD_JOIN_UNWIND_MS
+        : AUTO_CHILD_JOIN_UNWIND_MS;
+      try {
+        greedyThread.join(joinBudgetMs);
+        if (greedyThread.isAlive()) {
+          logInfo("AUTO: GREEDY child overstayed its budget; terminating");
+          if (greedyChild != null) {
+            greedyChild.terminate();
+          }
+          greedyThread.join(AUTO_CHILD_JOIN_UNWIND_MS);
+        }
+      } catch (InterruptedException ie) {
+        currentThread().interrupt();
+      }
+      // If the (needed) child is STILL alive its result slot is not safely
+      // published — treat it as no candidate rather than reading a
+      // half-written result. The daemon thread cannot block JVM exit.
+      if (greedyThread.isAlive()) {
+        greedyNeeded = false;
+        logInfo("AUTO: GREEDY child did not stop in time; ignoring its result");
+      }
+    }
     results.add(isoGreedyR);
     logInfo("AUTO candidate: " + isoGreedyR);
 
-    // 2. If ISO_GREEDY was weak/marginal/failed, run GREEDY for comparison.
-    //    The spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY
-    //    is weak — we use the same single threshold for both signals.
-    boolean isoGreedyWeak = !isoGreedyR.accepted()
-      || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;
-    if (isoGreedyWeak && System.currentTimeMillis() < deadline) {
-      RoundTripCandidateResult greedyR = runChildCandidate(
-        RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
-      results.add(greedyR);
-      logInfo("AUTO candidate: " + greedyR);
+    // Sequential fallback: no spare-CPU permit was available (busy box) or the
+    // budget was already spent at spawn time, so GREEDY was not started in
+    // parallel. Run it now on this thread iff it is actually needed — exactly
+    // the pre-parallel competition's behaviour (GREEDY only when ISO_GREEDY is
+    // weak). No oversubscription: this reuses the request's own core.
+    if (greedyThread == null && greedyNeeded) {
+      parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
+    }
+
+    if (greedyNeeded && parallel[1] != null) {
+      results.add(parallel[1]);
+      logInfo("AUTO candidate: " + parallel[1]);
+    } else if (greedyThread != null) {
+      logInfo("AUTO: speculative GREEDY child discarded ("
+        + (isoGreedyWeak ? "past deadline at decision point" : "ISO_GREEDY strong")
+        + ") — policy parity with the sequential competition");
     }
 
     // 3. Compare accepted greedy candidates; pick highest score.
@@ -1278,6 +1464,20 @@ public class RoutingEngine extends Thread {
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
                                                      double searchRadius, double direction,
                                                      long deadline) {
+    return runChildCandidate(algo, searchRadius, direction, deadline, null);
+  }
+
+  /**
+   * As above, additionally publishing the child engine into
+   * {@code engineOut[0]} as soon as it is constructed, so a concurrent
+   * coordinator can {@link #terminate()} a speculative child whose result is
+   * no longer needed (the volatile kill flag is honoured per search pop and
+   * per expansion pop).
+   */
+  private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
+                                                     double searchRadius, double direction,
+                                                     long deadline,
+                                                     java.util.concurrent.atomic.AtomicReference<RoutingEngine> engineOut) {
     long t0 = System.currentTimeMillis();
     RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
     try {
@@ -1304,6 +1504,9 @@ public class RoutingEngine extends Thread {
       RoutingEngine child = new RoutingEngine(null, null, segmentDir, childWps, childCtx,
         BROUTER_ENGINEMODE_ROUNDTRIP);
       child.quite = true;
+      if (engineOut != null) {
+        engineOut.set(child);
+      }
       // Give the child only the remaining shared budget (floored so a spawned
       // candidate still gets a usable slice), not the full request timeout.
       long budget = childCandidateBudgetMs(deadline, System.currentTimeMillis());
@@ -1888,24 +2091,35 @@ public class RoutingEngine extends Thread {
       ? Math.min(maxSnapDist, VIA_RELOCATION_LOOP_FRACTION * roundTripSearchRadius)
       : maxSnapDist;
     OsmNode orig = new OsmNode(ilon, ilat);
-    List<OsmNode> points = new ArrayList<>();
-    points.add(new OsmNode(ilon, ilat));
-    for (double ring : VIA_SNAP_PROBE_RINGS) {
-      if (ring > relocationCap) continue; // ring would only yield over-cap candidates
-      for (double bearing = 0; bearing < 360; bearing += 45) {
-        int[] p = CheapRuler.destination(ilon, ilat, ring, bearing);
-        points.add(new OsmNode(p[0], p[1]));
-      }
-    }
-    List<MatchedWaypoint> mwps = batchMatchToRoads(points, maxSnapDist, name);
-    if (mwps == null) return null;
+    // Match the plain point FIRST and probe the rings only when it is
+    // actually hostile. The rings exist purely for the hostile-snap escape;
+    // matching all 17 points up front paid ~16 extra road matches per routed
+    // candidate (~240 candidate snaps per plan) on the common non-hostile
+    // path. Skipping the orig entry in the ring loop below is
+    // behavior-identical: its score (origCf*1000 + snapDist) can never beat
+    // the incumbent-initialized bestScore of origCf*1000.
+    List<OsmNode> plainPoint = new ArrayList<>(1);
+    plainPoint.add(new OsmNode(ilon, ilat));
+    List<MatchedWaypoint> plainMatch = batchMatchToRoads(plainPoint, maxSnapDist, name);
+    if (plainMatch == null) return null;
 
-    MatchedWaypoint origMatch = isRoadSnap(mwps.get(0)) ? mwps.get(0) : null;
+    MatchedWaypoint origMatch = isRoadSnap(plainMatch.get(0)) ? plainMatch.get(0) : null;
     double origCf = origMatch != null ? snapCandidateCostFactor(origMatch) : Double.MAX_VALUE;
 
     MatchedWaypoint best = origMatch;
     double bestCf = origCf;
     if (origMatch == null || origCf >= VIA_SNAP_HOSTILE_COSTFACTOR) {
+      List<OsmNode> points = new ArrayList<>();
+      for (double ring : VIA_SNAP_PROBE_RINGS) {
+        if (ring > relocationCap) continue; // ring would only yield over-cap candidates
+        for (double bearing = 0; bearing < 360; bearing += 45) {
+          int[] p = CheapRuler.destination(ilon, ilat, ring, bearing);
+          points.add(new OsmNode(p[0], p[1]));
+        }
+      }
+      List<MatchedWaypoint> mwps = points.isEmpty()
+        ? new ArrayList<>() : batchMatchToRoads(points, maxSnapDist, name);
+      if (mwps == null) mwps = new ArrayList<>(); // probe failure: keep the plain match
       // KNOWN INCONSISTENCY, kept for now: the incumbent is scored WITHOUT its
       // snap-distance term while the probe alternatives pay costFactor*1000 +
       // distance (the sibling start-snapper scores the incumbent with the full
@@ -2276,7 +2490,10 @@ public class RoutingEngine extends Thread {
     if (isDegradedGreedyResult(result)
         && direction >= 0
         && frontierAxis.hasStrongAxis
-        && isPerpendicularToAxis(direction, frontierAxis.axisBearingDegrees)) {
+        && isPerpendicularToAxis(direction, frontierAxis.axisBearingDegrees)
+        // Request-budget gate: the axis retry re-runs the whole subRouteCount
+        // ladder — only worth starting when the request can still fund it.
+        && remainingRequestBudgetMs() >= MIN_LADDER_RUNG_BUDGET_MS) {
       phase21Triggered = true;
       phase21RetryDir = chooseAxisBearing(frontierAxis.axisBearingDegrees, direction);
       logInfo("ISO_GREEDY: Phase 2.1 axis retry — user direction " + (int) direction
@@ -2394,8 +2611,27 @@ public class RoutingEngine extends Thread {
       if (!useDetailedPlannerTrack) {
         routingContext.waypointCatchingRange = 250;
         roundTripSearchRadius = searchRadius;
+        // Honor the request deadline: once it has fully passed, do NOT start
+        // the fallback re-route at all (doRouting resets startTime, so any
+        // budget handed to it is a real overrun). While budget remains, fund
+        // the fallback with the REMAINING budget, floored so a nearly-spent
+        // request still gets a usable (bounded, < MIN_LADDER_RUNG_BUDGET_MS
+        // overrun) salvage slice rather than a guaranteed instant timeout.
+        long remaining = remainingRequestBudgetMs();
+        if (roundTripRoutingBudgetMs > 0 && remaining <= 0) {
+          errorMessage = "round-trip request budget exhausted before the fallback re-route ("
+            + remaining + "ms remaining)";
+          logInfo(errorMessage);
+          foundTrack = null;
+          greedyLegTracks = null;
+          return;
+        }
         try {
-          doRouting(roundTripRoutingBudgetMs);
+          long fallbackBudget = roundTripRoutingBudgetMs <= 0
+            ? roundTripRoutingBudgetMs
+            : Math.min(roundTripRoutingBudgetMs,
+                Math.max(MIN_LADDER_RUNG_BUDGET_MS, remaining));
+          doRouting(fallbackBudget);
         } catch (Exception e) {
           logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
           throw e;
@@ -2407,9 +2643,19 @@ public class RoutingEngine extends Thread {
       // ISO_GREEDY only fails over to plain GREEDY if it also failed; otherwise
       // ISO_GREEDY's planner already added graph-native per-step candidates
       // when the start-centered iso pool was insufficient (see buildCandidateProvider).
-      if (algo == RoundTripAlgorithm.ISO_GREEDY) {
+      if (algo == RoundTripAlgorithm.ISO_GREEDY
+          && remainingRequestBudgetMs() >= MIN_LADDER_RUNG_BUDGET_MS) {
         logInfo("ISO_GREEDY produced no loop, falling back to GREEDY with graph-native candidates");
         doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.GREEDY);
+      } else if (algo == RoundTripAlgorithm.ISO_GREEDY) {
+        // Same recursion, but the request budget is spent — adopt/report what
+        // we have instead of starting another multi-plan GREEDY ladder.
+        logInfo("ISO_GREEDY produced no loop and request budget is exhausted ("
+          + remainingRequestBudgetMs() + "ms left), skipping GREEDY fallback ladder");
+        errorMessage = "greedy round trip planner produced no acceptable loop within the request budget"
+          + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason());
+        lastRejectedTrack = result == null ? null : result.getTrack();
+        foundTrack = null;
       } else {
         // Adopt the planner's best-effort loop (if any) and hand it up to the
         // uniform quality gate in doRoundTrip, which is the single place that
@@ -3916,7 +4162,29 @@ public class RoutingEngine extends Thread {
     int cellDivLat = Math.max(1, (int) (REACHABILITY_CELL_M / cellKxKy[1]));
     java.util.Set<Long> visitedCells = new java.util.HashSet<>(4096);
 
+    long expansionDeadline = transientExpansionDeadline;
+    if (roundTripRequestDeadline > 0) {
+      expansionDeadline = expansionDeadline > 0
+        ? Math.min(expansionDeadline, roundTripRequestDeadline) : roundTripRequestDeadline;
+    }
+
+    int popTick = 0;
     for (;;) {
+      // Wall-clock + watchdog guard (same contract as _findTrack's pop loop):
+      // stop expanding and return the partial frontier — callers already
+      // handle sparse candidate sets gracefully, and a partial frontier beats
+      // an un-killable multi-second expansion overrunning every deadline.
+      // The volatile kill flag is checked every pop; the wall clock only every
+      // 4096 pops (a currentTimeMillis per pop is measurable at ~1.5M pops,
+      // and 4096 pops complete in well under any deadline granularity).
+      if (terminated
+          || (expansionDeadline > 0 && (++popTick & 0xFFF) == 0
+              && System.currentTimeMillis() > expansionDeadline)) {
+        logInfo("isochrone: expansion stopped early (" + (terminated ? "terminated" : "deadline")
+          + ") after " + nodesExpanded + " nodes");
+        break;
+      }
+
       OsmPath path = isoOpenSet.popLowestKeyValue();
       if (path == null) break;
       if (path.airdistance == -1) continue; // invalidated
@@ -4508,12 +4776,24 @@ public class RoutingEngine extends Thread {
                                            IsoAsymmetryBias bias) {
     RoundTripResult result = null;
     for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount)) {
+      // Request-budget gate on the retry ladder: each plan() used to get a
+      // fresh 30s deadline regardless of remaining request budget, so the
+      // ladder alone could run ~4x the requested timeout. Stop starting new
+      // rungs once the request budget cannot fund a useful plan anymore.
+      long remaining = remainingRequestBudgetMs();
+      if (remaining < MIN_LADDER_RUNG_BUDGET_MS) {
+        logInfo("greedy: request budget exhausted (" + remaining
+          + "ms left), skipping remaining subRouteCount ladder");
+        break;
+      }
       logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
       planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(routingContext.getProfileName()));
       planner.setProfileName(routingContext.getProfileName());
       planner.setVarietySeed(routingContext.getRoundTripSeed());
+      planner.setExternalDeadline(roundTripRequestDeadline == 0
+        ? Long.MAX_VALUE : roundTripRequestDeadline);
       result = planner.plan(start, desiredDistance, tryDirection);
       if (result != null) {
         result.setIsoAsymmetryBearingApplied(bias.applied);

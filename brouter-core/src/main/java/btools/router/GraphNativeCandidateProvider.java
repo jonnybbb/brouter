@@ -58,6 +58,34 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
    */
   private final Map<CacheKey, IsochroneExpansionResult> expansionCache = new HashMap<>();
 
+  /**
+   * Single-slot reuse cache for WITH-refTrack expansions (the no-ref cache
+   * above cannot serve them because poisoning depends on the committed
+   * route). Keyed by position + refTrack INSTANCE identity + radius: the
+   * planner builds one refTrack per step and reuses it across all backoff
+   * attempts, whose radii only shrink — so the step's first (largest)
+   * expansion serves every later attempt. A new step or a new plan builds a
+   * new refTrack instance, which naturally invalidates the slot.
+   */
+  private RefExpansionCacheEntry refExpansionCache;
+
+  private static final class RefExpansionCacheEntry {
+    final int fromIlon;
+    final int fromIlat;
+    final OsmTrack refTrack;
+    final int radius;
+    final IsochroneExpansionResult expansion;
+
+    RefExpansionCacheEntry(int fromIlon, int fromIlat, OsmTrack refTrack,
+                           int radius, IsochroneExpansionResult expansion) {
+      this.fromIlon = fromIlon;
+      this.fromIlat = fromIlat;
+      this.refTrack = refTrack;
+      this.radius = radius;
+      this.expansion = expansion;
+    }
+  }
+
   GraphNativeCandidateProvider(RoutingEngine engine) {
     this.engine = engine;
   }
@@ -74,6 +102,9 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
 
     int expansionRadius = roundedExpansionRadius(airRadius);
     IsochroneExpansionResult expansion;
+    // Non-null only when already built on the ref-cache-hit path (avoids a
+    // second window/dedupe/sort pass below).
+    List<Template> templates = null;
     if (refTrack == null || refTrack.nodes == null || refTrack.nodes.isEmpty()) {
       CacheKey key = new CacheKey(fromIlon, fromIlat, expansionRadius);
       expansion = expansionCache.get(key);
@@ -84,20 +115,61 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
         // radius without re-running the expansion (a transient failure becomes
         // permanent for that step).
         if (expansion != null && !expansion.candidates.isEmpty()) {
+          // Bound the never-evicting map: each entry holds a visited-cell set
+          // plus up to ~144 compiled candidate tracks, and the provider lives
+          // for the whole subRouteCount ladder. 16 entries comfortably covers
+          // one plan's step-1 radii; beyond that, old radii are stale anyway.
+          if (expansionCache.size() >= 16) {
+            expansionCache.clear();
+          }
           expansionCache.put(key, expansion);
         }
       }
     } else {
       // Poisoning depends on the already-accepted route, so do not reuse the
-      // no-ref cache when a reference track is present.
-      expansion = runExpansion(fromIlon, fromIlat, expansionRadius, refTrack);
+      // no-ref cache when a reference track is present. But WITHIN a step the
+      // refTrack is one constant instance across all backoff attempts (built
+      // once at the step top), while the attempt radius only ever SHRINKS —
+      // so a completed expansion at this position with the same refTrack and
+      // a radius >= the requested one already contains every node the smaller
+      // window can select. Reusing it saves up to maxAttempts-1 full bounded
+      // Dijkstras (up to 1.5M pops each) per retry-heavy step. Safety valve
+      // below: if the reused pool yields no template in the smaller window,
+      // fall through to a fresh expansion at the requested radius.
+      expansion = null;
+      if (refExpansionCache != null
+          && refExpansionCache.fromIlon == fromIlon && refExpansionCache.fromIlat == fromIlat
+          && refExpansionCache.refTrack == refTrack
+          && refExpansionCache.radius >= expansionRadius) {
+        expansion = refExpansionCache.expansion;
+      }
+      if (expansion != null) {
+        // Build the window/sort once and reuse it below — the emptiness probe
+        // that validates the reused pool IS the template build, so on the
+        // cache-hit path (the path this optimization targets) we must not
+        // repeat it after the if/else.
+        templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
+        if (templates.isEmpty()) {
+          expansion = null; // reused pool too sparse at this radius — re-expand
+          templates = null;
+        }
+      }
+      if (expansion == null) {
+        expansion = runExpansion(fromIlon, fromIlat, expansionRadius, refTrack);
+        if (expansion != null && !expansion.candidates.isEmpty()) {
+          refExpansionCache = new RefExpansionCacheEntry(
+            fromIlon, fromIlat, refTrack, expansionRadius, expansion);
+        }
+      }
     }
     if (expansion == null) return new ArrayList<>();
     // Window/sort is airRadius-specific and must run per call, not be cached:
     // distinct airRadius values that round to the same expansionRadius share
     // the expansion above but need their own window [LOW, HIGH] and
-    // distance-error sort.
-    List<Template> templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
+    // distance-error sort. Already computed on the ref-cache-hit path above.
+    if (templates == null) {
+      templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
+    }
 
     List<CandidatePoint> result = new ArrayList<>(templates.size());
     for (Template t : templates) {

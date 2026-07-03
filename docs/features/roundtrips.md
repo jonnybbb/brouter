@@ -75,6 +75,48 @@ These checks make round-trip planning reliable enough to use without manually
 tweaking the result, while still leaving the actual road choices entirely to
 your routing profile.
 
+## Calculation budget
+
+Round-trip generation is bounded by a wall-clock budget. The server's
+`maxRunningTime` system property (default 60 s) is the **operator ceiling**; a
+request may ask for a different budget via the `timeout` URL parameter
+(seconds), clamped to that ceiling — a client can lower it, or raise it up to
+the ceiling, but never beyond (a longer budget is a DoS lever, so the server
+cap always wins).
+
+The per-plan budget scales with the requested loop length: the standard
+40–100 km class keeps the calibrated 30 s, scaling linearly to 2× at 200 km.
+**Loops above 200 km must opt in** by supplying a `timeout` of at least 120 s
+(and an operator ceiling that permits it); otherwise the request is rejected
+with a message pointing at the `timeout` / `maxRunningTime` knob rather than
+shipping a guaranteed-degraded loop.
+
+Because a plan that exhausts its budget returns its best gate-graded loop
+(possibly a disclosed distance-miss) rather than an error, a client that gets a
+degraded result can **resend the same request with a larger `timeout`** to buy a
+deeper search. Each plan exit records a `budget: used …ms of …ms, headroom …ms`
+diagnostic so operators can see how often the budget actually binds.
+
+### Behaviour under load
+
+Routing is CPU-bound, and the wall-clock budget only translates into useful
+search if the request actually gets a core. In `AUTO` mode the ISO_GREEDY and
+GREEDY candidates run **in parallel** on an idle box for lower latency, but that
+doubles the CPU-bound threads per request — so the parallelism is gated by a
+global non-blocking permit pool sized to the spare cores
+(`-DroundTripParallelAutoPermits`, default `cores - 1`). When the pool is
+saturated (busy multi-core box, or a single-core box) the child is **not**
+spawned and GREEDY runs sequentially on the request's own core, bounding the
+extra CPU load instead of oversubscribing it. Set the property to `0` to force
+fully-sequential AUTO competition.
+
+Note this only bounds the *round-trip parallelism*'s extra threads. The
+server's overall concurrency is governed separately by the `maxthreads` launch
+argument; for a hard "an admitted request gets a core for its whole timeout"
+guarantee, keep `maxthreads` at or below the core count (the server's default
+admission policy favours new-request latency and will pre-empt the oldest
+in-flight request when the pool is full).
+
 ## Experimental parameters
 
 A few opt-in flags expose work-in-progress planning experiments. They all

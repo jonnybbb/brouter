@@ -165,6 +165,56 @@ public class RoundTripQualityFixtureTest {
     return autoEngineWithBudget(budgetMs).getFoundTrack();
   }
 
+  /**
+   * Product sizing gate: loops above 200km require an explicitly raised
+   * request timeout — a standard 60s budget must fail fast with instructions
+   * instead of shipping a guaranteed-degraded loop, while a generous budget
+   * (or an untimed run) passes the gate.
+   */
+  @Test
+  public void longLoopsRequireExplicitTimeoutOptIn() {
+    RoundTripleEngineResult standard = longLoopEngine(250_000, 60_000L);
+    Assert.assertNotNull("250km at 60s must be rejected by the opt-in gate",
+      standard.errorMessage);
+    Assert.assertTrue("rejection must explain the raise-timeout remedy: " + standard.errorMessage,
+      standard.errorMessage.contains("raise maxRunningTime"));
+
+    // A raised budget passes the gate: whatever the tiny fixture map lets the
+    // planner do afterwards, the failure (if any) must NOT be the opt-in gate.
+    RoundTripleEngineResult raised = longLoopEngine(250_000, 180_000L);
+    Assert.assertTrue("raised budget must pass the opt-in gate: " + raised.errorMessage,
+      raised.errorMessage == null || !raised.errorMessage.contains("raise maxRunningTime"));
+
+    // 200km is within the standard class — the gate must not fire at 60s.
+    RoundTripleEngineResult atLimit = longLoopEngine(199_000, 60_000L);
+    Assert.assertTrue("199km at 60s must pass the opt-in gate: " + atLimit.errorMessage,
+      atLimit.errorMessage == null || !atLimit.errorMessage.contains("raise maxRunningTime"));
+  }
+
+  private static final class RoundTripleEngineResult {
+    final String errorMessage;
+
+    RoundTripleEngineResult(String errorMessage) {
+      this.errorMessage = errorMessage;
+    }
+  }
+
+  private RoundTripleEngineResult longLoopEngine(int loopMeters, long budgetMs) {
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    wps.add(RoundTripFixture.node("from", 8.72, 50.0));
+    RoutingContext rc = new RoutingContext();
+    rc.localFunction = RoundTripFixture.profileFile(PROFILE).getAbsolutePath();
+    rc.roundTripLength = loopMeters;
+    rc.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
+    rc.startDirection = EAST;
+    rc.turnInstructionMode = 2;
+    RoutingEngine re = new RoutingEngine(null, null, RoundTripFixture.segmentDir(), wps, rc,
+      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+    re.quite = true;
+    re.doRun(budgetMs);
+    return new RoundTripleEngineResult(re.getErrorMessage());
+  }
+
   private RoutingEngine autoEngineWithBudget(long budgetMs) {
     List<OsmNodeNamed> wps = new ArrayList<>();
     wps.add(RoundTripFixture.node("from", 8.72, 50.0));

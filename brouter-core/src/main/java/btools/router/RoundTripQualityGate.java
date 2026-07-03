@@ -443,15 +443,15 @@ public final class RoundTripQualityGate {
     //    closure search) — STRUCTURAL, so lenient adoption, best-effort
     //    fallbacks and AUTO children all refuse it and fall through to
     //    cleaner candidates.
-    String chaos = checkShapeChaos(track);
+    ChaosCheck chaos = checkShapeChaos(track);
     if (chaos != null) {
       RoundTripQualityResult.RejectionTier tier =
-        countSelfIntersections(track) > 2 * MAX_SELF_INTERSECTIONS
+        chaos.selfIntersections > 2 * MAX_SELF_INTERSECTIONS
           ? RoundTripQualityResult.RejectionTier.STRUCTURAL
           : RoundTripQualityResult.RejectionTier.QUALITY;
       return RoundTripQualityResult.builder()
         .shape(RouteShape.INVALID_RETRACE)
-        .reject(tier, chaos)
+        .reject(tier, chaos.reason)
         .build();
     }
 
@@ -526,17 +526,33 @@ public final class RoundTripQualityGate {
     return tags.contains("route=ferry") || tags.contains("ferry=");
   }
 
-  private static String checkShapeChaos(OsmTrack track) {
+  /**
+   * Chaos verdict carrying the crossing count so {@link #evaluate}'s tier
+   * decision can reuse it — the tier check used to re-run the full
+   * bounded-quadratic {@link #countSelfIntersections} a second time on
+   * exactly the rejection path that triggers planner retries.
+   */
+  private static final class ChaosCheck {
+    final String reason;
+    final int selfIntersections;
+
+    ChaosCheck(String reason, int selfIntersections) {
+      this.reason = reason;
+      this.selfIntersections = selfIntersections;
+    }
+  }
+
+  private static ChaosCheck checkShapeChaos(OsmTrack track) {
     int selfIntersections = countSelfIntersections(track);
     if (selfIntersections > MAX_SELF_INTERSECTIONS) {
-      return "route has " + selfIntersections + " self-intersections (max "
-        + MAX_SELF_INTERSECTIONS + ") — chaotic loop geometry";
+      return new ChaosCheck("route has " + selfIntersections + " self-intersections (max "
+        + MAX_SELF_INTERSECTIONS + ") — chaotic loop geometry", selfIntersections);
     }
 
     int hairpins = countHairpinTurns(track);
     if (hairpins > MAX_HAIRPIN_TURNS) {
-      return "route has " + hairpins + " hairpin turns (max "
-        + MAX_HAIRPIN_TURNS + ") — chaotic loop geometry";
+      return new ChaosCheck("route has " + hairpins + " hairpin turns (max "
+        + MAX_HAIRPIN_TURNS + ") — chaotic loop geometry", selfIntersections);
     }
     return null;
   }
@@ -576,11 +592,65 @@ public final class RoundTripQualityGate {
       cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
     }
     double perim = cum[n - 1];
-    int crossings = 0;
     // Hard ceiling proportional to the threshold; routes that already
     // qualify as chaotic don't benefit from precise upper counting and
-    // we'd rather avoid the O(n²) cost of long scans on degenerate input.
+    // we'd rather avoid the cost of long scans on degenerate input.
     int absoluteCeiling = MAX_SELF_INTERSECTIONS * 4;
+    int crossings = countSegmentPairCrossings(nodes, cum, perim, absoluteCeiling);
+    if (crossings > absoluteCeiling) return crossings;
+    // The CCW scan above excludes segment pairs sharing an endpoint — but on a
+    // road network most genuine self-crossings happen AT a shared junction node
+    // (both passes ride through the same intersection), which made the count
+    // systematically blind to exactly the knots a cyclist sees on the map
+    // (observed: dreieich 50km fastbike W showing 2 visual knots, counted 1).
+    crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings, cum);
+    // Shared-corridor crossings: the route rides a short shared run (a roundabout
+    // arc, a few junction edges) and exits the opposite side. Every node in the
+    // run has a shared incident edge, so BOTH scans above exempt it — yet it is a
+    // real knot (Rond-Point de la Contamine; Diacquenods figure-eight). Computed
+    // on FULL-resolution nodes (sampling breaks the node-identity adjacency the
+    // run-grouping needs); additive without double-counting because the shared
+    // edges make these invisible to the segment/per-node scans. See sharedCorridors.
+    if (crossings <= absoluteCeiling) {
+      crossings += countCorridorCrossings(track.nodes);
+    }
+    return crossings;
+  }
+
+  /** Node count from which the segment-pair scan switches to the spatial grid. */
+  private static final int GRID_MIN_SEGMENTS = 512;
+  /**
+   * Grid cell edge in raw ilon/ilat units (microdegrees): ~220m in latitude.
+   * Typical sampled-shape segments (10-50m edges, occasional 200-950m chords)
+   * cover 1-4 cells, so bucket occupancy stays small and the scan near-linear.
+   */
+  private static final int GRID_CELL_UNITS = 2000;
+
+  /**
+   * Count crossing segment pairs (j >= i+2, both outside the start/end
+   * exemption windows and not bridge/tunnel, closure pair (0, n-2) excluded).
+   * Dispatches to a uniform spatial-hash grid above {@link #GRID_MIN_SEGMENTS}
+   * segments — the historical all-pairs scan is O(n²) with NO early exit for
+   * clean loops (~5.4M pair tests for a 100km loop) and runs up to ~380× per
+   * greedy plan (once per routed candidate, per return variant and per gate
+   * verdict). The grid produces the IDENTICAL count: a crossing point lies in
+   * both segments' bounding boxes, so the pair shares at least one covered
+   * cell; the stamp array dedupes multi-cell pairs; and the count is
+   * order-independent (below the ceiling all crossing pairs are counted, above
+   * it both variants return ceiling+1).
+   */
+  static int countSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
+                                       double perim, int absoluteCeiling) {
+    return nodes.size() - 1 >= GRID_MIN_SEGMENTS
+      ? gridSegmentPairCrossings(nodes, cum, perim, absoluteCeiling)
+      : bruteForceSegmentPairCrossings(nodes, cum, perim, absoluteCeiling);
+  }
+
+  /** The historical all-pairs scan, kept for small inputs and as the equivalence-test oracle. */
+  static int bruteForceSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
+                                            double perim, int absoluteCeiling) {
+    int n = nodes.size();
+    int crossings = 0;
     for (int i = 0; i < n - 1; i++) {
       OsmPathElement a1 = nodes.get(i);
       OsmPathElement a2 = nodes.get(i + 1);
@@ -601,21 +671,70 @@ public final class RoundTripQualityGate {
         }
       }
     }
-    // The CCW scan above excludes segment pairs sharing an endpoint — but on a
-    // road network most genuine self-crossings happen AT a shared junction node
-    // (both passes ride through the same intersection), which made the count
-    // systematically blind to exactly the knots a cyclist sees on the map
-    // (observed: dreieich 50km fastbike W showing 2 visual knots, counted 1).
-    crossings += countTransverseNodeRevisits(nodes, absoluteCeiling - crossings, cum);
-    // Shared-corridor crossings: the route rides a short shared run (a roundabout
-    // arc, a few junction edges) and exits the opposite side. Every node in the
-    // run has a shared incident edge, so BOTH scans above exempt it — yet it is a
-    // real knot (Rond-Point de la Contamine; Diacquenods figure-eight). Computed
-    // on FULL-resolution nodes (sampling breaks the node-identity adjacency the
-    // run-grouping needs); additive without double-counting because the shared
-    // edges make these invisible to the segment/per-node scans. See sharedCorridors.
-    if (crossings <= absoluteCeiling) {
-      crossings += countCorridorCrossings(track.nodes);
+    return crossings;
+  }
+
+  private static int gridSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
+                                              double perim, int absoluteCeiling) {
+    int segCount = nodes.size() - 1;
+    // A segment flagged here can never be part of a counted pair: the brute
+    // scan skips exempt i rows and exempt j columns, and a bridge/tunnel on
+    // either side suppresses the count after the cross test — so flagged
+    // segments are excluded from the grid entirely.
+    boolean[] skip = new boolean[segCount];
+    for (int i = 0; i < segCount; i++) {
+      skip[i] = cum[i + 1] <= CROSSING_START_END_EXEMPT_M
+        || cum[i] >= perim - CROSSING_START_END_EXEMPT_M
+        || bridgeOrTunnelEdge(nodes.get(i + 1));
+    }
+    Map<Long, List<Integer>> grid = new java.util.HashMap<>(segCount * 2);
+    for (int i = 0; i < segCount; i++) {
+      if (skip[i]) continue;
+      OsmPathElement a = nodes.get(i);
+      OsmPathElement b = nodes.get(i + 1);
+      // floorDiv, not /: BRouter ilon/ilat are non-negative by convention,
+      // but floor division keeps the cell partition uniform even for exotic
+      // negative inputs (truncation would make cell 0 twice as wide).
+      int x0 = Math.floorDiv(Math.min(a.getILon(), b.getILon()), GRID_CELL_UNITS);
+      int x1 = Math.floorDiv(Math.max(a.getILon(), b.getILon()), GRID_CELL_UNITS);
+      int y0 = Math.floorDiv(Math.min(a.getILat(), b.getILat()), GRID_CELL_UNITS);
+      int y1 = Math.floorDiv(Math.max(a.getILat(), b.getILat()), GRID_CELL_UNITS);
+      for (int x = x0; x <= x1; x++) {
+        for (int y = y0; y <= y1; y++) {
+          grid.computeIfAbsent((((long) x) << 32) | (y & 0xFFFFFFFFL),
+            k -> new ArrayList<>()).add(i);
+        }
+      }
+    }
+    int[] lastTested = new int[segCount];
+    java.util.Arrays.fill(lastTested, -1);
+    int crossings = 0;
+    for (int i = 0; i < segCount; i++) {
+      if (skip[i]) continue;
+      OsmPathElement a1 = nodes.get(i);
+      OsmPathElement a2 = nodes.get(i + 1);
+      int x0 = Math.floorDiv(Math.min(a1.getILon(), a2.getILon()), GRID_CELL_UNITS);
+      int x1 = Math.floorDiv(Math.max(a1.getILon(), a2.getILon()), GRID_CELL_UNITS);
+      int y0 = Math.floorDiv(Math.min(a1.getILat(), a2.getILat()), GRID_CELL_UNITS);
+      int y1 = Math.floorDiv(Math.max(a1.getILat(), a2.getILat()), GRID_CELL_UNITS);
+      for (int x = x0; x <= x1; x++) {
+        for (int y = y0; y <= y1; y++) {
+          List<Integer> bucket = grid.get((((long) x) << 32) | (y & 0xFFFFFFFFL));
+          if (bucket == null) continue;
+          for (int bi = 0; bi < bucket.size(); bi++) {
+            int j = bucket.get(bi);
+            if (j <= i + 1 || lastTested[j] == i) continue;
+            lastTested[j] = i;
+            // The first and last segments in a closed loop share the start/end
+            // coordinate; that closure is not a self-crossing.
+            if (i == 0 && j == segCount - 1) continue;
+            if (segmentsCross(a1, a2, nodes.get(j), nodes.get(j + 1))) {
+              crossings++;
+              if (crossings > absoluteCeiling) return crossings;
+            }
+          }
+        }
+      }
     }
     return crossings;
   }
