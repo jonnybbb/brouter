@@ -1188,7 +1188,8 @@ public class RoutingEngine extends Thread {
     // dominant path (both greedy families used to run back to back) at the
     // cost of one speculative child's CPU when ISO_GREEDY is strong.
     RoundTripCandidateResult[] parallel = new RoundTripCandidateResult[2];
-    RoutingEngine[] greedyEngineOut = new RoutingEngine[1];
+    java.util.concurrent.atomic.AtomicReference<RoutingEngine> greedyEngineOut =
+      new java.util.concurrent.atomic.AtomicReference<>();
     Thread greedyThread = null;
     if (System.currentTimeMillis() < deadline) {
       greedyThread = new Thread(() ->
@@ -1206,11 +1207,12 @@ public class RoutingEngine extends Thread {
     // candidate.
     boolean greedyEntitled = System.currentTimeMillis() < deadline;
     if (greedyThread != null) {
-      if (!greedyEntitled && greedyEngineOut[0] != null) {
+      RoutingEngine greedyChild = greedyEngineOut.get();
+      if (!greedyEntitled && greedyChild != null) {
         // The speculative child's result can no longer be consulted — kill it
         // so the join below returns promptly instead of waiting out the
         // child's minimum budget slice.
-        greedyEngineOut[0].terminate();
+        greedyChild.terminate();
       }
       try {
         greedyThread.join();
@@ -1405,7 +1407,8 @@ public class RoutingEngine extends Thread {
    */
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
                                                      double searchRadius, double direction,
-                                                     long deadline, RoutingEngine[] engineOut) {
+                                                     long deadline,
+                                                     java.util.concurrent.atomic.AtomicReference<RoutingEngine> engineOut) {
     long t0 = System.currentTimeMillis();
     RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
     try {
@@ -1433,7 +1436,7 @@ public class RoutingEngine extends Thread {
         BROUTER_ENGINEMODE_ROUNDTRIP);
       child.quite = true;
       if (engineOut != null) {
-        engineOut[0] = child;
+        engineOut.set(child);
       }
       // Give the child only the remaining shared budget (floored so a spawned
       // candidate still gets a usable slice), not the full request timeout.
@@ -4083,13 +4086,18 @@ public class RoutingEngine extends Thread {
         ? Math.min(expansionDeadline, roundTripRequestDeadline) : roundTripRequestDeadline;
     }
 
+    int popTick = 0;
     for (;;) {
       // Wall-clock + watchdog guard (same contract as _findTrack's pop loop):
       // stop expanding and return the partial frontier — callers already
       // handle sparse candidate sets gracefully, and a partial frontier beats
       // an un-killable multi-second expansion overrunning every deadline.
+      // The volatile kill flag is checked every pop; the wall clock only every
+      // 4096 pops (a currentTimeMillis per pop is measurable at ~1.5M pops,
+      // and 4096 pops complete in well under any deadline granularity).
       if (terminated
-          || (expansionDeadline > 0 && System.currentTimeMillis() > expansionDeadline)) {
+          || (expansionDeadline > 0 && (++popTick & 0xFFF) == 0
+              && System.currentTimeMillis() > expansionDeadline)) {
         logInfo("isochrone: expansion stopped early (" + (terminated ? "terminated" : "deadline")
           + ") after " + nodesExpanded + " nodes");
         break;

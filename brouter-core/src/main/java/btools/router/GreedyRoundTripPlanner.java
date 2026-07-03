@@ -978,9 +978,13 @@ public class GreedyRoundTripPlanner {
           waypointStack.add(currentMwp);
 
           // Learn the observed air-to-road ratio of this leg (kept on undo —
-          // a routed leg is a real terrain measurement either way).
+          // a routed leg is a real terrain measurement either way). Only the
+          // top-ranked trial updates the estimate: the pre-trial-loop code
+          // learned exactly once per attempt (from its single candidate), and
+          // letting every runner-up update it would let a rejection-heavy
+          // attempt shift the EMA several times before a leg commits.
           double legAir = CheapRuler.distance(currentIlon, currentIlat, lastNode.getILon(), lastNode.getILat());
-          if (legAir > 500) {
+          if (trial == 0 && legAir > 500) {
             double observed = accepted.routeDistance / legAir;
             indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
               (1 - INDIRECTNESS_EMA_ALPHA) * indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
@@ -1127,10 +1131,15 @@ public class GreedyRoundTripPlanner {
           if (needDetail) {
             // Same fidelity-enforced detailing as committed forward legs: a
             // failed retrack on the closing leg used to ship raw chord geometry
-            // (no fallback at all here). The reroute fallback reuses returnRef
-            // so the replacement return keeps the same anti-reuse poisoning.
+            // (no fallback at all here). The reroute fallback needs anti-reuse
+            // poisoning against the path actually COMMITTED: returnRef was
+            // built before the accepted leg was detailed (and possibly
+            // rerouted by the fidelity fallback), so rebuild the ref from the
+            // now-detailed segments — otherwise a return reroute could freely
+            // retrace a fidelity-rerouted leg the stale ref doesn't contain.
+            OsmTrack detailedReturnRef = buildRefTrack(segments);
             returnTrack = detailWithFallback("greedy-return-detail-fallback",
-              returnTrack, currentMwp, startMwp, returnRef, deadline);
+              returnTrack, currentMwp, startMwp, detailedReturnRef, deadline);
           }
 
           // Build the closed loop and evaluate the production gate once (only

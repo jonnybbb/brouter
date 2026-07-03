@@ -692,10 +692,13 @@ public final class RoundTripQualityGate {
       if (skip[i]) continue;
       OsmPathElement a = nodes.get(i);
       OsmPathElement b = nodes.get(i + 1);
-      int x0 = Math.min(a.getILon(), b.getILon()) / GRID_CELL_UNITS;
-      int x1 = Math.max(a.getILon(), b.getILon()) / GRID_CELL_UNITS;
-      int y0 = Math.min(a.getILat(), b.getILat()) / GRID_CELL_UNITS;
-      int y1 = Math.max(a.getILat(), b.getILat()) / GRID_CELL_UNITS;
+      // floorDiv, not /: BRouter ilon/ilat are non-negative by convention,
+      // but floor division keeps the cell partition uniform even for exotic
+      // negative inputs (truncation would make cell 0 twice as wide).
+      int x0 = Math.floorDiv(Math.min(a.getILon(), b.getILon()), GRID_CELL_UNITS);
+      int x1 = Math.floorDiv(Math.max(a.getILon(), b.getILon()), GRID_CELL_UNITS);
+      int y0 = Math.floorDiv(Math.min(a.getILat(), b.getILat()), GRID_CELL_UNITS);
+      int y1 = Math.floorDiv(Math.max(a.getILat(), b.getILat()), GRID_CELL_UNITS);
       for (int x = x0; x <= x1; x++) {
         for (int y = y0; y <= y1; y++) {
           grid.computeIfAbsent((((long) x) << 32) | (y & 0xFFFFFFFFL),
@@ -710,10 +713,10 @@ public final class RoundTripQualityGate {
       if (skip[i]) continue;
       OsmPathElement a1 = nodes.get(i);
       OsmPathElement a2 = nodes.get(i + 1);
-      int x0 = Math.min(a1.getILon(), a2.getILon()) / GRID_CELL_UNITS;
-      int x1 = Math.max(a1.getILon(), a2.getILon()) / GRID_CELL_UNITS;
-      int y0 = Math.min(a1.getILat(), a2.getILat()) / GRID_CELL_UNITS;
-      int y1 = Math.max(a1.getILat(), a2.getILat()) / GRID_CELL_UNITS;
+      int x0 = Math.floorDiv(Math.min(a1.getILon(), a2.getILon()), GRID_CELL_UNITS);
+      int x1 = Math.floorDiv(Math.max(a1.getILon(), a2.getILon()), GRID_CELL_UNITS);
+      int y0 = Math.floorDiv(Math.min(a1.getILat(), a2.getILat()), GRID_CELL_UNITS);
+      int y1 = Math.floorDiv(Math.max(a1.getILat(), a2.getILat()), GRID_CELL_UNITS);
       for (int x = x0; x <= x1; x++) {
         for (int y = y0; y <= y1; y++) {
           List<Integer> bucket = grid.get((((long) x) << 32) | (y & 0xFFFFFFFFL));
