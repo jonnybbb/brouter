@@ -577,6 +577,7 @@ public class GreedyRoundTripPlanner {
     MatchedWaypoint startMwp = matchPoint(start.ilon, start.ilat, "greedy_start");
     if (startMwp == null) {
       result.setFallbackReason("start point not on road network");
+      stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
       stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
       return result;
     }
@@ -1252,7 +1253,8 @@ public class GreedyRoundTripPlanner {
             result.addDiagnostic("loop closed at step " + step
               + ", total=" + (int) closedDistance + "m"
               + ", error=" + String.format("%.1f%%", error * 100));
-            stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
+            stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
             return result;
           }
 
@@ -1305,6 +1307,7 @@ public class GreedyRoundTripPlanner {
       }
       result.setSubRoutesChosen(bestFallback.legTracks.size());
       result.setAttemptsUsed(totalAttempts);
+      stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
       stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
       return result;
     }
@@ -1335,13 +1338,15 @@ public class GreedyRoundTripPlanner {
         result.setFallbackReason(reject == null ? "forced closure" : DEGRADED_FALLBACK_PREFIX + reject + "; forced closure");
         result.setSubRoutesChosen(segments.size());
         result.setAttemptsUsed(totalAttempts);
-        stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
+        stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
         return result;
       }
     }
 
     result.setFallbackReason("could not build any loop");
-    stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
+    stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
+      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
     return result;
   }
 
@@ -1425,6 +1430,23 @@ public class GreedyRoundTripPlanner {
    * don't track source type pass 0 for those four counters. Internally
    * uses {@link #stampBaseTelemetry} for the underlying counters.
    */
+  /**
+   * Budget-pressure diagnostic: the direct answer to "was the plan budget
+   * enough?". Emitted on every plan() exit — grep production logs / corpus
+   * diagnostics for "budget:" and look at the headroom distribution: a
+   * healthy fleet has P95 headroom well above 0 and near-zero "EXHAUSTED"
+   * lines for the standard 40-100km class.
+   */
+  private static void stampBudgetDiagnostic(RoundTripResult result, long planStart,
+                                            long planBudgetMs, long deadline) {
+    long now = System.currentTimeMillis();
+    long usedMs = now - planStart;
+    long headroomMs = deadline - now;
+    result.addDiagnostic("budget: used " + usedMs + "ms of " + planBudgetMs
+      + "ms plan budget, headroom " + headroomMs + "ms"
+      + (headroomMs <= 0 ? " (EXHAUSTED)" : ""));
+  }
+
   private static void stampTelemetry(RoundTripResult result, long planStart,
                                      int candidatesGenerated, int candidatesRouted,
                                      int returnChecksPerformed,
