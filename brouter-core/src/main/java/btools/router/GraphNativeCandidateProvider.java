@@ -102,6 +102,9 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
 
     int expansionRadius = roundedExpansionRadius(airRadius);
     IsochroneExpansionResult expansion;
+    // Non-null only when already built on the ref-cache-hit path (avoids a
+    // second window/dedupe/sort pass below).
+    List<Template> templates = null;
     if (refTrack == null || refTrack.nodes == null || refTrack.nodes.isEmpty()) {
       CacheKey key = new CacheKey(fromIlon, fromIlat, expansionRadius);
       expansion = expansionCache.get(key);
@@ -140,9 +143,16 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
           && refExpansionCache.radius >= expansionRadius) {
         expansion = refExpansionCache.expansion;
       }
-      if (expansion != null
-          && buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius).isEmpty()) {
-        expansion = null; // reused pool too sparse at this radius — re-expand
+      if (expansion != null) {
+        // Build the window/sort once and reuse it below — the emptiness probe
+        // that validates the reused pool IS the template build, so on the
+        // cache-hit path (the path this optimization targets) we must not
+        // repeat it after the if/else.
+        templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
+        if (templates.isEmpty()) {
+          expansion = null; // reused pool too sparse at this radius — re-expand
+          templates = null;
+        }
       }
       if (expansion == null) {
         expansion = runExpansion(fromIlon, fromIlat, expansionRadius, refTrack);
@@ -156,8 +166,10 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
     // Window/sort is airRadius-specific and must run per call, not be cached:
     // distinct airRadius values that round to the same expansionRadius share
     // the expansion above but need their own window [LOW, HIGH] and
-    // distance-error sort.
-    List<Template> templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
+    // distance-error sort. Already computed on the ref-cache-hit path above.
+    if (templates == null) {
+      templates = buildTemplates(expansion.candidates, fromIlon, fromIlat, airRadius);
+    }
 
     List<CandidatePoint> result = new ArrayList<>(templates.size());
     for (Template t : templates) {

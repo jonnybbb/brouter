@@ -395,8 +395,10 @@ public class RouteServer extends Thread implements Comparable<RouteServer> {
    * the server cap always wins). A non-positive or unparseable {@code timeout}
    * is ignored and the ceiling applies.
    */
+  static final long DEFAULT_MAX_RUNNING_TIME_MS = 60000;
+
   static long getMaxRunningTime(Map<String, String> params) {
-    long ceilingMs = 60000;
+    long ceilingMs = DEFAULT_MAX_RUNNING_TIME_MS;
     String sMaxRunningTime = System.getProperty("maxRunningTime");
     if (sMaxRunningTime != null) {
       try {
@@ -407,6 +409,14 @@ public class RouteServer extends Thread implements Comparable<RouteServer> {
         System.err.println("ignoring malformed -DmaxRunningTime=" + sMaxRunningTime
           + ", using default " + (ceilingMs / 1000) + "s");
       }
+    }
+    // A non-positive ceiling would flow to doRun(<=0), which means "no timeout"
+    // — a server-wide DoS footgun (a single request could run unbounded). Fail
+    // closed to the default so the timeout knob can never DISABLE the timeout.
+    if (ceilingMs <= 0) {
+      System.err.println("ignoring non-positive -DmaxRunningTime=" + sMaxRunningTime
+        + ", using default " + (DEFAULT_MAX_RUNNING_TIME_MS / 1000) + "s");
+      ceilingMs = DEFAULT_MAX_RUNNING_TIME_MS;
     }
     long requestedMs = ceilingMs;
     String sTimeout = params == null ? null : params.get("timeout");

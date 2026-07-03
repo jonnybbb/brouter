@@ -1442,8 +1442,17 @@ public class GreedyRoundTripPlanner {
     long now = System.currentTimeMillis();
     long usedMs = now - planStart;
     long headroomMs = deadline - now;
-    result.addDiagnostic("budget: used " + usedMs + "ms of " + planBudgetMs
+    // Report the EFFECTIVE budget the plan actually ran under (deadline -
+    // planStart), not the nominal distance-scaled planBudgetMs: the external
+    // request deadline can clamp it smaller (e.g. a small request `timeout`),
+    // and printing "used Xms of 30000ms" when the plan was only allowed 5000ms
+    // would mislead operators reading the headroom distribution. Annotate when
+    // the request budget was the binding constraint.
+    long effectiveBudgetMs = deadline - planStart;
+    boolean cappedByRequest = effectiveBudgetMs < planBudgetMs;
+    result.addDiagnostic("budget: used " + usedMs + "ms of " + effectiveBudgetMs
       + "ms plan budget, headroom " + headroomMs + "ms"
+      + (cappedByRequest ? " (capped from " + planBudgetMs + "ms by request budget)" : "")
       + (headroomMs <= 0 ? " (EXHAUSTED)" : ""));
   }
 
