@@ -152,7 +152,7 @@ public class RouteServer extends Thread implements Comparable<RouteServer> {
       RoutingParamCollector routingParamCollector = new RoutingParamCollector();
       Map<String, String> params = routingParamCollector.getUrlParams(url);
 
-      long maxRunningTime = getMaxRunningTime();
+      long maxRunningTime = getMaxRunningTime(params);
 
       RequestHandler handler;
       if (params.containsKey("lonlats") && params.containsKey("profile")) {
@@ -384,13 +384,36 @@ public class RouteServer extends Thread implements Comparable<RouteServer> {
     return params;
   }
 
-  private static long getMaxRunningTime() {
-    long maxRunningTime = 60000;
+  /**
+   * Resolve the request's CPU-time budget (ms). The {@code maxRunningTime}
+   * system property is the operator-configured CEILING (default 60s); a
+   * request may ask for LESS, or for MORE up to that ceiling, via the
+   * {@code timeout} URL parameter (seconds). This lets a client that got a
+   * degraded round-trip (e.g. a distance-miss or a >200km opt-in rejection)
+   * resend with a larger budget and ask for a better route — without being
+   * able to exceed the operator's ceiling (a longer budget is a DoS lever, so
+   * the server cap always wins). A non-positive or unparseable {@code timeout}
+   * is ignored and the ceiling applies.
+   */
+  static long getMaxRunningTime(Map<String, String> params) {
+    long ceilingMs = 60000;
     String sMaxRunningTime = System.getProperty("maxRunningTime");
     if (sMaxRunningTime != null) {
-      maxRunningTime = Integer.parseInt(sMaxRunningTime) * 1000;
+      ceilingMs = Integer.parseInt(sMaxRunningTime) * 1000L;
     }
-    return maxRunningTime;
+    long requestedMs = ceilingMs;
+    String sTimeout = params == null ? null : params.get("timeout");
+    if (sTimeout != null) {
+      try {
+        long t = (long) (Double.parseDouble(sTimeout) * 1000.0);
+        if (t > 0) {
+          requestedMs = t;
+        }
+      } catch (NumberFormatException e) {
+        // ignore a malformed timeout — fall back to the ceiling
+      }
+    }
+    return Math.min(ceilingMs, requestedMs);
   }
 
   private static void writeHttpHeader(BufferedWriter bw, String status) throws IOException {

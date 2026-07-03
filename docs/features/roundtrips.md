@@ -83,6 +83,28 @@ These checks make round-trip planning reliable enough to use without manually
 tweaking the result, while still leaving the actual road choices entirely to
 your routing profile.
 
+## Calculation budget
+
+Round-trip generation is bounded by a wall-clock budget. The server's
+`maxRunningTime` system property (default 60 s) is the **operator ceiling**; a
+request may ask for a different budget via the `timeout` URL parameter
+(seconds), clamped to that ceiling — a client can lower it, or raise it up to
+the ceiling, but never beyond (a longer budget is a DoS lever, so the server
+cap always wins).
+
+The per-plan budget scales with the requested loop length: the standard
+40–100 km class keeps the calibrated 30 s, scaling linearly to 2× at 200 km.
+**Loops above 200 km must opt in** by supplying a `timeout` of at least 120 s
+(and an operator ceiling that permits it); otherwise the request is rejected
+with a message pointing at the `timeout` / `maxRunningTime` knob rather than
+shipping a guaranteed-degraded loop.
+
+Because a plan that exhausts its budget returns its best gate-graded loop
+(possibly a disclosed distance-miss) rather than an error, a client that gets a
+degraded result can **resend the same request with a larger `timeout`** to buy a
+deeper search. Each plan exit records a `budget: used …ms of …ms, headroom …ms`
+diagnostic so operators can see how often the budget actually binds.
+
 ## Experimental parameters
 
 A few opt-in flags expose work-in-progress planning experiments. They all
