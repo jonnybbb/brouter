@@ -286,6 +286,14 @@ public class RoutingEngine extends Thread {
    */
   private static final long MIN_LADDER_RUNG_BUDGET_MS = 3_000;
   /**
+   * Product sizing (2026-07): loops up to this length must work with the
+   * standard request budget; anything longer requires the caller to opt in
+   * with a raised timeout (see the gate in doRoundTrip).
+   */
+  static final double MAX_STANDARD_LOOP_METERS = 200_000;
+  /** Minimum request budget accepted for loops above {@link #MAX_STANDARD_LOOP_METERS}. */
+  static final long LONG_LOOP_MIN_BUDGET_MS = 120_000;
+  /**
    * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
    * via points in round-trip mode. Routing-time micro-detour and back-and-forth
    * removal must be skipped in this mode — those passes were designed for
@@ -853,6 +861,24 @@ public class RoutingEngine extends Thread {
         }
         doExplicitViaRoundTrip(searchRadius, direction);
       } else {
+        // Product sizing gate: the standard loop class is 40-100km and up to
+        // 200km must work without special action; ABOVE 200km the caller must
+        // explicitly ask for a longer calculation by raising the request
+        // timeout (server: -DmaxRunningTime, embedders: doRun budget). A
+        // default 60s budget cannot fund a good 200km+ loop, so failing fast
+        // with instructions beats a guaranteed degraded result. Untimed
+        // callers (budget <= 0, e.g. CLI) are already explicit and pass.
+        double requestedLoopMeters = 2 * Math.PI * searchRadius;
+        if (requestedLoopMeters > MAX_STANDARD_LOOP_METERS
+            && maxRunningTime > 0 && maxRunningTime < LONG_LOOP_MIN_BUDGET_MS) {
+          errorMessage = "round trips above " + (int) (MAX_STANDARD_LOOP_METERS / 1000)
+            + "km need an explicitly increased calculation budget: requested "
+            + Math.round(requestedLoopMeters / 1000.0) + "km with a "
+            + (maxRunningTime / 1000) + "s timeout; raise maxRunningTime to at least "
+            + (LONG_LOOP_MIN_BUDGET_MS / 1000) + "s";
+          logInfo(errorMessage);
+          return;
+        }
         // Resolve the roundTripIsochrone shortcut into the canonical
         // roundTripAlgorithm ONCE, so the algorithm is the single source of
         // truth from here down and the boolean never has to propagate to child

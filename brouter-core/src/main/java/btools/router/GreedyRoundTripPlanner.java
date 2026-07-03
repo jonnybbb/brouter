@@ -204,6 +204,16 @@ public class GreedyRoundTripPlanner {
    * issuing new Dijkstras after the deadline.
    */
   private static final long DEFAULT_PLAN_DEADLINE_MS = 30_000;
+  /** Loop length at which the plan budget is exactly {@link #DEFAULT_PLAN_DEADLINE_MS}. */
+  private static final double PLAN_BUDGET_REFERENCE_DISTANCE_M = 100_000;
+  /** Budget scale ceiling: a 200km+ loop gets at most 2x the reference budget. */
+  private static final double PLAN_BUDGET_MAX_SCALE = 2.0;
+  /**
+   * Fraction of the plan budget reserved for the late (closure) steps: early
+   * steps stop issuing work at the early deadline, so a plan that burned its
+   * budget on the outbound legs still has search time to close the loop.
+   */
+  private static final double CLOSURE_RESERVE_FRACTION = 0.25;
   /** Minimum per-Dijkstra timeout. Below this it's cheaper to skip than try. */
   private static final long MIN_FIND_TRACK_MS = 250;
   /**
@@ -523,7 +533,21 @@ public class GreedyRoundTripPlanner {
    */
   public RoundTripResult plan(OsmNodeNamed start, double desiredDistance, double startDirection) {
     long planStart = System.currentTimeMillis();
-    long deadline = Math.min(planStart + DEFAULT_PLAN_DEADLINE_MS, externalDeadline);
+    // Distance-scaled plan budget (product sizing: 40-100km loops are the
+    // standard class and keep the calibrated 30s; up to 200km scales linearly
+    // to 2x so bigger loops get proportionally more search; beyond that the
+    // engine-level opt-in gate applies). Always hard-capped by the request
+    // budget (externalDeadline).
+    long planBudgetMs = (long) (DEFAULT_PLAN_DEADLINE_MS
+      * Math.min(PLAN_BUDGET_MAX_SCALE,
+          Math.max(1.0, desiredDistance / PLAN_BUDGET_REFERENCE_DISTANCE_M)));
+    long deadline = Math.min(planStart + planBudgetMs, externalDeadline);
+    // Closure reserve: early steps may not consume the tail of the plan
+    // budget — the endgame (the last two steps, where closure retries
+    // concentrate) always keeps at least CLOSURE_RESERVE_FRACTION of it.
+    // Late steps, the fallback finalization and the force-close all run
+    // against the FULL deadline.
+    long earlyDeadline = deadline - (long) (CLOSURE_RESERVE_FRACTION * (deadline - planStart));
     RoundTripResult result = new RoundTripResult();
     double subTarget = desiredDistance / subRouteCount;
     // SAFE-3: primitive open-addressing store replacing the former
@@ -586,8 +610,11 @@ public class GreedyRoundTripPlanner {
     int closureRejections = 0;
 
     for (int step = 1; step <= subRouteCount; step++) {
-      if (System.currentTimeMillis() >= deadline) {
-        result.addDiagnostic("step " + step + ": planner deadline reached, stopping");
+      // Closure reserve (see earlyDeadline): non-late steps run against the
+      // reduced deadline so the endgame always has budget left.
+      long stepDeadline = (step >= subRouteCount - 1) ? deadline : earlyDeadline;
+      if (System.currentTimeMillis() >= stepDeadline) {
+        result.addDiagnostic("step " + step + ": planner stepDeadline reached, stopping");
         break;
       }
       boolean candidateFound = false;
@@ -599,16 +626,16 @@ public class GreedyRoundTripPlanner {
 
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         totalAttempts++;
-        if (System.currentTimeMillis() >= deadline) break;
+        if (System.currentTimeMillis() >= stepDeadline) break;
 
         double airRadius = localRadius / indirectnessEst;
 
         // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
-        // Bound the provider's graph expansion by the plan deadline (and a
+        // Bound the provider's graph expansion by the plan stepDeadline (and a
         // per-call ceiling): the expansion loop historically ran with no time
         // check at all, so a dense-area expansion could overrun every budget.
         List<RoundTripCandidateProvider.CandidatePoint> candidates;
-        engine.transientExpansionDeadline = Math.min(deadline,
+        engine.transientExpansionDeadline = Math.min(stepDeadline,
           System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS);
         try {
           candidates = candidateProvider.candidatesForStep(
@@ -795,7 +822,7 @@ public class GreedyRoundTripPlanner {
             subTrack = null;
           }
           if (subTrack == null) {
-            subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, deadline);
+            subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, stepDeadline);
           }
           candidatesRouted++;
           // Phase 2 v3 deliberate compromise: do NOT retrack candidate
@@ -955,7 +982,7 @@ public class GreedyRoundTripPlanner {
         OsmTrack refBeforeAccept = cachedRefTrack;
 
         for (int trial = 0; trial < routedCandidates.size(); trial++) {
-          if (System.currentTimeMillis() >= deadline) break;
+          if (System.currentTimeMillis() >= stepDeadline) break;
           ScoredRoute accepted = routedCandidates.get(trial);
 
           result.addDiagnostic("step " + step + (trial > 0 ? " trial " + (trial + 1) : "")
@@ -1015,7 +1042,7 @@ public class GreedyRoundTripPlanner {
             // are spent only on the defective case).
             returnRef = buildRefTrack(segments);
             returnTrack = routeReturnWithVariants(segments, returnRef,
-              currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
+              currentMwp, startMwp, stepDeadline, result, totalDistance, desiredDistance, step);
             returnChecksPerformed++;
 
             // Too long → undo the RAW sub-route (no detail work paid yet) and
@@ -1045,7 +1072,7 @@ public class GreedyRoundTripPlanner {
           // wayKeyValues on every edge; single-pass tracks don't have them,
           // so without this step the gate would either bypass hostility
           // (under suspect-tolerance) or trip the missing-metadata floor.
-          OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, deadline);
+          OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, stepDeadline);
           String detailReject = null;
           if (detailedAccepted == null || detailedAccepted.distance == 0) {
             detailReject = "accepted leg could not be detailed";
@@ -1109,7 +1136,7 @@ public class GreedyRoundTripPlanner {
             if (returnChecked) {
               returnRef = buildRefTrack(segments);
               returnTrack = routeReturnWithVariants(segments, returnRef,
-                currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
+                currentMwp, startMwp, stepDeadline, result, totalDistance, desiredDistance, step);
               returnChecksPerformed++;
             }
           }
@@ -1163,7 +1190,7 @@ public class GreedyRoundTripPlanner {
             // retrace a fidelity-rerouted leg the stale ref doesn't contain.
             OsmTrack detailedReturnRef = buildRefTrack(segments);
             returnTrack = detailWithFallback("greedy-return-detail-fallback",
-              returnTrack, currentMwp, startMwp, detailedReturnRef, deadline);
+              returnTrack, currentMwp, startMwp, detailedReturnRef, stepDeadline);
           }
 
           // Build the closed loop and evaluate the production gate once (only
