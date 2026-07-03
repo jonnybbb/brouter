@@ -294,6 +294,13 @@ public class RoutingEngine extends Thread {
   /** Minimum request budget accepted for loops above {@link #MAX_STANDARD_LOOP_METERS}. */
   static final long LONG_LOOP_MIN_BUDGET_MS = 120_000;
   /**
+   * Unwind margin for the parallel AUTO GREEDY child join: how long past its
+   * own budget the request thread waits for the child to stop before
+   * terminating it and moving on. Bounds the join so a wedged or
+   * budget-overshooting child can never hang the request thread.
+   */
+  private static final long AUTO_CHILD_JOIN_UNWIND_MS = 3_000;
+  /**
    * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
    * via points in round-trip mode. Routing-time micro-detour and back-and-forth
    * removal must be skipped in this mode — those passes were designed for
@@ -1250,17 +1257,33 @@ public class RoutingEngine extends Thread {
         // its searches/expansions within ~one heap pop).
         greedyChild.terminate();
       }
+      // ALWAYS bound the join. Even a needed child must not hang the request
+      // thread: its own budget ends at the shared deadline, so wait only up to
+      // the remaining budget plus an unwind margin. If it overstays that
+      // (overshot its budget, or wedged in a path slow to honor termination),
+      // terminate it and give it a final short window — never block forever.
+      // A discarded child gets only the unwind margin.
+      long joinBudgetMs = greedyNeeded
+        ? Math.max(0L, deadline - System.currentTimeMillis()) + AUTO_CHILD_JOIN_UNWIND_MS
+        : AUTO_CHILD_JOIN_UNWIND_MS;
       try {
-        if (greedyNeeded) {
-          greedyThread.join();
-        } else {
-          // Bounded wait covers only the terminated child's unwinding; if it
-          // overstays, move on — the daemon thread's late result is discarded
-          // anyway and cannot block JVM exit.
-          greedyThread.join(2000);
+        greedyThread.join(joinBudgetMs);
+        if (greedyThread.isAlive()) {
+          logInfo("AUTO: GREEDY child overstayed its budget; terminating");
+          if (greedyChild != null) {
+            greedyChild.terminate();
+          }
+          greedyThread.join(AUTO_CHILD_JOIN_UNWIND_MS);
         }
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
+      }
+      // If the (needed) child is STILL alive its result slot is not safely
+      // published — treat it as no candidate rather than reading a
+      // half-written result. The daemon thread cannot block JVM exit.
+      if (greedyThread.isAlive()) {
+        greedyNeeded = false;
+        logInfo("AUTO: GREEDY child did not stop in time; ignoring its result");
       }
     }
     results.add(isoGreedyR);

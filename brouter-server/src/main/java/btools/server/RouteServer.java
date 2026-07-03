@@ -399,7 +399,14 @@ public class RouteServer extends Thread implements Comparable<RouteServer> {
     long ceilingMs = 60000;
     String sMaxRunningTime = System.getProperty("maxRunningTime");
     if (sMaxRunningTime != null) {
-      ceilingMs = Integer.parseInt(sMaxRunningTime) * 1000L;
+      try {
+        ceilingMs = Integer.parseInt(sMaxRunningTime.trim()) * 1000L;
+      } catch (NumberFormatException e) {
+        // Operator-facing knob: fail closed to the default ceiling rather than
+        // turning every request into a 500 on a malformed -DmaxRunningTime.
+        System.err.println("ignoring malformed -DmaxRunningTime=" + sMaxRunningTime
+          + ", using default " + (ceilingMs / 1000) + "s");
+      }
     }
     long requestedMs = ceilingMs;
     String sTimeout = params == null ? null : params.get("timeout");
