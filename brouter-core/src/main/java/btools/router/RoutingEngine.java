@@ -2550,15 +2550,26 @@ public class RoutingEngine extends Thread {
       if (!useDetailedPlannerTrack) {
         routingContext.waypointCatchingRange = 250;
         roundTripSearchRadius = searchRadius;
+        // Honor the request deadline: once it has fully passed, do NOT start
+        // the fallback re-route at all (doRouting resets startTime, so any
+        // budget handed to it is a real overrun). While budget remains, fund
+        // the fallback with the REMAINING budget, floored so a nearly-spent
+        // request still gets a usable (bounded, < MIN_LADDER_RUNG_BUDGET_MS
+        // overrun) salvage slice rather than a guaranteed instant timeout.
+        long remaining = remainingRequestBudgetMs();
+        if (roundTripRoutingBudgetMs > 0 && remaining <= 0) {
+          errorMessage = "round-trip request budget exhausted before the fallback re-route ("
+            + remaining + "ms remaining)";
+          logInfo(errorMessage);
+          foundTrack = null;
+          greedyLegTracks = null;
+          return;
+        }
         try {
-          // Fund the fallback re-route with the REMAINING request budget, not
-          // the full original one (which would let the fallback alone double
-          // the request wall clock). A small floor keeps a spent budget from
-          // guaranteeing failure right at the finish line.
           long fallbackBudget = roundTripRoutingBudgetMs <= 0
             ? roundTripRoutingBudgetMs
             : Math.min(roundTripRoutingBudgetMs,
-                Math.max(MIN_LADDER_RUNG_BUDGET_MS, remainingRequestBudgetMs()));
+                Math.max(MIN_LADDER_RUNG_BUDGET_MS, remaining));
           doRouting(fallbackBudget);
         } catch (Exception e) {
           logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");

@@ -1090,6 +1090,30 @@ public class GreedyRoundTripPlanner {
           totalDistance += detailedAccepted.distance - rawLegDistance;
           addVisitedEdges(accepted.track, visitedEdges, totalDistance - accepted.routeDistance);
 
+          // Endpoint re-anchor: detailWithFallback's fidelity fallback can
+          // REROUTE the leg (toward accepted.toMwp), so the committed leg may
+          // end at a different node than the raw leg the step was anchored on.
+          // The pre-trial-loop code derived currentMwp from the DETAILED
+          // track's endpoint, so match that: re-derive the step anchor and,
+          // when a return was already routed from the stale anchor, redo the
+          // return check from the corrected one (rare path — pays one extra
+          // Dijkstra only when a fidelity reroute actually moved the endpoint;
+          // without this, the next leg and the return would start at a point
+          // the committed track never reaches, shipping a seam gap).
+          OsmPathElement detailedEnd = detailedAccepted.nodes.get(detailedAccepted.nodes.size() - 1);
+          if (detailedEnd.getILon() != lastNode.getILon()
+              || detailedEnd.getILat() != lastNode.getILat()) {
+            MatchedWaypoint reanchored = matchPoint(detailedEnd.getILon(), detailedEnd.getILat(), "greedy_next");
+            currentMwp = (reanchored != null) ? reanchored : accepted.toMwp;
+            waypointStack.set(waypointStack.size() - 1, currentMwp);
+            if (returnChecked) {
+              returnRef = buildRefTrack(segments);
+              returnTrack = routeReturnWithVariants(segments, returnRef,
+                currentMwp, startMwp, deadline, result, totalDistance, desiredDistance, step);
+              returnChecksPerformed++;
+            }
+          }
+
           if (!returnChecked || returnTrack == null || returnTrack.distance == 0) {
             // Either closure is clearly out of reach with steps to spare, or
             // the return was not routable within budget — keep the leg
