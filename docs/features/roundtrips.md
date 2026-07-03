@@ -105,6 +105,26 @@ degraded result can **resend the same request with a larger `timeout`** to buy a
 deeper search. Each plan exit records a `budget: used …ms of …ms, headroom …ms`
 diagnostic so operators can see how often the budget actually binds.
 
+### Behaviour under load
+
+Routing is CPU-bound, and the wall-clock budget only translates into useful
+search if the request actually gets a core. In `AUTO` mode the ISO_GREEDY and
+GREEDY candidates run **in parallel** on an idle box for lower latency, but that
+doubles the CPU-bound threads per request — so the parallelism is gated by a
+global non-blocking permit pool sized to the spare cores
+(`-DroundTripParallelAutoPermits`, default `cores - 1`). When the pool is
+saturated (busy multi-core box, or a single-core box) the child is **not**
+spawned and GREEDY runs sequentially on the request's own core, bounding the
+extra CPU load instead of oversubscribing it. Set the property to `0` to force
+fully-sequential AUTO competition.
+
+Note this only bounds the *round-trip parallelism*'s extra threads. The
+server's overall concurrency is governed separately by the `maxthreads` launch
+argument; for a hard "an admitted request gets a core for its whole timeout"
+guarantee, keep `maxthreads` at or below the core count (the server's default
+admission policy favours new-request latency and will pre-empt the oldest
+in-flight request when the pool is full).
+
 ## Experimental parameters
 
 A few opt-in flags expose work-in-progress planning experiments. They all

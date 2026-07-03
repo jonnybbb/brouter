@@ -301,6 +301,20 @@ public class RoutingEngine extends Thread {
    */
   private static final long AUTO_CHILD_JOIN_UNWIND_MS = 3_000;
   /**
+   * Global bound on how many AUTO round-trip requests may run their speculative
+   * GREEDY child IN PARALLEL at once (a non-blocking permit pool). Routing is
+   * CPU-bound, so this caps the extra CPU-bound threads the parallelism adds
+   * across the whole JVM: default is spare cores ({@code cores - 1}), so a
+   * single-core box never parallelizes and a busy multi-core box stops
+   * spawning children once the spare cores are taken (each such request runs
+   * GREEDY sequentially instead). Tunable via {@code -DroundTripParallelAutoPermits};
+   * set 0 to force fully-sequential AUTO competition (zero oversubscription).
+   */
+  private static final java.util.concurrent.Semaphore PARALLEL_AUTO_SEMAPHORE =
+    new java.util.concurrent.Semaphore(Math.max(0,
+      Integer.getInteger("roundTripParallelAutoPermits",
+        Runtime.getRuntime().availableProcessors() - 1)));
+  /**
    * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
    * via points in round-trip mode. Routing-time micro-detour and back-and-forth
    * removal must be skipped in this mode — those passes were designed for
@@ -1224,11 +1238,26 @@ public class RoutingEngine extends Thread {
     java.util.concurrent.atomic.AtomicReference<RoutingEngine> greedyEngineOut =
       new java.util.concurrent.atomic.AtomicReference<>();
     Thread greedyThread = null;
-    if (System.currentTimeMillis() < deadline) {
-      greedyThread = new Thread(() ->
-        parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction,
-          deadline, greedyEngineOut),
-        "roundtrip-auto-greedy");
+    // Load-aware parallelism: routing is CPU-bound, so spawning the speculative
+    // GREEDY child unconditionally would 2x the CPU-bound threads per AUTO
+    // round trip. Under concurrent load that oversubscribes the cores and makes
+    // BOTH searches run slower against their wall-clock deadlines — a net loss.
+    // Gate the child on a NON-BLOCKING permit from a global pool sized to the
+    // spare cores (roundTripParallelAutoPermits, default cores-1): when the box
+    // has spare CPU the child runs in parallel (single-request latency win);
+    // when the pool is saturated the acquire fails and GREEDY runs sequentially
+    // below — bounding the extra CPU load instead of blindly oversubscribing.
+    boolean parallelPermit = System.currentTimeMillis() < deadline
+      && PARALLEL_AUTO_SEMAPHORE.tryAcquire();
+    if (parallelPermit) {
+      greedyThread = new Thread(() -> {
+        try {
+          parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction,
+            deadline, greedyEngineOut);
+        } finally {
+          PARALLEL_AUTO_SEMAPHORE.release();
+        }
+      }, "roundtrip-auto-greedy");
       // Daemon: a discarded speculative child must never delay JVM exit (CLI).
       greedyThread.setDaemon(true);
       greedyThread.start();
@@ -1288,6 +1317,15 @@ public class RoutingEngine extends Thread {
     }
     results.add(isoGreedyR);
     logInfo("AUTO candidate: " + isoGreedyR);
+
+    // Sequential fallback: no spare-CPU permit was available (busy box) or the
+    // budget was already spent at spawn time, so GREEDY was not started in
+    // parallel. Run it now on this thread iff it is actually needed — exactly
+    // the pre-parallel competition's behaviour (GREEDY only when ISO_GREEDY is
+    // weak). No oversubscription: this reuses the request's own core.
+    if (greedyThread == null && greedyNeeded) {
+      parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
+    }
 
     if (greedyNeeded && parallel[1] != null) {
       results.add(parallel[1]);
