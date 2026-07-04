@@ -47,6 +47,21 @@ public enum LoopTestRegion {
   // and where it does close (Dreieich, Berlin) the route runs at cost/m
   // 6.5–12.3 — far over the 5.0 mtb ceiling. The exclusion is empirical, not
   // arbitrary; the round-trip fixes in this PR do not change it.
+  //
+  // 2026-07 partial re-inclusion (after the isochrone cost-budget
+  // calibration): the June "no acceptable loop" half of that verdict was a
+  // symptom of the pre-calibration budget starving the mtb candidate pool
+  // (measured: Basel mtb 60km produced NO loop on the fixed budget). A
+  // 5-candidate × 30/60km × 4-direction sweep (MtbRegionEvaluationSweepTest)
+  // shows healthy mtb loops (distR 0.78-1.00, reuse <10%, RCS 0.72-0.89) in
+  // trail-rich regions, priced 8.0-12.4 surface cost/m — the profile's
+  // structural scale, not a quality defect (even Finale Ligure prices ~9-12).
+  // mtb is therefore enabled for the two clean sweeps (FREIBURG 16/16,
+  // GIRONA 16/16 healthy) with an empirically calibrated 13.0 mtb cost
+  // ceiling (see LoopQualityTestBase.maxCostPerMeterForProfile). Garmisch
+  // (7/8; the 30km westward Zugspitze wall degenerates), Finale Ligure
+  // (30km collapses to one direction-blind loop) and Vosges/La Bresse
+  // (valley-walled at 30km) stay out.
   DREIEICH(8.720, 50.000, "E5_N50.rd5", 25.0, 0.5, 1.6, 180,
     profiles("fastbike", "gravel")),
   URBAN_BERLIN(13.400, 52.520, "E10_N50.rd5", 25.0, 0.5, 1.6, 180,
@@ -76,7 +91,8 @@ public enum LoopTestRegion {
   // cycling country; Annecy/Grenoble/Garmisch are mountain-but-loopable candidates
   // (keep the best after the evaluation run). Same thresholds as comparable terrain.
   FREIBURG(7.852, 48.000, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel")),       // Black Forest edge, dense network
+    profiles("fastbike", "gravel", "mtb")), // Black Forest edge, dense network;
+                                            // mtb: 2026-07 sweep 8/8 healthy
   BASEL(7.590, 47.560, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Rhine / Jura foothills
   ANNECY(6.130, 45.900, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
@@ -97,7 +113,8 @@ public enum LoopTestRegion {
   // dense dirt lattice through Les Gavarres and the Garrotxa volcanic zone,
   // dry year-round. Shares Lozère's E0_N40 tile (no new download).
   GIRONA(2.8214, 41.9794, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel")),       // Les Gavarres / Garrotxa dirt
+    profiles("fastbike", "gravel", "mtb")), // Les Gavarres / Garrotxa dirt;
+                                            // mtb: 2026-07 sweep 8/8 healthy
   // Tuscany — Crete Senesi, the open white-clay hills near Asciano (SE of
   // Siena), the densest strade bianche (white gravel road) heartland. Start
   // moved here from Gaiole in Chianti after calibration: Gaiole's wooded
