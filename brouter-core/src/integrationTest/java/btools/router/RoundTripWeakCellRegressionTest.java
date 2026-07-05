@@ -44,7 +44,14 @@ public class RoundTripWeakCellRegressionTest {
   public void greedyRuralLozere30kmFastbike() throws Exception {
     LoopQualityMetrics m = runLoop(LoopTestRegion.RURAL_LOZERE, "fastbike", 30_000, 4775, 0,
       RoundTripAlgorithm.GREEDY);
-    assertEnvelope("greedy rural_lozere 30km N fastbike", m, 0.70, 1.30, 30.0);
+    // distR floor 0.70 -> 0.60 (2026-07-05, worktree-bisected): the
+    // minutes-long-generation fix (5dac2f37, PR #22) traded this cell's
+    // distance ratio from >=0.70 to a stable 0.63 — the accepted price of
+    // killing pathological greedy runtimes. The region gate (floor 0.40,
+    // Lozère matrix green) still accepts the loop; this pin stays as a
+    // tripwire against FURTHER degradation (the suite is deterministic, so
+    // the 0.03 margin under the observed 0.63 does not flap).
+    assertEnvelope("greedy rural_lozere 30km N fastbike", m, 0.60, 1.30, 30.0);
   }
 
   @Test

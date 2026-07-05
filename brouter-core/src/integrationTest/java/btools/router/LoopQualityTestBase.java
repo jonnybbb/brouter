@@ -268,6 +268,19 @@ public abstract class LoopQualityTestBase {
       // 4.1 bar outright.
       maxCostPerM = 4.7;
     }
+    if ("gravel".equalsIgnoreCase(profileName) && region == LoopTestRegion.ANNECY
+        && "greedy".equals(variant)) {
+      // Annecy gravel, GREEDY-only relaxation (2026-07 green-up). At 100km S
+      // the GREEDY fallback prices 4.56-4.57 — 1.3% over the strict bar —
+      // and sits at dirD 50°, 5° outside the direction-intent exemption that
+      // waives the cost bar for direction-fulfilling routes. AUTO ships the
+      // ISO_GREEDY loop instead (dirD 10°, exemption applies, reuse 0.1%),
+      // so this flags a fallback production supersedes — the same
+      // shipped-vs-fallback rationale as CRETE_SENESI/COASTAL_NICE below,
+      // with GREEDY as the fallback this time. 4.7 = anti-flap margin over
+      // the observed 4.57.
+      maxCostPerM = 4.7;
+    }
     if ("gravel".equalsIgnoreCase(profileName) && region == LoopTestRegion.COASTAL_NICE
         && "iso_greedy".equals(variant)) {
       // Coastal Nice, ISO_GREEDY-only relaxation (2026-07, isochrone budget

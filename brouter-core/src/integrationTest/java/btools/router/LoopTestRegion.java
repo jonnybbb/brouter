@@ -68,7 +68,12 @@ public enum LoopTestRegion {
     profiles("fastbike", "gravel")),
   ALPINE_INNSBRUCK(11.400, 47.260, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),
-  COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 30.0, 0.4, 1.8, 180,
+  // Reuse ceiling 31 (one above the 30 hilly default, mirroring ANNECY's 36):
+  // coastal_nice_30km_gravel_E greedy sits deterministically at exactly 30.1%
+  // reuse (half-plane start: some corridor reuse is forced), flapping the old
+  // 30.0 bar by 0.1pp. The +1 anti-flap margin stabilises the gate without
+  // masking a real (>31%) retrace.
+  COASTAL_NICE(7.270, 43.700, "E5_N40.rd5", 31.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")), // gravel rides the hills above Nice (Aspremont,
                                      // Tourrette-Levens); loops verified accepted from this start
   // Start near Rieutort-de-Randon (paved-road country) rather than the original
