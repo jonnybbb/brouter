@@ -100,7 +100,10 @@ public enum LoopTestRegion {
   GRENOBLE(5.720, 45.190, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Vercors/Chartreuse/Belledonne valleys
   GARMISCH(11.100, 47.500, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel")),       // Bavarian Alps, more valley connectivity
+    profiles("fastbike", "gravel", "mtb")), // Bavarian Alps, more valley connectivity;
+                                            // mtb: 2026-07 sweep 7/8 healthy — from
+                                            // 50km only (30km W runs into the
+                                            // Zugspitze massif: distR 0.51 @ 18.7)
   // --- Gravel-mecca hill country (added 2026-06-09) -----------------------
   // Two classic 30-100 km hilly gravel destinations. Black Forest is already
   // covered by FREIBURG above. Thresholds start at the hilly-peer band
@@ -122,7 +125,27 @@ public enum LoopTestRegion {
   // (cost/m up to 5.81), while the Crete Senesi closes gravel loops in every
   // direction at cost/m ~3.3 (mirrors the RURAL_LOZERE start relocation).
   CRETE_SENESI(11.560, 43.230, "E10_N40.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel"));       // strade bianche, Asciano/Eroica
+    profiles("fastbike", "gravel")),       // strade bianche, Asciano/Eroica
+  // --- Dedicated MTB regions (added 2026-07, distance-scoped) --------------
+  // Two classic MTB destinations on tiles already in segments4, added after
+  // the MtbRegionEvaluationSweepTest measured them healthy at 60km but
+  // geometry-walled at 30km — hence mtb-only and minLoopMetersForProfile
+  // gating (see that method). Thresholds start at the mountain band
+  // (reuse 35, ratio 0.4-1.8) shared by Garmisch/Grenoble; confirmed
+  // empirically by the acceptance run, not curve-fit.
+  //
+  // Finale Ligure — the classic Ligurian trail network above the coast.
+  // Sweep 60km: distR 0.86-0.92, reuse <=3%, cost 9.2-12.4. At 30km the
+  // coastal half-plane collapses every heading onto one direction-blind
+  // loop (all four dirs identical: distR 0.78) — below-50km skipped.
+  FINALE_LIGURE(8.343, 44.170, "E5_N40.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("mtb")),
+  // Vosges / La Bresse — large French trail area around the Hautes-Vosges
+  // ridges. Sweep 60km: distR 0.87-0.96, cost 9.6-11.5. At 30km the valley
+  // walls degenerate 3 of 4 headings (distR 0.34-0.55 at cost 13.6-17.7) —
+  // below-50km skipped.
+  VOSGES_LA_BRESSE(6.870, 48.006, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
+    profiles("mtb"));
 
   /** Longitude in decimal degrees */
   public final double lon;
@@ -144,6 +167,31 @@ public enum LoopTestRegion {
   public final double maxDirectionDelta;
   /** Profile names that are plausibly usable in this region's terrain */
   public final Set<String> supportedProfiles;
+
+  /**
+   * Minimum matrix loop distance (meters) for a profile in this region;
+   * 0 = supported at every distance. Some region × profile combos are
+   * healthy only above a size threshold because small-radius geometry walls
+   * the start in (Zugspitze massif face, Ligurian coastal half-plane,
+   * Vosges valley floor) while larger radii ride fine — measured by
+   * {@code MtbRegionEvaluationSweepTest} (healthy at 60km, degenerate at
+   * 30km). 50km is the smallest matrix distance at or above the measured
+   * healthy scale; bump a region to 75_000 if its 50km acceptance cases
+   * degenerate.
+   */
+  int minLoopMetersForProfile(String profileName) {
+    if (!"mtb".equalsIgnoreCase(profileName)) {
+      return 0;
+    }
+    switch (this) {
+      case GARMISCH:
+      case FINALE_LIGURE:
+      case VOSGES_LA_BRESSE:
+        return 50_000;
+      default:
+        return 0;
+    }
+  }
 
   LoopTestRegion(double lon, double lat, String segmentFile,
                  double maxReusePercent, double minDistanceRatio,

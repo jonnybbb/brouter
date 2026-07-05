@@ -142,6 +142,16 @@ public abstract class LoopQualityTestBase {
       "Profile " + profileName + " is not a supported profile for " + region.name()
         + " (no plausible route exists for this terrain × profile combination)",
       region.supportedProfiles.contains(profileName));
+    // Distance-scoped support (2026-07): some region × profile combos are
+    // healthy only above a minimum loop size — small-radius geometry walls
+    // them in (valley floors, coastal half-planes, massif faces) while the
+    // larger radii ride fine. Skip below the region's empirical minimum
+    // instead of excluding the profile outright.
+    Assume.assumeTrue(
+      "Profile " + profileName + " is only supported in " + region.name()
+        + " from " + region.minLoopMetersForProfile(profileName) / 1000 + "km loops up"
+        + " (small-radius geometry walls this start in; see LoopTestRegion)",
+      targetDistanceMeters >= region.minLoopMetersForProfile(profileName));
 
     // Run all four strategies. greedy and iso_greedy — the primary algorithms
     // the AUTO competition ships — are quality-gated below; probe (legacy
