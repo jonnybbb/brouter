@@ -569,14 +569,14 @@ public class ReuseClassifierTest {
   @Test
   public void gateLegacyValidateReturnsNullOnAccept() {
     OsmTrack t = cleanLoop(5000);
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNull("legacy validate returns null on accept", reason);
   }
 
   @Test
   public void gateLegacyValidateReturnsReasonOnReject() {
     OsmTrack t = loopWithMidUTurn(3000);
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull("legacy validate returns reason on reject", reason);
   }
 
@@ -762,5 +762,11 @@ public class ReuseClassifierTest {
     pts.add(new int[]{0, height});
     pts.add(new int[]{0, 0}); // close
     return track(pts.toArray(new int[0][]));
+  }
+
+  /** Local shim for the removed legacy String API: null when accepted, else the rejection reason. */
+  private static String validate(OsmTrack track, double desiredDistance, String profileName) {
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(track, desiredDistance, profileName, false, false);
+    return r.isAccepted() ? null : r.getRejectionReason();
   }
 }

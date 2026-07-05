@@ -408,7 +408,7 @@ public class GreedyRoundTripPlannerTest {
     // Successful greedy plans must produce road-snapped (SHAPING) waypoints.
     // A DIRECT entry would tell the routing engine to insert a beeline,
     // which violates the round-trip invariant.
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RoundTripCandidateProvider.RadialCandidateProvider());
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RadialCandidateProvider());
 
     MatchedWaypoint startMwp = makeMatchedWaypoint(1000, 1000, 900, 900, 1100, 1100);
     // Even when the source MWP is marked DIRECT, copyMatchedWaypoint must
@@ -599,7 +599,7 @@ public class GreedyRoundTripPlannerTest {
     // the planner used independent FALLBACK_* constants and would have
     // accepted this track (it has zero reuse and clean ratio).
     OsmTrack heavy = squarePathTrack(/*sideMeters*/ 5000);
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RoundTripCandidateProvider.RadialCandidateProvider());
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RadialCandidateProvider());
     planner.setProfileName("fastbike");
     String reason = planner.qualityGateReason(heavy, heavy.distance);
     Assert.assertNotNull("planner rejects hostile-fraction routes", reason);
@@ -612,7 +612,7 @@ public class GreedyRoundTripPlannerTest {
   public void qualityGateReasonAcceptsCleanLoop() {
     // The same delegation accepts a clean paved loop.
     OsmTrack clean = squareResidentialTrack(/*sideMeters*/ 5000);
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RoundTripCandidateProvider.RadialCandidateProvider());
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RadialCandidateProvider());
     planner.setProfileName("fastbike");
     Assert.assertNull("planner accepts clean residential loop",
       planner.qualityGateReason(clean, clean.distance));

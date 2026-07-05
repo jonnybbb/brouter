@@ -15,10 +15,7 @@ public class RoundTripResult {
   private List<OsmNodeNamed> loopWaypoints;
   private List<MatchedWaypoint> matchedWaypoints;
   private int totalDistanceMeters;
-  private double reusedEdgeRatio;
   private boolean withinTolerance;
-  private int attemptsUsed;
-  private int subRoutesChosen;
   private final List<String> diagnostics = new ArrayList<>();
   private String fallbackReason;
   private List<OsmTrack> legTracks; // per-leg sub-route tracks from greedy planner
@@ -92,36 +89,12 @@ public class RoundTripResult {
     this.totalDistanceMeters = totalDistanceMeters;
   }
 
-  public double getReusedEdgeRatio() {
-    return reusedEdgeRatio;
-  }
-
-  public void setReusedEdgeRatio(double reusedEdgeRatio) {
-    this.reusedEdgeRatio = reusedEdgeRatio;
-  }
-
   public boolean isWithinTolerance() {
     return withinTolerance;
   }
 
   public void setWithinTolerance(boolean withinTolerance) {
     this.withinTolerance = withinTolerance;
-  }
-
-  public int getAttemptsUsed() {
-    return attemptsUsed;
-  }
-
-  public void setAttemptsUsed(int attemptsUsed) {
-    this.attemptsUsed = attemptsUsed;
-  }
-
-  public int getSubRoutesChosen() {
-    return subRoutesChosen;
-  }
-
-  public void setSubRoutesChosen(int subRoutesChosen) {
-    this.subRoutesChosen = subRoutesChosen;
   }
 
   public List<String> getDiagnostics() {

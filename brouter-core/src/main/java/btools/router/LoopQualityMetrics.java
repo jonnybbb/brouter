@@ -473,16 +473,6 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * True if {@code nodes} contains at least one near-revisit span under the given
-   * thresholds. Convenience wrapper over {@link #nearRevisitSpans}.
-   */
-  public static boolean hasNearRevisit(List<OsmPathElement> nodes,
-                                       double epsMeters, double minArcMeters,
-                                       double maxArcMeters) {
-    return !nearRevisitSpans(nodes, epsMeters, minArcMeters, maxArcMeters).isEmpty();
-  }
-
-  /**
    * Length (m) of the longest single edge that is BOTH long and <em>null-way</em>
    * (no {@code wayKeyValues}) — the beeline fingerprint.
    *

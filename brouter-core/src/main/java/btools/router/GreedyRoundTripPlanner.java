@@ -242,15 +242,6 @@ public class GreedyRoundTripPlanner {
   // Magnitude is similar to scorer.score() output; 0.5 keeps both signals relevant.
   static final double COST_PER_METER_WEIGHT = 0.5;
   /**
-   * "Super unattractive" penalty (user directive) added to a candidate whose via falls inside a
-   * detected dense box (a residential/town core), so the planner never places a turnaround/via in a
-   * city — the root cause of loops diving into towns. Large enough (≫ the ~1–3 score range) to push
-   * such candidates to the bottom, but finite so a town-only-reachable case still closes (graceful,
-   * no no-route). Active only when the dense-area map is built (engine.routingContext.denseAreaMap != null).
-   * Tunable via {@code loop.denseboxwppenalty}.
-   */
-  static final double DENSE_BOX_WP_PENALTY = 100.0;
-  /**
    * Weight applied per self-intersection introduced by a tentative partial
    * loop. This is a placement-side signal: among otherwise similar routed
    * candidates, prefer the one that keeps the loop geometry clean before the
@@ -329,58 +320,6 @@ public class GreedyRoundTripPlanner {
   private String profileName;
 
   /**
-   * Desirability reward weight for the round-trip heatmap experiment (issue #15).
-   * Subtracted (× the candidate's [0,1] desirability) from the candidate score so
-   * waypoints on profile-preferred terrain rank better.
-   *
-   * <p>Inert on the default routing path: only {@link DesirabilityCandidateProvider}
-   * (built solely when {@code roundTripDesirability} is set) assigns a non-zero
-   * {@code desirability}; every other provider leaves it at 0, so {@code 30 × 0}
-   * contributes nothing.
-   *
-   * <p>The value is intentionally <b>strong</b>, not a gentle nudge: the base
-   * {@link CandidateScorer#score} terms are normalized ratios weighted in the 0.5–3.0
-   * range, so a score is typically O(1–10). At 30 the desirability term meaningfully
-   * biases waypoint selection among the candidates the provider already constrained to
-   * the step's distance window — though how much it actually re-ranks depends on the
-   * stock spacing weights (notably {@code wPrev}); the measured route effect in the
-   * issue #15 study came with those relaxed, which this commit does not ship. Loop
-   * closure still pulls the final return leg back to the start. This is an exploratory
-   * experiment behind an off-by-default flag, not a tuned route-quality default; tuning
-   * it together with the spacing weights is future work.
-   */
-  private static final double DESIR_WEIGHT = 30.0;
-
-  /**
-   * Capsule prototype reward weights — INSTANCE fields read from system properties
-   * at construction, so a sweep harness can vary them per request in one JVM (each
-   * round-trip builds a fresh planner). Inert on the default path: only
-   * {@link CapsuleCandidateProvider} (built when {@code roundTripCapsule} is set)
-   * assigns non-zero capsule/elevation rewards.
-   *
-   * <ul>
-   *   <li>{@code CAPSULE_WEIGHT} — pull toward
-   *       boundary "portal" / open cells, away from dense interiors.</li>
-   *   <li>{@code ELEV_WEIGHT} — reward higher
-   *       ground (counter the flat-terrain bias).</li>
-   *   <li>{@code CAPSULE_OVERSHOOT_TOL} — fade
-   *       both rewards once a candidate's projected loop runs this fraction past
-   *       target (kills the over-distancing failure mode).</li>
-   *   <li>{@code CAPSULE_PHASE2_SCALE} — scale of the
-   *       reward applied in the Phase-2 routed re-score (the pick that actually
-   *       commits). **Default 0 (off).** The Basel/Freiburg sweep showed that letting
-   *       the reward override the committed pick over-steers (commits worse-routed
-   *       loops, more crossings, lower RCS). Phase-1-only — bias which candidates get
-   *       routed, then let routedScore commit — is RCS-neutral and reduces crossings.
-   *       Kept as a knob for experiments; >0 re-enables the (worse) override.</li>
-   * </ul>
-   */
-  private static final double CAPSULE_WEIGHT = 3.0;
-  private static final double ELEV_WEIGHT = 1.5;
-  private static final double CAPSULE_OVERSHOOT_TOL = 0.12;
-  private static final double CAPSULE_PHASE2_SCALE = 0.0;
-
-  /**
    * Set the active profile name. Should be called by {@link RoutingEngine}
    * during planner construction, immediately after the planner is
    * instantiated, so the internal fallback gate matches what the
@@ -434,37 +373,6 @@ public class GreedyRoundTripPlanner {
     this.subRouteCount = subRouteCount;
     this.tolerance = tolerance;
     this.maxAttempts = maxAttempts;
-  }
-
-  /**
-   * Overshoot guard for the capsule/elevation rewards: full reward at or under
-   * target, fading to 0 once the projected loop runs {@code CAPSULE_OVERSHOOT_TOL}
-   * past target. Stops the steering from ever winning by over-distancing.
-   */
-  private double capsuleOvershootGate(double projectedTotal, double desiredDistance) {
-    if (desiredDistance <= 0) return 1.0;
-    double overshoot = projectedTotal / desiredDistance;
-    if (overshoot <= 1.0) return 1.0;
-    return Math.max(0.0, 1.0 - (overshoot - 1.0) / CAPSULE_OVERSHOOT_TOL);
-  }
-
-  /**
-   * Combined capsule + elevation reward to SUBTRACT from a candidate score (lower
-   * = better). {@code gate} is the overshoot fade. Zero unless a
-   * {@link CapsuleCandidateProvider} populated the rewards (default path inert).
-   */
-  private double capsuleReward(RoundTripCandidateProvider.CandidatePoint cp, double gate) {
-    return gate * (CAPSULE_WEIGHT * cp.capsuleReward + ELEV_WEIGHT * cp.elevationReward);
-  }
-
-  /**
-   * User directive #3: make a candidate whose via lands inside a dense box (a town/residential core)
-   * "super unattractive" so the planner never turns a loop around inside a city. 0 when no boxes are
-   * built (default) → zero overhead and no behaviour change.
-   */
-  private double denseBoxWaypointPenalty(int ilon, int ilat) {
-    RoutingContext rc = engine.routingContext;
-    return (rc.denseAreaMap != null && rc.denseAreaMap.contains(ilon, ilat)) ? DENSE_BOX_WP_PENALTY : 0.0;
   }
 
   /**
@@ -547,7 +455,6 @@ public class GreedyRoundTripPlanner {
     // iterated), so slot layout cannot affect any routing decision.
     VisitedEdgeStore visitedEdges = new VisitedEdgeStore();
     List<OsmTrack> segments = new ArrayList<>();
-    int totalAttempts = 0;
     double totalDistance = 0;
     int candidatesGenerated = 0;
     int candidatesRouted = 0;
@@ -616,7 +523,6 @@ public class GreedyRoundTripPlanner {
       OsmTrack cachedRefTrack = segments.isEmpty() ? null : buildRefTrack(segments);
 
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-        totalAttempts++;
         if (System.currentTimeMillis() >= stepDeadline) break;
 
         double airRadius = localRadius / indirectnessEst;
@@ -659,9 +565,8 @@ public class GreedyRoundTripPlanner {
         // Previous leg's bearing for the heading-persistence term: NaN on
         // step 1 (no previous leg — the start-direction term covers it).
         // Must use the cos(lat)-scaled bearing so it shares the convention of
-        // cp.bearing (graph-native, isochrone and desirability providers all set it
-        // via CheapRuler.getScaledBearing; RadialCandidateProvider uses a fixed
-        // placement angle in the same true-compass convention). The raw
+        // cp.bearing (graph-native and isochrone providers both set it
+        // via CheapRuler.getScaledBearing). The raw
         // CheapAngleMeter.getDirection would distort the kink angle by ~10-15° off
         // the equator. (loopSweepPenalty intentionally uses getDirection — it is
         // self-consistent because it derives all its angles from that one call.)
@@ -692,13 +597,6 @@ public class GreedyRoundTripPlanner {
             ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * indirectnessEst
             : -1;
 
-          // Overshoot guard: fade the capsule/elevation rewards as a candidate's
-          // projected loop total runs past the target, so the steering never wins
-          // by over-distancing (the 80km→97km failure mode). On-or-under target ⇒
-          // full reward; CAPSULE_OVERSHOOT_TOL past target ⇒ zero.
-          double projectedTotal = totalDistance + estimatedRouteDist + estimatedReturn;
-          double capsuleGate = capsuleOvershootGate(projectedTotal, desiredDistance);
-
           cp.score = scorer.score(
             estimatedRouteDist, subTarget,
             totalDistance, estimatedReturn, desiredDistance,
@@ -708,10 +606,7 @@ public class GreedyRoundTripPlanner {
             distFromStart, searchRadius,
             distFromPrevious,
             cp.costFromStart, cp.bucketHits, cp.sourceContour)
-            - DESIR_WEIGHT * cp.desirability // issue #15: reward profile-desirable cells (lower score = better)
-            - capsuleReward(cp, capsuleGate) // capsule prototype: steer out of dense interiors / reward higher ground
-            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells)
-            + denseBoxWaypointPenalty(cp.ilon, cp.ilat); // user #3: never place a via inside a town
+            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
 
           // Heading persistence: prefer candidates that keep turning gently
           // instead of kinking at the via — terrain-gated so constrained
@@ -738,8 +633,7 @@ public class GreedyRoundTripPlanner {
           // candidate comparison below stays purely quality-driven. The jitter is
           // ±VARIETY_JITTER_AMPLITUDE of the score MAGNITUDE, added (not multiplied),
           // so a positive unit always raises the score (= worse rank) regardless of
-          // the score's sign. A bare multiply would invert the effect once the
-          // desirability/capsule terms drive the score negative. It flips near-tie
+          // the score's sign. It flips near-tie
           // rankings without overriding clear winners; in sparse networks with no
           // near-ties, variety is best-effort.
           if (varietySeed > 0) {
@@ -901,18 +795,10 @@ public class GreedyRoundTripPlanner {
 
           double costPerMeter = (double) subTrack.cost / subTrack.distance;
           double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
-          // Capsule prototype (H2 fix): apply the steering reward to the PICK that
-          // actually commits — Phase 1 only biased which candidates got routed, so
-          // the winner ignored the capsule. Gate on the now-known leg distance.
-          double routedProjectedTotal = totalDistance + subTrack.distance + estimatedReturn;
-          routedScore -= CAPSULE_PHASE2_SCALE
-            * capsuleReward(cp, capsuleOvershootGate(routedProjectedTotal, desiredDistance));
           int tentativeSelfIntersections = countTentativeSelfIntersections(committedPrefixNodes, subTrack);
           if (tentativeSelfIntersections > 0) {
             routedScore += PARTIAL_SELF_INTERSECTION_WEIGHT * tentativeSelfIntersections;
           }
-          // User #3: a committed via inside a town core is "super unattractive".
-          routedScore += denseBoxWaypointPenalty(snappedIlon, snappedIlat);
 
           ScoredRoute candidate = new ScoredRoute();
           candidate.track = subTrack;
@@ -1235,11 +1121,9 @@ public class GreedyRoundTripPlanner {
             addVisitedEdges(returnTrack, visitedEdges, totalDistance);
             segments.add(returnTrack);
             totalDistance += returnTrack.distance; // keep consistent with segments
-            populateResult(result, finalTrack, waypointStack, start, startMwp, segments, desiredDistance, startDirection);
+            populateResult(result, finalTrack, waypointStack, startMwp, segments, desiredDistance, startDirection);
             result.setTotalDistanceMeters((int) closedDistance);
             result.setWithinTolerance(true);
-            result.setSubRoutesChosen(step);
-            result.setAttemptsUsed(totalAttempts);
             result.addDiagnostic("loop closed at step " + step
               + ", total=" + (int) closedDistance + "m"
               + ", error=" + String.format("%.1f%%", error * 100));
@@ -1276,7 +1160,7 @@ public class GreedyRoundTripPlanner {
     }
 
     if (bestFallback != null) {
-      populateResult(result, bestFallback.track, bestFallback.waypointStack, start,
+      populateResult(result, bestFallback.track, bestFallback.waypointStack,
         startMwp, bestFallback.legTracks, desiredDistance, startDirection);
       result.setTotalDistanceMeters(bestFallback.track.distance);
       result.setWithinTolerance(false);
@@ -1295,8 +1179,6 @@ public class GreedyRoundTripPlanner {
       } else {
         result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
       }
-      result.setSubRoutesChosen(bestFallback.legTracks.size());
-      result.setAttemptsUsed(totalAttempts);
       stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
       stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
       return result;
@@ -1321,13 +1203,11 @@ public class GreedyRoundTripPlanner {
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
         reportSeamGaps(segments, null, result);
-        populateResult(result, finalTrack, waypointStack, start, startMwp, segments, desiredDistance, startDirection);
+        populateResult(result, finalTrack, waypointStack, startMwp, segments, desiredDistance, startDirection);
         result.setTotalDistanceMeters(finalTrack.distance);
         result.setWithinTolerance(false);
         String reject = qualityGateReason(finalTrack, desiredDistance);
         result.setFallbackReason(reject == null ? "forced closure" : DEGRADED_FALLBACK_PREFIX + reject + "; forced closure");
-        result.setSubRoutesChosen(segments.size());
-        result.setAttemptsUsed(totalAttempts);
         stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
         stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
         return result;
@@ -1471,20 +1351,18 @@ public class GreedyRoundTripPlanner {
   }
 
   private void populateResult(RoundTripResult result, OsmTrack track,
-    List<MatchedWaypoint> waypointStack, OsmNodeNamed start,
+    List<MatchedWaypoint> waypointStack,
     MatchedWaypoint startMwp, List<OsmTrack> segments,
     double desiredDistance, double startDirection) {
     result.setTrack(track);
-    result.setLoopWaypoints(buildLoopWaypoints(waypointStack, start));
+    result.setLoopWaypoints(buildLoopWaypoints(waypointStack));
     result.setMatchedWaypoints(buildMatchedWaypoints(waypointStack, startMwp));
     result.setLegTracks(new ArrayList<>(segments));
-    // Compute the full quality metrics once and surface them: the reuse ratio
-    // drives the result field, and the complete metric set is recorded as a
-    // diagnostic so API callers can inspect loop quality instead of it being
-    // computed and discarded.
+    // Compute the full quality metrics once and record them as a diagnostic so
+    // API callers can inspect loop quality instead of it being computed and
+    // discarded.
     if (track != null && track.nodes != null && track.nodes.size() >= 2) {
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, (int) desiredDistance, startDirection);
-      result.setReusedEdgeRatio(metrics.getRoadReusePercent() / 100.0);
       result.addDiagnostic("quality: " + metrics);
       // Also surface the semantic reuse classification — what SHAPE this
       // loop is (STRICT_LOOP / LOLLIPOP / OUT_AND_BACK) and any
@@ -1499,8 +1377,6 @@ public class GreedyRoundTripPlanner {
         + ", spur=" + qr.getScenicSpurReuseMeters() + "m"
         + ", maxContiguous=" + qr.getMaxContiguousReuseMeters() + "m");
       for (String d : qr.getDisclosures()) result.addDiagnostic("disclosure: " + d);
-    } else {
-      result.setReusedEdgeRatio(0.0);
     }
   }
 
@@ -2179,7 +2055,7 @@ public class GreedyRoundTripPlanner {
    * forming a closed loop: [start, wp1, wp2, ..., closing_point].
    * The closing point is a copy of start to form the return leg.
    */
-  private List<OsmNodeNamed> buildLoopWaypoints(List<MatchedWaypoint> stack, OsmNodeNamed start) {
+  private List<OsmNodeNamed> buildLoopWaypoints(List<MatchedWaypoint> stack) {
     List<OsmNodeNamed> wps = new ArrayList<>();
     // First waypoint = road-snapped start position (crosspoint, not raw user position).
     // Using the crosspoint avoids beeline segments when the user's click position

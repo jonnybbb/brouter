@@ -40,7 +40,7 @@ public class RoutingIslandExceptionTest {
   }
 
   private static OsmTrack routeOneLeg(RoutingEngine engine) {
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(engine, new RoundTripCandidateProvider.RadialCandidateProvider());
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(engine, new RadialCandidateProvider());
     return planner.timedFindTrack("test-leg",
       new MatchedWaypoint(), new MatchedWaypoint(), null,
       System.currentTimeMillis() + 60_000L);

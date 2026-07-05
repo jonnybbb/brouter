@@ -259,15 +259,6 @@ public class RoutingEngine extends Thread {
 
   public boolean quite = false;
 
-  // Round-trip desirability heatmap (issue #15) — experimental, default off,
-  // gated on RoutingContext.roundTripDesirability and honoured by GREEDY only.
-  // When enabled, the GREEDY round-trip piggybacks on the isochrone expansion to
-  // accumulate a coarse profile-cost-density grid keyed by ~500m cell: each value
-  // is [nodeCount, prefWeightedSum], where prefWeighted rewards nodes reached
-  // cheaply per air-meter (i.e. on profile-preferred roads). The grid then feeds
-  // a DesirabilityCandidateProvider that biases waypoint placement toward
-  // high-desirability cells. Stays empty (and unused) when the flag is off.
-  static final int DESIRABILITY_CELL = 5000; // microdeg (~500m)
   /**
    * Reachability-cloud cell size for pocket-avoiding waypoint placement: every
    * node an isochrone expansion pops is bucketed into cells of roughly this
@@ -276,14 +267,6 @@ public class RoutingEngine extends Thread {
    * junction-rich neighborhood (filled square).
    */
   static final int REACHABILITY_CELL_M = 150;
-  private static final int DESIRABILITY_TOP_K = 10; // candidate cells offered per greedy step
-  // Package-private so the round-trip desirability wiring test can assert the grid
-  // was actually populated (i.e. the flag-on path was exercised end-to-end).
-  final Map<Long, double[]> desirabilityGrid = new HashMap<>();
-  // True only while an isochrone expansion is being run specifically to build the
-  // GREEDY desirability grid. Keeps the accumulation off the ISO_GREEDY expansion,
-  // which would otherwise populate a grid that buildCandidateProvider then discards.
-  private boolean accumulatingDesirabilityGrid;
   private boolean suppressRoutingIslandGuard = false;
 
   private Object[] extract;
@@ -2441,14 +2424,6 @@ public class RoutingEngine extends Thread {
     //   - at least one bucket meets quality thresholds (airDist >= 0.6 *
     //     searchRadius AND hits >= 3)
     // Otherwise direction is preserved verbatim.
-    // The desirability heatmap (issue #15) piggybacks on the isochrone expansion,
-    // so GREEDY also runs the expansion when an explicit experimental flag needs
-    // the grid. Accumulation is scoped to this case so default GREEDY and
-    // ISO_GREEDY do not pay to build a grid they never consume.
-    boolean buildDesirabilityGrid = (routingContext.roundTripDesirability || routingContext.roundTripCapsule
-        || routingContext.roundTripSteerVias)
-        && algo == RoundTripAlgorithm.GREEDY;
-    accumulatingDesirabilityGrid = buildDesirabilityGrid;
     // NOTE (measured 2026-07-04, do not re-attempt without new evidence):
     // adopting the expansion's compiled step-1 legs as planner sub-legs
     // (includeCandidateTracks=true here + routedTrack forwarding at step 1)
@@ -2460,41 +2435,9 @@ public class RoutingEngine extends Thread {
     // request), and no latency win (+4%: track-compile overhead outweighed
     // the saved step-1 re-routes). Reverted; diff preserved in the session
     // findings.
-    IsochroneExpansionResult iso = (algo == RoundTripAlgorithm.ISO_GREEDY || buildDesirabilityGrid)
+    IsochroneExpansionResult iso = algo == RoundTripAlgorithm.ISO_GREEDY
       ? runIsochroneExpansion(start, searchRadius)
       : null;
-    accumulatingDesirabilityGrid = false;
-    // Faithful capsule (leg-masking): turn the density grid into soft no-go polygons over
-    // dense interiors so routed LEGS avoid the spaghetti, crossing only at least-cost gaps
-    // (implicit portals/corridors). Off unless roundTripCapsule AND loop.capsule.nogoweight>0.
-    double capsuleNogoWeight = 0;
-    if (routingContext.roundTripCapsule && capsuleNogoWeight > 0 && !desirabilityGrid.isEmpty()) {
-      List<OsmNodeNamed> capsuleNogos = CapsuleNogoBuilder.build(
-        desirabilityGrid, DESIRABILITY_CELL, capsuleNogoWeight,
-        0.80,
-        10,
-        4);
-      if (!capsuleNogos.isEmpty()) {
-        if (routingContext.nogopoints == null) routingContext.nogopoints = new ArrayList<>();
-        routingContext.nogopoints.addAll(capsuleNogos);
-        logInfo("GREEDY: capsule leg-masking — " + capsuleNogos.size()
-          + " soft no-go polygons (weight " + capsuleNogoWeight + ")");
-      }
-    }
-    // Via-steering: derive a dense-area map (town/city cores) from the same grid; the round-trip
-    // planner penalises candidate vias placed inside it, so the loop keeps its turnarounds out of
-    // built-up cores. Opt-in (roundTripSteerVias); never consulted by the general per-segment engine.
-    if (routingContext.roundTripSteerVias && !desirabilityGrid.isEmpty()) {
-      routingContext.denseAreaMap = DenseAreaMap.fromDesirabilityGrid(desirabilityGrid, DESIRABILITY_CELL,
-        0.88,
-        12,
-        2,
-        20,
-        5);
-      if (routingContext.denseAreaMap != null) {
-        logInfo("GREEDY: via-steering — " + routingContext.denseAreaMap.size() + " dense-area boxes");
-      }
-    }
     double effectiveDirection = direction;
     IsoAsymmetryBias bias = IsoAsymmetryBias.NONE;
     if (algo == RoundTripAlgorithm.ISO_GREEDY && direction < 0 && iso != null) {
@@ -2518,10 +2461,6 @@ public class RoutingEngine extends Thread {
     // the user's direction is perpendicular to that axis, retry once
     // along the axis. This addresses the Inn-Valley pattern: 100km loop
     // requested heading N where the road network only supports E-W.
-    // Scoped to ISO_GREEDY: the desirability flag (issue #15) also makes GREEDY
-    // populate `iso`, but Phase 2.1 axis-retry is an ISO_GREEDY behaviour and must
-    // not change GREEDY's algorithm identity. (No-op for prior behaviour — `iso`
-    // was only ever non-null for ISO_GREEDY before the flag existed.)
     FrontierAxis frontierAxis = (algo == RoundTripAlgorithm.ISO_GREEDY && iso != null)
       ? computeFrontierAxis(iso.frontier, searchRadius) : FrontierAxis.NONE;
     boolean phase21Triggered = false;
@@ -2795,21 +2734,6 @@ public class RoutingEngine extends Thread {
                                                             IsochroneExpansionResult iso) {
     GraphNativeCandidateProvider graphNative = new GraphNativeCandidateProvider(this);
     if (algo != RoundTripAlgorithm.ISO_GREEDY) {
-      // Capsule wins if both experimental flags are set: it steers waypoints out
-      // of dense interiors AND rewards higher ground, a superset of the use case.
-      if (routingContext.roundTripCapsule && !desirabilityGrid.isEmpty()) {
-        CapsuleCandidateProvider capsule =
-          new CapsuleCandidateProvider(desirabilityGrid, graphNative, DESIRABILITY_CELL);
-        logInfo("GREEDY: capsule-guided candidate provider (" + desirabilityGrid.size()
-          + " cells, " + capsule.denseCellCount() + " dense, " + capsule.boundaryCellCount()
-          + " portal, elevation=" + (capsule.elevationActive() ? "on" : "off") + ")");
-        return capsule;
-      }
-      if (routingContext.roundTripDesirability && !desirabilityGrid.isEmpty()) {
-        logInfo("GREEDY: desirability-guided candidate provider (" + desirabilityGrid.size() + " cells)");
-        return new DesirabilityCandidateProvider(desirabilityGrid, graphNative,
-          DESIRABILITY_CELL, DESIRABILITY_TOP_K);
-      }
       return graphNative;
     }
     if (iso == null || iso.frontier.length < 6 || iso.candidates.size() < 12) {
@@ -4118,9 +4042,9 @@ public class RoutingEngine extends Thread {
    * @return frontier table + road-native candidate pool; {@code null} on failure
    */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
-    // Start-centered expansion (ISO_GREEDY pool, frontier table, desirability
-    // grid): budget calibration ON — searchRadius here is the loop radius the
-    // reach target is defined against.
+    // Start-centered expansion (ISO_GREEDY pool, frontier table): budget
+    // calibration ON — searchRadius here is the loop radius the reach target
+    // is defined against.
     return runIsochroneExpansion(start, searchRadius, null, false, true);
   }
 
@@ -4321,27 +4245,6 @@ public class RoutingEngine extends Thread {
       visitedCells.add((((long) (curIlon / cellDivLon)) << 32)
         | ((curIlat / cellDivLat) & 0xFFFFFFFFL));
       double dist = CheapRuler.distance(start.ilon, start.ilat, curIlon, curIlat);
-      if (accumulatingDesirabilityGrid && dist > 50) {
-        // Accumulate profile-cost-density per ~500m cell (issue #15 heatmap).
-        // pref saturates to 1.0 at costEff <= ROAD_INDIRECTNESS (1.3), i.e. a
-        // fastbike on flat tarmac; gravel/MTB profiles have higher costEff floors,
-        // so their pref ceiling is correspondingly below 1.0.
-        double costEff = path.cost / dist;                 // cost-units per air-meter
-        double pref = costEff > 0 ? Math.min(1.0, 1.3 / costEff) : 1.0;
-        long key = (long) (curIlon / DESIRABILITY_CELL) * 1_000_000L + (curIlat / DESIRABILITY_CELL);
-        double[] cell = desirabilityGrid.get(key);
-        // Slots: [nodeCount, prefSum, eleSum, eleCount]. nodeCount drives the
-        // capsule density classification; eleSum/eleCount the elevation reward.
-        if (cell == null) { cell = new double[4]; desirabilityGrid.put(key, cell); }
-        cell[0] += 1;
-        cell[1] += pref;
-        // Capsule prototype: accumulate elevation per cell (sentinels = no SRTM).
-        short selev = currentNode.selev;
-        if (selev != Short.MIN_VALUE && selev != -12345) {
-          cell[2] += selev / 4.0; // selev is in 1/4-meter units
-          cell[3] += 1;
-        }
-      }
       if (dist > 50) { // skip very close nodes (noisy bearings)
         int pcost = path.cost;
         // Calibration band sample: cost-per-air-meter of frontier-band pops.

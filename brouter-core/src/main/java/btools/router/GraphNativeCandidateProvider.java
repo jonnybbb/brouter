@@ -13,8 +13,7 @@ import btools.util.CheapRuler;
 /**
  * Per-step graph-native candidate provider for greedy round-trip planning.
  *
- * <p>Unlike {@link RoundTripCandidateProvider.RadialCandidateProvider}, this
- * provider does not invent coordinates on a geometric ring. For every greedy
+ * <p>This provider does not invent coordinates on a geometric ring. For every greedy
  * step it runs a bounded Dijkstra expansion from the current graph position and
  * returns real reached graph nodes near the requested sub-leg air distance.
  *

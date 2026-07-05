@@ -250,11 +250,6 @@ public final class RoutingContext {
   private List<OsmNodeNamed> keepnogopoints = null;
   private OsmNodeNamed pendingEndpoint = null;
 
-  // Dense (town/city) areas for GREEDY via-steering. Null = off (general routing and non-steered
-  // round-trips). Built at round-trip time from the desirability grid (RoutingEngine) and consumed
-  // only by the round-trip planner — never by the general per-segment cost engine.
-  public DenseAreaMap denseAreaMap = null;
-
   public Integer startDirection;
   public boolean startDirectionValid;
   public boolean forceUseStartDirection;
@@ -326,45 +321,6 @@ public final class RoutingContext {
    * not copied into child contexts by {@link #copyRequestFields()}).
    */
   public boolean roundTripIsochrone;
-
-  /**
-   * Experimental profile-desirability heatmap for GREEDY round-trips (issue #15),
-   * settable via the request parameter {@code roundTripDesirability=1}. Off by
-   * default. When on, the GREEDY round-trip accumulates a coarse profile-cost-density
-   * grid during its isochrone expansion and biases waypoint placement toward
-   * high-desirability cells (see {@link DesirabilityCandidateProvider}).
-   *
-   * <p>Takes effect only when the GREEDY algorithm actually runs; inert for
-   * ISOCHRONE / ISO_GREEDY / WAYPOINT. Under the default AUTO algorithm a GREEDY
-   * child is spawned only when ISO_GREEDY does not clearly win the competition, so
-   * on good tile data this flag can be silently inert under AUTO — set
-   * {@code roundTripAlgorithm=GREEDY} explicitly to guarantee it is honoured. This
-   * is an exploratory infrastructure lever, not a tuned route-quality default.
-   */
-  public boolean roundTripDesirability;
-
-  /**
-   * Experimental urban-capsule loop planning for GREEDY round-trips, settable via
-   * the request parameter {@code roundTripCapsule=1}. Off by default. When on, the
-   * GREEDY round-trip accumulates the same coarse density/elevation grid as the
-   * desirability flag and uses {@link CapsuleCandidateProvider} to steer waypoints
-   * out of dense capsule interiors toward boundary "portal" cells, plus reward
-   * higher ground to counter the flat-terrain bias.
-   *
-   * <p>Same activation caveats as {@link #roundTripDesirability}: honoured only by
-   * the GREEDY algorithm; set {@code roundTripAlgorithm=GREEDY} explicitly to
-   * guarantee it takes effect under AUTO. If both flags are set, capsule wins.
-   */
-  public boolean roundTripCapsule;
-
-  /**
-   * Via-steering for GREEDY round-trips (opt-in, request param {@code roundTripSteerVias=1}, default
-   * off). When on, the GREEDY round-trip builds the coarse density grid, derives a {@link DenseAreaMap}
-   * of town/city cores, and penalises candidate waypoints placed inside those areas — so the planned
-   * loop keeps its vias out of built-up cores. Honoured by GREEDY only; costs one extra isochrone
-   * expansion to build the grid, which is why it is opt-in.
-   */
-  public boolean roundTripSteerVias;
 
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
 
@@ -771,15 +727,6 @@ public final class RoutingContext {
     // report no errorMessage, so the parent's strict re-gate finds no winner
     // but can only surface "unknown" instead of the child's real reason.
     c.roundTripStrictQuality = this.roundTripStrictQuality;
-    // The desirability flag (issue #15) must reach the GREEDY child spawned by the
-    // AUTO competition, where it actually takes effect.
-    c.roundTripDesirability = this.roundTripDesirability;
-    // The capsule flag must likewise reach the GREEDY child spawned by AUTO.
-    c.roundTripCapsule = this.roundTripCapsule;
-    // Via-steering flag reaches the GREEDY child spawned by AUTO; the derived dense-area map (built
-    // after the grid expansion) is read-only during leg routing, so aliasing the reference is safe.
-    c.roundTripSteerVias = this.roundTripSteerVias;
-    c.denseAreaMap = this.denseAreaMap;
     // Densification request inputs (the effective explicitViaDensify flag is
     // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
     // AUTO children currently route a single waypoint and never densify, but

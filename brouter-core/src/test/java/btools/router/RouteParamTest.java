@@ -84,31 +84,4 @@ public class RouteParamTest {
     Assert.assertEquals("result content timode ", 3, rc.turnInstructionMode);
   }
 
-  @Test
-  public void roundTripDesirabilityParsesIntoContextAndPropagatesToChildren()
-      throws UnsupportedEncodingException {
-    // Default: off when the parameter is absent.
-    RoutingContext bare = new RoutingContext();
-    new RoutingParamCollector().setParams(bare, null, new HashMap<>());
-    Assert.assertFalse("roundTripDesirability defaults to off", bare.roundTripDesirability);
-
-    // roundTripDesirability=1 turns it on.
-    Map<String, String> params = new HashMap<>();
-    params.put("roundTripDesirability", "1");
-    RoutingContext rc = new RoutingContext();
-    new RoutingParamCollector().setParams(rc, null, params);
-    Assert.assertTrue("roundTripDesirability=1 enables the flag", rc.roundTripDesirability);
-
-    // It must follow the parent into the AUTO-spawned child context, where it takes effect.
-    RoutingContext child = rc.copyRequestFields();
-    Assert.assertTrue("roundTripDesirability is copied into child contexts", child.roundTripDesirability);
-
-    // Any non-1 value leaves it off.
-    Map<String, String> zero = new HashMap<>();
-    zero.put("roundTripDesirability", "0");
-    RoutingContext off = new RoutingContext();
-    new RoutingParamCollector().setParams(off, null, zero);
-    Assert.assertFalse("roundTripDesirability=0 keeps the flag off", off.roundTripDesirability);
-  }
-
 }

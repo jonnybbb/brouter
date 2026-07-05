@@ -53,7 +53,7 @@ public class RoundTripQualityGateTest {
   public void acceptsCleanCloseLoop() {
     OsmTrack good = squareLoop(/*sideMeters*/ 5000);
     // 4 edges × ~5km = ~20km loop — pass desired = actual so ratio = 1.0
-    assertNull(RoundTripQualityGate.validate(good, good.distance, "fastbike"));
+    assertNull(validate(good, good.distance, "fastbike"));
   }
 
   @Test
@@ -66,16 +66,16 @@ public class RoundTripQualityGateTest {
     double desiredAtMin = dist / RoundTripQualityGate.MIN_DISTANCE_RATIO;
     double desiredAtMax = dist / RoundTripQualityGate.MAX_DISTANCE_RATIO;
     assertNull("at MIN_DISTANCE_RATIO should pass",
-      RoundTripQualityGate.validate(track, desiredAtMin, "fastbike"));
+      validate(track, desiredAtMin, "fastbike"));
     assertNull("at MAX_DISTANCE_RATIO should pass",
-      RoundTripQualityGate.validate(track, desiredAtMax, "fastbike"));
+      validate(track, desiredAtMax, "fastbike"));
   }
 
   // ---- Hard-fail cases (one per spec criterion) ---------------------------
 
   @Test
   public void rejectsNullTrack() {
-    assertNotNull(RoundTripQualityGate.validate(null, 20000, "fastbike"));
+    assertNotNull(validate(null, 20000, "fastbike"));
   }
 
   @Test
@@ -85,7 +85,7 @@ public class RoundTripQualityGateTest {
     t.nodes.add(makeNode(0, 0));
     t.nodes.add(makeNode(1000, 0));
     t.distance = 1000;
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected too-few-nodes, got: " + reason, reason.contains("too few nodes"));
   }
@@ -96,7 +96,7 @@ public class RoundTripQualityGateTest {
     // Move the last node 500m away from the start
     OsmPathElement last = t.nodes.get(t.nodes.size() - 1);
     t.nodes.set(t.nodes.size() - 1, makeNodeRaw(last.getILon() + 5000, last.getILat()));
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected closure rejection, got: " + reason, reason.contains("closure"));
   }
@@ -105,7 +105,7 @@ public class RoundTripQualityGateTest {
   public void rejectsRatioBelowMin() {
     OsmTrack t = squareLoop(2000);  // 8km
     // 8km / 20km = 0.4 → below MIN_DISTANCE_RATIO 0.5
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected ratio rejection, got: " + reason, reason.contains("ratio"));
   }
@@ -114,7 +114,7 @@ public class RoundTripQualityGateTest {
   public void rejectsRatioAboveMax() {
     OsmTrack t = squareLoop(5000); // 20km
     // 20km / 10km = 2.0 → above MAX_DISTANCE_RATIO 1.8
-    String reason = RoundTripQualityGate.validate(t, 10000, "fastbike");
+    String reason = validate(t, 10000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected ratio rejection, got: " + reason, reason.contains("ratio"));
   }
@@ -144,7 +144,7 @@ public class RoundTripQualityGateTest {
       heavy.nodes.get(i).message = m;
     }
     heavy.distance = hd;
-    String reason = RoundTripQualityGate.validate(heavy, hd, "fastbike");
+    String reason = validate(heavy, hd, "fastbike");
     assertNotNull(reason);
     // The new semantic classifier rejects this synthetic zigzag (an edge
     // visited 3+ times within a contiguous reuse stretch) as accidental
@@ -201,7 +201,7 @@ public class RoundTripQualityGateTest {
     MatchedWaypoint mwp = new MatchedWaypoint();
     mwp.wpttype = MatchedWaypoint.WAYPOINT_TYPE_DIRECT;
     t.matchedWaypoints.add(mwp);
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected beeline rejection, got: " + reason, reason.contains("beeline"));
   }
@@ -210,7 +210,7 @@ public class RoundTripQualityGateTest {
   public void rejectsDirectSegmentMarkerInTrackGeometry() {
     OsmTrack t = squareLoopWithMessage(5000,
       msgWayTags("highway=residential surface=asphalt direct_segment=true"));
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull(reason);
     assertTrue("expected direct_segment beeline rejection, got: " + reason,
       reason.contains("beeline") || reason.contains("direct_segment"));
@@ -240,7 +240,7 @@ public class RoundTripQualityGateTest {
   @Test
   public void pavedProfileRejectsPathHeavyRoute() {
     OsmTrack t = squareLoopWithMessage(5000, msgWayTags("highway=path"));
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected hostile-segment rejection, got: " + reason,
       reason.contains("profile-hostile") || reason.contains("path/track/unpaved"));
@@ -250,7 +250,7 @@ public class RoundTripQualityGateTest {
   public void pavedProfileRejectsHighCostFactorSpike() {
     // 100% of edges have costfactor=10 (e.g. forced onto a grade-5 track)
     OsmTrack t = squareLoopWithMessage(5000, msgCostfactor(10.0f, "highway=residential"));
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected hostile rejection on cost-spike, got: " + reason,
       reason.contains("profile-hostile"));
@@ -309,7 +309,7 @@ public class RoundTripQualityGateTest {
   public void pavedProfileRejectsRouteWithMissingMetadata() {
     // No per-edge messages — engine can't prove the edges are paved
     OsmTrack t = squareLoopNoMessage(5000);
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected missing-metadata rejection, got: " + reason,
       reason.contains("missing/unknown metadata"));
@@ -319,7 +319,7 @@ public class RoundTripQualityGateTest {
   public void pavedProfileAcceptsCleanResidentialRoute() {
     // costfactor=1.5 (residential-ish), tags are clearly paved
     OsmTrack t = squareLoopWithMessage(5000, msgCostfactor(1.5f, "highway=residential"));
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNull("clean paved route should pass: " + reason, reason);
   }
 
@@ -327,15 +327,15 @@ public class RoundTripQualityGateTest {
   public void nonPavedProfileSkipsHostilityCheck() {
     // Same path-heavy route that fastbike rejects → gravel/MTB accept it
     OsmTrack t = squareLoopWithMessage(5000, msgWayTags("highway=path"));
-    assertNull(RoundTripQualityGate.validate(t, 20000, "gravel"));
-    assertNull(RoundTripQualityGate.validate(t, 20000, "mtb"));
+    assertNull(validate(t, 20000, "gravel"));
+    assertNull(validate(t, 20000, "mtb"));
   }
 
   @Test
   public void pavedProfileToleratesMinorHostileSegments() {
     // 95% residential, 5% path → below MAX_HOSTILE_FRACTION (10%)
     OsmTrack t = mixedSurfaceLoop(/*sideMeters*/ 5000, /*hostileFractionPct*/ 5);
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNull("5% path content should pass: " + reason, reason);
   }
 
@@ -631,7 +631,7 @@ public class RoundTripQualityGateTest {
     // ~6% total hostile (1200m of 20km), longest contiguous run only 400m
     // → accept (under both total-fraction and contiguous caps).
     OsmTrack t = trackWithContiguousHostile(20000, 400, 800);
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNull("short contiguous hostile under sub-cap: " + reason, reason);
   }
 
@@ -641,7 +641,7 @@ public class RoundTripQualityGateTest {
     // "contiguous" prefix (over the 1500m sub-cap) even though total
     // fraction is below the 10% cap.
     OsmTrack t = trackWithContiguousHostile(20000, 1800, 0);
-    String reason = RoundTripQualityGate.validate(t, 20000, "fastbike");
+    String reason = validate(t, 20000, "fastbike");
     assertNotNull("long contiguous hostile must reject", reason);
     assertTrue("rejection prefix is 'contiguous': " + reason,
       reason.startsWith("contiguous "));
@@ -676,7 +676,7 @@ public class RoundTripQualityGateTest {
     // due to CheapRuler scaling at 50°N, so 1000m of declared contiguous
     // turns into ~1200m actual — comfortably under the 1500m sub-cap.
     OsmTrack t = trackWithContiguousHostile(40000, 1000, 5000);
-    String reason = RoundTripQualityGate.validate(t, 40000, "fastbike");
+    String reason = validate(t, 40000, "fastbike");
     assertNotNull(reason);
     assertTrue("expected total-fraction prefix: " + reason,
       reason.contains("of distance on profile-hostile ways"));
@@ -691,7 +691,7 @@ public class RoundTripQualityGateTest {
     // questionable fraction exceeds MAX_QUESTIONABLE_FRACTION (15%) and must
     // be rejected. Edges are scattered so the contiguous sub-cap never fires.
     OsmTrack t = loopWithScatteredKinds(40000, 36, 36, msgNoMetadata());
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull("9%+9% questionable surface must be rejected by the combined cap", reason);
     assertTrue("expected combined questionable-surface message, got: " + reason,
       reason.contains("hostile or unverifiable") || reason.contains("questionable"));
@@ -702,7 +702,7 @@ public class RoundTripQualityGateTest {
     // ~6% + ~6% = ~12% < 15% combined cap, each well under 10% — still accepted,
     // so the new ceiling does not over-tighten ordinary data-sparse loops.
     OsmTrack t = loopWithScatteredKinds(40000, 24, 24, msgNoMetadata());
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNull("12% combined questionable surface should still pass: " + reason, reason);
   }
 
@@ -713,7 +713,7 @@ public class RoundTripQualityGateTest {
     // must count them as hostile ("profile-hostile ways") rather than merely
     // unverifiable ("missing/unknown metadata"). Scattered: contiguous cap N/A.
     OsmTrack t = loopWithScatteredKinds(40000, 0, 48, msgSinglePass(5.0f));
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull("12% confirmed-expensive surface must be rejected", reason);
     assertTrue("expected hostile (not metadata) rejection, got: " + reason,
       reason.contains("profile-hostile ways"));
@@ -724,7 +724,7 @@ public class RoundTripQualityGateTest {
     // No tags AND low router cost = genuinely unverifiable, must stay suspect.
     // ~12% suspect alone trips the suspect ceiling with the metadata message.
     OsmTrack t = loopWithScatteredKinds(40000, 0, 48, msgSinglePass(1.2f));
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull("12% unverifiable surface must be rejected", reason);
     assertTrue("expected missing-metadata rejection, got: " + reason,
       reason.contains("missing/unknown metadata"));
@@ -1115,7 +1115,7 @@ public class RoundTripQualityGateTest {
     // hairpin rejection. (The loop is otherwise clean and should pass.)
     OsmTrack t = closedSerpentine(21); // 21 teeth → 20 reversals
     assertEquals("fixture sanity", 20, RoundTripQualityGate.countHairpinTurns(t));
-    String reason = RoundTripQualityGate.validate(t, t.distance, "gravel");
+    String reason = validate(t, t.distance, "gravel");
     assertFalse("20 hairpins (== MAX) must not be a hairpin rejection: " + reason,
       reason != null && reason.contains("hairpin"));
   }
@@ -1125,7 +1125,7 @@ public class RoundTripQualityGateTest {
     // One more reversal (21 > MAX 20) trips the chaos gate.
     OsmTrack t = closedSerpentine(22); // 22 teeth → 21 reversals
     assertEquals("fixture sanity", 21, RoundTripQualityGate.countHairpinTurns(t));
-    String reason = RoundTripQualityGate.validate(t, t.distance, "gravel");
+    String reason = validate(t, t.distance, "gravel");
     assertNotNull(reason);
     assertTrue("21 hairpins (> MAX) must reject as chaotic: " + reason,
       reason.contains("hairpin"));
@@ -1149,7 +1149,7 @@ public class RoundTripQualityGateTest {
     // with the self-intersections reason regardless of profile.
     OsmTrack t = closedBowties(6);
     assertEquals("fixture sanity", 6, RoundTripQualityGate.countSelfIntersections(t));
-    String reason = RoundTripQualityGate.validate(t, t.distance, "gravel");
+    String reason = validate(t, t.distance, "gravel");
     assertNotNull(reason);
     assertTrue("6 self-intersections (> MAX 5) must reject: " + reason,
       reason.contains("self-intersections"));
@@ -1386,7 +1386,7 @@ public class RoundTripQualityGateTest {
     int closure = t.nodes.get(0).calcDistance(t.nodes.get(t.nodes.size() - 1));
     assertTrue("fixture closure should be < 400m, got " + closure, closure < 400);
     assertNull("closure under cap must pass",
-      RoundTripQualityGate.validate(t, t.distance, "fastbike"));
+      validate(t, t.distance, "fastbike"));
   }
 
   @Test
@@ -1394,7 +1394,7 @@ public class RoundTripQualityGateTest {
     OsmTrack t = squareLoopWithClosureGap(2500, 450);
     int closure = t.nodes.get(0).calcDistance(t.nodes.get(t.nodes.size() - 1));
     assertTrue("fixture closure should be > 400m, got " + closure, closure > 400);
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull(reason);
     assertTrue("closure over cap must reject: " + reason, reason.contains("closure"));
   }
@@ -1411,7 +1411,7 @@ public class RoundTripQualityGateTest {
     t.nodes.add(makeNode(1500, 0));
     t.nodes.add(makeNode(0, 0));
     recomputeDistance(t);
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertNotNull(reason);
     assertTrue("3 nodes (< MIN_NODES 4) is too few: " + reason,
       reason.contains("too few nodes"));
@@ -1422,7 +1422,7 @@ public class RoundTripQualityGateTest {
     // n == MIN_NODES (4): a clean triangle loop must clear the count gate.
     OsmTrack t = triangleLoop();
     assertEquals("fixture sanity", 4, t.nodes.size());
-    String reason = RoundTripQualityGate.validate(t, t.distance, "fastbike");
+    String reason = validate(t, t.distance, "fastbike");
     assertFalse("4-node loop must pass the node-count check: " + reason,
       reason != null && reason.contains("too few nodes"));
   }
@@ -1436,7 +1436,7 @@ public class RoundTripQualityGateTest {
   @Test
   public void gate_ratioJustBelowMinRejected() {
     OsmTrack t = squareLoop(2500);
-    String reason = RoundTripQualityGate.validate(t, t.distance / 0.49, "fastbike");
+    String reason = validate(t, t.distance / 0.49, "fastbike");
     assertNotNull(reason);
     assertTrue("ratio 0.49 (< MIN 0.5) must reject: " + reason, reason.contains("ratio"));
   }
@@ -1444,7 +1444,7 @@ public class RoundTripQualityGateTest {
   @Test
   public void gate_ratioJustAboveMaxRejected() {
     OsmTrack t = squareLoop(2500);
-    String reason = RoundTripQualityGate.validate(t, t.distance / 1.81, "fastbike");
+    String reason = validate(t, t.distance / 1.81, "fastbike");
     assertNotNull(reason);
     assertTrue("ratio 1.81 (> MAX 1.8) must reject: " + reason, reason.contains("ratio"));
   }
@@ -1453,9 +1453,9 @@ public class RoundTripQualityGateTest {
   public void gate_ratioJustInsideBandAccepted() {
     OsmTrack t = squareLoop(2500);
     assertNull("ratio 0.51 (> MIN) must pass",
-      RoundTripQualityGate.validate(t, t.distance / 0.51, "fastbike"));
+      validate(t, t.distance / 0.51, "fastbike"));
     assertNull("ratio 1.79 (< MAX) must pass",
-      RoundTripQualityGate.validate(t, t.distance / 1.79, "fastbike"));
+      validate(t, t.distance / 1.79, "fastbike"));
   }
 
   // ======================================================================
@@ -1477,10 +1477,10 @@ public class RoundTripQualityGateTest {
     assertTrue("over-fixture must measure > cap, got " + wo,
       wo > RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS);
 
-    String ru = RoundTripQualityGate.validate(under, under.distance, "fastbike");
+    String ru = validate(under, under.distance, "fastbike");
     assertTrue("measured-under-cap must not be a contiguous rejection: " + ru,
       ru == null || !ru.startsWith("contiguous"));
-    String ro = RoundTripQualityGate.validate(over, over.distance, "fastbike");
+    String ro = validate(over, over.distance, "fastbike");
     assertNotNull(ro);
     assertTrue("measured-over-cap must reject as contiguous: " + ro,
       ro.startsWith("contiguous"));
@@ -1627,5 +1627,11 @@ public class RoundTripQualityGateTest {
     }
     recomputeDistance(t);
     return t;
+  }
+
+  /** Local shim for the removed legacy String API: null when accepted, else the rejection reason. */
+  private static String validate(OsmTrack track, double desiredDistance, String profileName) {
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(track, desiredDistance, profileName, false, false);
+    return r.isAccepted() ? null : r.getRejectionReason();
   }
 }

@@ -418,13 +418,6 @@ public abstract class LoopQualityTestBase {
       // loop production AUTO would ship, not a strict-rejected blank.
       rctx.roundTripStrictQuality = strictQuality;
 
-      // Optional via-steering (-Dloop.steervias). Builds the dense-area map for the GREEDY round-trip
-      // so candidate vias inside town/city cores are penalised (never place a loop turnaround in a
-      // town). Off by default → the default suite routes exactly what production AUTO ships.
-      if (Boolean.getBoolean("loop.steervias")) {
-        rctx.roundTripSteerVias = true;
-      }
-
       String outPath = new File(outputDir.getRoot(), testLabel + "_" + variant).getAbsolutePath();
       RoutingEngine re = new RoutingEngine(
         outPath, outPath, segDir, wplist, rctx,

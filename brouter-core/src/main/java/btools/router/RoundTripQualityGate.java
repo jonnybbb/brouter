@@ -265,33 +265,6 @@ public final class RoundTripQualityGate {
 
   private RoundTripQualityGate() { /* static-only */ }
 
-  // ---- Legacy String API (kept for callers that just need a reject reason) -
-
-  /**
-   * Convenience overload: assumes loop-style routes (no deliberate retracing).
-   * Use {@link #validate(OsmTrack, double, String, boolean)} to relax the
-   * reuse and ratio checks for same-way-back / out-and-back routes.
-   */
-  public static String validate(OsmTrack track, double desiredDistance, String profileName) {
-    return validate(track, desiredDistance, profileName, false);
-  }
-
-  /**
-   * Validate a generated round-trip track. Returns {@code null} when the
-   * track is acceptable; a human-readable rejection reason otherwise.
-   * Equivalent to {@link #evaluate} but returning only the rejection
-   * string for callers that don't need the structured verdict.
-   *
-   * <p>{@code allowSamewayback=true} signals the cyclist explicitly asked
-   * for an out-and-back; the gate then permits the
-   * {@link RouteShape#OUT_AND_BACK} shape.
-   */
-  public static String validate(OsmTrack track, double desiredDistance, String profileName,
-                                  boolean allowSamewayback) {
-    RoundTripQualityResult r = evaluate(track, desiredDistance, profileName, allowSamewayback, false);
-    return r.isAccepted() ? null : r.getRejectionReason();
-  }
-
   // ---- Structured API ------------------------------------------------------
 
   /**

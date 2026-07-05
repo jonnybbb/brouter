@@ -273,18 +273,6 @@ public class RoutingParamCollector {
           if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
             rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
           }
-        } else if (key.equals("roundTripDesirability")) {
-          // Experimental profile-desirability heatmap for GREEDY round-trips (issue #15).
-          // Off by default; honoured only by the GREEDY algorithm.
-          rctx.roundTripDesirability = (Integer.parseInt(value) == 1);
-        } else if (key.equals("roundTripCapsule")) {
-          // Experimental urban-capsule loop planning for GREEDY round-trips.
-          // Off by default; honoured only by the GREEDY algorithm.
-          rctx.roundTripCapsule = (Integer.parseInt(value) == 1);
-        } else if (key.equals("roundTripSteerVias")) {
-          // Opt-in via-steering: keep GREEDY round-trip waypoints out of dense town/city cores.
-          // Off by default; honoured only by the GREEDY algorithm (costs one extra isochrone).
-          rctx.roundTripSteerVias = (Integer.parseInt(value) == 1);
         } else if (key.equals("alternativeidx")) {
           rctx.setAlternativeIdx(Integer.parseInt(value));
         } else if (key.equals("turnInstructionMode")) {

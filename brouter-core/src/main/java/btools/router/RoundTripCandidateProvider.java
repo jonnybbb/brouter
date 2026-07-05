@@ -1,10 +1,6 @@
 package btools.router;
 
-import java.util.ArrayList;
 import java.util.List;
-
-import btools.util.CheapAngleMeter;
-import btools.util.CheapRuler;
 
 /**
  * Generates candidate next-step points for {@link GreedyRoundTripPlanner}.
@@ -13,11 +9,10 @@ import btools.util.CheapRuler;
  * <ul>
  *   <li>{@link GraphNativeCandidateProvider} — bounded Dijkstra from the
  *       current graph position. This is the default GREEDY candidate source.</li>
- *   <li>{@link IsochroneCandidateProvider} — road-native candidates extracted from a
- *       bounded isochrone expansion centered at the start (ISO_GREEDY bias).</li>
- *   <li>{@link RadialCandidateProvider} — purely geometric ring around the current
- *       position. Legacy/debug fallback only; generated production AUTO should
- *       not use this for greedy placement.</li>
+ *   <li>{@link BlendedCandidateProvider} — the ISO_GREEDY source: it concatenates
+ *       a start-centered {@link IsochroneCandidateProvider} pool with per-step
+ *       graph-native candidates. {@link IsochroneCandidateProvider} is not wired
+ *       on its own; it only feeds the blend.</li>
  * </ul>
  *
  * <p>The planner then routes a small number of these candidates and chooses the best
@@ -49,11 +44,11 @@ public interface RoundTripCandidateProvider {
     double startDirection,
     OsmTrack refTrack);
 
-  /** Sentinel for "iso cost-from-start not available" (radial candidates). */
+  /** Sentinel for "iso cost-from-start not available" (non-iso providers). */
   double NO_ISO_COST = -1;
-  /** Sentinel for "iso bucket-density not available" (radial candidates). */
+  /** Sentinel for "iso bucket-density not available" (non-iso providers). */
   int NO_ISO_DENSITY = -1;
-  /** Sentinel for "iso source contour not available" (radial candidates). */
+  /** Sentinel for "iso source contour not available" (non-iso providers). */
   int NO_ISO_CONTOUR = -1;
 
   /**
@@ -70,25 +65,6 @@ public interface RoundTripCandidateProvider {
     public int ilat;
     public double bearing;
     public double score; // heuristic score — set by the planner during ranking
-    /**
-     * Normalized [0,1] profile-desirability of this candidate's cell (issue #15).
-     * Only {@link DesirabilityCandidateProvider} sets it; all other providers leave
-     * it at 0, so the planner's desirability reward is a no-op for them.
-     */
-    public double desirability;
-    /**
-     * Capsule-steering reward [0,1] (urban-capsule loop prototype): 0 for dense
-     * capsule interiors, {@code OPEN_REWARD} for open countryside, 1 for boundary
-     * "portal" cells. Only {@link CapsuleCandidateProvider} sets it; every other
-     * provider leaves it at 0, so the planner's capsule reward is a no-op for them.
-     */
-    public double capsuleReward;
-    /**
-     * Elevation reward [0,1] (urban-capsule loop prototype): higher ground scores
-     * higher, to counter the greedy planner's flat-terrain bias. Only
-     * {@link CapsuleCandidateProvider} sets it; 0 for every other provider.
-     */
-    public double elevationReward;
     /** Dijkstra cost-units from the loop start to this candidate; {@link #NO_ISO_COST} = unavailable. */
     public double costFromStart = NO_ISO_COST;
     /** Population of this candidate's angular bucket in the isochrone; {@link #NO_ISO_DENSITY} = unavailable. */
@@ -108,49 +84,5 @@ public interface RoundTripCandidateProvider {
      * corridors — the placement signature behind teardrop and stub artifacts.
      */
     public int reachableCells = -1;
-  }
-
-  /**
-   * Default: place {@code count} candidates on a ring at {@code airRadius} from
-   * the current position. Identical to the legacy in-planner generation.
-   */
-  final class RadialCandidateProvider implements RoundTripCandidateProvider {
-
-    private static final int DEFAULT_DIRECTIONS = 12;
-
-    private final int directions;
-
-    public RadialCandidateProvider() {
-      this(DEFAULT_DIRECTIONS);
-    }
-
-    public RadialCandidateProvider(int directions) {
-      this.directions = directions;
-    }
-
-    @Override
-    public List<CandidatePoint> candidatesForStep(
-      int fromIlon, int fromIlat, double airRadius,
-      int step, int totalSteps,
-      int startIlon, int startIlat,
-      double startDirection,
-      OsmTrack refTrack) {
-      // baseAngle: align the first ring slot with the user's direction on the
-      // first two steps so the loop heads where the user asked; thereafter let
-      // the scorer's loop/direction terms decide.
-      double baseAngle = (step <= 2 && startDirection >= 0) ? startDirection : 0;
-      double angleStep = 360.0 / directions;
-      List<CandidatePoint> points = new ArrayList<>(directions);
-      for (int i = 0; i < directions; i++) {
-        double bearing = CheapAngleMeter.normalize(baseAngle + i * angleStep);
-        int[] dest = CheapRuler.destination(fromIlon, fromIlat, airRadius, bearing);
-        CandidatePoint cp = new CandidatePoint();
-        cp.ilon = dest[0];
-        cp.ilat = dest[1];
-        cp.bearing = bearing;
-        points.add(cp);
-      }
-      return points;
-    }
   }
 }
