@@ -297,6 +297,24 @@ public abstract class LoopQualityTestBase {
       // margin over the observed 5.29.
       maxCostPerM = 5.5;
     }
+    if ("gravel".equalsIgnoreCase(profileName) && region == LoopTestRegion.MALLORCA
+        && "iso_greedy".equals(variant)) {
+      // Mallorca, ISO_GREEDY-only relaxation (2026-07, source-fair routed
+      // top-K). With graph-native candidates guaranteed a routed slot, the
+      // 75km N cell trades its former 2-self-crossing loop (4.02, distR 0.84)
+      // for a crossing-free one priced 4.74 at distR 0.51 — the planner's own
+      // crossing-penalized ranking PREFERS the trade (score 0.583 -> 0.663),
+      // but this bar has no crossing dimension and only sees the cost side.
+      // Same shipped-vs-fallback rationale as CRETE_SENESI / COASTAL_NICE
+      // above: AUTO supersedes this fallback with a clean 3.61 cost/m loop
+      // (distR 0.87), so flagging it would flag a path production never
+      // ships. Relax ONLY the ISO_GREEDY bar; GREEDY keeps the strict 4.5
+      // ceiling. 4.9 = anti-flap margin over the observed 4.74. The
+      // undershoot half of the trade (distR 0.51 accepted on an estimated
+      // return) is the return-distance-oracle follow-up's target — re-tighten
+      // this bar when that lands.
+      maxCostPerM = 4.9;
+    }
     // Direction-intent stance (2026-06): when strong-direction routing is active
     // and the loop actually fulfilled the requested heading (small direction
     // delta), the higher cost is the accepted price of going where the user
