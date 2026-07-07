@@ -17,8 +17,14 @@ import btools.util.CheapRuler;
  *
  * <p>The pool is filtered once at construction (drop too-close, dedupe identical positions,
  * limit to a diverse 12-24 candidates per spec) and then queried unchanged for each step.
- * The planner's window filter naturally avoids picking the same candidate twice (a just-
- * picked candidate has air-distance ≈ 0 from current, falling outside the window).
+ * Construct it via {@link #fromPool}; {@code RoutingEngine.buildCandidateProvider} first
+ * checks {@link #poolSize()} and {@link #isDiverse()} and drops to plain graph-native when
+ * the pool is too small or corridor-only.
+ *
+ * <p>The planner's window filter naturally avoids picking the same candidate twice (a just-
+ * picked candidate has air-distance ≈ 0 from current, falling outside the window). Because
+ * the pool is start-centered, the stored paths are start-to-candidate only and must not be
+ * adopted as a sub-leg from a later step's current node — the planner re-routes instead.
  */
 final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
 
@@ -50,8 +56,9 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
    * The pool is "diverse" if it spans ≥{@value #MIN_DISTINCT_BUCKETS} distinct angular
    * buckets AND covers ≥{@value #MIN_ANGULAR_SPAN_DEG}° of arc. Pools that fail either
    * test are usually corridor-only (sparse rural lozere, or a single accessible
-   * valley) and lead to false-success loops. Callers should fall back to the radial
-   * provider in that case — see {@link #isDiverse()}.
+   * valley) and lead to false-success loops. In that case the caller
+   * ({@code RoutingEngine.buildCandidateProvider}) falls back to the per-step
+   * {@link GraphNativeCandidateProvider} instead of the blend — see {@link #isDiverse()}.
    */
   private static boolean isAngularlyDiverse(List<IsoCandidate> filteredPool) {
     if (filteredPool.size() < MIN_DISTINCT_BUCKETS) return false;
@@ -225,8 +232,9 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
   /**
    * Whether the filtered pool spans enough distinct directions to plan a loop.
    * Returns {@code false} for corridor-only or single-direction pools (e.g.,
-   * sparse rural terrain where every candidate clumps in a few buckets) — callers
-   * should fall back to the radial candidate provider in that case.
+   * sparse rural terrain where every candidate clumps in a few buckets) — the
+   * caller ({@code RoutingEngine.buildCandidateProvider}) then falls back to the
+   * per-step {@link GraphNativeCandidateProvider} in that case.
    */
   boolean isDiverse() {
     return diverse;

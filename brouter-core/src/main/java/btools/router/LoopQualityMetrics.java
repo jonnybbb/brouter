@@ -11,10 +11,19 @@ import btools.util.CheapAngleMeter;
 import btools.util.CheapRuler;
 
 /**
- * Quality metrics for evaluating round-trip/loop routes.
- * Computes road reuse percentage, distance accuracy ratio,
- * direction adherence, continuity, compactness, cost and closure
- * from an OsmTrack.
+ * Quality metrics for evaluating round-trip/loop routes. Computes road reuse
+ * percentage, distance accuracy ratio, direction adherence, continuity,
+ * compactness, cost, closure, spur/teardrop and self-intersection counts from
+ * an {@link OsmTrack}.
+ *
+ * <p>Two roles: (1) it backs the loop-quality report and integration-test
+ * gates via {@link #compositeScore} and {@code toString}; (2) several of its
+ * primitives ({@link #nearRevisitSpans}, {@link #crossingPoints},
+ * {@link #computeRoadReusePercent}, {@link #beelineInSpurMeters}) are reused by
+ * the production candidate ranker {@link RouteChoiceScore}. The COMPOSITE score
+ * here is reporting/test-only — production candidate selection uses
+ * {@link RouteChoiceScore#score}, which weighs the same raw metrics differently.
+ * See the note on {@link #compositeScore}.
  */
 public final class LoopQualityMetrics {
 

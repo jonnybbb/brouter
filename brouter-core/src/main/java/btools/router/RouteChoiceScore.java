@@ -14,7 +14,7 @@ import java.util.Locale;
  * the gate is excluded from scoring entirely. Among candidates that DO pass,
  * the score ranks them — it does not gate.
  *
- * <p>Design constraints (see docs/features/roundtrip-auto-quality-redesign.md):
+ * <p>Design constraints:
  * <ul>
  *   <li>numeric score + a reason breakdown the caller can surface for
  *       debugging or explanation;</li>

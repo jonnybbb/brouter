@@ -259,10 +259,9 @@ public abstract class LoopQualityTestBase {
       failures.add(String.format("%s: distance ratio %.2f exceeds max %.2f",
         tag, m.getDistanceRatio(), region.maxDistanceRatio));
     }
-    if (m.getDirectionDeltaDegrees() > region.maxDirectionDelta) {
-      failures.add(String.format("%s: direction delta %.1f° exceeds max %.1f°",
-        tag, m.getDirectionDeltaDegrees(), region.maxDirectionDelta));
-    }
+    // Direction adherence is intentionally a soft hint (every region sets
+    // maxDirectionDelta=180 and the metric is bounded [0,180]), so it is NOT
+    // gated here - the delta is still computed and reported for visibility.
     double maxCostPerM = maxCostPerMeterForProfile(profileName);
     if ("gravel".equalsIgnoreCase(profileName) && region == LoopTestRegion.CRETE_SENESI
         && "iso_greedy".equals(variant)) {

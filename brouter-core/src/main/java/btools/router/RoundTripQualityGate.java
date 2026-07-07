@@ -1461,12 +1461,10 @@ public final class RoundTripQualityGate {
    * </ol>
    *
    * <p>Evidence backing: 1032 cyclist-curated GPX routes replayed
-   * point-to-point (Basel + Mallorca + Innsbruck + Freiburg) with the
-   * Phase 2 v5 stack — 95.9% pass rate. The remaining failures cluster
-   * on genuine gravel sections (defensible) or these grade1-no-surface
-   * / asphalt-no-grade patterns this predicate now accepts.
-   *
-   * <p>Detail in {@code docs/features/phase-2-v5-osm-evidence-analysis.md}.
+   * point-to-point (Basel + Mallorca + Innsbruck + Freiburg) — 95.9% pass
+   * rate. The remaining failures cluster on genuine gravel sections
+   * (defensible) or these grade1-no-surface / asphalt-no-grade patterns
+   * this predicate now accepts.
    */
   private static boolean isRoadBikeSuitablePavedTrack(String tags) {
     if (!tags.contains("highway=track")) return false;
@@ -1637,7 +1635,6 @@ public final class RoundTripQualityGate {
     if (Float.isNaN(unpaved) || Float.isNaN(paved)) {
       return false;
     }
-    // costfactor is always >= 1.0, but guard the divides defensively.
     // costfactor is always >= 1.0, but guard the divide defensively.
     double ratio = unpaved / Math.max(paved, 1.0f);
     return ratio >= PAVED_PROBE_RATIO;

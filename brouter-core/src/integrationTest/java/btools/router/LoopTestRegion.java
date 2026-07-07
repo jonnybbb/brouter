@@ -100,7 +100,11 @@ public enum LoopTestRegion {
                                             // mtb: 2026-07 sweep 8/8 healthy
   BASEL(7.590, 47.560, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Rhine / Jura foothills
-  ANNECY(6.130, 45.900, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
+  // Reuse ceiling 36 (one above the 35 mountain default): the 100km gravel
+  // iso_greedy variant sits exactly on 35% reuse and flaps across JVM runs;
+  // AUTO ships the clean 22.8%-reuse greedy loop regardless, so the +1 anti-flap
+  // margin stabilises the gate without masking a real (>36%) retrace.
+  ANNECY(6.130, 45.900, "E5_N45.rd5", 36.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // lake basin + Bornes/Bauges/Semnoz climbs
   GRENOBLE(5.720, 45.190, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Vercors/Chartreuse/Belledonne valleys

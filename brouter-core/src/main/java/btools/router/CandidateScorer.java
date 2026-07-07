@@ -170,12 +170,14 @@ public class CandidateScorer {
   /**
    * Phase 2 v2 entry point. {@code routedLegWorstContiguousHostileMeters}
    * is the longest unbroken hostile stretch in the candidate's routed
-   * sub-track (computed via
-   * {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}).
-   * When ≥ 0 it REPLACES the {@link #isoHostilityPenalty} term — the
-   * routed signal is strictly more accurate than iso-Dijkstra
-   * indirectness because the route is now known, not estimated. Pass
-   * {@code -1} to retain the legacy iso behaviour.
+   * sub-track. The planner computes it with the scorer-side approximation
+   * {@link RoundTripQualityGate#worstContiguousCostlyMetersForScorer}, which
+   * works on the single-pass tracks scoring sees (the gate's stricter
+   * tag-aware {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}
+   * needs per-edge metadata it does not yet have). When ≥ 0 it REPLACES the
+   * {@link #isoHostilityPenalty} term — the routed signal is strictly more
+   * accurate than iso-Dijkstra indirectness because the route is now known,
+   * not estimated. Pass {@code -1} to retain the legacy iso behaviour.
    *
    * <p>Only paved profiles activate hostility (gated by
    * {@link #setHostilityActive}); gravel/MTB routes ignore the signal.
@@ -320,10 +322,6 @@ public class CandidateScorer {
   }
 
   /**
-   * Penalty for misalignment with the direction preference.
-   * Fades after step 2 (exploration phase only).
-   */
-  /**
    * Strengthen the direction preference so a round-trip keeps a coherent outward
    * heading instead of wandering / doubling back into self-crossings. On by
    * default. Strength and late-step retention are calibrated constants.
@@ -346,6 +344,12 @@ public class CandidateScorer {
   /** Best achievable |Δbearing| (deg) among this step's candidates; set by the planner. */
   void setDirectionReferenceOffset(double deg) { this.dirReferenceOffset = deg; }
 
+  /**
+   * Penalty for a candidate bearing that misaligns with the direction preference.
+   * Scales by {@link #directionFade}(step) (full early, tapering late) and by the
+   * terrain-feasibility factor (see {@link #DIR_FEASIBILITY}); 0 when the
+   * preference is {@link DirectionPreference#ANY} or the fade has reached 0.
+   */
   double directionScore(double candidateBearing, DirectionPreference pref, int step) {
     if (pref == null || pref == DirectionPreference.ANY) return 0;
     double fade = directionFade(step);

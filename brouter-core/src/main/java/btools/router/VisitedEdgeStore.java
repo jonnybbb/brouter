@@ -12,8 +12,8 @@ package btools.router;
  * {@code Long}/{@code Integer}/{@code Double} autoboxing on the planner's
  * hottest per-segment loop.
  *
- * <p><b>Result-preservation invariants</b> (see
- * docs/features/greedy-loop-perf-optimizations.md, SAFE-3):
+ * <p><b>Result-preservation invariants</b> (SAFE-3 — these keep the primitive
+ * store behaviour-identical to the boxed maps it replaced):
  * <ul>
  *   <li>The store is only ever accessed by keyed point operations — never
  *       iterated — so the internal slot layout never influences a routing

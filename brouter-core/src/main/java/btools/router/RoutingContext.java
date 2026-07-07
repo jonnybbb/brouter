@@ -30,11 +30,12 @@ public final class RoutingContext {
   }
 
   /**
-   * Variety seed for round-trip mode (ADR-0001): the raw {@code alternativeidx}
-   * value with only a lower clamp at 0. Unlike classic routing's enumerated
-   * 0–3 alternatives, round trips accept any value &gt;= 1 as a deterministic
-   * seed selecting one loop variant; 0 (or absent) is bit-identical to the
-   * unperturbed baseline. The seed never influences the start-direction draw.
+   * Variety seed for round-trip mode: the raw {@code alternativeidx} value with
+   * only a lower clamp at 0. Unlike classic routing's enumerated 0–3
+   * alternatives, round trips reuse {@code alternativeidx} as a free seed —
+   * any value &gt;= 1 deterministically selects one loop variant; 0 (or absent)
+   * is bit-identical to the unperturbed baseline. The seed never influences the
+   * start-direction draw.
    */
   public int getRoundTripSeed() {
     return Math.max(0, alternativeIdx);
@@ -275,10 +276,10 @@ public final class RoutingContext {
   public boolean roundTripStrictQuality;
 
   /**
-   * Via-arc densification (see docs/features/roundtrip-via-loop-failure-analysis.md):
-   * when on, the explicit-via round-trip inserts generated "bulge" waypoints between
-   * consecutive user anchors, offset outward from the anchor centroid, so each leg follows
-   * the loop perimeter instead of cutting the chord. Opt-in; off by default.
+   * Via-arc densification: when on, the explicit-via round-trip inserts generated
+   * "bulge" waypoints between consecutive user anchors, offset outward from the
+   * anchor centroid, so each leg follows the loop perimeter instead of cutting the
+   * chord. Opt-in; off by default.
    * {@link #explicitViaDensifyAlpha} is the bulge offset as a fraction of the leg chord length.
    *
    * <p>This is the effective per-request flag, computed by {@code doExplicitViaRoundTrip}
@@ -676,9 +677,9 @@ public final class RoutingContext {
   /**
    * Produce a fresh {@link RoutingContext} carrying only the REQUEST-LEVEL
    * fields: profile path, key/value lookups, round-trip settings, output
-   * format, no-go list. Used by the AUTO candidate competition (see
-   * docs/features/roundtrip-auto-quality-redesign.md §183) to construct
-   * isolated child engines without sharing parsed/runtime state.
+   * format, no-go list. Used by the AUTO candidate competition (each algorithm
+   * gets its own child {@link RoutingEngine}) to construct isolated child
+   * engines without sharing parsed/runtime state.
    *
    * <p>What is intentionally NOT copied:
    * <ul>

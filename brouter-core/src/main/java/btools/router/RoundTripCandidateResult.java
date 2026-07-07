@@ -3,11 +3,12 @@ package btools.router;
 /**
  * Internal candidate-comparison record for AUTO mode round-trip routing.
  *
- * <p>When AUTO runs multiple candidate algorithms (probe → ISO_GREEDY →
- * GREEDY per the auto-quality-redesign spec), each attempt produces one
+ * <p>When AUTO runs its candidate algorithms in sequence (ISO_GREEDY first,
+ * then GREEDY if ISO_GREEDY was weak, then the legacy WAYPOINT/probe and
+ * ISOCHRONE paths only as last-resort fallbacks), each attempt produces one
  * {@link RoundTripCandidateResult}. The comparison loop in
- * {@link RoutingEngine#doRoundTrip} examines all accepted candidates and
- * picks the highest {@link RouteChoiceScore.Verdict#score()}.
+ * {@code RoutingEngine.runAutoCandidateCompetition} examines all accepted
+ * candidates and picks the highest {@link RouteChoiceScore.Verdict#score()}.
  *
  * <p>Field semantics:
  * <ul>

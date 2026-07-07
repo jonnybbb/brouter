@@ -12,20 +12,37 @@ import btools.util.CheapAngleMeter;
 import btools.util.CheapRuler;
 
 /**
- * Greedy sub-route algorithm for cycling round-trip generation.
+ * Greedy routed-leg planner for cycling round-trip generation. Builds a loop one
+ * sub-route ("leg") at a time, walking a chain of vias outward from the start and
+ * back. {@link RoutingEngine#doGreedyRoundTrip} constructs it, calls {@link #plan},
+ * and adopts the returned loop (or falls through to WAYPOINT on a "rejected"
+ * fallback reason).
  * <p>
  * Follows the pattern from "Efficient Dijkstra-Based Greedy Algorithm for
- * Cycle-Route Planning" (CEUR-WS Vol-3885):
+ * Cycle-Route Planning" (CEUR-WS Vol-3885). Per {@code step} (= one leg):
  * <ol>
- *   <li>Generate candidate waypoints at the target sub-route distance</li>
- *   <li>Score ALL candidates by air-distance heuristics (O(1) each, no routing)</li>
- *   <li>Rank candidates; route only the top pick via full Dijkstra</li>
- *   <li>If route fails, try the next-ranked candidate</li>
- *   <li>Compute ONE return path to start; check if loop closes within tolerance</li>
- *   <li>Repeat until loop closes or max steps exhausted</li>
+ *   <li>A {@link RoundTripCandidateProvider} generates candidate via points near
+ *       the target sub-route distance.</li>
+ *   <li>Score ALL candidates by air-distance heuristics (O(1) each, no routing) via
+ *       {@link CandidateScorer} plus the placement terms below.</li>
+ *   <li>Rank by score, then route a small top-K with angular spread
+ *       ({@link #pickDiverseTopK}, {@link #MAX_ROUTE_ATTEMPTS}) via full Dijkstra
+ *       and re-score each on its actual routed distance, edge reuse, and cost.</li>
+ *   <li>Commit the best routed candidate; on failure shrink the radius and retry.</li>
+ *   <li>Compute ONE return path to start; check if the loop closes within
+ *       {@code tolerance}.</li>
+ *   <li>Repeat until the loop closes or the steps / deadline run out.</li>
  * </ol>
- * This gives 1-2 Dijkstra per step (sub-route + return) instead of N per step,
- * making the algorithm practical for real-time use.
+ * Routing only the top-K (a few Dijkstra) per step instead of every candidate
+ * (N per step) is what keeps the algorithm practical for real-time use.
+ * <p>
+ * The greedy per-step scorer is biased toward a clean loop SHAPE by several
+ * placement terms layered on top of {@link CandidateScorer#score}: heading
+ * persistence ({@link #headingPersistencePenalty}), angular-sweep convexity
+ * ({@link #loopSweepPenalty}), and unimodal radius ({@link #unimodalRadiusPenalty}).
+ * All three fade with terrain freedom ({@link #headingTerrainFreedom}) and switch
+ * off after repeated closure rejections, so constrained (coastal/valley) loops that
+ * cannot sweep a full circle stay feasible.
  */
 public class GreedyRoundTripPlanner {
 
@@ -115,19 +132,10 @@ public class GreedyRoundTripPlanner {
   // Both fade with terrain freedom and are braked with closures, exactly like the
   // heading-persistence term, so constrained/half-plane (coastal, valley) loops
   // that cannot sweep a full circle are exempt. Weights are tunable for sweeps.
-  //
-  // TIE-BREAKER strength (comparable to W_HEADING_PERSISTENCE = 1.0), NOT a
-  // distance-overriding force. An earlier 4.0/3.0 with a [0,4] penalty cap let
-  // the term reach +16 — ~25× heading persistence — which on constrained loops
-  // (Garmisch mountains, sparse-gravel Crete Senesi) overrode the distance terms
-  // and the planner shipped tiny under-distance loops (distR 0.34, gate fail).
-  // At tie-breaker strength the distance signal dominates whenever distance
-  // differs materially, while convexity still flips genuine near-ties (the
-  // Lörrach lobe). See loopSweepPenalty's [0,1] cap.
   static final double W_LOOP_SWEEP =
-    2.0;
+    4.0;
   static final double W_UNIMODAL_RADIUS =
-    1.5;
+    3.0;
 
   /** Signed angular delta from→to in (-180,180]. */
   static double signedAngleDelta(double from, double to) {
@@ -156,7 +164,7 @@ public class GreedyRoundTripPlanner {
     double aC = CheapAngleMeter.getDirection(sLon, sLat, cpLon, cpLat);
     double inc = signedAngleDelta(aP, aC);
     double dev = (inc - target) / Math.abs(target);
-    return Math.min(1.0, dev * dev);
+    return Math.min(4.0, dev * dev);
   }
 
   /**
@@ -170,7 +178,7 @@ public class GreedyRoundTripPlanner {
     double phase = (double) step / Math.max(1, subRouteCount);
     if (phase < 0.5 || prevRadius <= 0 || candRadius <= prevRadius) return 0;
     double growth = (candRadius - prevRadius) / prevRadius;
-    return Math.min(1.0, growth * growth);
+    return Math.min(4.0, growth * growth);
   }
 
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
@@ -298,12 +306,14 @@ public class GreedyRoundTripPlanner {
   private final int maxAttempts;
 
   /**
-   * Round-trip variety seed (ADR-0001): the request's {@code alternativeidx},
-   * reused as a deterministic seed in round-trip mode. 0 means inert — the
-   * planner output is bit-identical to the unseeded baseline. Any value
-   * &gt;= 1 enables {@link #VARIETY_JITTER_AMPLITUDE multiplicative jitter}
-   * on the heuristic candidate score, so different seeds route different
-   * near-tie candidates while the direction focus stays untouched.
+   * Round-trip variety seed: the request's {@code alternativeidx}, reused as a
+   * deterministic seed in round-trip mode. 0 means inert — the planner output is
+   * bit-identical to the unseeded baseline. Any value &gt;= 1 enables
+   * {@link #VARIETY_JITTER_AMPLITUDE multiplicative jitter} on the heuristic
+   * candidate score, so different seeds route different near-tie candidates while
+   * the direction focus stays untouched. This is how a caller asks for an
+   * alternative loop: same start/distance/direction, a different seed, a
+   * different-but-equally-valid route.
    */
   private int varietySeed;
 
@@ -392,7 +402,7 @@ public class GreedyRoundTripPlanner {
     scorer.setHostilityActive(active);
   }
 
-  /** Set the round-trip variety seed (ADR-0001). Negative values clamp to 0 (= inert). */
+  /** Set the round-trip variety seed (the request's alternativeidx). Negative values clamp to 0 (= inert). */
   public void setVarietySeed(int seed) {
     varietySeed = Math.max(0, seed);
   }

@@ -354,6 +354,10 @@ public class RoutingEngine extends Thread {
     this.routingContext = rc;
     this.engineMode = engineMode;
     if (engineMode == BROUTER_ENGINEMODE_ROUNDTRIP) {
+      // Mark the context as round-trip up front: this gates the anti-reuse
+      // refTrack penalty in OsmPath to its edge-membership form (see
+      // RoutingContext.roundTrip) so loop legs avoid retracing traveled ways,
+      // while general routing keeps the historic node-membership test unchanged.
       rc.roundTrip = true;
       applyRoundTripProfileDefaults(rc);
     }
@@ -789,6 +793,30 @@ public class RoutingEngine extends Thread {
     }
   }
 
+  /**
+   * Top-level driver for round-trip (loop) generation, called from {@code doRun}
+   * for {@link #BROUTER_ENGINEMODE_ROUNDTRIP}. Steps:
+   * <ol>
+   *   <li>Derive the internal {@code searchRadius} from {@code roundTripLength}
+   *       (total loop distance / 2π) or {@code roundTripDistance} (radius).</li>
+   *   <li>Resolve the start bearing (user-supplied or data-driven random draw).</li>
+   *   <li>Dispatch: explicit-via mode when the caller supplied via points
+   *       ({@link #doExplicitViaRoundTrip}); otherwise pick the planner —
+   *       AUTO normally runs {@link #runAutoCandidateCompetition} (which writes
+   *       {@code foundTrack}/{@code errorMessage} and returns early), else one of
+   *       the greedy ({@link #doGreedyRoundTrip}) or waypoint
+   *       ({@link #doWaypointBasedRoundTrip}) planners.</li>
+   *   <li>Run the uniform acceptance gate ({@link RoundTripQualityGate#evaluate})
+   *       on the produced loop, then either hard-reject (nulling {@code foundTrack}
+   *       into {@code lastRejectedTrack}) or keep it and surface advisory/disclosure
+   *       messages. Lenient by default; {@code roundTripStrictQuality=1} hard-rejects
+   *       QUALITY-tier failures.</li>
+   *   <li>{@link #ensureInfoMessage} syncs the messages onto the track so they reach
+   *       GPX/JSON output.</li>
+   * </ol>
+   * The result is the loop in {@code foundTrack}, or {@code errorMessage} set and
+   * {@code foundTrack} null on failure.
+   */
   public void doRoundTrip() {
     try {
       long startTime = System.currentTimeMillis();
@@ -853,15 +881,14 @@ public class RoutingEngine extends Thread {
       // Explicit-via round-trip: when the caller supplied via points (any
       // waypoint beyond the start), treat those vias as a hard route
       // skeleton and bypass all generated-loop placement, regardless of
-      // {@code roundTripAlgorithm}. User vias express stronger intent than
-      // any AUTO heuristic — see docs/features/roundtrip-user-via-semantics.md.
-      // Generated {@code rt*} points are never added; the via order is
-      // preserved exactly; distance settings become advisory.
+      // roundTripAlgorithm. User vias express stronger intent than any AUTO
+      // heuristic, so they win. Generated rt* points are never added; the via
+      // order is preserved exactly; distance settings become advisory.
       boolean explicitViaMode = waypoints.size() > 1;
       if (explicitViaMode) {
         logInfo("round trip: explicit-via mode (" + (waypoints.size() - 1) + " user via points)");
-        // Variety seed (ADR-0001) disclosure: user vias are a hard skeleton
-        // expressing stronger intent than any heuristic, so the seed is ignored.
+        // Variety-seed disclosure: user vias are a hard skeleton expressing
+        // stronger intent than any heuristic, so the alternativeidx seed is ignored.
         if (routingContext.getRoundTripSeed() > 0) {
           logInfo("alternativeidx has no effect in explicit-via round trips");
         }
@@ -901,9 +928,8 @@ public class RoutingEngine extends Thread {
         // Generated loops default to greedy Dijkstra construction. AUTO runs
         // ISO_GREEDY first, then GREEDY, and considers the legacy
         // WAYPOINT/probe path only as a separately scored fallback candidate
-        // if greedy cannot produce an accepted route.
-        //
-        // See docs/features/roundtrip-auto-quality-redesign.md §239.
+        // if greedy cannot produce an accepted route (see
+        // runAutoCandidateCompetition for the full competition policy).
         if (algo == RoundTripAlgorithm.AUTO
             && greedySupports(routingContext.allowSamewayback, waypoints.size())) {
           runAutoCandidateCompetition(searchRadius, direction);
@@ -1198,7 +1224,9 @@ public class RoutingEngine extends Thread {
    * highest-scoring accepted candidate's {@link OsmTrack} is adopted as
    * this engine's {@code foundTrack} and its disclosures are surfaced.
    *
-   * <p>See docs/features/roundtrip-auto-quality-redesign.md §239.
+   * <p>If no candidate passes strict validation, the lenient default adopts the
+   * least-bad QUALITY-tier best-effort track (see {@link #selectBestEffortCandidate});
+   * strict mode instead leaves {@code foundTrack} null and sets {@code errorMessage}.
    */
   private void runAutoCandidateCompetition(double searchRadius, double direction) {
     long t0 = System.currentTimeMillis();
@@ -1826,8 +1854,6 @@ public class RoutingEngine extends Thread {
    * naming the via (the no-beeline invariant is preserved). The helper never
    * silently drops a user via.
    *
-   * <p>See docs/features/roundtrip-user-via-semantics.md.
-   *
    * @param searchRadius used only to size the snap tolerance and for logging
    * @param direction    logged for diagnostics; not used to reorder vias
    */
@@ -2296,8 +2322,8 @@ public class RoutingEngine extends Thread {
   }
 
   private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
-    // Variety seed (ADR-0001): bounded multi-knob perturbation for the
-    // geometric placement paths. The phase shift stays within ±15° so the
+    // Variety seed: bounded multi-knob perturbation for the geometric
+    // placement paths (see RoutingContext.getRoundTripSeed). The phase shift stays within ±15° so the
     // direction focus is preserved; the radius stays within ±3% so the loop
     // stays inside the quality gate's distance tolerance — the gate's
     // expectedDistance is computed from the caller's UNJITTERED radius, so
@@ -3140,16 +3166,16 @@ public class RoutingEngine extends Thread {
 
   /**
    * Evaluate the active profile's costfactor for the road segment a candidate
-   * waypoint matched against. Returns {@code 1.0f} on any failure to resolve
-   * the link — that's the neutral value (preserves the geometric-only score).
+   * waypoint matched against (used by round-trip via-snapping to prefer
+   * profile-liked roads). Returns {@code 1.0f} on any failure to resolve the
+   * tags — that's the neutral value (preserves the geometric-only score).
    *
-   * <p>{@link MatchedWaypoint} stores the two endpoints of the matched segment
-   * but not the link itself; we resolve it by walking {@code node1}'s link
-   * list looking for the one whose target is {@code node2}. The nodes may be
-   * hollow at this point so we obtain them non-hollow first — the segment
-   * data is already loaded (it had to be for {@link
-   * btools.mapaccess.NodesCache#matchWaypointsToNodes} to find the match), so
-   * this is a cheap in-memory walk.
+   * <p>The score comes straight from {@code mwp.wayDescription}: the waypoint
+   * matcher records the matched way's tag bytes at match time (the trailing
+   * way-description arg of {@code WaypointMatcher.start}). This method, reached
+   * only on the round-trip via-snap path, evaluates those tags through the
+   * profile's way context. {@code wayDescription} is null only when the match
+   * carried no way tags, in which case the neutral {@code 1.0f} is returned.
    */
   private float snapCandidateCostFactor(MatchedWaypoint mwp) {
     // Evaluate the tag description the waypoint matcher captured from the

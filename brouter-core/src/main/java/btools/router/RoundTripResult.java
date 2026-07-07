@@ -6,8 +6,16 @@ import java.util.List;
 import btools.mapaccess.MatchedWaypoint;
 
 /**
- * Result of a greedy round-trip planning attempt.
- * Contains the route, quality metrics, and diagnostic metadata.
+ * Mutable result of a round-trip planning attempt, produced by the greedy
+ * planner (GREEDY / ISO_GREEDY) and read by {@code RoutingEngine}.
+ *
+ * <p>Carries the chosen {@link OsmTrack}, the loop waypoints/matched waypoints,
+ * a few summary metrics (distance, reuse ratio, tolerance flag), and a large
+ * block of diagnostic telemetry. The telemetry fields are write-once by the
+ * planner and read-only afterwards; they are sentinel-valued (NaN / -1 / false)
+ * when the producing path did not run, so a reader can tell "not applied" from
+ * a real measurement. Setters exist only so the planner and engine can populate
+ * the fields in stages — callers downstream treat the result as read-only.
  */
 public class RoundTripResult {
 
