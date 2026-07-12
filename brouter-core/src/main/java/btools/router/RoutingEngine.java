@@ -2897,7 +2897,10 @@ public class RoutingEngine extends Thread {
 
     boolean startGraphNativeOnly = isoStartPolicy == IsoStartPolicy.GRAPH_NATIVE_ONLY;
     RoundTripCandidateProvider primaryProvider = startGraphNativeOnly ? graphNativeProvider : provider;
-    ReturnDistanceOracle primaryReturnOracle = startGraphNativeOnly ? null : returnOracle;
+    // The return oracle survives a graph-native-only start: it calibrates from
+    // the raw expansion cell cloud, not the filtered pool, so it stays valid in
+    // exactly the constrained terrain that demotes the pool.
+    ReturnDistanceOracle primaryReturnOracle = returnOracle;
     IsoPoolHealth.PoolShape primaryPoolShape = startGraphNativeOnly ? null : poolShape;
 
     // First attempt — user direction (or Phase 2.0 biased bearing).
@@ -2913,10 +2916,11 @@ public class RoutingEngine extends Thread {
     boolean phase21Triggered = false;
     boolean phase21Succeeded = false;
     double phase21RetryDir = Double.NaN;
-    if (!startGraphNativeOnly
-        // Bounded effort: the axis retry re-runs the whole ladder exactly when
-        // the terrain is hard — the opposite of a bounded tier's contract.
-        && !roundTripEffortPolicy.skipRetryLayers
+    // Bounded effort: the axis retry re-runs the whole ladder exactly when
+    // the terrain is hard — the opposite of a bounded tier's contract.
+    // (Deliberately NOT gated on the start policy: corridor terrain is both
+    // what demotes the pool and what the axis retry exists to recover.)
+    if (!roundTripEffortPolicy.skipRetryLayers
         && isDegradedGreedyResult(result)
         && direction >= 0
         && frontierAxis.hasStrongAxis
