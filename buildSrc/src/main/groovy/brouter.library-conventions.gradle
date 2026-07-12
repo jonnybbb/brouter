@@ -2,6 +2,21 @@ plugins {
     id 'java-library'
     id 'maven-publish'
     id 'brouter.java-conventions'
+    id 'ru.vyarus.animalsniffer'
+}
+
+// Android compatibility gate: every shipped library module must stay within the
+// Android API 23 surface (minSdkVersion 23). animalsnifferMain fails the build on
+// any main-source call to a method/class absent from that signature — catching
+// regressions like the API-24 round-trip calls that broke #903 on-device, at
+// library build time rather than on the phone. Only main (shipped) bytecode is
+// checked; test code never runs on Android.
+dependencies {
+    signature 'net.sf.androidscents.signature:android-api-level-23:6.0_r3@signature'
+}
+
+animalsniffer {
+    sourceSets = [project.sourceSets.main]
 }
 
 publishing {
