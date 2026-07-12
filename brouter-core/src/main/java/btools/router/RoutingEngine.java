@@ -53,6 +53,11 @@ public class RoutingEngine extends Thread {
   // validateAndAdjustWaypoints floor). Below this the optimized FAST placement
   // falls back to the circle path rather than emitting a start->start loop.
   private static final int MIN_ROUNDTRIP_VIAS = 3;
+  // Optimized FAST placement: re-probe at the corrected radius when the scale
+  // from the actual viable directions exceeds the nominal full-ring scale by
+  // this factor — the narrow-arc (constrained terrain) case where the
+  // pre-probe shrink would otherwise roughly halve the loop length.
+  private static final double FAST_RESCALE_TRIGGER = 1.15;
   OsmNodePairSet islandNodePairs = new OsmNodePairSet(MAXNODES_ISLAND_CHECK);
   private boolean useNodePoints = false; // use the start/end nodes  instead of crosspoint
 
@@ -2667,6 +2672,13 @@ public class RoutingEngine extends Thread {
         }
         ProbeResult probe =
           probeReachableDirectionsFast(waypoints.get(0), searchRadius * fastScale, bearings);
+        if (!directional) {
+          // Ring mode only: the nominal scale assumed a near-full ring of viable
+          // bearings; constrained terrain needs the corrective re-probe. A lobe's
+          // scale comes from its exact bearing distribution instead.
+          probe = reprobeIfNarrowArc(probe, waypoints.get(0), searchRadius, fastScale,
+            bearings, targetPoints, direction);
+        }
         int placed = (probe != null && probe.viableDirections.length >= 3)
           ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
           : 0;
@@ -2685,6 +2697,8 @@ public class RoutingEngine extends Thread {
           double ringScale =
             computeRadiusScale(sortDirectionsForLoop(fullCircleBearings(ringCount), 0), targetPoints);
           probe = probeReachableDirectionsFast(waypoints.get(0), searchRadius * ringScale, ring);
+          probe = reprobeIfNarrowArc(probe, waypoints.get(0), searchRadius, ringScale,
+            ring, targetPoints, direction);
           placed = (probe != null && probe.viableDirections.length >= 3)
             ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
             : 0;
@@ -4663,25 +4677,68 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Ring-mode narrow-arc correction. The pre-probe shrink assumes a near-full
+   * ring of viable bearings; in constrained terrain (coast, valley) they bunch
+   * into a narrow arc whose correct scale — computed like the legacy path from
+   * the ACTUAL selected directions, which never shrinks a narrow arc — is much
+   * larger. One corrective re-probe at that radius keeps the loop near its
+   * target length instead of roughly half of it. Directional lobes skip this:
+   * their scale derives from the exact lobe distribution already.
+   */
+  private ProbeResult reprobeIfNarrowArc(ProbeResult probe, OsmNodeNamed start,
+                                         double searchRadius, double nominalScale,
+                                         double[] bearings, int targetPoints,
+                                         double direction) {
+    if (probe == null || probe.viableDirections.length < 3) {
+      return probe;
+    }
+    double[] viable = probe.viableDirections;
+    int needed = Math.min(Math.max(2, targetPoints - 1), viable.length);
+    double anchor = direction >= 0 ? direction : 0;
+    double[] selected = needed >= viable.length ? viable
+      : selectSpreadDirections(viable, needed, anchor);
+    double actualScale = computeRadiusScale(selected, targetPoints);
+    if (actualScale > nominalScale * FAST_RESCALE_TRIGGER) {
+      logInfo("optimized FAST placement: narrow viable arc, re-probing at scale "
+        + String.format(Locale.US, "%.2f", actualScale)
+        + " (nominal " + String.format(Locale.US, "%.2f", nominalScale) + ")");
+      ProbeResult rescaled =
+        probeReachableDirectionsFast(start, searchRadius * actualScale, bearings);
+      if (rescaled != null && rescaled.viableDirections.length >= 3) {
+        return rescaled;
+      }
+    }
+    return probe;
+  }
+
+  /**
    * FAST placement (optimization idea 1) that reuses the probe's already-snapped
    * road nodes as vias and dedups any that collapse onto the same node or the
    * start — which both removes the redundant {@link #validateAndAdjustWaypoints}
    * re-matching pass and fixes the stacked-waypoint bug (multiple bearings
    * snapping to one node were previously kept as duplicates).
+   *
+   * <p>Safeguards mirror the validation this path skips: ferry-like and
+   * profile-hostile matches are never committed, and a dropped direction is
+   * replaced from the remaining viable pool instead of shrinking the ring —
+   * legacy validation had the same redundancy through its per-waypoint
+   * candidate groups.
    */
   int placeWaypointsFromProbeMatches(List<OsmNodeNamed> waypoints, ProbeResult probe,
                                       double startDirection, int targetPoints) {
     OsmNodeNamed start = waypoints.get(0);
     // The caller distributed the bearings (a directional lobe toward the requested
     // bearing, or a full ring). Cap to the target via count (the encircle fallback
-    // probes a denser ring than we want vias), order for the loop, reuse the
-    // snapped nodes, and drop islanded/duplicate ones below.
+    // probes a denser ring than we want vias), order for the loop, and reuse the
+    // snapped nodes. The safeguards below drop ferry-like / profile-hostile /
+    // duplicate / islanded picks and REPLACE them from the remaining snapped
+    // bearings, so a drop never shrinks the via count while substitutes exist.
     double anchor = startDirection >= 0 ? startDirection : 0;
-    double[] selected = probe.viableDirections;
-    if (selected.length > targetPoints - 1) {
-      selected = selectSpreadDirections(selected, targetPoints - 1, anchor);
-    }
-    selected = sortDirectionsForLoop(selected, anchor);
+    double[] viable = probe.viableDirections;
+    int needed = Math.min(Math.max(2, targetPoints - 1), viable.length);
+    double[] preferred = (needed >= viable.length)
+        ? viable
+        : selectSpreadDirections(viable, needed, anchor);
 
     Map<Double, MatchedWaypoint> byDir = new HashMap<>();
     for (ProbeDirection pd : probe.scored) {
@@ -4690,30 +4747,62 @@ public class RoutingEngine extends Thread {
       }
     }
 
-    int added = 0;
     int deduped = 0;
     int islanded = 0;
-    for (double dir : selected) {
+    int ferryLike = 0;
+    int hostile = 0;
+    double snapRejectThreshold = snapRejectCostFactorForProfile();
+    // Two ordered passes: the spread-selected directions first, then the rest
+    // of the viable ring as substitutes for any direction a safeguard drops.
+    List<Double> chosen = new ArrayList<>();
+    java.util.Set<Double> visited = new java.util.HashSet<>();
+    java.util.Set<Long> usedNodes = new java.util.HashSet<>();
+    usedNodes.add(nodeKey(start.ilon, start.ilat));
+    double[][] passes = {preferred, viable};
+    for (int p = 0; p < passes.length && chosen.size() < needed; p++) {
+      for (double dir : passes[p]) {
+        if (chosen.size() >= needed) break;
+        if (!visited.add(dir)) continue;
+        MatchedWaypoint m = byDir.get(dir);
+        if (m == null || m.crosspoint == null) continue;
+        // A via committed onto a ferry-like edge routes the loop across the
+        // ferry; a via on a profile-hostile road forces the loop through it.
+        if (m.node1 != null && m.node2 != null
+            && m.node1.calcDistance(m.node2) > FERRY_LIKE_EDGE_METERS) {
+          ferryLike++;
+          continue;
+        }
+        if (snapCandidateCostFactor(m) > snapRejectThreshold) {
+          hostile++;
+          continue;
+        }
+        // Dedup: drop a via that lands on the start or an already-chosen node.
+        long key = nodeKey(m.crosspoint.getILon(), m.crosspoint.getILat());
+        if (usedNodes.contains(key)) {
+          deduped++;
+          continue;
+        }
+        // Reachability guard: drop a via stranded on a small island disconnected
+        // from the start, rather than letting it fail the whole loop at routing.
+        if (!isViaReachableFromStart(m, probe.startMatch)) {
+          islanded++;
+          continue;
+        }
+        usedNodes.add(key);
+        chosen.add(dir);
+      }
+    }
+
+    double[] loopDirs = new double[chosen.size()];
+    for (int i = 0; i < loopDirs.length; i++) {
+      loopDirs[i] = chosen.get(i);
+    }
+    loopDirs = sortDirectionsForLoop(loopDirs, anchor);
+    int added = 0;
+    for (double dir : loopDirs) {
       MatchedWaypoint m = byDir.get(dir);
-      if (m == null || m.crosspoint == null) continue;
-      int ilon = m.crosspoint.getILon();
-      int ilat = m.crosspoint.getILat();
-      // Dedup: drop a via that lands on the start or an already-placed via node.
-      boolean dup = (ilon == start.ilon && ilat == start.ilat);
-      for (int i = 1; !dup && i < waypoints.size(); i++) {
-        if (waypoints.get(i).ilon == ilon && waypoints.get(i).ilat == ilat) dup = true;
-      }
-      if (dup) {
-        deduped++;
-        continue;
-      }
-      // Reachability guard: drop a via stranded on a small island disconnected
-      // from the start, rather than letting it fail the whole loop at routing.
-      if (!isViaReachableFromStart(m, probe.startMatch)) {
-        islanded++;
-        continue;
-      }
-      OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(ilon, ilat));
+      OsmNodeNamed onn = new OsmNodeNamed(
+        new OsmNode(m.crosspoint.getILon(), m.crosspoint.getILat()));
       onn.name = "rt" + (++added);
       waypoints.add(onn);
     }
@@ -4725,8 +4814,15 @@ public class RoutingEngine extends Thread {
     logInfo("placeWaypointsFromProbeMatches: " + added + " road-snapped vias"
         + (deduped > 0 ? " (" + deduped + " deduped)" : "")
         + (islanded > 0 ? " (" + islanded + " islanded dropped)" : "")
-        + " from " + probe.viableDirections.length + " snapped bearings");
+        + (ferryLike > 0 ? " (" + ferryLike + " ferry-like dropped)" : "")
+        + (hostile > 0 ? " (" + hostile + " profile-hostile dropped)" : "")
+        + " from " + viable.length + " snapped bearings");
     return added;
+  }
+
+  /** Composite map key for an integer coordinate pair. */
+  private static long nodeKey(int ilon, int ilat) {
+    return ((long) ilon << 32) | (ilat & 0xffffffffL);
   }
 
   /**
