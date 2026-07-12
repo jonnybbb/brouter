@@ -174,10 +174,35 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
-  public void isoStartPolicyStartsGraphNativeForWeakPool() {
+  public void isoStartPolicyKeepsWeakAdmittedPoolBlended() {
+    // The weakest admitted shape scores exactly 0.50 = DEGRADED. The planner's
+    // influence reduction (stripped priors + extra quota seat, active from
+    // step 1 via the static deduction) is the calibrated response — a
+    // graph-native-only start is reserved for UNHEALTHY, which static shape
+    // alone cannot reach.
     IsoPoolHealth.PoolShape weak = new IsoPoolHealth.PoolShape(6, 4, 180.0, 1, false);
-    Assert.assertEquals(RoutingEngine.IsoStartPolicy.GRAPH_NATIVE_ONLY,
+    Assert.assertEquals(RoutingEngine.IsoStartPolicy.BLEND,
       RoutingEngine.selectIsoStartPolicy(weak, FrontierAxis.NONE, -1));
+  }
+
+  @Test
+  public void isoStartPolicyStartsGraphNativeWhenPoolNotAdmitted() {
+    Assert.assertEquals(RoutingEngine.IsoStartPolicy.GRAPH_NATIVE_ONLY,
+      RoutingEngine.selectIsoStartPolicy(null, FrontierAxis.NONE, -1));
+  }
+
+  @Test
+  public void graphNativeQuotaNeverFillsTheRoutedTopK() {
+    // Standard budgets (3 normal / 5 late): DEGRADED cedes one extra seat.
+    Assert.assertEquals(2, GreedyRoundTripPlanner.graphNativeQuota(false, true, 3));
+    Assert.assertEquals(3, GreedyRoundTripPlanner.graphNativeQuota(true, true, 5));
+    // BOUNDED preset budgets (2 normal / 3 late): the DEGRADED +1 must not
+    // evict every iso pick — one seat stays contestable by the pool.
+    Assert.assertEquals(1, GreedyRoundTripPlanner.graphNativeQuota(false, true, 2));
+    Assert.assertEquals(2, GreedyRoundTripPlanner.graphNativeQuota(true, true, 3));
+    // Healthy pools keep the base quota.
+    Assert.assertEquals(1, GreedyRoundTripPlanner.graphNativeQuota(false, false, 2));
+    Assert.assertEquals(2, GreedyRoundTripPlanner.graphNativeQuota(true, false, 3));
   }
 
   @Test

@@ -157,6 +157,14 @@ final class IsoPoolHealth {
   private int closureRejections;
   private int oracleEstimates;
   private int emaEstimates;
+  /**
+   * Latched EMA-share deduction. The live share recovers when later estimates
+   * land inside oracle coverage, but the sticky-score contract (score only
+   * ever decreases over a plan) requires this deduction to keep its
+   * high-water mark — otherwise a DEGRADED demotion silently reverts
+   * mid-plan.
+   */
+  private double emaShareDeduction;
   /** Bit i set = an accepted via already landed in 45°-sector i. */
   private int acceptedSectorMask;
 
@@ -231,6 +239,14 @@ final class IsoPoolHealth {
   void recordReturnEstimate(boolean oracleBacked) {
     if (oracleBacked) oracleEstimates++;
     else emaEstimates++;
+    int estimates = oracleEstimates + emaEstimates;
+    if (estimates >= MIN_RETURN_ESTIMATES) {
+      double emaShare = emaEstimates / (double) estimates;
+      double d = W_EMA_SHARE * clamp01((emaShare - 0.5) / 0.5);
+      if (d > emaShareDeduction) {
+        emaShareDeduction = d;
+      }
+    }
   }
 
   // ---- Score and state ------------------------------------------------------
@@ -243,11 +259,7 @@ final class IsoPoolHealth {
     d += Math.min(CAP_ISO_LEG_REJECTION, W_ISO_LEG_REJECTION * isoLegRejections);
     d += Math.min(CAP_SECTOR_REPEAT, W_SECTOR_REPEAT * sectorRepeats);
     d += Math.min(CAP_CLOSURE_REJECTION, W_CLOSURE_REJECTION * closureRejections);
-    int estimates = oracleEstimates + emaEstimates;
-    if (estimates >= MIN_RETURN_ESTIMATES) {
-      double emaShare = emaEstimates / (double) estimates;
-      d += W_EMA_SHARE * clamp01((emaShare - 0.5) / 0.5);
-    }
+    d += emaShareDeduction;
     return clamp01(1.0 - d);
   }
 

@@ -3234,7 +3234,15 @@ public class RoutingEngine extends Thread {
       return IsoStartPolicy.GRAPH_NATIVE_ONLY;
     }
     IsoPoolHealth staticHealth = new IsoPoolHealth(poolShape);
-    if (staticHealth.state() != IsoPoolHealth.State.HEALTHY) {
+    // Only UNHEALTHY escalates to a graph-native-only start. A statically
+    // DEGRADED pool (the weakest admitted shape sits exactly at 0.50) keeps
+    // the blend: the planner's influence reduction — stripped prior terms
+    // plus an extra routed quota seat — is the calibrated response, and it
+    // engages from step 1 because the static deduction is already in the
+    // score. UNHEALTHY stays reachable only through in-plan evidence with
+    // the current weights (static floor 0.50); unadmitted pools take the
+    // poolShape == null arm above.
+    if (staticHealth.state() == IsoPoolHealth.State.UNHEALTHY) {
       return IsoStartPolicy.GRAPH_NATIVE_ONLY;
     }
     if (frontierAxis != null && frontierAxis.hasStrongAxis

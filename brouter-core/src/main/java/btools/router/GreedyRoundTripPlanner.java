@@ -867,30 +867,19 @@ public class GreedyRoundTripPlanner {
         // routed truth, so a mixed sort lets iso picks monopolize the routed
         // top-K and the cost-aware routed comparison never prices the honest
         // local alternative. Guarantee it a seat; phase-2 stays the judge.
-        int minGraphNative = lateStep
-          ? GRAPH_NATIVE_MIN_ROUTED_LATE : GRAPH_NATIVE_MIN_ROUTED;
-        // A DEGRADED pool cedes one more routed seat to graph-native truth —
-        // the automatic influence reduction for thin/bunched/losing pools.
-        if (stripIsoPriorTerms) {
-          minGraphNative++;
-        }
+        int minGraphNative = graphNativeQuota(lateStep, stripIsoPriorTerms, routeBudget);
         if (enforceSourceQuota(toRoute, candidates, routeBudget, minGraphNative)) {
           result.addDiagnostic("step " + step + " attempt " + attempt
             + ": source quota injected graph-native candidate(s) into routed top-" + routeBudget);
         }
-        // Source-attribution context for this attempt: only a routed top-K
-        // that mixes both sources constitutes a real iso-vs-graph-native
-        // comparison (single-source steps prove nothing about the pool).
-        boolean mixedSourceRouting = false;
-        {
-          boolean anyIso = false;
-          boolean anyGraph = false;
-          for (RoundTripCandidateProvider.CandidatePoint cp : toRoute) {
-            if (isIsoPoolCandidate(cp)) anyIso = true;
-            else anyGraph = true;
-          }
-          mixedSourceRouting = anyIso && anyGraph;
-        }
+        // Source-attribution context for this attempt: only a step where BOTH
+        // sources actually produced a routed (priced) candidate constitutes a
+        // real iso-vs-graph-native comparison. Computed from the routed
+        // results below, not the pre-routing selection — an iso pick that
+        // fails to route never priced an alternative, and charging the pool a
+        // routed-truth loss for it would demote pools that lost nothing.
+        boolean isoPriced = false;
+        boolean graphPriced = false;
 
         // Phase 1 Step 2: keep a ranked list of routed candidates instead of
         // a single best-pick. Step 2 is structural and behavior-preserving —
@@ -1051,7 +1040,14 @@ public class GreedyRoundTripPlanner {
           candidate.tentativeSelfIntersections = tentativeSelfIntersections;
           candidate.routedLegWorstHostileMeters = worstHostile;
           routedCandidates.add(candidate);
+          if (isIsoCandidate) {
+            isoPriced = true;
+          } else {
+            graphPriced = true;
+          }
         }
+
+        boolean mixedSourceRouting = isoPriced && graphPriced;
 
         sortByRoutedScore(routedCandidates);
 
@@ -1683,6 +1679,26 @@ public class GreedyRoundTripPlanner {
   private static final int GRAPH_NATIVE_MIN_ROUTED = 1;
   /** Quota at the late/retry budget ({@link #MAX_ROUTE_ATTEMPTS_LATE} slots). */
   private static final int GRAPH_NATIVE_MIN_ROUTED_LATE = 2;
+
+  /**
+   * Graph-native routed-seat quota for one attempt. A DEGRADED pool cedes one
+   * more seat to graph-native truth — the automatic influence reduction for
+   * thin/bunched/losing pools — but the quota never fills the whole routed
+   * top-K: DEGRADED means the pool keeps competing on routed truth (total
+   * eviction is UNHEALTHY's provider switch), so under small budgets (the
+   * BOUNDED preset routes top-K 2/3) one seat always stays contestable by
+   * iso picks.
+   */
+  static int graphNativeQuota(boolean lateStep, boolean degraded, int routeBudget) {
+    int quota = lateStep ? GRAPH_NATIVE_MIN_ROUTED_LATE : GRAPH_NATIVE_MIN_ROUTED;
+    if (degraded) {
+      quota++;
+    }
+    if (routeBudget > 1 && quota >= routeBudget) {
+      quota = routeBudget - 1;
+    }
+    return quota;
+  }
 
   /**
    * Start-pool iso candidates carry a real {@code costFromStart}; per-step

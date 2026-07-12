@@ -165,6 +165,24 @@ public class IsoPoolHealthTest {
   }
 
   @Test
+  public void emaShareDemotionIsStickyWhenOracleCoverageRecovers() {
+    IsoPoolHealth h = new IsoPoolHealth(minimalShape()); // static score 0.50
+    for (int i = 0; i < IsoPoolHealth.MIN_RETURN_ESTIMATES; i++) {
+      h.recordReturnEstimate(false); // all-EMA share → full deduction → 0.40
+    }
+    double demoted = h.score();
+    assertEquals(IsoPoolHealth.State.DEGRADED, h.state());
+    // Later estimates land inside oracle coverage: the live share recovers,
+    // the demotion must not (sticky-score contract).
+    for (int i = 0; i < 32; i++) {
+      h.recordReturnEstimate(true);
+    }
+    assertTrue("demotion must not revert when the EMA share recovers",
+      h.score() <= demoted + 1e-12);
+    assertEquals(IsoPoolHealth.State.DEGRADED, h.state());
+  }
+
+  @Test
   public void scoreIsMonotonicallyNonIncreasingAndClamped() {
     IsoPoolHealth h = new IsoPoolHealth(minimalShape());
     double prev = h.score();
