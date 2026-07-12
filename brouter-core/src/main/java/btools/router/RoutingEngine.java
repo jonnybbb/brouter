@@ -2952,6 +2952,10 @@ public class RoutingEngine extends Thread {
 
     if (algo == RoundTripAlgorithm.ISO_GREEDY
         && !startGraphNativeOnly
+        // QUALITY (runGreedyAlways) already fields a dedicated plain-GREEDY
+        // child in the parent competition — this internal comparison would run
+        // materially the same graph-native ladder a second time.
+        && !roundTripEffortPolicy.runGreedyAlways
         && provider instanceof BlendedCandidateProvider
         && shouldRunInternalGraphNativeBranch(result, desiredDistance,
             routingContext.getProfileName(), effectiveDirection,
