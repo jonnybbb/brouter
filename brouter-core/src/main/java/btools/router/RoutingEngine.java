@@ -995,48 +995,54 @@ public class RoutingEngine extends Thread {
         // Constrained resources (short request budget, memory-constrained
         // device) resolve to the BOUNDED preset — the bounded dispatch below
         // instead of the full competition.
+        boolean autoBounded = false;
         if (algo == RoundTripAlgorithm.AUTO && greedyCapable) {
           RoundTripEffortPolicy resolved = RoundTripEffortPolicy.resolveAuto(
             profileClass, lengthClass, routingContext.memoryclass, maxRunningTime);
           logInfo("round trip effort: " + resolved.rationale);
-          if (resolved.preset == RoundTripEffortPolicy.Preset.BOUNDED) {
-            doBoundedRoundTrip(searchRadius, direction, resolved, "AUTO(bounded)");
+          if (resolved.preset != RoundTripEffortPolicy.Preset.BOUNDED) {
+            roundTripEffortPolicy = resolved;
+            runAutoCandidateCompetition(searchRadius, direction);
+            // The competition method writes foundTrack / errorMessage directly
+            // (its children are gated inside the competition).
             return;
           }
-          roundTripEffortPolicy = resolved;
-          runAutoCandidateCompetition(searchRadius, direction);
-          // The competition method writes foundTrack / errorMessage directly.
-          return;
+          // Constrained resources: the same bounded dispatch as explicit
+          // BALANCED — and the same fall-through to the shared floors and
+          // quality gate below. The bounded tier adopts best-effort tracks
+          // and defers hard-reject to that uniform gate, so an early return
+          // here would ship ungated tracks that an identical explicit
+          // BALANCED request rejects or returns with a Warning.
+          autoBounded = true;
+          doBoundedRoundTrip(searchRadius, direction, resolved, "AUTO(bounded)", true);
         }
 
-        if (algo == RoundTripAlgorithm.AUTO || algo == RoundTripAlgorithm.QUALITY) {
-          algo = selectRoundTripAlgorithm(searchRadius);
-        }
-        logInfo("round trip algorithm: " + algo);
+        if (!autoBounded) {
+          if (algo == RoundTripAlgorithm.AUTO || algo == RoundTripAlgorithm.QUALITY) {
+            algo = selectRoundTripAlgorithm(searchRadius);
+          }
+          logInfo("round trip algorithm: " + algo);
 
-        if (algo == RoundTripAlgorithm.BALANCED) {
-          if (!greedyCapable) {
-            // Same constraint as the greedy branch below: the planner generates
-            // its own intermediate points and does not honor allowSamewayback.
-            logInfo("BALANCED round trip does not support allowSamewayback, falling back to waypoint algorithm");
-            doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
-          } else {
+          if (algo == RoundTripAlgorithm.BALANCED) {
+            // allowSamewayback is handled inside the bounded tier: the planner
+            // slice is skipped, but the waypoint placement keeps the tier
+            // budget instead of inheriting the full request budget.
             doBoundedRoundTrip(searchRadius, direction,
-              RoundTripEffortPolicy.BOUNDED_PRESET, "BALANCED");
-          }
-        } else if (algo == RoundTripAlgorithm.GREEDY || algo == RoundTripAlgorithm.ISO_GREEDY) {
-          if (!greedySupports(routingContext.allowSamewayback, waypoints.size())) {
-            // Greedy generates its own intermediate points and does not honor
-            // allowSamewayback. (User vias are handled in explicitViaMode above.)
-            logInfo("greedy round trip does not support allowSamewayback, falling back to waypoint algorithm");
-            doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
+              RoundTripEffortPolicy.BOUNDED_PRESET, "BALANCED", greedyCapable);
+          } else if (algo == RoundTripAlgorithm.GREEDY || algo == RoundTripAlgorithm.ISO_GREEDY) {
+            if (!greedySupports(routingContext.allowSamewayback, waypoints.size())) {
+              // Greedy generates its own intermediate points and does not honor
+              // allowSamewayback. (User vias are handled in explicitViaMode above.)
+              logInfo("greedy round trip does not support allowSamewayback, falling back to waypoint algorithm");
+              doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
+            } else {
+              // ISO_GREEDY: isochrone-derived candidate pool. Falls back to plain
+              // GREEDY internally if the candidate pool is insufficient.
+              doGreedyRoundTrip(searchRadius, direction, algo);
+            }
           } else {
-            // ISO_GREEDY: isochrone-derived candidate pool. Falls back to plain
-            // GREEDY internally if the candidate pool is insufficient.
-            doGreedyRoundTrip(searchRadius, direction, algo);
+            doWaypointBasedRoundTrip(searchRadius, direction, algo);
           }
-        } else {
-          doWaypointBasedRoundTrip(searchRadius, direction, algo);
         }
       }
 
@@ -1094,17 +1100,7 @@ public class RoutingEngine extends Thread {
       // disclosures so the cyclist knows what they're getting; only
       // INVALID_RETRACE is rejected. See {@link RoundTripQualityGate}.
       double expectedDistance = 2 * Math.PI * searchRadius;
-      String profileName = routingContext.getProfileName();
-      // Explicit-via mode treats the requested distance as advisory only —
-      // the user-supplied skeleton defines the route, not the distance target.
-      // The gate still enforces beeline / closure / profile-hostility checks.
-      // A forced same-way-back corridor (planner found nothing clean in this
-      // constrained terrain) is accepted as a disclosed OUT_AND_BACK rather than
-      // rejected — keep-when-forced. Gratuitous corridors never reach here: the
-      // planner only sets the flag when no clean alternative exists.
-      boolean allowSamewayback = routingContext.allowSamewayback || roundTripForcedCorridorAccepted;
-      RoundTripQualityResult quality = RoundTripQualityGate.evaluate(foundTrack, expectedDistance,
-        profileName, allowSamewayback, explicitViaMode, roundTripFerriesAllowed());
+      RoundTripQualityResult quality = evaluateRoundTripGate(foundTrack, searchRadius, explicitViaMode);
       if (!quality.isAccepted()) {
         // STRUCTURAL failures (broken / un-routable / not-a-loop) are always
         // hard-rejected — there is nothing usable to offer. QUALITY failures
@@ -1238,6 +1234,27 @@ public class RoutingEngine extends Thread {
     } else {
       track.message += " " + message;
     }
+  }
+
+  /**
+   * The uniform round-trip gate evaluation — single source of truth for the
+   * gate flags, shared by the verdict in {@code doRoundTrip} and the bounded
+   * tier's fallback decision so the two sites can never drift.
+   *
+   * <p>Explicit-via mode treats the requested distance as advisory only — the
+   * user-supplied skeleton defines the route, not the distance target; the
+   * gate still enforces beeline / closure / profile-hostility checks. A forced
+   * same-way-back corridor (planner found nothing clean in constrained
+   * terrain) is accepted as a disclosed OUT_AND_BACK rather than rejected —
+   * keep-when-forced; gratuitous corridors never reach here because the
+   * planner only sets the flag when no clean alternative exists.
+   */
+  private RoundTripQualityResult evaluateRoundTripGate(OsmTrack track, double searchRadius,
+                                                       boolean explicitViaMode) {
+    boolean allowSamewayback = routingContext.allowSamewayback || roundTripForcedCorridorAccepted;
+    return RoundTripQualityGate.evaluate(track, 2 * Math.PI * searchRadius,
+      routingContext.getProfileName(), allowSamewayback, explicitViaMode,
+      roundTripFerriesAllowed());
   }
 
   /**
@@ -2731,49 +2748,86 @@ public class RoutingEngine extends Thread {
    * routed top-K. The Phase 2.1 axis retry and the ISO_GREEDY→GREEDY
    * recursion are skipped ({@link RoundTripEffortPolicy#skipRetryLayers});
    * a degraded-but-rideable planner loop is adopted best-effort for the
-   * lenient gate to grade. Only when the planner produces no track at all does
-   * the tier fall back to one FAST/WAYPOINT attempt — run under a fresh tier
-   * budget slice, because always returning some loop beats strict adherence
-   * to a single slice (the fallback fires mostly in constrained terrain
-   * where the greedy run burned its budget without closing a loop).
+   * lenient gate to grade. When the planner produces no track at all — or a
+   * track the uniform gate would hard-reject — the tier falls back to one
+   * FAST/WAYPOINT attempt, run under a fresh tier budget slice, because
+   * always returning some loop beats strict adherence to a single slice
+   * (the fallback fires mostly in constrained terrain where the greedy run
+   * burned its budget without closing a loop). With
+   * {@code greedyCapable == false} (allowSamewayback requests) the planner
+   * slice is skipped and only the budgeted fallback runs. The caller falls
+   * through to the shared floors and quality gate in {@code doRoundTrip} —
+   * this method never returns an ungated success.
    */
   private void doBoundedRoundTrip(double searchRadius, double direction,
-                                  RoundTripEffortPolicy policy, String tierLabel) {
+                                  RoundTripEffortPolicy policy, String tierLabel,
+                                  boolean greedyCapable) {
     long tierBudgetMs = policy.tierBudgetMs;
     long t0 = System.currentTimeMillis();
     long savedDeadline = roundTripRequestDeadline;
-    RoundTripEffortPolicy savedPolicy = roundTripEffortPolicy;
-    // Minimum-slice floor, mirroring the competition's childCandidateBudgetMs
-    // contract: a nearly-spent request budget still funds ONE bounded planner
-    // run (a deliberate, bounded overrun — the caller gets a loop instead of
-    // a guaranteed instant timeout). The tier budget stays the upper clamp.
-    long effectiveMs = Math.min(tierBudgetMs,
-      savedDeadline == 0 ? tierBudgetMs
-        : Math.max(savedDeadline - t0, MIN_LADDER_RUNG_BUDGET_MS));
-    roundTripRequestDeadline = t0 + effectiveMs;
-    roundTripEffortPolicy = policy;
-    // The engine-level timers (island check, leg searches) run in THIS engine
-    // and consult maxRunningTime — floor it to the slice too, or a nearly-
-    // spent request budget times out the matching before the planner starts.
-    // (The competition path achieves the same by flooring each child's doRun
-    // budget.) 0 stays 0: an untimed request keeps engine timers off.
-    long savedMaxRunningTime = maxRunningTime;
-    if (maxRunningTime > 0) {
-      maxRunningTime = (t0 + effectiveMs) - startTime;
+    long plannerMs = 0;
+    if (!greedyCapable) {
+      // Same constraint as the greedy dispatch: the planner generates its own
+      // intermediate points and does not honor allowSamewayback. The waypoint
+      // placement below still runs under the tier budget — bypassing the tier
+      // would hand this input the full request budget.
+      logInfo(tierLabel + ": planner does not support allowSamewayback,"
+        + " using waypoint placement under the tier budget");
+    } else {
+      RoundTripEffortPolicy savedPolicy = roundTripEffortPolicy;
+      // Minimum-slice floor, mirroring the competition's childCandidateBudgetMs
+      // contract: a nearly-spent request budget still funds ONE bounded planner
+      // run (a deliberate, bounded overrun — the caller gets a loop instead of
+      // a guaranteed instant timeout). The tier budget stays the upper clamp.
+      long effectiveMs = Math.min(tierBudgetMs,
+        savedDeadline == 0 ? tierBudgetMs
+          : Math.max(savedDeadline - t0, MIN_LADDER_RUNG_BUDGET_MS));
+      roundTripRequestDeadline = t0 + effectiveMs;
+      roundTripEffortPolicy = policy;
+      // The engine-level timers (island check, leg searches) run in THIS engine
+      // and consult maxRunningTime — floor it to the slice too, or a nearly-
+      // spent request budget times out the matching before the planner starts.
+      // (The competition path achieves the same by flooring each child's doRun
+      // budget.) 0 stays 0: an untimed request keeps engine timers off here;
+      // the planner slice is still bounded by roundTripRequestDeadline.
+      long savedMaxRunningTime = maxRunningTime;
+      if (maxRunningTime > 0) {
+        maxRunningTime = (t0 + effectiveMs) - startTime;
+      }
+      try {
+        doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.ISO_GREEDY);
+      } finally {
+        roundTripEffortPolicy = savedPolicy;
+        roundTripRequestDeadline = savedDeadline;
+        maxRunningTime = savedMaxRunningTime;
+      }
+      plannerMs = System.currentTimeMillis() - t0;
+      if (foundTrack != null) {
+        // The bounded planner adopts degraded best-effort snapshots and defers
+        // the verdict to the uniform gate in doRoundTrip. Take that verdict
+        // now: a track the gate will hard-reject must not suppress the tier's
+        // geometric fallback — by the time the shared gate nulls the track,
+        // the chance to fall back is gone and the tier returns a hard error
+        // instead of the loop it promises.
+        // explicitViaMode == false by construction: the bounded tier is only
+        // dispatched in generated-loop mode (the explicit-via skeleton
+        // branches off before the tier dispatch).
+        RoundTripQualityResult verdict = evaluateRoundTripGate(foundTrack, searchRadius, false);
+        if (!verdict.isAccepted() && roundTripQualityHardReject(verdict)) {
+          logInfo(tierLabel + ": bounded planner track fails the quality gate ("
+            + verdict.getRejectionReason() + "); falling back to waypoint placement");
+          lastRejectedTrack = foundTrack;
+          foundTrack = null;
+        }
+      }
+      if (foundTrack == null) {
+        logInfo(tierLabel + ": bounded planner produced no accepted loop in " + plannerMs
+          + "ms (budget " + tierBudgetMs + "ms)"
+          + (errorMessage == null ? "" : " — " + errorMessage)
+          + "; falling back to waypoint placement");
+      }
     }
-    try {
-      doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.ISO_GREEDY);
-    } finally {
-      roundTripEffortPolicy = savedPolicy;
-      roundTripRequestDeadline = savedDeadline;
-      maxRunningTime = savedMaxRunningTime;
-    }
-    long plannerMs = System.currentTimeMillis() - t0;
     if (foundTrack == null) {
-      logInfo(tierLabel + ": bounded planner produced no loop in " + plannerMs
-        + "ms (budget " + tierBudgetMs + "ms)"
-        + (errorMessage == null ? "" : " — " + errorMessage)
-        + "; falling back to waypoint placement");
       errorMessage = null;
       // Fresh tier slice for the fallback (see method javadoc). Worst case is
       // two slices; the request-level watchdog still applies on top. Same
@@ -2784,17 +2838,24 @@ public class RoutingEngine extends Thread {
         savedDeadline == 0 ? tierBudgetMs
           : Math.max(savedDeadline - fallbackStart, MIN_LADDER_RUNG_BUDGET_MS));
       roundTripRequestDeadline = fallbackStart + fallbackMs;
-      // Same floor for the fallback's routing budget (doRouting re-arms the
-      // engine timers from this field); 0 stays 0 = untimed.
       long savedRoutingBudget = roundTripRoutingBudgetMs;
-      if (roundTripRoutingBudgetMs > 0) {
-        roundTripRoutingBudgetMs = fallbackMs;
-      }
+      long savedMaxRunningTime = maxRunningTime;
+      // Scope the engine timers to the fallback slice, UNCONDITIONALLY. The
+      // placement phase (probing + the islanded-via guard) runs before
+      // doRouting re-arms startTime/maxRunningTime from the routing budget:
+      // under the request-scoped timer a spent budget makes every placement
+      // engine call throw instantly — the island guard degrades to
+      // keep-every-via and routing then dies on "target island detected" —
+      // and an untimed request (all timer fields 0) would run the fallback
+      // with no bound at all. Both violate the tier's slice contract.
+      roundTripRoutingBudgetMs = fallbackMs;
+      maxRunningTime = (fallbackStart + fallbackMs) - startTime;
       try {
         doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
       } finally {
         roundTripRequestDeadline = savedDeadline;
         roundTripRoutingBudgetMs = savedRoutingBudget;
+        maxRunningTime = savedMaxRunningTime;
       }
     }
     logInfo(tierLabel + ": finished in " + (System.currentTimeMillis() - t0)
@@ -5590,17 +5651,24 @@ public class RoutingEngine extends Thread {
                                            IsoPoolHealth.PoolShape poolShape,
                                            IsoStartPolicy subRoutePolicy) {
     RoundTripResult result = null;
+    boolean firstRung = true;
     for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount, subRoutePolicy)) {
       // Request-budget gate on the retry ladder: each plan() used to get a
       // fresh 30s deadline regardless of remaining request budget, so the
       // ladder alone could run ~4x the requested timeout. Stop starting new
       // rungs once the request budget cannot fund a useful plan anymore.
+      // The FIRST rung is exempt: minimum-slice floors (the bounded tier, the
+      // competition's MIN_CHILD) deliberately fund exactly one run, and that
+      // floor equals this gate's threshold — checking remaining-vs-threshold
+      // a millisecond into the slice would veto the very run the floor
+      // funded. The planner still honors its external deadline internally.
       long remaining = remainingRequestBudgetMs();
-      if (remaining < MIN_LADDER_RUNG_BUDGET_MS) {
+      if (!firstRung && remaining < MIN_LADDER_RUNG_BUDGET_MS) {
         logInfo("greedy: request budget exhausted (" + remaining
           + "ms left), skipping remaining subRouteCount ladder");
         break;
       }
+      firstRung = false;
       logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(this, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);

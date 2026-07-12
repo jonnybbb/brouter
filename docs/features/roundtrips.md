@@ -49,9 +49,10 @@ closed loop. Four modes are recommended, forming a speed/quality ladder:
   mobile hardware.
 - **BALANCED** — one graph-aware planning run under a hard ~8 s wall-clock
   budget with a reduced per-step search width, no retry ladders beyond the
-  budget, and a geometric fallback if no loop closes at all. Returns the best
-  loop it found inside the budget — with a `Warning:` advisory when quality is
-  degraded. This is the recommended default for interactive use on phones:
+  budget, and a geometric fallback when no acceptable loop closes (planner
+  produced nothing, or its best effort fails the quality gate outright).
+  Returns the best loop it found inside the budget — with a `Warning:`
+  advisory when quality is degraded. This is the recommended default for interactive use on phones:
   predictable latency, visibly better loops than FAST. (Measured on the test
   machine: ~40% below AUTO's time on a 180 km request at nearly identical
   length adherence; phones should expect the budget to be the limit instead.)
