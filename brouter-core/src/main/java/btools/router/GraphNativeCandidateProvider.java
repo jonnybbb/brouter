@@ -41,10 +41,22 @@ final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
    * every {@code buildTemplates} call. {@code List.sort} stability preserves
    * the pre-sort insertion order for fully-equal templates.
    */
-  private static final Comparator<Template> BY_TEMPLATE_RANK = Comparator
-    .comparingDouble((Template t) -> t.distanceError)
-    .thenComparing((Template t) -> -t.bucketHits)
-    .thenComparing((Template t) -> -t.sourceContour);
+  private static final Comparator<Template> BY_TEMPLATE_RANK = new Comparator<>() {
+    // Explicit compare instead of Comparator.comparingDouble/thenComparing:
+    // those are API 24+ and crash class-init on Android minSdk 23.
+    @Override
+    public int compare(Template a, Template b) {
+      int c = Double.compare(a.distanceError, b.distanceError);
+      if (c != 0) {
+        return c;
+      }
+      c = Integer.compare(b.bucketHits, a.bucketHits);
+      if (c != 0) {
+        return c;
+      }
+      return Integer.compare(b.sourceContour, a.sourceContour);
+    }
+  };
 
   private final RoutingEngine engine;
   /**
