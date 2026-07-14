@@ -89,11 +89,11 @@ public final class OsmTrack {
 
   public void copyDetours(OsmTrack source) {
     detourMap = source.detourMap == null ? null : new FrozenLongMap<>(source.detourMap);
-    // The FrozenLongMap constructor MOVES the source map's internal arrays out
-    // (moveToFrozenArrays nulls them), leaving the source holding an unusable
-    // husk. Drop the reference: when the same track object later serves as a
-    // guide again (a second retrackForDetail pass), registerDetourForId then
-    // starts a fresh map instead of NPEing on the moved-from one.
+    // The FrozenLongMap constructor MOVES the source map's internal arrays out,
+    // leaving the source an unusable husk (CompactLongMap now guards against
+    // reuse with an IllegalStateException). Drop the reference so that when the
+    // same track object later serves as a guide again (a second retrackForDetail
+    // pass), registerDetourForId starts a fresh map instead of hitting the guard.
     source.detourMap = null;
   }
 
