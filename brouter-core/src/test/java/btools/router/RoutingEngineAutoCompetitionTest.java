@@ -311,16 +311,18 @@ public class RoutingEngineAutoCompetitionTest {
     RoundTripResult degraded = result(cleanSquareLoop(5000));
     degraded.setFallbackReason(GreedyRoundTripPlanner.DEGRADED_FALLBACK_PREFIX + "synthetic");
 
-    Assert.assertTrue(RoutingEngine.shouldRunInternalGraphNativeBranch(
-      degraded, degraded.getTrack().distance, "fastbike", 0, 1_000L, 10_000L, false, false));
+    Assert.assertTrue(RoutingEngine.internalBranchNeeded(
+      RoutingEngine.scoreInternalGreedyResult(
+        degraded, degraded.getTrack().distance, "fastbike", 0, false, false)));
   }
 
   @Test
   public void internalGraphNativeBranchSkipsStrongIsoResult() {
     RoundTripResult strong = result(cleanSquareLoop(5000));
 
-    Assert.assertFalse(RoutingEngine.shouldRunInternalGraphNativeBranch(
-      strong, strong.getTrack().distance, "fastbike", 0, 1_000L, 10_000L, false, false));
+    Assert.assertFalse(RoutingEngine.internalBranchNeeded(
+      RoutingEngine.scoreInternalGreedyResult(
+        strong, strong.getTrack().distance, "fastbike", 0, false, false)));
   }
 
   // ---- best-effort (lenient) candidate selection — Option C ----------------

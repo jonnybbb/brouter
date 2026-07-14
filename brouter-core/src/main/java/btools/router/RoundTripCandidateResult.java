@@ -66,14 +66,6 @@ final class RoundTripCandidateResult {
     return planner == null ? 0 : planner.getRoutedNonIsoCandidates();
   }
 
-  int acceptedIsoLegs() {
-    return planner == null ? 0 : planner.getAcceptedIsoLegs();
-  }
-
-  int acceptedNonIsoLegs() {
-    return planner == null ? 0 : planner.getAcceptedNonIsoLegs();
-  }
-
   int acceptedQuotaInjectedLegs() {
     return planner == null ? 0 : planner.getAcceptedQuotaInjectedLegs();
   }

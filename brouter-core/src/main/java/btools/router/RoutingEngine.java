@@ -1006,7 +1006,6 @@ public class RoutingEngine extends Thread {
         // Constrained resources (short request budget, memory-constrained
         // device) resolve to the BOUNDED preset — the bounded dispatch below
         // instead of the full competition.
-        boolean autoBounded = false;
         if (algo == RoundTripAlgorithm.AUTO && greedyCapable) {
           RoundTripEffortPolicy resolved = RoundTripEffortPolicy.resolveAuto(
             profileClass, lengthClass, routingContext.memoryclass, maxRunningTime);
@@ -1024,11 +1023,8 @@ public class RoutingEngine extends Thread {
           // and defers hard-reject to that uniform gate, so an early return
           // here would ship ungated tracks that an identical explicit
           // BALANCED request rejects or returns with a Warning.
-          autoBounded = true;
           doBoundedRoundTrip(searchRadius, direction, resolved, "AUTO(bounded)", true);
-        }
-
-        if (!autoBounded) {
+        } else {
           if (algo == RoundTripAlgorithm.AUTO || algo == RoundTripAlgorithm.QUALITY) {
             algo = selectRoundTripAlgorithm(searchRadius);
           }
@@ -1111,7 +1107,13 @@ public class RoutingEngine extends Thread {
       // disclosures so the cyclist knows what they're getting; only
       // INVALID_RETRACE is rejected. See {@link RoundTripQualityGate}.
       double expectedDistance = 2 * Math.PI * searchRadius;
-      RoundTripQualityResult quality = evaluateRoundTripGate(foundTrack, searchRadius, explicitViaMode);
+      // Reuse the bounded tier's verdict when it evaluated this same track
+      // (set only when the planner track survived its pre-gate; the fallback
+      // path leaves it null). Consumed once.
+      RoundTripQualityResult quality = boundedGateVerdict != null
+        ? boundedGateVerdict
+        : evaluateRoundTripGate(foundTrack, searchRadius, explicitViaMode);
+      boundedGateVerdict = null;
       if (!quality.isAccepted()) {
         // STRUCTURAL failures (broken / un-routable / not-a-loop) are always
         // hard-rejected — there is nothing usable to offer. QUALITY failures
@@ -1273,11 +1275,25 @@ public class RoutingEngine extends Thread {
    */
   private RoundTripQualityResult evaluateRoundTripGate(OsmTrack track, double searchRadius,
                                                        boolean explicitViaMode) {
-    boolean allowSamewayback = routingContext.allowSamewayback || roundTripForcedCorridorAccepted;
+    return evaluateRoundTripGate(track, searchRadius, explicitViaMode,
+      roundTripForcedCorridorAccepted);
+  }
+
+  /** Overload for verdicts on a CANDIDATE's track, whose forced-corridor
+   *  marker lives on the candidate rather than the engine field. */
+  private RoundTripQualityResult evaluateRoundTripGate(OsmTrack track, double searchRadius,
+                                                       boolean explicitViaMode,
+                                                       boolean forcedCorridorAccepted) {
+    boolean allowSamewayback = routingContext.allowSamewayback || forcedCorridorAccepted;
     return RoundTripQualityGate.evaluate(track, 2 * Math.PI * searchRadius,
       routingContext.getProfileName(), allowSamewayback, explicitViaMode,
       roundTripFerriesAllowed());
   }
+
+  /** Bounded-tier verdict handoff: set by doBoundedRoundTrip when its
+   *  pre-gate accepted the planner track, consumed (once) by the shared gate
+   *  in doRoundTrip so the same track is not fully evaluated twice. */
+  private RoundTripQualityResult boundedGateVerdict;
 
   /**
    * Single source of truth for the round-trip lenient/strict policy: whether a
@@ -1616,30 +1632,15 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Trigger for the internal graph-native comparison branch. Delegates to the
-   * SAME gate+score evaluation the selection uses
-   * ({@link #scoreInternalGreedyResult}) so the trigger and the comparison can
-   * never judge a track differently — the flags drifted once (ferries
-   * hard-coded off here) and every ferry-using accepted loop paid a full
-   * spurious extra ladder.
+   * A blended verdict below the clear-accept bar (or none) warrants the
+   * internal graph-native comparison. The trigger and the selection both work
+   * on verdicts from {@link #scoreInternalGreedyResult}, so they can never
+   * judge a track differently — the flags drifted once (ferries hard-coded
+   * off in a separate trigger pipeline) and every ferry-using accepted loop
+   * paid a full spurious extra ladder. Package-visible so the trigger tests
+   * exercise the same predicate production calls.
    */
-  static boolean shouldRunInternalGraphNativeBranch(RoundTripResult result,
-                                                    double desiredDistance,
-                                                    String profileName,
-                                                    double direction,
-                                                    long now,
-                                                    long deadline,
-                                                    boolean allowSamewayback,
-                                                    boolean allowFerries) {
-    if (now >= deadline) {
-      return false;
-    }
-    return internalBranchNeeded(scoreInternalGreedyResult(result, desiredDistance,
-      profileName, direction, allowSamewayback, allowFerries));
-  }
-
-  /** A blended verdict below the clear-accept bar (or none) warrants the comparison. */
-  private static boolean internalBranchNeeded(RouteChoiceScore.Verdict blendedVerdict) {
+  static boolean internalBranchNeeded(RouteChoiceScore.Verdict blendedVerdict) {
     return blendedVerdict == null || blendedVerdict.score() < CLEAR_ACCEPT_THRESHOLD;
   }
 
@@ -1834,9 +1835,8 @@ public class RoutingEngine extends Thread {
         // for profile-name lookup), but in practice both agree.
         double expectedDist = 2 * Math.PI * searchRadius;
         String profileName = routingContext.getProfileName();
-        r.gateVerdict = RoundTripQualityGate.evaluate(r.track, expectedDist,
-          profileName, routingContext.allowSamewayback || r.forcedCorridorAccepted(),
-          false, roundTripFerriesAllowed());
+        r.gateVerdict = evaluateRoundTripGate(r.track, searchRadius, false,
+          r.forcedCorridorAccepted());
         if (r.gateVerdict.isAccepted()) {
           r.score = RouteChoiceScore.score(r.track, expectedDist,
             profileName, r.gateVerdict, direction);
@@ -2695,12 +2695,8 @@ public class RoutingEngine extends Thread {
         ProbeResult probe =
           probeReachableDirectionsFast(waypoints.get(0), searchRadius * fastScale, bearings);
         if (!directional) {
-          // Ring mode only: the nominal scale assumed a near-full ring of viable
-          // bearings; constrained terrain needs the corrective re-probe. A lobe's
-          // scale comes from its exact bearing distribution instead.
-          probe = reprobeIfNarrowArc(probe, waypoints.get(0), searchRadius, fastScale,
+          probe = refineRingProbe(probe, waypoints.get(0), searchRadius, fastScale,
             bearings, targetPoints, direction);
-          probe = withConfidenceFilteredDirections(probe, targetPoints);
         }
         int placed = (probe != null && probe.viableDirections.length >= 3)
           ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
@@ -2720,9 +2716,8 @@ public class RoutingEngine extends Thread {
           double ringScale =
             computeRadiusScale(sortDirectionsForLoop(fullCircleBearings(ringCount), 0), targetPoints);
           probe = probeReachableDirectionsFast(waypoints.get(0), searchRadius * ringScale, ring);
-          probe = reprobeIfNarrowArc(probe, waypoints.get(0), searchRadius, ringScale,
+          probe = refineRingProbe(probe, waypoints.get(0), searchRadius, ringScale,
             ring, targetPoints, direction);
-          probe = withConfidenceFilteredDirections(probe, targetPoints);
           placed = (probe != null && probe.viableDirections.length >= 3)
             ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
             : 0;
@@ -2776,6 +2771,19 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * One bounded tier slice: the tier budget clamped to the remaining request
+   * budget, floored at {@link #MIN_LADDER_RUNG_BUDGET_MS} — mirroring the
+   * competition's childCandidateBudgetMs contract, a nearly-spent request
+   * still funds ONE bounded run (a deliberate, bounded overrun: the caller
+   * gets a loop instead of a guaranteed instant timeout). An untimed request
+   * (deadline 0) gets the full tier budget.
+   */
+  private static long tierSliceMs(long tierBudgetMs, long requestDeadline, long now) {
+    return Math.min(tierBudgetMs, requestDeadline == 0 ? tierBudgetMs
+      : Math.max(requestDeadline - now, MIN_LADDER_RUNG_BUDGET_MS));
+  }
+
+  /**
    * Bounded-effort dispatch (issue #27): one bounded, graph-aware planning run
    * with predictable latency. Used by the BALANCED tier and by AUTO when the
    * effort policy resolves BOUNDED (constrained resources).
@@ -2797,19 +2805,6 @@ public class RoutingEngine extends Thread {
    * through to the shared floors and quality gate in {@code doRoundTrip} —
    * this method never returns an ungated success.
    */
-  /**
-   * One bounded tier slice: the tier budget clamped to the remaining request
-   * budget, floored at {@link #MIN_LADDER_RUNG_BUDGET_MS} — mirroring the
-   * competition's childCandidateBudgetMs contract, a nearly-spent request
-   * still funds ONE bounded run (a deliberate, bounded overrun: the caller
-   * gets a loop instead of a guaranteed instant timeout). An untimed request
-   * (deadline 0) gets the full tier budget.
-   */
-  private static long tierSliceMs(long tierBudgetMs, long requestDeadline, long now) {
-    return Math.min(tierBudgetMs, requestDeadline == 0 ? tierBudgetMs
-      : Math.max(requestDeadline - now, MIN_LADDER_RUNG_BUDGET_MS));
-  }
-
   private void doBoundedRoundTrip(double searchRadius, double direction,
                                   RoundTripEffortPolicy policy, String tierLabel,
                                   boolean greedyCapable) {
@@ -2863,6 +2858,13 @@ public class RoutingEngine extends Thread {
             + verdict.getRejectionReason() + "); falling back to waypoint placement");
           lastRejectedTrack = foundTrack;
           foundTrack = null;
+        } else {
+          // The surviving track flows unchanged to the shared gate in
+          // doRoundTrip — stash the verdict so that gate consumes it instead
+          // of paying a second full-track evaluation (crossing grid, corridor
+          // index) on every interactive bounded request. The fallback path
+          // leaves this null: its track needs a fresh verdict.
+          boundedGateVerdict = verdict;
         }
       }
       if (foundTrack == null) {
@@ -4693,26 +4695,39 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Ring-mode narrow-arc correction. The pre-probe shrink assumes a near-full
-   * ring of viable bearings; in constrained terrain (coast, valley) they bunch
-   * into a narrow arc whose correct scale — computed like the legacy path from
-   * the ACTUAL selected directions, which never shrinks a narrow arc — is much
-   * larger. One corrective re-probe at that radius keeps the loop near its
-   * target length instead of roughly half of it. Directional lobes skip this:
-   * their scale derives from the exact lobe distribution already.
+   * The spread-selected direction subset placement will use — shared with the
+   * narrow-arc rescale trigger so it scores exactly the set placement
+   * consumes. Returned length doubles as placement's via-count target.
    */
-  private ProbeResult reprobeIfNarrowArc(ProbeResult probe, OsmNodeNamed start,
-                                         double searchRadius, double nominalScale,
-                                         double[] bearings, int targetPoints,
-                                         double direction) {
+  private static double[] selectPreferredDirections(double[] viable, int targetPoints,
+                                                    double startDirection) {
+    int needed = Math.min(Math.max(2, targetPoints - 1), viable.length);
+    double anchor = startDirection >= 0 ? startDirection : 0;
+    return needed >= viable.length ? viable
+      : selectSpreadDirections(viable, needed, anchor);
+  }
+
+  /**
+   * Ring-mode probe refinement, one owner for both ring call sites (initial
+   * ring and the directional lobe's ring fallback) so the pipeline order —
+   * narrow-arc rescale first, confidence filter second — cannot diverge.
+   *
+   * <p>Narrow-arc correction: the pre-probe shrink assumes a near-full ring of
+   * viable bearings; in constrained terrain (coast, valley) they bunch into a
+   * narrow arc whose correct scale — computed like the legacy path from the
+   * ACTUAL selected directions, which never shrinks a narrow arc — is much
+   * larger. One corrective re-probe at that radius keeps the loop near its
+   * target length instead of roughly half of it. Directional lobes skip this
+   * method entirely: their scale derives from the exact lobe distribution.
+   */
+  private ProbeResult refineRingProbe(ProbeResult probe, OsmNodeNamed start,
+                                      double searchRadius, double nominalScale,
+                                      double[] bearings, int targetPoints,
+                                      double direction) {
     if (probe == null || probe.viableDirections.length < 3) {
       return probe;
     }
-    double[] viable = probe.viableDirections;
-    int needed = Math.min(Math.max(2, targetPoints - 1), viable.length);
-    double anchor = direction >= 0 ? direction : 0;
-    double[] selected = needed >= viable.length ? viable
-      : selectSpreadDirections(viable, needed, anchor);
+    double[] selected = selectPreferredDirections(probe.viableDirections, targetPoints, direction);
     double actualScale = computeRadiusScale(selected, targetPoints);
     if (actualScale > nominalScale * FAST_RESCALE_TRIGGER) {
       logInfo("optimized FAST placement: narrow viable arc, re-probing at scale "
@@ -4721,10 +4736,10 @@ public class RoutingEngine extends Thread {
       ProbeResult rescaled =
         probeReachableDirectionsFast(start, searchRadius * actualScale, bearings);
       if (rescaled != null && rescaled.viableDirections.length >= 3) {
-        return rescaled;
+        probe = rescaled;
       }
     }
-    return probe;
+    return withConfidenceFilteredDirections(probe, targetPoints);
   }
 
   /**
@@ -4751,10 +4766,8 @@ public class RoutingEngine extends Thread {
     // bearings, so a drop never shrinks the via count while substitutes exist.
     double anchor = startDirection >= 0 ? startDirection : 0;
     double[] viable = probe.viableDirections;
-    int needed = Math.min(Math.max(2, targetPoints - 1), viable.length);
-    double[] preferred = (needed >= viable.length)
-        ? viable
-        : selectSpreadDirections(viable, needed, anchor);
+    double[] preferred = selectPreferredDirections(viable, targetPoints, startDirection);
+    int needed = preferred.length;
 
     Map<Double, MatchedWaypoint> byDir = new HashMap<>();
     for (ProbeDirection pd : probe.scored) {
@@ -4773,7 +4786,7 @@ public class RoutingEngine extends Thread {
     List<Double> chosen = new ArrayList<>();
     java.util.Set<Double> visited = new java.util.HashSet<>();
     java.util.Set<Long> usedNodes = new java.util.HashSet<>();
-    usedNodes.add(nodeKey(start.ilon, start.ilat));
+    usedNodes.add(start.getIdFromPos());
     double[][] passes = {preferred, viable};
     for (int p = 0; p < passes.length && chosen.size() < needed; p++) {
       for (double dir : passes[p]) {
@@ -4782,9 +4795,9 @@ public class RoutingEngine extends Thread {
         MatchedWaypoint m = byDir.get(dir);
         if (m == null || m.crosspoint == null) continue;
         // A via committed onto a ferry-like edge routes the loop across the
-        // ferry; a via on a profile-hostile road forces the loop through it.
-        if (m.node1 != null && m.node2 != null
-            && m.node1.calcDistance(m.node2) > FERRY_LIKE_EDGE_METERS) {
+        // ferry (same rule as every other snap-validation site); a via on a
+        // profile-hostile road forces the loop through it.
+        if (!isRoadSnap(m)) {
           ferryLike++;
           continue;
         }
@@ -4793,7 +4806,7 @@ public class RoutingEngine extends Thread {
           continue;
         }
         // Dedup: drop a via that lands on the start or an already-chosen node.
-        long key = nodeKey(m.crosspoint.getILon(), m.crosspoint.getILat());
+        long key = m.crosspoint.getIdFromPos();
         if (usedNodes.contains(key)) {
           deduped++;
           continue;
@@ -4834,11 +4847,6 @@ public class RoutingEngine extends Thread {
         + (hostile > 0 ? " (" + hostile + " profile-hostile dropped)" : "")
         + " from " + viable.length + " snapped bearings");
     return added;
-  }
-
-  /** Composite map key for an integer coordinate pair. */
-  private static long nodeKey(int ilon, int ilat) {
-    return ((long) ilon << 32) | (ilat & 0xffffffffL);
   }
 
   /**

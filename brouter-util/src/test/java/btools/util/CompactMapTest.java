@@ -82,11 +82,7 @@ public class CompactMapTest {
   }
 
   private void assertMovedGuard(Runnable access) {
-    try {
-      access.run();
-      Assert.fail("expected IllegalStateException on the moved-from map");
-    } catch (IllegalStateException e) {
-      Assert.assertEquals("map was moved into a FrozenLongMap; the source is no longer usable", e.getMessage());
-    }
+    IllegalStateException e = Assert.assertThrows(IllegalStateException.class, access::run);
+    Assert.assertEquals("map was moved into a FrozenLongMap; the source is no longer usable", e.getMessage());
   }
 }

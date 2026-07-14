@@ -166,7 +166,10 @@ final class IsoPoolHealth {
    * land inside oracle coverage, but the sticky-score contract (score only
    * ever decreases over a plan) requires this deduction to keep its
    * high-water mark — otherwise a DEGRADED demotion silently reverts
-   * mid-plan.
+   * mid-plan. NOTE: the aggregate score is only monotone because EVERY term
+   * is — the counters grow monotonically and this one term latches. Any
+   * future ratio-based (or otherwise non-monotone) signal must latch the
+   * same way and extend the sticky-demotion test.
    */
   private double emaShareDeduction;
   /** Bit i set = an accepted via already landed in 45°-sector i. */
