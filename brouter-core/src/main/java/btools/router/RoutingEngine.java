@@ -2701,6 +2701,7 @@ public class RoutingEngine extends Thread {
           // scale comes from its exact bearing distribution instead.
           probe = reprobeIfNarrowArc(probe, waypoints.get(0), searchRadius, fastScale,
             bearings, targetPoints, direction);
+          probe = withConfidenceFilteredDirections(probe, targetPoints);
         }
         int placed = (probe != null && probe.viableDirections.length >= 3)
           ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
@@ -2722,6 +2723,7 @@ public class RoutingEngine extends Thread {
           probe = probeReachableDirectionsFast(waypoints.get(0), searchRadius * ringScale, ring);
           probe = reprobeIfNarrowArc(probe, waypoints.get(0), searchRadius, ringScale,
             ring, targetPoints, direction);
+          probe = withConfidenceFilteredDirections(probe, targetPoints);
           placed = (probe != null && probe.viableDirections.length >= 3)
             ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
             : 0;
@@ -4532,72 +4534,17 @@ public class RoutingEngine extends Thread {
    * @param searchRadius the round-trip search radius in meters
    * @return viable bearings + per-direction scoring; {@code null} on probe failure
    */
-  ProbeResult probeReachableDirections(OsmNodeNamed start, double searchRadius) {
-    resetCache(false);
-    double maxSnapDist = Math.min(searchRadius * 0.3, 2000);
-    double[] distFactors = {0.7, 1.0, 1.3};
-    int probeCount = 24; // every 15 degrees
-    double angleStep = 360.0 / probeCount;
-    int probesPerDirection = distFactors.length;
-
-    List<MatchedWaypoint> allProbes = new ArrayList<>();
-    // Include the start point itself to ensure its segment is loaded
-    MatchedWaypoint startProbe = new MatchedWaypoint();
-    startProbe.waypoint = new OsmNode(start.ilon, start.ilat);
-    startProbe.name = "probe_start";
-    allProbes.add(startProbe);
-
-    for (int d = 0; d < probeCount; d++) {
-      double angle = d * angleStep;
-      for (double df : distFactors) {
-        int[] pos = CheapRuler.destination(start.ilon, start.ilat, searchRadius * df, angle);
-        MatchedWaypoint mwp = new MatchedWaypoint();
-        mwp.waypoint = new OsmNode(pos[0], pos[1]);
-        mwp.name = "probe_" + d + "_" + (int) (df * 100);
-        allProbes.add(mwp);
-      }
-    }
-
-    try {
-      nodesCache.matchWaypointsToNodes(allProbes, maxSnapDist, islandNodePairs);
-    } catch (Exception e) {
-      logInfo("reachability probe failed: " + e.getMessage());
-      return null;
-    }
-
-    int probeOffset = 1; // start probe is at index 0
-    double[] viable = new double[probeCount];
-    int viableCount = 0;
-    List<ProbeDirection> scored = new ArrayList<>();
-    for (int d = 0; d < probeCount; d++) {
-      double dir = d * angleStep;
-      int successCount = 0;
-      for (int f = 0; f < probesPerDirection; f++) {
-        MatchedWaypoint mwp = allProbes.get(probeOffset + d * probesPerDirection + f);
-        if (mwp.crosspoint == null || mwp.radius > maxSnapDist) continue;
-        successCount++;
-      }
-      if (successCount == 0) continue;
-      viable[viableCount++] = dir;
-      scored.add(new ProbeDirection(dir, successCount, null));
-    }
-
-    logInfo("reachability probe: " + viableCount + "/" + probeCount + " directions viable");
-    if (viableCount == 0) return null;
-    return new ProbeResult(java.util.Arrays.copyOf(viable, viableCount), scored);
-  }
-
   /**
-   * FAST-tier reachability probe (optimization ideas 1 + 2). Trims the grid to
-   * 12 bearings × 2 radii (vs the legacy 24 × 3) AND retains the best road match
-   * per direction, so {@link #placeWaypointsFromProbeMatches} can reuse those
-   * already-snapped nodes as vias — replacing both the geometric placement and
-   * the ~21-candidate-per-via re-matching in {@link #validateAndAdjustWaypoints}.
+   * One probe skeleton for both grids — the legacy 24-bearing × 3-radii sweep
+   * and the optimized FAST 2-radii grid — so fixes to the snap rule, matcher
+   * error handling, or start-probe convention cannot drift between the paths
+   * (the two used to be near-verbatim forks kept alive for A/B comparison).
    */
-  ProbeResult probeReachableDirectionsFast(OsmNodeNamed start, double searchRadius, double[] bearings) {
+  private ProbeResult probeDirections(OsmNodeNamed start, double searchRadius,
+                                      double[] bearings, double[] distFactors,
+                                      boolean retainMatches, String logLabel) {
     resetCache(false);
     double maxSnapDist = Math.min(searchRadius * 0.3, 2000);
-    double[] distFactors = {0.85, 1.15};
     int probesPerDirection = distFactors.length;
 
     List<MatchedWaypoint> allProbes = new ArrayList<>();
@@ -4635,19 +4582,42 @@ public class RoutingEngine extends Thread {
         MatchedWaypoint mwp = allProbes.get(probeOffset + d * probesPerDirection + f);
         if (mwp.crosspoint == null || mwp.radius > maxSnapDist) continue;
         successCount++;
-        if (best == null || mwp.radius < best.radius) best = mwp;
+        if (retainMatches && (best == null || mwp.radius < best.radius)) {
+          best = mwp;
+        }
       }
       if (successCount == 0) continue;
       viable[viableCount++] = bearings[d];
       scored.add(new ProbeDirection(bearings[d], successCount, best));
     }
 
-    logInfo("reachability probe (fast): " + viableCount + "/" + bearings.length + " bearings snapped");
+    logInfo(logLabel + ": " + viableCount + "/" + bearings.length + " bearings snapped");
     if (viableCount == 0) return null;
-    // allProbes.get(0) is the matched start (has node1/node2/crosspoint when the
-    // start is on a road) — used by the reachability guard to drop islanded vias.
-    MatchedWaypoint startMatch = allProbes.get(0);
-    return new ProbeResult(java.util.Arrays.copyOf(viable, viableCount), scored, startMatch);
+    // allProbes.get(0) is the matched start (has node1/node2/crosspoint when
+    // the start is on a road) — used by the islanded-via guard.
+    return new ProbeResult(java.util.Arrays.copyOf(viable, viableCount), scored,
+      retainMatches ? allProbes.get(0) : null);
+  }
+
+  ProbeResult probeReachableDirections(OsmNodeNamed start, double searchRadius) {
+    // Legacy sweep: 24 bearings every 15°, radii {0.7, 1.0, 1.3}·R — the
+    // ISOCHRONE path and the -Droundtrip.fast.optimized=false A/B baseline.
+    return probeDirections(start, searchRadius, fullCircleBearings(24),
+      new double[]{0.7, 1.0, 1.3}, false, "reachability probe");
+  }
+
+  /**
+   * FAST-tier reachability probe (optimization ideas 1 + 2). Trims the grid to
+   * 12 bearings × 2 radii (vs the legacy 24 × 3) AND retains the best road match
+   * per direction, so {@link #placeWaypointsFromProbeMatches} can reuse those
+   * already-snapped nodes as vias — replacing both the geometric placement and
+   * the ~21-candidate-per-via re-matching in {@link #validateAndAdjustWaypoints}.
+   */
+  ProbeResult probeReachableDirectionsFast(OsmNodeNamed start, double searchRadius, double[] bearings) {
+    // 2 radii per bearing (vs the legacy 3) + best-match retention so
+    // placeWaypointsFromProbeMatches can reuse the snapped nodes as vias.
+    return probeDirections(start, searchRadius, bearings,
+      new double[]{0.85, 1.15}, true, "reachability probe (fast)");
   }
 
   /**
@@ -4876,11 +4846,32 @@ public class RoutingEngine extends Thread {
   }
 
   /**
+   * Ring-probe confidence filter for the optimized FAST path: drop fragile
+   * single-snap bearings when enough two-snap-strong ones remain
+   * (see {@link #filterByProbeConfidence}) — the same guard the legacy
+   * probe+envelope path applies. The filtered set also bounds the
+   * replacement-selection substitutes, so a fragile bearing cannot re-enter
+   * as a stand-in for a dropped one.
+   */
+  private static ProbeResult withConfidenceFilteredDirections(ProbeResult probe, int targetPoints) {
+    if (probe == null) {
+      return null;
+    }
+    double[] filtered = filterByProbeConfidence(probe, targetPoints);
+    if (filtered == null || filtered.length == probe.viableDirections.length) {
+      return probe;
+    }
+    return new ProbeResult(filtered, probe.scored, probe.startMatch);
+  }
+
+  /**
    * FAST-tier helper: drop directions where only a single probe distance snapped, IF at
-   * least {@code max(targetPoints, 8)} multi-probe-strong directions remain. A 1/3
-   * success rate usually marks a thin road sliver or sea-edge that snaps weakly; selecting
-   * it produces a fragile waypoint. When few strong directions exist (constrained
-   * terrain), we keep the weak ones to avoid collapsing to a circle fallback.
+   * least {@code max(targetPoints, 8)} multi-probe-strong directions remain. A lone snap
+   * (1 of the legacy 3 radii, or 1 of the optimized path's 2) usually marks a thin road
+   * sliver or sea-edge that snaps weakly; selecting it produces a fragile waypoint. When
+   * few strong directions exist (constrained terrain), we keep the weak ones to avoid
+   * collapsing to a circle fallback — which also makes it a no-op for directional lobes
+   * (their bearing count never reaches the threshold).
    *
    * @return the viable-direction subset to feed into placement
    */
