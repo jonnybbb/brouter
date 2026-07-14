@@ -252,16 +252,6 @@ public class GreedyRoundTripPlanner {
   /** Raised cap on late steps or after a failed attempt, where extra exploration pays off. */
   private static final int MAX_ROUTE_ATTEMPTS_LATE = 5;
   /**
-   * Bounded-effort (BALANCED tier, issue #27) routed top-K: each routed
-   * candidate is a full Dijkstra leg, so this is the planner's main per-step
-   * cost multiplier. K=2 keeps the routed comparison and the source quota
-   * ({@code GRAPH_NATIVE_MIN_ROUTED}) functional — K=1 would degenerate the
-   * step to a heuristic-only pick.
-   */
-  static final int MAX_ROUTE_ATTEMPTS_BOUNDED = 2;
-  /** Bounded-effort cap on late steps / after a failed attempt. */
-  static final int MAX_ROUTE_ATTEMPTS_LATE_BOUNDED = 3;
-  /**
    * Min angular separation between routed candidates within a step. Top-K by raw
    * heuristic score is often spatially redundant in dense networks (two adjacent
    * road choices have similar scores); enforcing a 30° gap gives diverse routed
@@ -445,12 +435,6 @@ public class GreedyRoundTripPlanner {
   public void setRouteBudgets(int normal, int late) {
     topKNormal = normal;
     topKLate = late;
-  }
-
-  /** Bounded-effort shorthand (BALANCED tier, issue #27): top-K 2/3. */
-  public void setBoundedEffort(boolean bounded) {
-    setRouteBudgets(bounded ? MAX_ROUTE_ATTEMPTS_BOUNDED : MAX_ROUTE_ATTEMPTS,
-      bounded ? MAX_ROUTE_ATTEMPTS_LATE_BOUNDED : MAX_ROUTE_ATTEMPTS_LATE);
   }
 
   public void setPlanBudgetScale(double scale) {

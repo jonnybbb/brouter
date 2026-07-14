@@ -315,7 +315,6 @@ public class RoutingEngine extends Thread {
 
   enum IsoStartPolicy {
     BLEND,
-    DUAL_IF_WEAK,
     GRAPH_NATIVE_ONLY
   }
 
@@ -3000,7 +2999,7 @@ public class RoutingEngine extends Thread {
     FrontierAxis frontierAxis = (algo == RoundTripAlgorithm.ISO_GREEDY && iso != null)
       ? computeFrontierAxis(iso.frontier, searchRadius) : FrontierAxis.NONE;
     IsoStartPolicy isoStartPolicy = algo == RoundTripAlgorithm.ISO_GREEDY
-      ? selectIsoStartPolicy(poolShape, frontierAxis, direction)
+      ? selectIsoStartPolicy(poolShape)
       : IsoStartPolicy.BLEND;
     if (algo == RoundTripAlgorithm.ISO_GREEDY) {
       logInfo("ISO_GREEDY: start policy " + isoStartPolicy);
@@ -3047,7 +3046,7 @@ public class RoutingEngine extends Thread {
         + "); retrying with axis-aligned direction " + (int) phase21RetryDir + "°");
       RoundTripResult retry = runGreedyAttempt(start, searchRadius, desiredDistance,
         phase21RetryDir, baseSubRouteCount, provider, bias, returnOracle, poolShape,
-        IsoStartPolicy.DUAL_IF_WEAK);
+        IsoStartPolicy.BLEND);
       if (!isDegradedGreedyResult(retry)
           && retry != null && retry.getLoopWaypoints() != null
           && retry.getLoopWaypoints().size() >= 4) {
@@ -3362,9 +3361,7 @@ public class RoutingEngine extends Thread {
     return result;
   }
 
-  static IsoStartPolicy selectIsoStartPolicy(IsoPoolHealth.PoolShape poolShape,
-                                             FrontierAxis frontierAxis,
-                                             double requestedDirection) {
+  static IsoStartPolicy selectIsoStartPolicy(IsoPoolHealth.PoolShape poolShape) {
     if (poolShape == null) {
       return IsoStartPolicy.GRAPH_NATIVE_ONLY;
     }
@@ -3380,11 +3377,10 @@ public class RoutingEngine extends Thread {
     if (staticHealth.state() == IsoPoolHealth.State.UNHEALTHY) {
       return IsoStartPolicy.GRAPH_NATIVE_ONLY;
     }
-    if (frontierAxis != null && frontierAxis.hasStrongAxis
-        && requestedDirection >= 0
-        && isPerpendicularToAxis(requestedDirection, frontierAxis.axisBearingDegrees)) {
-      return IsoStartPolicy.DUAL_IF_WEAK;
-    }
+    // No third value for the perpendicular-strong-axis situation: the former
+    // DUAL_IF_WEAK was behaviorally identical to BLEND (no consumer ever
+    // distinguished them), and the Phase 2.1 axis retry derives its own
+    // trigger conditions from the frontier axis directly.
     return IsoStartPolicy.BLEND;
   }
 
@@ -3689,7 +3685,7 @@ public class RoutingEngine extends Thread {
     // Use direction-aware scoring: prefer roads perpendicular to the travel
     // direction (the route naturally crosses them) over parallel roads
     // (which often require a detour to reach).
-    int minWaypoints = 3;
+    int minWaypoints = MIN_ROUNDTRIP_VIAS;
     int remaining = intermediateCount;
 
     for (int i = intermediateCount; i >= 1; i--) {

@@ -43,19 +43,14 @@ public class GreedyRoundTripPlannerTest {
     // Default (full) effort: 3 routed candidates per step, 5 on late steps/retries.
     Assert.assertEquals(3, planner.routeBudgetFor(false));
     Assert.assertEquals(5, planner.routeBudgetFor(true));
-    // Bounded effort (BALANCED tier, issue #27): 2 / 3. K stays >= 2 so the
-    // routed comparison and the graph-native source quota remain functional.
-    planner.setBoundedEffort(true);
-    Assert.assertEquals(GreedyRoundTripPlanner.MAX_ROUTE_ATTEMPTS_BOUNDED,
-      planner.routeBudgetFor(false));
-    Assert.assertEquals(GreedyRoundTripPlanner.MAX_ROUTE_ATTEMPTS_LATE_BOUNDED,
-      planner.routeBudgetFor(true));
+    // Bounded effort (BALANCED tier, issue #27): 2 / 3, wired from the ONE
+    // source of truth — the effort-policy preset production passes to
+    // setRouteBudgets. K stays >= 2 so the routed comparison and the
+    // graph-native source quota remain functional.
+    RoundTripEffortPolicy bounded = RoundTripEffortPolicy.BOUNDED_PRESET;
+    planner.setRouteBudgets(bounded.topKNormal, bounded.topKLate);
     Assert.assertEquals(2, planner.routeBudgetFor(false));
     Assert.assertEquals(3, planner.routeBudgetFor(true));
-    // And back off again — the flag must not latch.
-    planner.setBoundedEffort(false);
-    Assert.assertEquals(3, planner.routeBudgetFor(false));
-    Assert.assertEquals(5, planner.routeBudgetFor(true));
     // The generalized knob (effort policy presets: QUALITY = 4/6).
     planner.setRouteBudgets(4, 6);
     Assert.assertEquals(4, planner.routeBudgetFor(false));
@@ -170,7 +165,7 @@ public class GreedyRoundTripPlannerTest {
   public void isoStartPolicyKeepsRichPoolBlended() {
     IsoPoolHealth.PoolShape rich = new IsoPoolHealth.PoolShape(24, 12, 360.0, 4, true);
     Assert.assertEquals(RoutingEngine.IsoStartPolicy.BLEND,
-      RoutingEngine.selectIsoStartPolicy(rich, FrontierAxis.NONE, -1));
+      RoutingEngine.selectIsoStartPolicy(rich));
   }
 
   @Test
@@ -182,13 +177,13 @@ public class GreedyRoundTripPlannerTest {
     // alone cannot reach.
     IsoPoolHealth.PoolShape weak = new IsoPoolHealth.PoolShape(6, 4, 180.0, 1, false);
     Assert.assertEquals(RoutingEngine.IsoStartPolicy.BLEND,
-      RoutingEngine.selectIsoStartPolicy(weak, FrontierAxis.NONE, -1));
+      RoutingEngine.selectIsoStartPolicy(weak));
   }
 
   @Test
   public void isoStartPolicyStartsGraphNativeWhenPoolNotAdmitted() {
     Assert.assertEquals(RoutingEngine.IsoStartPolicy.GRAPH_NATIVE_ONLY,
-      RoutingEngine.selectIsoStartPolicy(null, FrontierAxis.NONE, -1));
+      RoutingEngine.selectIsoStartPolicy(null));
   }
 
   @Test
@@ -203,14 +198,6 @@ public class GreedyRoundTripPlannerTest {
     // Healthy pools keep the base quota.
     Assert.assertEquals(1, GreedyRoundTripPlanner.graphNativeQuota(false, false, 2));
     Assert.assertEquals(2, GreedyRoundTripPlanner.graphNativeQuota(true, false, 3));
-  }
-
-  @Test
-  public void isoStartPolicyUsesLazyBranchForPerpendicularStrongAxis() {
-    IsoPoolHealth.PoolShape rich = new IsoPoolHealth.PoolShape(24, 12, 360.0, 4, true);
-    FrontierAxis eastWest = new FrontierAxis(true, 90.0, 4.0);
-    Assert.assertEquals(RoutingEngine.IsoStartPolicy.DUAL_IF_WEAK,
-      RoutingEngine.selectIsoStartPolicy(rich, eastWest, 0));
   }
 
   @Test

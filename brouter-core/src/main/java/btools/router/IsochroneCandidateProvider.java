@@ -39,10 +39,13 @@ final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
   private static final int DEDUPE_GRANULARITY = 100;
   /** Below this filtered-pool size, we relax the hits<3 filter (matches buildCandidateProvider gate). */
   private static final int MIN_DIVERSITY_BEFORE_RELAX = 6;
-  /** Minimum distinct angular buckets the filtered pool must span. */
-  private static final int MIN_DISTINCT_BUCKETS = 4;
+  /** Minimum distinct angular buckets the filtered pool must span. Package-visible:
+   *  {@link IsoPoolHealth}'s calibration anchor (the weakest ADMITTED shape scores
+   *  exactly 0.50) references these admission thresholds structurally, so relaxing
+   *  the blend admission cannot silently invalidate the anchor. */
+  static final int MIN_DISTINCT_BUCKETS = 4;
   /** Minimum angular span of the filtered pool in degrees (avoid corridor-only pools). */
-  private static final double MIN_ANGULAR_SPAN_DEG = 180.0;
+  static final double MIN_ANGULAR_SPAN_DEG = 180.0;
 
   private final List<IsoCandidate> pool;
   private final boolean diverse;

@@ -2,6 +2,8 @@ package btools.router;
 
 import java.util.Locale;
 
+import btools.util.CheapAngleMeter;
+
 /**
  * Per-plan health model of the ISO_GREEDY start-centered candidate pool
  * (issue #26 — "make ISO_GREEDY absorb plain GREEDY fallback").
@@ -81,10 +83,12 @@ final class IsoPoolHealth {
   /** Max deduction for few distinct sectors (full at ≤{@link #SECTORS_POOR}, none at ≥{@link #SECTORS_GOOD}). */
   static final double W_SECTORS = 0.22;
   static final int SECTORS_GOOD = 10;
-  static final int SECTORS_POOR = 4;
+  /** The provider's admission floors, referenced (not copied) so the 0.50
+   *  calibration anchor tracks the blend admission filter structurally. */
+  static final int SECTORS_POOR = IsochroneCandidateProvider.MIN_DISTINCT_BUCKETS;
   /** Max deduction for a narrow angular span (full at ≤{@link #SPAN_POOR_DEG}°, none at 360°). */
   static final double W_SPAN = 0.18;
-  static final double SPAN_POOR_DEG = 180.0;
+  static final double SPAN_POOR_DEG = IsochroneCandidateProvider.MIN_ANGULAR_SPAN_DEG;
   /** Deduction when the pool samples a single cost contour (no depth spread). */
   static final double W_SINGLE_CONTOUR = 0.05;
   /** Deduction when no return-distance oracle could be calibrated from the expansion. */
@@ -224,8 +228,7 @@ final class IsoPoolHealth {
 
   /** 45°-sector index in [0, {@link #ACCEPTED_SECTOR_COUNT}) for a bearing in degrees. */
   static int sectorOf(double bearingDeg) {
-    double norm = bearingDeg % 360.0;
-    if (norm < 0) norm += 360.0;
+    double norm = CheapAngleMeter.normalize(bearingDeg);
     return Math.min(ACCEPTED_SECTOR_COUNT - 1,
       (int) (norm / (360.0 / ACCEPTED_SECTOR_COUNT)));
   }
