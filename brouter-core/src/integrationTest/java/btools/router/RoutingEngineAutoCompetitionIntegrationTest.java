@@ -22,6 +22,19 @@ import org.junit.Test;
  */
 public class RoutingEngineAutoCompetitionIntegrationTest {
 
+  /**
+   * Set {@code -Dloop.absorption.matrix=true} to run the standalone GREEDY and
+   * ISO_GREEDY passes that feed the {@code [absorption]} per-planner score
+   * matrix printed by
+   * {@link #targetedIsoGreedyAbsorptionComparisonDocumentsRemainingGreedyNeed}.
+   * Off by default: those extra passes are documentation only (they feed no
+   * assertions) and each is a full multi-second round-trip computation, so the
+   * unattended run skips them and exercises only the asserted AUTO passes.
+   * Mirrors the opt-in pattern of {@code RoundTripPerfBudgetTest}'s
+   * {@code -Dperf.calibrate=true}.
+   */
+  private static final boolean ABSORPTION_MATRIX = Boolean.getBoolean("loop.absorption.matrix");
+
   private File segmentDir;
   private File profileDir;
 
@@ -297,6 +310,13 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
       auto.getFoundTrack().message.contains("Also tried GREEDY"));
   }
 
+  /**
+   * The 9 AUTO passes and their assertions run unconditionally. The 18
+   * standalone GREEDY/ISO_GREEDY passes that feed the {@code [absorption]}
+   * per-planner score matrix are documentation only and cost a full multi-second
+   * round-trip each, so they run only under {@code -Dloop.absorption.matrix=true}
+   * (see {@link #ABSORPTION_MATRIX}); off by default the matrix line is skipped.
+   */
   @Test
   public void targetedIsoGreedyAbsorptionComparisonDocumentsRemainingGreedyNeed() {
     Scenario[] scenarios = {
@@ -314,26 +334,31 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
     List<String> separateGreedyNeeds = new ArrayList<>();
     for (Scenario s : scenarios) {
       Assume.assumeTrue("Segment data required for " + s.region, hasSegmentData(s.region.segmentFile));
-      RoutingEngine greedy = runRoundTrip(s.region, s.profileName, s.searchRadius, s.direction,
-        RoundTripAlgorithm.GREEDY, 180_000);
-      RoutingEngine isoGreedy = runRoundTrip(s.region, s.profileName, s.searchRadius, s.direction,
-        RoundTripAlgorithm.ISO_GREEDY, 180_000);
       RoutingEngine auto = runRoundTrip(s.region, s.profileName, s.searchRadius, s.direction,
         RoundTripAlgorithm.AUTO, 180_000);
-
-      double greedyScore = scoreOrNaN(greedy.getFoundTrack(), s.profileName, s.searchRadius, s.direction);
-      double isoScore = scoreOrNaN(isoGreedy.getFoundTrack(), s.profileName, s.searchRadius, s.direction);
       String autoMessage = auto.getFoundTrack() == null ? auto.getErrorMessage() : auto.getFoundTrack().message;
-      RoundTripResult isoTelemetry = isoGreedy.getLastRoundTripResult();
-      boolean internalCompared = isoTelemetry != null && isoTelemetry.isInternalGraphNativeCompared();
-      boolean graphNativeProvider = isoTelemetry != null
-        && Double.isNaN(isoTelemetry.getIsoPoolHealthScore())
-        && isoTelemetry.getAcceptedIsoLegs() == 0
-        && isoTelemetry.getAcceptedNonIsoLegs() > 0;
-      System.out.println(String.format(java.util.Locale.US,
-        "[absorption] %s/%s r=%d dir=%d greedy=%.3f iso=%.3f internalCompared=%s graphNativeProvider=%s auto=%s",
-        s.region.name(), s.profileName, s.searchRadius, s.direction,
-        greedyScore, isoScore, internalCompared, graphNativeProvider, autoMessage));
+
+      if (ABSORPTION_MATRIX) {
+        // Opt-in documentation matrix: the standalone GREEDY/ISO_GREEDY passes
+        // exist only to print the per-planner scores below, they feed no
+        // assertions. Each is a full multi-second round-trip computation.
+        RoutingEngine greedy = runRoundTrip(s.region, s.profileName, s.searchRadius, s.direction,
+          RoundTripAlgorithm.GREEDY, 180_000);
+        RoutingEngine isoGreedy = runRoundTrip(s.region, s.profileName, s.searchRadius, s.direction,
+          RoundTripAlgorithm.ISO_GREEDY, 180_000);
+        double greedyScore = scoreOrNaN(greedy.getFoundTrack(), s.profileName, s.searchRadius, s.direction);
+        double isoScore = scoreOrNaN(isoGreedy.getFoundTrack(), s.profileName, s.searchRadius, s.direction);
+        RoundTripResult isoTelemetry = isoGreedy.getLastRoundTripResult();
+        boolean internalCompared = isoTelemetry != null && isoTelemetry.isInternalGraphNativeCompared();
+        boolean graphNativeProvider = isoTelemetry != null
+          && Double.isNaN(isoTelemetry.getIsoPoolHealthScore())
+          && isoTelemetry.getAcceptedIsoLegs() == 0
+          && isoTelemetry.getAcceptedNonIsoLegs() > 0;
+        System.out.println(String.format(java.util.Locale.US,
+          "[absorption] %s/%s r=%d dir=%d greedy=%.3f iso=%.3f internalCompared=%s graphNativeProvider=%s auto=%s",
+          s.region.name(), s.profileName, s.searchRadius, s.direction,
+          greedyScore, isoScore, internalCompared, graphNativeProvider, autoMessage));
+      }
 
       if (auto.getFoundTrack() == null || auto.getErrorMessage() != null) {
         separateGreedyNeeds.add(s + ": AUTO failed: " + auto.getErrorMessage());
@@ -385,32 +410,33 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
 
   /** Run an AUTO round trip from the Innsbruck start and return the found track. */
   private OsmTrack runAuto(String profileName, int searchRadius, int direction, boolean forceHeading) {
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((11.400 + 180) * 1_000_000);
-    start.ilat = (int) ((47.260 + 90) * 1_000_000);
-    start.name = "from";
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(start);
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, profileName + ".brf").getAbsolutePath();
-    rctx.roundTripDistance = searchRadius;
-    rctx.roundTripAlgorithm = RoundTripAlgorithm.AUTO;
-    rctx.startDirection = direction;
-    rctx.forceUseStartDirection = forceHeading;
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(180_000);
-    return re.getFoundTrack();
+    int ilon = (int) ((11.400 + 180) * 1_000_000);
+    int ilat = (int) ((47.260 + 90) * 1_000_000);
+    return runRoundTripEngine(ilon, ilat, profileName, searchRadius, direction,
+      RoundTripAlgorithm.AUTO, forceHeading, 0, 180_000).getFoundTrack();
   }
 
   private RoutingEngine runRoundTrip(LoopTestRegion region, String profileName,
       int searchRadius, int direction, RoundTripAlgorithm algo, long timeoutMs) {
+    return runRoundTripEngine(region.ilon, region.ilat, profileName, searchRadius,
+      direction, algo, false, 0, timeoutMs);
+  }
+
+  /**
+   * One engine-construction path shared by the round-trip integration helpers
+   * ({@link #runAuto}, {@link #runRoundTrip}, {@link #runRoundTripWithTurns}), so
+   * their request setup cannot drift apart on defaults. Builds a single-waypoint
+   * round-trip request at the given integer coordinates and runs it to
+   * completion. A {@code false} {@code forceHeading} and a {@code 0}
+   * {@code turnInstructionMode} leave the RoutingContext at its constructor
+   * defaults (i.e. behave exactly as if the field were never set).
+   */
+  private RoutingEngine runRoundTripEngine(int ilon, int ilat, String profileName,
+      int searchRadius, int direction, RoundTripAlgorithm algo,
+      boolean forceHeading, int turnInstructionMode, long timeoutMs) {
     OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = region.ilon;
-    start.ilat = region.ilat;
+    start.ilon = ilon;
+    start.ilat = ilat;
     start.name = "from";
     List<OsmNodeNamed> wps = new ArrayList<>();
     wps.add(start);
@@ -420,6 +446,8 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
     rctx.roundTripDistance = searchRadius;
     rctx.roundTripAlgorithm = algo;
     rctx.startDirection = direction;
+    rctx.forceUseStartDirection = forceHeading;
+    rctx.turnInstructionMode = turnInstructionMode;
 
     RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
       RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
@@ -504,25 +532,10 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
 
   private OsmTrack runRoundTripWithTurns(double lon, double lat, String profileName,
       int searchRadius, int direction, RoundTripAlgorithm algo, int turnInstructionMode) {
-    OsmNodeNamed start = new OsmNodeNamed();
-    start.ilon = (int) ((lon + 180) * 1_000_000);
-    start.ilat = (int) ((lat + 90) * 1_000_000);
-    start.name = "from";
-    List<OsmNodeNamed> wps = new ArrayList<>();
-    wps.add(start);
-
-    RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = new File(profileDir, profileName + ".brf").getAbsolutePath();
-    rctx.roundTripDistance = searchRadius;
-    rctx.roundTripAlgorithm = algo;
-    rctx.startDirection = direction;
-    rctx.turnInstructionMode = turnInstructionMode;
-
-    RoutingEngine re = new RoutingEngine(null, null, segmentDir, wps, rctx,
-      RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
-    re.quite = true;
-    re.doRun(180_000);
-    return re.getFoundTrack();
+    int ilon = (int) ((lon + 180) * 1_000_000);
+    int ilat = (int) ((lat + 90) * 1_000_000);
+    return runRoundTripEngine(ilon, ilat, profileName, searchRadius, direction,
+      algo, false, turnInstructionMode, 180_000).getFoundTrack();
   }
 
   /** Count consecutive-edge intersections in a track polyline (excluding

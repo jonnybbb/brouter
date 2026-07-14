@@ -76,6 +76,11 @@ public class LoopGoldenSignatureTest {
     new Scenario(LoopTestRegion.URBAN_BERLIN, 8000, 0, "fastbike", RoundTripAlgorithm.ISO_GREEDY),
     new Scenario(LoopTestRegion.RURAL_LOZERE, 8000, 0, "gravel", RoundTripAlgorithm.GREEDY),
     new Scenario(LoopTestRegion.RURAL_LOZERE, 8000, 0, "gravel", RoundTripAlgorithm.ISO_GREEDY),
+    // Pin the BLENDED ISO_GREEDY plan at dir90: the plain dir90 cell's golden
+    // is byte-identical to greedy's because the internal graph-native branch
+    // wins there — without this cell no golden covers the blended planner's
+    // dir90 output at all.
+    new Scenario(LoopTestRegion.DREIEICH, 8000, 90, "fastbike", RoundTripAlgorithm.ISO_GREEDY, true),
   };
 
   @Test
@@ -161,6 +166,7 @@ public class LoopGoldenSignatureTest {
       // loops (err=null), freezing a degraded loop into the golden instead of
       // surfacing it as a regression (NO_TRACK).
       rctx.roundTripStrictQuality = true;
+      rctx.roundTripInternalCompare = !s.blendOnly;
 
       RoutingEngine re = new RoutingEngine(
         null, null, segDir, wplist, rctx,
@@ -215,20 +221,32 @@ public class LoopGoldenSignatureTest {
     final int direction;
     final String profile;
     final RoundTripAlgorithm algorithm;
+    /** Disable ISO_GREEDY's internal graph-native comparison, so the cell pins
+     *  the BLENDED planner's output even where the comparison branch would win
+     *  (without such a cell, a blended-planner regression stays invisible as
+     *  long as the internal branch keeps replacing it). */
+    final boolean blendOnly;
 
     Scenario(LoopTestRegion region, int searchRadius, int direction,
              String profile, RoundTripAlgorithm algorithm) {
+      this(region, searchRadius, direction, profile, algorithm, false);
+    }
+
+    Scenario(LoopTestRegion region, int searchRadius, int direction,
+             String profile, RoundTripAlgorithm algorithm, boolean blendOnly) {
       this.region = region;
       this.searchRadius = searchRadius;
       this.direction = direction;
       this.profile = profile;
       this.algorithm = algorithm;
+      this.blendOnly = blendOnly;
     }
 
     String key() {
       return String.format("%s|%s|r%d|dir%d|%s",
         algorithm.name().toLowerCase(), region.name().toLowerCase(),
-        searchRadius, direction, profile);
+        searchRadius, direction, profile)
+        + (blendOnly ? "|blend_only" : "");
     }
   }
 }

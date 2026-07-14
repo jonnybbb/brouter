@@ -223,6 +223,26 @@ public class RoundTripQualityFixtureTest {
   }
 
   /**
+   * Positive control for the shared competition budget (restores the coverage
+   * of the deleted "full budget should run more than one candidate"
+   * assertion): QUALITY always fields both planners, so a generous budget
+   * must record MORE than one candidate in the summary. A deadline-arithmetic
+   * regression that stops every competition after candidate #1 fails here —
+   * the tiny-budget tests alone cannot see it (they expect 1 candidate).
+   */
+  @Test
+  public void qualityWithFullBudgetRunsMoreThanOneCandidate() {
+    RoutingEngine re = engineWithBudget(RoundTripAlgorithm.QUALITY, 60_000L);
+    Assert.assertNull("quality run must complete cleanly: " + re.getErrorMessage(),
+      re.getErrorMessage());
+    OsmTrack t = re.getFoundTrack();
+    Assert.assertNotNull(t);
+    Assert.assertNotNull("adopted track carries the competition summary", t.message);
+    Assert.assertFalse("full budget must run more than one candidate: " + t.message,
+      t.message.contains("after 1 candidate(s)"));
+  }
+
+  /**
    * Context-aware AUTO: a request budget too short to fund the full
    * competition resolves BOUNDED effort — one bounded planner dispatch (with
    * the minimum-slice floor, so even a 1 ms budget ships a loop) instead of
