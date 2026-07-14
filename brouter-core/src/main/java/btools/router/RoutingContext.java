@@ -276,6 +276,14 @@ public final class RoutingContext {
   public boolean roundTripStrictQuality;
 
   /**
+   * ISO_GREEDY's internal graph-native comparison branch (issue #26). On by
+   * default; embedders/tests switch it off to observe the BLENDED planner's
+   * raw output — the golden suite pins a blend-only cell so a blended-planner
+   * regression cannot hide behind a winning comparison branch.
+   */
+  public boolean roundTripInternalCompare = true;
+
+  /**
    * Via-arc densification: when on, the explicit-via round-trip inserts generated
    * "bulge" waypoints between consecutive user anchors, offset outward from the
    * anchor centroid, so each leg follows the loop perimeter instead of cutting the
@@ -728,6 +736,7 @@ public final class RoutingContext {
     // report no errorMessage, so the parent's strict re-gate finds no winner
     // but can only surface "unknown" instead of the child's real reason.
     c.roundTripStrictQuality = this.roundTripStrictQuality;
+    c.roundTripInternalCompare = this.roundTripInternalCompare;
     // Densification request inputs (the effective explicitViaDensify flag is
     // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
     // AUTO children currently route a single waypoint and never densify, but

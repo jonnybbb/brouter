@@ -21,12 +21,8 @@ package btools.router;
  *   <li>{@link #score} — the {@link RouteChoiceScore.Verdict} for ranking;
  *       null if the candidate failed before scoring was attempted.</li>
  *   <li>{@link #runtimeMillis} — wall-clock of this candidate's attempt.</li>
- *   <li>{@link #routedIsoCandidates}/{@link #routedNonIsoCandidates} —
- *       telemetry: how many candidates of each provenance the greedy
- *       planner actually routed (not just generated).</li>
- *   <li>{@link #acceptedIsoLegs}/{@link #acceptedNonIsoLegs} — how many of
- *       those routed candidates were accepted into the final loop. "Low
- *       iso usage" should be measured by accepted, not routed.</li>
+ *   <li>{@link #planner} — the child planner's full {@link RoundTripResult};
+ *       all issue-#26 winner-attribution telemetry reads through it.</li>
  *   <li>{@link #errorMessage} — set when the candidate failed (engine error,
  *       gate rejection, planner aborted).</li>
  * </ul>
@@ -39,32 +35,15 @@ final class RoundTripCandidateResult {
   RoundTripQualityResult gateVerdict;
   RouteChoiceScore.Verdict score;
   long runtimeMillis;
-  int routedIsoCandidates;
-  int routedNonIsoCandidates;
-  int acceptedIsoLegs;
-  int acceptedNonIsoLegs;
   /**
-   * Issue #26 winner-attribution telemetry, copied from the child's
-   * {@link RoundTripResult}: accepted legs that only reached the routed
-   * comparison via the source quota, the final iso-pool health score
-   * ({@code NaN} = no iso pool), and the step at which the pool's influence
-   * was reduced ({@code -1} = never). Together these answer "would this
-   * candidate have needed a plain-GREEDY fallback?" without a matrix rerun.
+   * The child planner's result, or {@code null} when the candidate never
+   * produced one (legacy WAYPOINT/ISOCHRONE paths, engine error). The
+   * attribution accessors below read THROUGH this reference — the former
+   * field-by-field mirror invited copy omissions whose sentinel defaults
+   * (NaN/-1/0) silently flipped AUTO's plain-GREEDY absorption decision.
    */
-  int acceptedQuotaInjectedLegs;
-  double isoPoolHealthScore = Double.NaN;
-  int poolDemotedAtStep = -1;
-  boolean internalGraphNativeCompared;
+  RoundTripResult planner;
   String errorMessage;
-  /**
-   * Keep-when-forced marker from the child planner
-   * ({@link RoundTripResult#isForcedCorridorAccepted()}): the loop is a rideable
-   * same-way-back corridor and the planner proved no clean alternative exists.
-   * The parent's re-gate must honor it (allow same-way-back) exactly like the
-   * direct routing path does — otherwise AUTO rejects a route the child engine
-   * accepted by design.
-   */
-  boolean forcedCorridorAccepted;
 
   RoundTripCandidateResult(RoundTripAlgorithm algorithm) {
     this.algorithm = algorithm;
@@ -79,6 +58,57 @@ final class RoundTripCandidateResult {
     return (score == null) ? 0.0 : score.score();
   }
 
+  int routedIsoCandidates() {
+    return planner == null ? 0 : planner.getRoutedIsoCandidates();
+  }
+
+  int routedNonIsoCandidates() {
+    return planner == null ? 0 : planner.getRoutedNonIsoCandidates();
+  }
+
+  int acceptedIsoLegs() {
+    return planner == null ? 0 : planner.getAcceptedIsoLegs();
+  }
+
+  int acceptedNonIsoLegs() {
+    return planner == null ? 0 : planner.getAcceptedNonIsoLegs();
+  }
+
+  int acceptedQuotaInjectedLegs() {
+    return planner == null ? 0 : planner.getAcceptedQuotaInjectedLegs();
+  }
+
+  /** Final iso-pool health score; {@code NaN} = no iso pool. */
+  double isoPoolHealthScore() {
+    return planner == null ? Double.NaN : planner.getIsoPoolHealthScore();
+  }
+
+  /** Step at which the pool's influence was reduced; {@code -1} = never. */
+  int poolDemotedAtStep() {
+    return planner == null ? -1 : planner.getPoolDemotedAtStep();
+  }
+
+  boolean internalGraphNativeCompared() {
+    return planner != null && planner.isInternalGraphNativeCompared();
+  }
+
+  /** The child's explicit graph-native-only start decision (issue #26). */
+  boolean graphNativeOnlyStart() {
+    return planner != null && planner.isGraphNativeOnlyStart();
+  }
+
+  /**
+   * Keep-when-forced marker from the child planner
+   * ({@link RoundTripResult#isForcedCorridorAccepted()}): the loop is a rideable
+   * same-way-back corridor and the planner proved no clean alternative exists.
+   * The parent's re-gate must honor it (allow same-way-back) exactly like the
+   * direct routing path does — otherwise AUTO rejects a route the child engine
+   * accepted by design.
+   */
+  boolean forcedCorridorAccepted() {
+    return planner != null && planner.isForcedCorridorAccepted();
+  }
+
   @Override
   public String toString() {
     if (errorMessage != null) {
@@ -91,13 +121,13 @@ final class RoundTripCandidateResult {
       "%s: accepted=%s, track=%dm, gateShape=%s, score=%.3f, runtime=%dms, isoRouted=%d, nonIsoRouted=%d",
       algorithm, accepted(), track.distance,
       gateVerdict == null ? "?" : gateVerdict.getShape(),
-      scoreValue(), runtimeMillis, routedIsoCandidates, routedNonIsoCandidates)
+      scoreValue(), runtimeMillis, routedIsoCandidates(), routedNonIsoCandidates())
       // Winner-attribution suffix, only for candidates that ran an iso pool —
       // this is what the "plain GREEDY fallback wins are gone" acceptance
       // check greps from AUTO competition logs.
-      + (Double.isNaN(isoPoolHealthScore) ? "" : String.format(java.util.Locale.US,
+      + (Double.isNaN(isoPoolHealthScore()) ? "" : String.format(java.util.Locale.US,
         ", quotaAccepted=%d, poolHealth=%.2f, demotedAtStep=%d",
-        acceptedQuotaInjectedLegs, isoPoolHealthScore, poolDemotedAtStep))
-      + (internalGraphNativeCompared ? ", internalGraphNativeCompared=true" : "");
+        acceptedQuotaInjectedLegs(), isoPoolHealthScore(), poolDemotedAtStep()))
+      + (internalGraphNativeCompared() ? ", internalGraphNativeCompared=true" : "");
   }
 }

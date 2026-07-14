@@ -49,6 +49,7 @@ public class RoundTripResult {
   private int poolDemotedAtStep = -1;
   private double isoPoolHealthScore = Double.NaN;
   private boolean internalGraphNativeCompared;
+  private boolean graphNativeOnlyStart;
 
   // Phase 2.0 telemetry — isochrone-asymmetry initial bearing.
   // Populated by RoutingEngine.doGreedyRoundTrip after running the
@@ -225,6 +226,13 @@ public class RoundTripResult {
    *  GREEDY child for the same request. */
   public boolean isInternalGraphNativeCompared() { return internalGraphNativeCompared; }
   public void setInternalGraphNativeCompared(boolean v) { this.internalGraphNativeCompared = v; }
+
+  /** The engine's explicit start-policy decision: this plan ran on graph-native
+   *  candidates only (iso pool unadmitted or statically unhealthy). AUTO's
+   *  plain-GREEDY absorption decision reads THIS — inferring it from telemetry
+   *  sentinels silently flipped the decision when telemetry semantics moved. */
+  public boolean isGraphNativeOnlyStart() { return graphNativeOnlyStart; }
+  public void setGraphNativeOnlyStart(boolean v) { this.graphNativeOnlyStart = v; }
 
   /** Whether Phase 2.0 isochrone-asymmetry bearing bias fired for this loop.
    *  False when the algorithm wasn't ISO_GREEDY, when the user provided an

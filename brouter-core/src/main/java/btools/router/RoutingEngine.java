@@ -989,6 +989,13 @@ public class RoutingEngine extends Thread {
           runAutoCandidateCompetition(searchRadius, direction);
           return;
         }
+        if (algo == RoundTripAlgorithm.QUALITY) {
+          // Same constraint as the greedy/BALANCED branches: the planners do
+          // not honor allowSamewayback. Name the tier in the log — the silent
+          // rewrite below (QUALITY -> selectRoundTripAlgorithm -> WAYPOINT)
+          // otherwise hides that the MAX effort request was downgraded.
+          logInfo("QUALITY round trip does not support allowSamewayback, falling back to waypoint algorithm");
+        }
 
         // AUTO candidate competition, effort resolved from context.
         //
@@ -1146,60 +1153,71 @@ public class RoutingEngine extends Thread {
       // spurs pass the gate without any message, yet the cyclist sees them on
       // the map. Disclose every nonzero count — informational only, the route
       // ships either way (lenient product policy: odd-but-cycleable > nothing).
-      int shippedCrossings = RoundTripQualityGate.countSelfIntersections(foundTrack);
-      if (shippedCrossings > 0) {
-        appendRouteMessage(foundTrack, String.format(Locale.US,
-          "Note: route crosses its own path %d time%s.",
-          shippedCrossings, shippedCrossings == 1 ? "" : "s"));
-      }
-      if (foundTrack.nodes != null) {
-        int[] spurInfo = LoopQualityMetrics.computeSpurInfo(foundTrack.nodes);
-        if (spurInfo[0] > 0 && spurInfo[1] > 600) {
+      // The whole decoration block runs under its own guard: the loop is
+      // complete and gate-accepted at this point, and the outer catch nulls
+      // foundTrack — an exception in a cosmetic advisory must never destroy
+      // a rideable result.
+      try {
+        int shippedCrossings = RoundTripQualityGate.countSelfIntersections(foundTrack);
+        if (shippedCrossings > 0) {
           appendRouteMessage(foundTrack, String.format(Locale.US,
-            "Note: route contains %d out-and-back section%s (longest %.1fkm).",
-            spurInfo[0], spurInfo[0] == 1 ? "" : "s", spurInfo[1] / 1000.0));
+            "Note: route crosses its own path %d time%s.",
+            shippedCrossings, shippedCrossings == 1 ? "" : "s"));
         }
-      }
-
-      // Residual-chord advisory (loop-review backlog item 1): the planner's
-      // fidelity enforcement retries chord legs, but a best-effort adoption or
-      // a non-greedy path can still ship a long null-tag edge that renders as
-      // a straight line cutting across terrain. Ground truth (Lozère study):
-      // these follow a real curving road whose detail is missing, so the route
-      // is rideable — disclose, don't reject. Same threshold as the planner's
-      // fidelity check so the two mechanisms never disagree about what a
-      // chord is.
-      int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(foundTrack);
-      if (chordMeters > GreedyRoundTripPlanner.MAX_UNDETAILED_EDGE_METERS) {
-        appendRouteMessage(foundTrack, String.format(Locale.US,
-          "Note: route contains an undetailed straight-line section of ~%dm "
-            + "(way detail missing in the map data; the actual road may curve).",
-          chordMeters));
-      }
-
-      // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
-      // overshoot is worth flagging so the caller can suggest a shorter
-      // distance. This stays informational because the hard gate above
-      // already rejects ratios outside the safe range.
-      if (foundTrack.distance > 0) {
-        double ratio = foundTrack.distance / expectedDistance;
-        if (ratio > 1.5) {
-          String warning = String.format(
-            "Warning: route distance (%dkm) exceeds requested loop distance (%dkm) by %.0f%%. "
-            + "The road network in this area is too constrained for a compact loop at this distance. "
-            + "Consider a shorter distance or an out-and-back route.",
-            foundTrack.distance / 1000, (int) (expectedDistance / 1000), (ratio - 1) * 100);
-          logInfo(warning);
-          appendRouteMessage(foundTrack, warning);
+        if (foundTrack.nodes != null) {
+          int[] spurInfo = LoopQualityMetrics.computeSpurInfo(foundTrack.nodes);
+          if (spurInfo[0] > 0 && spurInfo[1] > 600) {
+            appendRouteMessage(foundTrack, String.format(Locale.US,
+              "Note: route contains %d out-and-back section%s (longest %.1fkm).",
+              spurInfo[0], spurInfo[0] == 1 ? "" : "s", spurInfo[1] / 1000.0));
+          }
         }
-      }
 
-      // The advisory/disclosures above were appended to foundTrack.message, but
-      // FormatGpx emits <brouter:info> and its message comments from
-      // messageList, not message. Sync messageList[0] so the quality warning
-      // actually reaches GPX/JSON consumers. Idempotent; no-op for the AUTO
-      // path (which returns earlier and syncs via adoptCandidateWinner).
-      ensureInfoMessage(foundTrack);
+        // Residual-chord advisory (loop-review backlog item 1): the planner's
+        // fidelity enforcement retries chord legs, but a best-effort adoption or
+        // a non-greedy path can still ship a long null-tag edge that renders as
+        // a straight line cutting across terrain. Ground truth (Lozère study):
+        // these follow a real curving road whose detail is missing, so the route
+        // is rideable — disclose, don't reject. Same threshold as the planner's
+        // fidelity check so the two mechanisms never disagree about what a
+        // chord is.
+        int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(foundTrack);
+        if (chordMeters > GreedyRoundTripPlanner.MAX_UNDETAILED_EDGE_METERS) {
+          appendRouteMessage(foundTrack, String.format(Locale.US,
+            "Note: route contains an undetailed straight-line section of ~%dm "
+              + "(way detail missing in the map data; the actual road may curve).",
+            chordMeters));
+        }
+
+        // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
+        // overshoot is worth flagging so the caller can suggest a shorter
+        // distance. This stays informational because the hard gate above
+        // already rejects ratios outside the safe range.
+        if (foundTrack.distance > 0) {
+          double ratio = foundTrack.distance / expectedDistance;
+          if (ratio > 1.5) {
+            String warning = String.format(
+              "Warning: route distance (%dkm) exceeds requested loop distance (%dkm) by %.0f%%. "
+              + "The road network in this area is too constrained for a compact loop at this distance. "
+              + "Consider a shorter distance or an out-and-back route.",
+              foundTrack.distance / 1000, (int) (expectedDistance / 1000), (ratio - 1) * 100);
+            logInfo(warning);
+            appendRouteMessage(foundTrack, warning);
+          }
+        }
+
+        // The advisory/disclosures above were appended to foundTrack.message, but
+        // FormatGpx emits <brouter:info> and its message comments from
+        // messageList, not message. Sync messageList[0] so the quality warning
+        // actually reaches GPX/JSON consumers. Idempotent; no-op for the AUTO
+        // path (which returns earlier and syncs via adoptCandidateWinner).
+        ensureInfoMessage(foundTrack);
+      } catch (RuntimeException advisoryFailure) {
+        logInfo("round-trip advisory decoration failed ("
+          + advisoryFailure.getClass().getSimpleName()
+          + "); returning the track without advisories");
+        logThrowable(advisoryFailure);
+      }
 
       long endTime = System.currentTimeMillis();
       logInfo("round trip execution time = " + (endTime - startTime) / 1000. + " seconds");
@@ -1589,7 +1607,7 @@ public class RoutingEngine extends Thread {
     if (isoGreedyR.scoreValue() >= CLEAR_ACCEPT_THRESHOLD) {
       return "ISO_GREEDY strong";
     }
-    if (isoGreedyR.internalGraphNativeCompared) {
+    if (isoGreedyR.internalGraphNativeCompared()) {
       return "ISO_GREEDY already compared graph-native branch";
     }
     if (isoGreedyAbsorbedGraphNativeTruth(isoGreedyR)) {
@@ -1598,39 +1616,43 @@ public class RoutingEngine extends Thread {
     return null;
   }
 
+  /**
+   * Trigger for the internal graph-native comparison branch. Delegates to the
+   * SAME gate+score evaluation the selection uses
+   * ({@link #scoreInternalGreedyResult}) so the trigger and the comparison can
+   * never judge a track differently — the flags drifted once (ferries
+   * hard-coded off here) and every ferry-using accepted loop paid a full
+   * spurious extra ladder.
+   */
   static boolean shouldRunInternalGraphNativeBranch(RoundTripResult result,
                                                     double desiredDistance,
                                                     String profileName,
                                                     double direction,
                                                     long now,
-                                                    long deadline) {
+                                                    long deadline,
+                                                    boolean allowSamewayback,
+                                                    boolean allowFerries) {
     if (now >= deadline) {
       return false;
     }
-    if (result == null || isDegradedGreedyResult(result)
-        || result.getTrack() == null
-        || result.getLoopWaypoints() == null
-        || result.getLoopWaypoints().size() < 4) {
-      return true;
-    }
-    RoundTripQualityResult gate = RoundTripQualityGate.evaluate(result.getTrack(),
-      desiredDistance, profileName, result.isForcedCorridorAccepted(), false, false);
-    if (gate == null || !gate.isAccepted()) {
-      return true;
-    }
-    RouteChoiceScore.Verdict score = RouteChoiceScore.score(result.getTrack(),
-      desiredDistance, profileName, gate, direction);
-    return score.score() < CLEAR_ACCEPT_THRESHOLD;
+    return internalBranchNeeded(scoreInternalGreedyResult(result, desiredDistance,
+      profileName, direction, allowSamewayback, allowFerries));
   }
 
-  private RoundTripResult selectBetterInternalIsoGreedyResult(RoundTripResult blended,
-                                                              RoundTripResult graphNative,
-                                                              double desiredDistance,
-                                                              double direction) {
-    RouteChoiceScore.Verdict blendedScore = scoreInternalGreedyResult(blended,
-      desiredDistance, direction);
-    RouteChoiceScore.Verdict graphScore = scoreInternalGreedyResult(graphNative,
-      desiredDistance, direction);
+  /** A blended verdict below the clear-accept bar (or none) warrants the comparison. */
+  private static boolean internalBranchNeeded(RouteChoiceScore.Verdict blendedVerdict) {
+    return blendedVerdict == null || blendedVerdict.score() < CLEAR_ACCEPT_THRESHOLD;
+  }
+
+  /**
+   * Selection between the blended result and the internal graph-native branch,
+   * on verdicts computed ONCE at the call site (each full-track gate+score
+   * pass rebuilds the crossing grid and corridor index — two per comparison
+   * suffice, not four).
+   */
+  private static RoundTripResult selectBetterInternalIsoGreedyResult(
+      RoundTripResult blended, RouteChoiceScore.Verdict blendedScore,
+      RoundTripResult graphNative, RouteChoiceScore.Verdict graphScore) {
     if (graphScore == null) {
       return blended;
     }
@@ -1646,17 +1668,27 @@ public class RoutingEngine extends Thread {
   private RouteChoiceScore.Verdict scoreInternalGreedyResult(RoundTripResult result,
                                                             double desiredDistance,
                                                             double direction) {
+    return scoreInternalGreedyResult(result, desiredDistance,
+      routingContext.getProfileName(), direction,
+      routingContext.allowSamewayback, roundTripFerriesAllowed());
+  }
+
+  static RouteChoiceScore.Verdict scoreInternalGreedyResult(RoundTripResult result,
+                                                            double desiredDistance,
+                                                            String profileName,
+                                                            double direction,
+                                                            boolean allowSamewayback,
+                                                            boolean allowFerries) {
     if (result == null || isDegradedGreedyResult(result)
         || result.getTrack() == null
         || result.getLoopWaypoints() == null
         || result.getLoopWaypoints().size() < 4) {
       return null;
     }
-    String profileName = routingContext.getProfileName();
     RoundTripQualityResult gate = RoundTripQualityGate.evaluate(result.getTrack(),
       desiredDistance, profileName,
-      routingContext.allowSamewayback || result.isForcedCorridorAccepted(),
-      false, roundTripFerriesAllowed());
+      allowSamewayback || result.isForcedCorridorAccepted(),
+      false, allowFerries);
     if (gate == null || !gate.isAccepted()) {
       return null;
     }
@@ -1665,10 +1697,13 @@ public class RoutingEngine extends Thread {
   }
 
   private static boolean isoGreedyAbsorbedGraphNativeTruth(RoundTripCandidateResult isoGreedyR) {
+    // The child's explicit start-policy decision: a graph-native-only plan
+    // already used the same candidate source as plain GREEDY, so a separate
+    // GREEDY child would duplicate it. (This used to be inferred from three
+    // telemetry sentinels — no iso legs + some non-iso legs + NaN health —
+    // which any telemetry-semantics change could silently flip.)
     return isoGreedyR.algorithm == RoundTripAlgorithm.ISO_GREEDY
-      && isoGreedyR.acceptedNonIsoLegs > 0
-      && isoGreedyR.acceptedIsoLegs == 0
-      && Double.isNaN(isoGreedyR.isoPoolHealthScore);
+      && isoGreedyR.graphNativeOnlyStart();
   }
 
   /**
@@ -1787,23 +1822,11 @@ public class RoutingEngine extends Thread {
       // getLinksProcessed() reports request-level totals (the perf budget
       // suite's work metric). Same-thread for sequential children; the
       // speculative parallel child is joined before its result is read.
-      linksProcessed += child.linksProcessed;
-      if (child.lastRoundTripResult != null) {
-        RoundTripResult cr = child.lastRoundTripResult;
-        r.routedIsoCandidates = cr.getRoutedIsoCandidates();
-        r.routedNonIsoCandidates = cr.getRoutedNonIsoCandidates();
-        r.acceptedIsoLegs = cr.getAcceptedIsoLegs();
-        r.acceptedNonIsoLegs = cr.getAcceptedNonIsoLegs();
-        r.acceptedQuotaInjectedLegs = cr.getAcceptedQuotaInjectedLegs();
-        r.isoPoolHealthScore = cr.getIsoPoolHealthScore();
-        r.poolDemotedAtStep = cr.getPoolDemotedAtStep();
-        r.internalGraphNativeCompared = cr.isInternalGraphNativeCompared();
-        // Keep-when-forced: the child accepted a same-way-back corridor because
-        // nothing clean exists. Without carrying this, the re-gate below would
-        // reject the track the child engine accepted by design (the direct
-        // routing path honors the same flag at the main gate).
-        r.forcedCorridorAccepted = cr.isForcedCorridorAccepted();
-      }
+      addLinksProcessed(child.linksProcessed);
+      // All winner-attribution telemetry (incl. the keep-when-forced marker
+      // the re-gate below honors) reads through this reference — no
+      // field-by-field copy to forget when RoundTripResult grows.
+      r.planner = child.lastRoundTripResult;
 
       if (r.track != null) {
         // Score against the parent's expected loop distance. This produces
@@ -1813,7 +1836,7 @@ public class RoutingEngine extends Thread {
         double expectedDist = 2 * Math.PI * searchRadius;
         String profileName = routingContext.getProfileName();
         r.gateVerdict = RoundTripQualityGate.evaluate(r.track, expectedDist,
-          profileName, routingContext.allowSamewayback || r.forcedCorridorAccepted,
+          profileName, routingContext.allowSamewayback || r.forcedCorridorAccepted(),
           false, roundTripFerriesAllowed());
         if (r.gateVerdict.isAccepted()) {
           r.score = RouteChoiceScore.score(r.track, expectedDist,
@@ -2773,6 +2796,19 @@ public class RoutingEngine extends Thread {
    * through to the shared floors and quality gate in {@code doRoundTrip} —
    * this method never returns an ungated success.
    */
+  /**
+   * One bounded tier slice: the tier budget clamped to the remaining request
+   * budget, floored at {@link #MIN_LADDER_RUNG_BUDGET_MS} — mirroring the
+   * competition's childCandidateBudgetMs contract, a nearly-spent request
+   * still funds ONE bounded run (a deliberate, bounded overrun: the caller
+   * gets a loop instead of a guaranteed instant timeout). An untimed request
+   * (deadline 0) gets the full tier budget.
+   */
+  private static long tierSliceMs(long tierBudgetMs, long requestDeadline, long now) {
+    return Math.min(tierBudgetMs, requestDeadline == 0 ? tierBudgetMs
+      : Math.max(requestDeadline - now, MIN_LADDER_RUNG_BUDGET_MS));
+  }
+
   private void doBoundedRoundTrip(double searchRadius, double direction,
                                   RoundTripEffortPolicy policy, String tierLabel,
                                   boolean greedyCapable) {
@@ -2789,13 +2825,7 @@ public class RoutingEngine extends Thread {
         + " using waypoint placement under the tier budget");
     } else {
       RoundTripEffortPolicy savedPolicy = roundTripEffortPolicy;
-      // Minimum-slice floor, mirroring the competition's childCandidateBudgetMs
-      // contract: a nearly-spent request budget still funds ONE bounded planner
-      // run (a deliberate, bounded overrun — the caller gets a loop instead of
-      // a guaranteed instant timeout). The tier budget stays the upper clamp.
-      long effectiveMs = Math.min(tierBudgetMs,
-        savedDeadline == 0 ? tierBudgetMs
-          : Math.max(savedDeadline - t0, MIN_LADDER_RUNG_BUDGET_MS));
+      long effectiveMs = tierSliceMs(tierBudgetMs, savedDeadline, t0);
       roundTripRequestDeadline = t0 + effectiveMs;
       roundTripEffortPolicy = policy;
       // The engine-level timers (island check, leg searches) run in THIS engine
@@ -2848,9 +2878,7 @@ public class RoutingEngine extends Thread {
       // minimum-slice floor as above so a spent budget still funds the one
       // cheap geometric attempt.
       long fallbackStart = System.currentTimeMillis();
-      long fallbackMs = Math.min(tierBudgetMs,
-        savedDeadline == 0 ? tierBudgetMs
-          : Math.max(savedDeadline - fallbackStart, MIN_LADDER_RUNG_BUDGET_MS));
+      long fallbackMs = tierSliceMs(tierBudgetMs, savedDeadline, fallbackStart);
       roundTripRequestDeadline = fallbackStart + fallbackMs;
       long savedRoutingBudget = roundTripRoutingBudgetMs;
       long savedMaxRunningTime = maxRunningTime;
@@ -2870,6 +2898,12 @@ public class RoutingEngine extends Thread {
         roundTripRequestDeadline = savedDeadline;
         roundTripRoutingBudgetMs = savedRoutingBudget;
         maxRunningTime = savedMaxRunningTime;
+      }
+      if (foundTrack != null) {
+        // The shipped track came from the waypoint fallback, not the planner —
+        // keeping the FAILED planner result would attribute its counters and
+        // pool-health telemetry to a loop the planner never produced.
+        lastRoundTripResult = null;
       }
     }
     logInfo(tierLabel + ": finished in " + (System.currentTimeMillis() - t0)
@@ -3025,17 +3059,23 @@ public class RoutingEngine extends Thread {
       }
     }
 
+    RouteChoiceScore.Verdict blendedInternalVerdict = null;
+    boolean runInternalBranch = false;
     if (algo == RoundTripAlgorithm.ISO_GREEDY
+        && routingContext.roundTripInternalCompare
         && !startGraphNativeOnly
         // QUALITY (runGreedyAlways) already fields a dedicated plain-GREEDY
         // child in the parent competition — this internal comparison would run
         // materially the same graph-native ladder a second time.
         && !roundTripEffortPolicy.runGreedyAlways
         && provider instanceof BlendedCandidateProvider
-        && shouldRunInternalGraphNativeBranch(result, desiredDistance,
-            routingContext.getProfileName(), effectiveDirection,
-            System.currentTimeMillis(), roundTripRequestDeadline == 0
-              ? Long.MAX_VALUE : roundTripRequestDeadline)) {
+        && System.currentTimeMillis() < (roundTripRequestDeadline == 0
+            ? Long.MAX_VALUE : roundTripRequestDeadline)) {
+      // Evaluate the blended verdict ONCE; the selection below reuses it.
+      blendedInternalVerdict = scoreInternalGreedyResult(result, desiredDistance, effectiveDirection);
+      runInternalBranch = internalBranchNeeded(blendedInternalVerdict);
+    }
+    if (runInternalBranch) {
       logInfo("ISO_GREEDY: running internal graph-native-only comparison branch");
       // Ladder order: BLEND (base first), NOT GRAPH_NATIVE_ONLY (base-1 first).
       // This branch replaced the ISO_GREEDY→GREEDY recursion, which ran the
@@ -3049,10 +3089,11 @@ public class RoutingEngine extends Thread {
       RoundTripResult graphNativeResult = runGreedyAttempt(start, searchRadius, desiredDistance,
         effectiveDirection, baseSubRouteCount, graphNativeProvider, bias, null, null,
         IsoStartPolicy.BLEND);
-      boolean comparable = scoreInternalGreedyResult(graphNativeResult,
-        desiredDistance, effectiveDirection) != null;
-      RoundTripResult selected = selectBetterInternalIsoGreedyResult(result, graphNativeResult,
-        desiredDistance, effectiveDirection);
+      RouteChoiceScore.Verdict graphNativeVerdict = scoreInternalGreedyResult(
+        graphNativeResult, desiredDistance, effectiveDirection);
+      boolean comparable = graphNativeVerdict != null;
+      RoundTripResult selected = selectBetterInternalIsoGreedyResult(
+        result, blendedInternalVerdict, graphNativeResult, graphNativeVerdict);
       if (selected == graphNativeResult) {
         logInfo("ISO_GREEDY: internal graph-native branch selected");
       } else if (comparable) {
@@ -3068,6 +3109,15 @@ public class RoutingEngine extends Thread {
     }
 
     if (result != null) {
+      // The explicit record of the shipped result's candidate source. When no
+      // blend exists at all (pool not admitted → `provider` IS the graph-native
+      // provider), every attempt — including a successful Phase 2.1 axis retry —
+      // planned on graph-native candidates. With an admitted blend, a
+      // successful retry ran the blend, so only the primary attempt's start
+      // policy counts.
+      boolean blendAvailable = provider instanceof BlendedCandidateProvider;
+      result.setGraphNativeOnlyStart(!blendAvailable
+        || (startGraphNativeOnly && !phase21Succeeded));
       result.setPhase21AxisRetryTriggered(phase21Triggered);
       result.setPhase21AxisRetrySucceeded(phase21Succeeded);
       result.setPhase21AxisBearingDegrees(frontierAxis.hasStrongAxis
@@ -8102,8 +8152,21 @@ public class RoutingEngine extends Thread {
     return finished;
   }
 
-  public int getLinksProcessed() {
+  public synchronized int getLinksProcessed() {
     return linksProcessed;
+  }
+
+  /**
+   * Aggregates a child engine's work count into this (parent) engine.
+   * Synchronized: in speculative AUTO mode the GREEDY child runs
+   * runChildCandidate on its own thread concurrently with the request
+   * thread's ISO_GREEDY aggregation — an unsynchronized += on the shared
+   * parent field loses one child's entire count. The engine's own hot-loop
+   * {@code linksProcessed++} stays unsynchronized (single-threaded per
+   * engine); only the cross-engine aggregation contends.
+   */
+  private synchronized void addLinksProcessed(int childLinks) {
+    linksProcessed += childLinks;
   }
 
   public int getDistance() {

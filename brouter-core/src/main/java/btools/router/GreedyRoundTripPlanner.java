@@ -524,6 +524,12 @@ public class GreedyRoundTripPlanner {
   private int graphNativeOnlyAtStep = -1;
   /** Accepted legs whose candidate held its routed slot only via quota injection. */
   private int acceptedQuotaInjectedLegs;
+  // Leg-attribution counters (issue #26 telemetry). Per-plan state like the
+  // quota counter above: a planner instance runs exactly one plan(). Fields
+  // rather than plan() locals so undoTentativeLeg and snapshotFallback can
+  // keep them consistent with the committed geometry.
+  private int acceptedIsoLegs;
+  private int acceptedNonIsoLegs;
 
   void setPoolHealth(IsoPoolHealth health) {
     this.poolHealth = health;
@@ -623,8 +629,6 @@ public class GreedyRoundTripPlanner {
     // graph-native and legacy radial candidates use the sentinel.
     int routedIso = 0;
     int routedNonIso = 0;
-    int acceptedIsoLegs = 0;
-    int acceptedNonIsoLegs = 0;
 
     MatchedWaypoint startMwp = matchPoint(start.ilon, start.ilat, "greedy_start");
     if (startMwp == null) {
@@ -1173,13 +1177,8 @@ public class GreedyRoundTripPlanner {
                 + (int) (totalDistance + returnTrack.distance)
                 + "m exceeds desired " + (int) desiredDistance + "m, trying next candidate");
               tooLongSeen = true;
-              segments.remove(segments.size() - 1);
-              totalDistance -= accepted.routeDistance;
-              if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-              else acceptedNonIsoLegs--;
-              if (accepted.fromQuotaInjection) acceptedQuotaInjectedLegs--;
-              recordIsoTrialRejection(accepted);
-              waypointStack.remove(waypointStack.size() - 1);
+              totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
+                totalDistance, false, visitedEdges);
               currentMwp = waypointStack.get(waypointStack.size() - 1);
               prevIlon = savedPrevIlon;
               prevIlat = savedPrevIlat;
@@ -1219,13 +1218,8 @@ public class GreedyRoundTripPlanner {
           }
           if (detailReject != null) {
             result.addDiagnostic("step " + step + ": " + detailReject + ", trying next candidate");
-            segments.remove(segments.size() - 1);
-            totalDistance -= accepted.routeDistance;
-            if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-            else acceptedNonIsoLegs--;
-            if (accepted.fromQuotaInjection) acceptedQuotaInjectedLegs--;
-            recordIsoTrialRejection(accepted);
-            waypointStack.remove(waypointStack.size() - 1);
+            totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
+              totalDistance, false, visitedEdges);
             currentMwp = waypointStack.get(waypointStack.size() - 1);
             prevIlon = savedPrevIlon;
             prevIlat = savedPrevIlat;
@@ -1285,14 +1279,8 @@ public class GreedyRoundTripPlanner {
             result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
               + "m exceeds desired " + (int) desiredDistance + "m after detailing, trying next candidate");
             tooLongSeen = true;
-            segments.remove(segments.size() - 1);
-            totalDistance -= accepted.routeDistance;
-            if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-            else acceptedNonIsoLegs--;
-            if (accepted.fromQuotaInjection) acceptedQuotaInjectedLegs--;
-            recordIsoTrialRejection(accepted);
-            removeVisitedEdges(accepted.track, visitedEdges);
-            waypointStack.remove(waypointStack.size() - 1);
+            totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
+              totalDistance, true, visitedEdges);
             currentMwp = waypointStack.get(waypointStack.size() - 1);
             prevIlon = savedPrevIlon;
             prevIlat = savedPrevIlat;
@@ -1358,14 +1346,8 @@ public class GreedyRoundTripPlanner {
                 + ": " + reject + ", trying next candidate");
               closureRejections++;
               if (poolHealth != null) poolHealth.recordClosureRejection();
-              segments.remove(segments.size() - 1);
-              totalDistance -= accepted.routeDistance;
-              if (accepted.fromIsoCandidate) acceptedIsoLegs--;
-              else acceptedNonIsoLegs--;
-              if (accepted.fromQuotaInjection) acceptedQuotaInjectedLegs--;
-              recordIsoTrialRejection(accepted);
-              removeVisitedEdges(accepted.track, visitedEdges);
-              waypointStack.remove(waypointStack.size() - 1);
+              totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
+                totalDistance, true, visitedEdges);
               currentMwp = waypointStack.get(waypointStack.size() - 1);
               prevIlon = savedPrevIlon;
               prevIlat = savedPrevIlat;
@@ -1418,6 +1400,11 @@ public class GreedyRoundTripPlanner {
     }
 
     if (bestFallback != null) {
+      // Restore the counters captured with the snapshot — the live fields
+      // describe the abandoned plan state, not the geometry being shipped.
+      acceptedIsoLegs = bestFallback.isoLegs;
+      acceptedNonIsoLegs = bestFallback.nonIsoLegs;
+      acceptedQuotaInjectedLegs = bestFallback.quotaInjectedLegs;
       populateResult(result, bestFallback.track, bestFallback.waypointStack,
         startMwp, bestFallback.legTracks, desiredDistance, startDirection);
       result.setTotalDistanceMeters(bestFallback.track.distance);
@@ -1709,6 +1696,36 @@ public class GreedyRoundTripPlanner {
    */
   static boolean isIsoPoolCandidate(RoundTripCandidateProvider.CandidatePoint cp) {
     return cp.costFromStart != RoundTripCandidateProvider.NO_ISO_COST;
+  }
+
+  /**
+   * Undo a tentatively committed leg — the shared tail of all four rejection
+   * sites (too-long raw, detail reject, too-long detailed, closure reject).
+   * Removes the leg and its via, reverses the attribution counters, and fires
+   * the iso-rejection health hook; sites past {@code addVisitedEdges} also
+   * clear the leg's visited edges. Returns the restored total distance; the
+   * caller re-reads the current anchor from the stack and restores its
+   * loop-local prev coordinates.
+   */
+  private double undoTentativeLeg(ScoredRoute accepted, List<OsmTrack> segments,
+                                  List<MatchedWaypoint> waypointStack,
+                                  double totalDistance, boolean clearVisitedEdges,
+                                  VisitedEdgeStore visitedEdges) {
+    segments.remove(segments.size() - 1);
+    if (accepted.fromIsoCandidate) {
+      acceptedIsoLegs--;
+    } else {
+      acceptedNonIsoLegs--;
+    }
+    if (accepted.fromQuotaInjection) {
+      acceptedQuotaInjectedLegs--;
+    }
+    recordIsoTrialRejection(accepted);
+    if (clearVisitedEdges) {
+      removeVisitedEdges(accepted.track, visitedEdges);
+    }
+    waypointStack.remove(waypointStack.size() - 1);
+    return totalDistance - accepted.routeDistance;
   }
 
   /** Health hook for an undone trial: an iso-sourced rejection is pool-loss evidence. */
@@ -2631,6 +2648,13 @@ public class GreedyRoundTripPlanner {
     snap.error = error;
     snap.severity = severity;
     snap.gateAccepted = severity == 0;
+    // Capture the attribution counters WITH the geometry: the tentative leg in
+    // this snapshot may be undone right after, and a plan that ships the
+    // snapshot must report the counters of the shipped loop, not of the
+    // abandoned plan state.
+    snap.isoLegs = acceptedIsoLegs;
+    snap.nonIsoLegs = acceptedNonIsoLegs;
+    snap.quotaInjectedLegs = acceptedQuotaInjectedLegs;
     return snap;
   }
 
@@ -2642,6 +2666,10 @@ public class GreedyRoundTripPlanner {
     boolean gateAccepted;
     /** Fallback soundness rank — see {@link #fallbackSeverity}. */
     int severity;
+    /** Leg-attribution counters at snapshot time (they describe this geometry). */
+    int isoLegs;
+    int nonIsoLegs;
+    int quotaInjectedLegs;
   }
 
   /**

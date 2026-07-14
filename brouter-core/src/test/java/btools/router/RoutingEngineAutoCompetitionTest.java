@@ -190,9 +190,11 @@ public class RoutingEngineAutoCompetitionTest {
       noPool.toString().contains("poolHealth"));
 
     RoundTripCandidateResult withPool = candidate(RoundTripAlgorithm.ISO_GREEDY, cleanSquareLoop(5000));
-    withPool.acceptedQuotaInjectedLegs = 1;
-    withPool.isoPoolHealthScore = 0.62;
-    withPool.poolDemotedAtStep = 4;
+    RoundTripResult pooled = new RoundTripResult();
+    pooled.setAcceptedQuotaInjectedLegs(1);
+    pooled.setIsoPoolHealthScore(0.62);
+    pooled.setPoolDemotedAtStep(4);
+    withPool.planner = pooled;
     String s = withPool.toString();
     Assert.assertTrue(s.contains("quotaAccepted=1"));
     Assert.assertTrue(s.contains("poolHealth=0.62"));
@@ -225,11 +227,14 @@ public class RoutingEngineAutoCompetitionTest {
     absorbed.score = RouteChoiceScore.score(absorbed.track, absorbed.track.distance,
       "fastbike", absorbed.gateVerdict);
     // Force the weak-score branch that historically launched a separate GREEDY
-    // child. No pool-health score means ISO_GREEDY fell back to the graph-native
-    // provider before planning, so it used the same candidate source as GREEDY.
+    // child. The child's EXPLICIT decision record says the plan ran
+    // graph-native-only (iso pool unadmitted/unhealthy), so it used the same
+    // candidate source as GREEDY.
     absorbed.score = new RouteChoiceScore.Verdict(0.70, 0.70, absorbed.score.reasons());
-    absorbed.acceptedIsoLegs = 0;
-    absorbed.acceptedNonIsoLegs = 4;
+    RoundTripResult graphNativeOnly = new RoundTripResult();
+    graphNativeOnly.setGraphNativeOnlyStart(true);
+    graphNativeOnly.setAcceptedNonIsoLegs(4);
+    absorbed.planner = graphNativeOnly;
 
     Assert.assertFalse("graph-native-only ISO_GREEDY result should not run duplicate GREEDY",
       RoutingEngine.autoNeedsPlainGreedy(absorbed, 1_000L, 10_000L));
@@ -245,9 +250,11 @@ public class RoutingEngineAutoCompetitionTest {
     weakIso.score = RouteChoiceScore.score(weakIso.track, weakIso.track.distance,
       "fastbike", weakIso.gateVerdict);
     weakIso.score = new RouteChoiceScore.Verdict(0.70, 0.70, weakIso.score.reasons());
-    weakIso.acceptedIsoLegs = 3;
-    weakIso.acceptedNonIsoLegs = 1;
-    weakIso.isoPoolHealthScore = 0.80;
+    RoundTripResult isoPooled = new RoundTripResult();
+    isoPooled.setAcceptedIsoLegs(3);
+    isoPooled.setAcceptedNonIsoLegs(1);
+    isoPooled.setIsoPoolHealthScore(0.80);
+    weakIso.planner = isoPooled;
 
     Assert.assertTrue("weak iso-sourced result still deserves plain GREEDY comparison",
       RoutingEngine.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
@@ -263,10 +270,14 @@ public class RoutingEngineAutoCompetitionTest {
     weakIso.score = RouteChoiceScore.score(weakIso.track, weakIso.track.distance,
       "fastbike", weakIso.gateVerdict);
     weakIso.score = new RouteChoiceScore.Verdict(0.70, 0.70, weakIso.score.reasons());
-    weakIso.acceptedIsoLegs = 0;
-    weakIso.acceptedNonIsoLegs = 4;
-    weakIso.isoPoolHealthScore = 0.20;
-    weakIso.poolDemotedAtStep = 2;
+    // The pool WAS admitted (explicit graph-native-only flag stays false) but
+    // demoted in-plan — that is iso-pool context, not absorption.
+    RoundTripResult demoted = new RoundTripResult();
+    demoted.setAcceptedIsoLegs(0);
+    demoted.setAcceptedNonIsoLegs(4);
+    demoted.setIsoPoolHealthScore(0.20);
+    demoted.setPoolDemotedAtStep(2);
+    weakIso.planner = demoted;
 
     Assert.assertTrue("graph-native-only after iso-pool demotion still used iso-pool context",
       RoutingEngine.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
@@ -282,10 +293,12 @@ public class RoutingEngineAutoCompetitionTest {
     weakIso.score = RouteChoiceScore.score(weakIso.track, weakIso.track.distance,
       "fastbike", weakIso.gateVerdict);
     weakIso.score = new RouteChoiceScore.Verdict(0.70, 0.70, weakIso.score.reasons());
-    weakIso.acceptedIsoLegs = 3;
-    weakIso.acceptedNonIsoLegs = 1;
-    weakIso.isoPoolHealthScore = 0.62;
-    weakIso.internalGraphNativeCompared = true;
+    RoundTripResult compared = new RoundTripResult();
+    compared.setAcceptedIsoLegs(3);
+    compared.setAcceptedNonIsoLegs(1);
+    compared.setIsoPoolHealthScore(0.62);
+    compared.setInternalGraphNativeCompared(true);
+    weakIso.planner = compared;
 
     Assert.assertFalse("internal graph-native comparison replaces duplicate AUTO GREEDY",
       RoutingEngine.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
@@ -299,7 +312,7 @@ public class RoutingEngineAutoCompetitionTest {
     degraded.setFallbackReason(GreedyRoundTripPlanner.DEGRADED_FALLBACK_PREFIX + "synthetic");
 
     Assert.assertTrue(RoutingEngine.shouldRunInternalGraphNativeBranch(
-      degraded, degraded.getTrack().distance, "fastbike", 0, 1_000L, 10_000L));
+      degraded, degraded.getTrack().distance, "fastbike", 0, 1_000L, 10_000L, false, false));
   }
 
   @Test
@@ -307,7 +320,7 @@ public class RoutingEngineAutoCompetitionTest {
     RoundTripResult strong = result(cleanSquareLoop(5000));
 
     Assert.assertFalse(RoutingEngine.shouldRunInternalGraphNativeBranch(
-      strong, strong.getTrack().distance, "fastbike", 0, 1_000L, 10_000L));
+      strong, strong.getTrack().distance, "fastbike", 0, 1_000L, 10_000L, false, false));
   }
 
   // ---- best-effort (lenient) candidate selection — Option C ----------------
