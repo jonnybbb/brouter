@@ -29,7 +29,7 @@ public final class RoundTripTrackCleanup {
 
   public RoundTripTrackCleanup(RoundTripEngineOps ops) {
     this.ops = ops;
-    this.snapper = new WaypointSnapper(ops);
+    this.snapper = new WaypointSnapper(ops, ops, ops);
   }
 
   /**

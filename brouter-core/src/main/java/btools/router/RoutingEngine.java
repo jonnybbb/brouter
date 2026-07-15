@@ -978,7 +978,8 @@ public class RoutingEngine extends Thread {
   /** Round-trip snap/validate/probe helpers, extracted behind the ops seam. */
   WaypointSnapper waypointSnapper() {
     if (waypointSnapper == null) {
-      waypointSnapper = new WaypointSnapper(roundTripOps());
+      RoundTripEngineOps ops = roundTripOps();
+      waypointSnapper = new WaypointSnapper(ops, ops, ops);
     }
     return waypointSnapper;
   }

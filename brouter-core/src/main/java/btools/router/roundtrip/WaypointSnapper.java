@@ -20,14 +20,19 @@ import btools.util.CheapRuler;
  * user vias, the ferry/hostile usability rules, the densified-via arc bulges
  * and their pinned-bulge repair, the circle-path validation pass, and the
  * bearing-grid reachability probes that feed ISOCHRONE and FAST placement.
- * Reaches the engine only through {@link RoundTripEngineOps}.
+ * Reaches the engine only through the {@link LegRouter}, {@link EngineIO},
+ * and {@link EngineContext} roles of the engine seam.
  */
 public final class WaypointSnapper {
 
-  private final RoundTripEngineOps ops;
+  private final LegRouter router;
+  private final EngineIO io;
+  private final EngineContext ctx;
 
-  public WaypointSnapper(RoundTripEngineOps ops) {
-    this.ops = ops;
+  public WaypointSnapper(LegRouter router, EngineIO io, EngineContext ctx) {
+    this.router = router;
+    this.io = io;
+    this.ctx = ctx;
   }
 
   /**
@@ -94,7 +99,7 @@ public final class WaypointSnapper {
     int cLon = (int) (sumLon / anchors.size());
     int cLat = (int) (sumLat / anchors.size());
 
-    double alpha = ops.routingContext().explicitViaDensifyAlpha;
+    double alpha = ctx.routingContext().explicitViaDensifyAlpha;
     int n = anchors.size();
 
     // 1. Build one candidate bulge per leg (null when degenerate, e.g. a 1-via
@@ -134,7 +139,7 @@ public final class WaypointSnapper {
         dropped++;
       }
     }
-    ops.logInfo("explicit-via arc densification: +" + added + " arc point(s), " + dropped
+    io.logInfo("explicit-via arc densification: +" + added + " arc point(s), " + dropped
       + " dropped (degenerate/hostile/off-network), alpha=" + alpha);
     return out;
   }
@@ -160,7 +165,7 @@ public final class WaypointSnapper {
    * returns per-point booleans rather than the MatchedWaypoint objects.
    */
   private List<MatchedWaypoint> batchMatchToRoads(List<OsmNode> points, double maxSnapDist, String nameTag) {
-    ops.resetCache(false);
+    router.resetCache(false);
     List<MatchedWaypoint> mwps = new ArrayList<>(points.size());
     for (OsmNode p : points) {
       MatchedWaypoint mwp = new MatchedWaypoint();
@@ -169,7 +174,7 @@ public final class WaypointSnapper {
       mwps.add(mwp);
     }
     try {
-      ops.matchWaypointsToNodes(mwps, maxSnapDist);
+      router.matchWaypointsToNodes(mwps, maxSnapDist);
     } catch (Exception e) {
       return null;
     }
@@ -191,8 +196,8 @@ public final class WaypointSnapper {
   public MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist) {
     // Loop-scale relocation bound (see VIA_RELOCATION_LOOP_FRACTION). When no
     // round-trip scale is known (0), fall back to the absolute maxSnapDist.
-    double relocationCap = ops.roundTripSearchRadius() > 0
-      ? Math.min(maxSnapDist, VIA_RELOCATION_LOOP_FRACTION * ops.roundTripSearchRadius())
+    double relocationCap = ctx.roundTripSearchRadius() > 0
+      ? Math.min(maxSnapDist, VIA_RELOCATION_LOOP_FRACTION * ctx.roundTripSearchRadius())
       : maxSnapDist;
     OsmNode orig = new OsmNode(ilon, ilat);
     // Match the plain point FIRST and probe the rings only when it is
@@ -303,8 +308,8 @@ public final class WaypointSnapper {
    * Preserves at least one intermediate waypoint.
    */
   public void filterRoundTripWaypoints(List<MatchedWaypoint> waypoints) {
-    double maxSnapDistance = ops.roundTripSearchRadius() * 0.5;
-    double minWaypointDistance = ops.roundTripSearchRadius() / 10.0;
+    double maxSnapDistance = ctx.roundTripSearchRadius() * 0.5;
+    double minWaypointDistance = ctx.roundTripSearchRadius() / 10.0;
     // Max edge length between node1 and node2 for a valid road match.
     // Ferry routes have sparse nodes with multi-km edges; road segments are typically < 1km.
     int maxSegmentLength = 1500;
@@ -326,7 +331,7 @@ public final class WaypointSnapper {
       if (mwp.node1 != null && mwp.node2 != null) {
         int segLen = mwp.node1.calcDistance(mwp.node2);
         if (segLen > maxSegmentLength) {
-          ops.logInfo("filterRoundTrip: removing " + mwp.name + " matched to long segment (" + segLen + "m, likely ferry)");
+          io.logInfo("filterRoundTrip: removing " + mwp.name + " matched to long segment (" + segLen + "m, likely ferry)");
           waypoints.remove(i);
           rtCount--;
         }
@@ -340,7 +345,7 @@ public final class WaypointSnapper {
       if (rtCount <= 1) break; // preserve at least one intermediate waypoint
 
       if (mwp.radius > maxSnapDistance) {
-        ops.logInfo("filterRoundTrip: removing " + mwp.name + " snap=" + (int) mwp.radius + "m > max=" + (int) maxSnapDistance + "m");
+        io.logInfo("filterRoundTrip: removing " + mwp.name + " snap=" + (int) mwp.radius + "m > max=" + (int) maxSnapDistance + "m");
         waypoints.remove(i);
         rtCount--;
       }
@@ -361,7 +366,7 @@ public final class WaypointSnapper {
 
       double dist = curr.crosspoint.calcDistance(prev.crosspoint);
       if (dist < minWaypointDistance) {
-        ops.logInfo("filterRoundTrip: removing " + curr.name + " too close to " + prev.name + " dist=" + (int) dist + "m");
+        io.logInfo("filterRoundTrip: removing " + curr.name + " too close to " + prev.name + " dist=" + (int) dist + "m");
         waypoints.remove(i);
         rtCount--;
       }
@@ -388,7 +393,7 @@ public final class WaypointSnapper {
       int distToNode2 = mwp.crosspoint.calcDistance(mwp.node2);
       OsmNode closerNode = distToNode1 <= distToNode2 ? mwp.node1 : mwp.node2;
 
-      ops.logInfo("snapToIntersection: " + mwp.name + " moved crosspoint "
+      io.logInfo("snapToIntersection: " + mwp.name + " moved crosspoint "
         + (distToNode1 <= distToNode2 ? distToNode1 : distToNode2) + "m to nearest intersection");
       mwp.crosspoint = new OsmNode(closerNode.ilon, closerNode.ilat);
     }
@@ -423,7 +428,7 @@ public final class WaypointSnapper {
 
   /** Filename of the active profile (lower-cased, no extension) — for logging + threshold lookup. */
   private String profileNameForLog() {
-    String path = ops.routingContext() == null ? null : ops.routingContext().localFunction;
+    String path = ctx.routingContext() == null ? null : ctx.routingContext().localFunction;
     if (path == null) return null;
     int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
     int dot = path.lastIndexOf('.');
@@ -454,8 +459,8 @@ public final class WaypointSnapper {
     // inert. The matcher now records the way description at match time.
     if (mwp == null || mwp.wayDescription == null) return 1.0f;
     try {
-      ops.routingContext().expctxWay.evaluate(false, mwp.wayDescription);
-      return ops.routingContext().expctxWay.getCostfactor();
+      ctx.routingContext().expctxWay.evaluate(false, mwp.wayDescription);
+      return ctx.routingContext().expctxWay.getCostfactor();
     } catch (RuntimeException ignored) {
       return 1.0f;
     }
@@ -470,7 +475,7 @@ public final class WaypointSnapper {
   private ProbeResult probeDirections(OsmNodeNamed start, double searchRadius,
                                       double[] bearings, double[] distFactors,
                                       boolean retainMatches, String logLabel) {
-    ops.resetCache(false);
+    router.resetCache(false);
     double maxSnapDist = Math.min(searchRadius * 0.3, 2000);
     int probesPerDirection = distFactors.length;
 
@@ -492,9 +497,9 @@ public final class WaypointSnapper {
     }
 
     try {
-      ops.matchWaypointsToNodes(allProbes, maxSnapDist);
+      router.matchWaypointsToNodes(allProbes, maxSnapDist);
     } catch (Exception e) {
-      ops.logInfo("reachability probe failed: " + e.getMessage());
+      io.logInfo("reachability probe failed: " + e.getMessage());
       return null;
     }
 
@@ -513,7 +518,7 @@ public final class WaypointSnapper {
       scored.add(pd);
     }
 
-    ops.logInfo(logLabel + ": " + viableCount + "/" + bearings.length + " bearings snapped");
+    io.logInfo(logLabel + ": " + viableCount + "/" + bearings.length + " bearings snapped");
     if (viableCount == 0) return null;
     // allProbes.get(0) is the matched start (has node1/node2/crosspoint when
     // the start is on a road) — used by the islanded-via guard.
@@ -597,7 +602,7 @@ public final class WaypointSnapper {
    * Returns a parallel list of booleans indicating which waypoints matched.
    */
   public List<Boolean> snapWaypointsToRoad(List<OsmNodeNamed> wps, double maxSnapDist, String logTag) {
-    ops.resetCache(false);
+    router.resetCache(false);
     List<MatchedWaypoint> mwpList = new ArrayList<>(wps.size());
     for (OsmNodeNamed wp : wps) {
       MatchedWaypoint mwp = new MatchedWaypoint();
@@ -606,9 +611,9 @@ public final class WaypointSnapper {
       mwpList.add(mwp);
     }
     try {
-      ops.matchWaypointsToNodes(mwpList, maxSnapDist);
+      router.matchWaypointsToNodes(mwpList, maxSnapDist);
     } catch (Exception e) {
-      ops.logInfo(logTag + ": match failed, leaving " + wps.size() + " waypoint(s) unsnapped: " + e.getMessage());
+      io.logInfo(logTag + ": match failed, leaving " + wps.size() + " waypoint(s) unsnapped: " + e.getMessage());
       List<Boolean> all = new ArrayList<>(wps.size());
       for (int i = 0; i < wps.size(); i++) all.add(false);
       return all;
@@ -623,7 +628,7 @@ public final class WaypointSnapper {
       }
       int snapDist = wp.calcDistance(mwp.crosspoint);
       if (snapDist > 0) {
-        ops.logInfo(logTag + ": moved " + (wp.name == null ? "wp" : wp.name) + " "
+        io.logInfo(logTag + ": moved " + (wp.name == null ? "wp" : wp.name) + " "
           + snapDist + "m to nearest road");
         wp.ilon = mwp.crosspoint.getILon();
         wp.ilat = mwp.crosspoint.getILat();
@@ -676,7 +681,7 @@ public final class WaypointSnapper {
       if (span == null) continue;
       double spanCpm = spanCostPerMeter(nodes, span[0], span[1]);
       if (trackCostPerM > 0 && spanCpm < BULGE_MIN_COST_FACTOR * trackCostPerM) {
-        ops.logInfo("repairViaPinnedBulges: " + via.name + " span " + span[0] + "-" + span[1]
+        io.logInfo("repairViaPinnedBulges: " + via.name + " span " + span[0] + "-" + span[1]
           + " kept as petal (span " + spanCpm + " vs track " + trackCostPerM + " cost/m)");
         continue; // priced like the rest of the loop — a petal, not an artifact
       }
@@ -693,18 +698,18 @@ public final class WaypointSnapper {
       mouthPts.add(new OsmNode(nj.getILon(), nj.getILat()));
       List<MatchedWaypoint> mouth = batchMatchToRoads(mouthPts, 100.0, "bulge_repair");
       if (mouth == null || !isRoadSnap(mouth.get(0)) || !isRoadSnap(mouth.get(1))) {
-        ops.logInfo("repairViaPinnedBulges: " + via.name + " mouth snap failed");
+        io.logInfo("repairViaPinnedBulges: " + via.name + " mouth snap failed");
         continue;
       }
 
       OsmTrack connector = null;
       try {
-        connector = ops.findTrackUnguided("bulge-repair", mouth.get(0), mouth.get(1));
+        connector = router.findTrackUnguided("bulge-repair", mouth.get(0), mouth.get(1));
       } catch (RuntimeException e) {
-        ops.logInfo("repairViaPinnedBulges: connector routing failed (" + e.getMessage() + ")");
+        io.logInfo("repairViaPinnedBulges: connector routing failed (" + e.getMessage() + ")");
       }
       if (connector == null || connector.nodes == null || connector.nodes.size() < 2) {
-        ops.logInfo("repairViaPinnedBulges: " + via.name + " no connector route");
+        io.logInfo("repairViaPinnedBulges: " + via.name + " no connector route");
         continue;
       }
       double connCpm = connector.distance > 0
@@ -712,7 +717,7 @@ public final class WaypointSnapper {
       if (connector.distance > arc * BULGE_CONNECTOR_MAX_ARC_FRACTION
           || arc - connector.distance < BULGE_MIN_SAVED_M
           || connCpm * BULGE_CONNECTOR_COST_ADVANTAGE > spanCpm) {
-        ops.logInfo(String.format(Locale.US,
+        io.logInfo(String.format(Locale.US,
           "repairViaPinnedBulges: %s connector rejected (dist=%d crowFly=%.0f arc=%.0f connCpm=%.2f spanCpm=%.2f)",
           via.name, connector.distance, crowFly, arc, connCpm, spanCpm));
         continue;
@@ -741,13 +746,13 @@ public final class WaypointSnapper {
       if (crossingsAfter > crossingsBefore) {
         nodes.subList(span[0] + 1, span[0] + 1 + interior.size()).clear();
         nodes.addAll(span[0] + 1, oldInterior);
-        ops.logInfo("repairViaPinnedBulges: " + via.name + " connector rejected (would add "
+        io.logInfo("repairViaPinnedBulges: " + via.name + " connector rejected (would add "
           + (crossingsAfter - crossingsBefore) + " self-crossing(s))");
         continue;
       }
       adjustWaypointIndices(waypoints, span[0], span[1] - 1, removedNodes - interior.size());
 
-      ops.logInfo(String.format(Locale.US,
+      io.logInfo(String.format(Locale.US,
         "repairViaPinnedBulges: at %s replaced %.0fm bulge (mouth %.0fm, span %.2f cost/m vs track %.2f) with %dm connector (%.2f cost/m)",
         via.name, arc, crowFly, spanCpm, trackCostPerM, connector.distance, connCpm));
     }
@@ -766,7 +771,7 @@ public final class WaypointSnapper {
    * are considered.
    */
   public void validateAndAdjustWaypoints(List<OsmNodeNamed> waypoints, double searchRadius) {
-    ops.resetCache(false);
+    router.resetCache(false);
     OsmNodeNamed start = waypoints.get(0);
     double maxSnapDist = Math.min(searchRadius * 0.3, 2000);
 
@@ -817,9 +822,9 @@ public final class WaypointSnapper {
     // final matchWaypointsToNodes handle them, rather than throwing out of here
     // into doRoundTrip's catch and failing the request outright.
     try {
-      ops.matchWaypointsToNodes(allCandidates, maxSnapDist);
+      router.matchWaypointsToNodes(allCandidates, maxSnapDist);
     } catch (Exception e) {
-      ops.logInfo("validateAndAdjustWaypoints: candidate match failed ("
+      io.logInfo("validateAndAdjustWaypoints: candidate match failed ("
         + e.getClass().getSimpleName() + "), keeping generated waypoint positions");
       return;
     }
@@ -891,7 +896,7 @@ public final class WaypointSnapper {
       // waypoint and route around than ship the user onto a road their profile
       // would have actively avoided — that's the surprise-mid-tour pain.
       if (best != null && bestCostFactor > snapRejectThreshold) {
-        ops.logInfo("validateWaypoints: rejecting profile-hostile snap for "
+        io.logInfo("validateWaypoints: rejecting profile-hostile snap for "
           + waypoints.get(i).name + " (costfactor=" + String.format("%.1f", bestCostFactor)
           + " > " + snapRejectThreshold + " for " + profileNameForLog() + ")");
         best = null;
@@ -902,20 +907,20 @@ public final class WaypointSnapper {
         // Use crosspoint, not waypoint: keeps the point within the 250m
         // catching range used by final matchWaypointsToNodes (avoids beeline).
         if (wp.ilon != best.crosspoint.getILon() || wp.ilat != best.crosspoint.getILat()) {
-          ops.logInfo("validateWaypoints: relocated " + wp.name + " snap=" + (int) best.radius + "m");
+          io.logInfo("validateWaypoints: relocated " + wp.name + " snap=" + (int) best.radius + "m");
           wp.ilon = best.crosspoint.getILon();
           wp.ilat = best.crosspoint.getILat();
         }
       } else if (remaining > minWaypoints) {
-        ops.logInfo("validateWaypoints: removing unreachable " + wp.name
+        io.logInfo("validateWaypoints: removing unreachable " + wp.name
           + " (best=" + (best == null ? "none" : (int) best.radius + "m") + ")");
         waypoints.remove(i);
         remaining--;
       } else {
-        ops.logInfo("validateWaypoints: keeping marginal " + wp.name + " (min waypoint count reached)");
+        io.logInfo("validateWaypoints: keeping marginal " + wp.name + " (min waypoint count reached)");
       }
     }
-    ops.logInfo("validateWaypoints: " + remaining + "/" + intermediateCount + " waypoints validated");
+    io.logInfo("validateWaypoints: " + remaining + "/" + intermediateCount + " waypoints validated");
   }
 
   /**
@@ -968,7 +973,7 @@ public final class WaypointSnapper {
     if (mwps == null) {
       return accepted; // match failure — all legs revert to baseline
     }
-    double rejectThreshold = ops.routingContext().explicitViaDensifyMaxCostFactor;
+    double rejectThreshold = ctx.routingContext().explicitViaDensifyMaxCostFactor;
     for (int i = 0; i < bulges.size(); i++) {
       MatchedWaypoint mwp = mwps.get(i);
       if (!isRoadSnap(mwp)) {
@@ -1106,7 +1111,7 @@ public final class WaypointSnapper {
     if (best != null) {
       int moved = orig.calcDistance(best.crosspoint);
       if (moved > 0) {
-        ops.logInfo("snapStart: profile-aware start snap (" + moved + "m, costfactor "
+        io.logInfo("snapStart: profile-aware start snap (" + moved + "m, costfactor "
           + String.format("%.1f", bestCostFactor) + ")");
       }
       start.ilon = best.crosspoint.getILon();

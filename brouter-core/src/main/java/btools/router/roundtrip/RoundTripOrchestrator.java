@@ -30,7 +30,7 @@ public final class RoundTripOrchestrator {
 
   public RoundTripOrchestrator(RoundTripEngineOps ops) {
     this.ops = ops;
-    this.snapper = new WaypointSnapper(ops);
+    this.snapper = new WaypointSnapper(ops, ops, ops);
     this.placer = new GeometricWaypointPlacer(ops);
     this.cleanup = new RoundTripTrackCleanup(ops);
   }

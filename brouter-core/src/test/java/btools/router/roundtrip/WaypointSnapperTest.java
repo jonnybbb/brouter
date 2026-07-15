@@ -21,8 +21,9 @@ public class WaypointSnapperTest {
   private static final int START_ILAT = 140000000; // ~50.0N
 
   private WaypointSnapper snapper(double searchRadius) {
-    return new WaypointSnapper(
-      RoundTripFixture.dummyRoundTripEngine("trekking", searchRadius).roundTripOps());
+    RoundTripEngineOps ops =
+      RoundTripFixture.dummyRoundTripEngine("trekking", searchRadius).roundTripOps();
+    return new WaypointSnapper(ops, ops, ops);
   }
 
   private MatchedWaypoint createMatchedWaypoint(String name, int wpIlon, int wpIlat, int cpIlon, int cpIlat) {
