@@ -21,8 +21,9 @@ public class RoundTripTrackCleanupTest {
   private static final int START_ILAT = 140000000; // ~50.0N
 
   private RoundTripTrackCleanup cleanup(double searchRadius) {
-    return new RoundTripTrackCleanup(
-      RoundTripFixture.dummyRoundTripEngine("trekking", searchRadius).roundTripOps());
+    RoundTripEngineOps ops =
+      RoundTripFixture.dummyRoundTripEngine("trekking", searchRadius).roundTripOps();
+    return new RoundTripTrackCleanup(new WaypointSnapper(ops, ops, ops), ops, ops, ops);
   }
 
   // removeBackAndForthSegments removes overlapping nodes around a waypoint
@@ -352,8 +353,10 @@ public class RoundTripTrackCleanupTest {
   public void removeArtifactSpurSpansRemovesThinSpurWithoutVia() {
     // Request context: ~24km loop requested; removing the 2.4km spur keeps the
     // track at distR ~0.9, above the SPUR_REPAIR_MIN_DISTR floor.
-    RoundTripTrackCleanup cleanup = new RoundTripTrackCleanup(
-      RoundTripFixture.dummyRoundTripEngine("trekking", 5000, 24000).roundTripOps());
+    RoundTripEngineOps ops =
+      RoundTripFixture.dummyRoundTripEngine("trekking", 5000, 24000).roundTripOps();
+    RoundTripTrackCleanup cleanup =
+      new RoundTripTrackCleanup(new WaypointSnapper(ops, ops, ops), ops, ops, ops);
     OsmTrack track = buildViaTeardropTrack();
     OsmPathElement pinchOut = track.nodes.get(3);
 

@@ -20,16 +20,22 @@ import btools.util.CheapRuler;
  * spans, origin-chain rebuild, waypoint index bookkeeping, and the
  * adopted-track finalization pipeline. Voice-hint consolidation stays
  * engine-side (VoiceHint package internals) behind an ops delegate. Reaches
- * the engine only through {@link RoundTripEngineOps}.
+ * the engine only through the {@link RoundTripRequestState}, {@link EngineIO},
+ * and {@link EngineContext} roles of the engine seam.
  */
 public final class RoundTripTrackCleanup {
 
-  private final RoundTripEngineOps ops;
   private final WaypointSnapper snapper;
+  private final RoundTripRequestState state;
+  private final EngineIO io;
+  private final EngineContext ctx;
 
-  public RoundTripTrackCleanup(RoundTripEngineOps ops) {
-    this.ops = ops;
-    this.snapper = new WaypointSnapper(ops, ops, ops);
+  public RoundTripTrackCleanup(WaypointSnapper snapper, RoundTripRequestState state,
+                               EngineIO io, EngineContext ctx) {
+    this.snapper = snapper;
+    this.state = state;
+    this.io = io;
+    this.ctx = ctx;
   }
 
   /**
@@ -74,8 +80,8 @@ public final class RoundTripTrackCleanup {
   public void finalizeAdoptedRoundTripTrack(OsmTrack track, List<MatchedWaypoint> mwps) {
     if (track == null || track.nodes == null || track.nodes.isEmpty()) return;
     boolean haveMwps = mwps != null && !mwps.isEmpty();
-    if (ops.isRoundTripMode()
-        && !ops.routingContext().allowSamewayback && !ops.explicitViaRoundTrip()) {
+    if (ctx.isRoundTripMode()
+        && !ctx.routingContext().allowSamewayback && !ctx.explicitViaRoundTrip()) {
       // removeBackAndForthSegments locates each waypoint's spur via its
       // indexInTrack, so populate those indices first. The direct greedy-bypass
       // path supplies matchedWaypoints with indexInTrack still 0 (the planner
@@ -94,25 +100,25 @@ public final class RoundTripTrackCleanup {
       }
     }
     rebuildOriginChain(track);
-    ops.recalcTrack(track);
+    ctx.recalcTrack(track);
     ensureInfoMessage(track);
     if (haveMwps) {
       assignMatchedWaypointIndexes(track, mwps);
-      ops.setMatchedWaypoints(mwps);
+      state.setMatchedWaypoints(mwps);
       track.setMatchedWaypoints(mwps);
     }
-    track.processVoiceHints(ops.routingContext());
-    if (ops.isRoundTripMode()) {
-      ops.consolidateRoundTripVoiceHints(track);
+    track.processVoiceHints(ctx.routingContext());
+    if (ctx.isRoundTripMode()) {
+      io.consolidateRoundTripVoiceHints(track);
     }
-    track.prepareSpeedProfile(ops.routingContext());
-    track.showTime = ops.routingContext().showTime;
-    track.params = ops.routingContext().keyValues;
-    if (ops.routingContext().poipoints != null) {
-      track.pois = ops.routingContext().poipoints;
+    track.prepareSpeedProfile(ctx.routingContext());
+    track.showTime = ctx.routingContext().showTime;
+    track.params = ctx.routingContext().keyValues;
+    if (ctx.routingContext().poipoints != null) {
+      track.pois = ctx.routingContext().poipoints;
     }
-    track.exportWaypoints = ops.routingContext().exportWaypoints;
-    track.exportCorrectedWaypoints = ops.routingContext().exportCorrectedWaypoints;
+    track.exportWaypoints = ctx.routingContext().exportWaypoints;
+    track.exportCorrectedWaypoints = ctx.routingContext().exportCorrectedWaypoints;
   }
 
   private static void assignMatchedWaypointIndexes(OsmTrack track, List<MatchedWaypoint> mwps) {
@@ -201,7 +207,7 @@ public final class RoundTripTrackCleanup {
         int removeCount = removeTo - removeFrom;
         int branchIdx = removeFrom - 1;
 
-        ops.logInfo("removeBackAndForth: at waypoint " + waypoints.get(wi).name
+        io.logInfo("removeBackAndForth: at waypoint " + waypoints.get(wi).name
           + " removing " + removeCount + " spur nodes");
 
         nodes.subList(removeFrom, removeTo).clear();
@@ -306,7 +312,7 @@ public final class RoundTripTrackCleanup {
           // (the route went elsewhere and came back). Normal forward progression
           // has route distance ≈ crow-fly distance.
           if (removable && loopDist > crowFly * ratioThreshold) {
-            ops.logInfo("removeMicroDetours: removing " + (i - matchIdx) + " nodes (loop of " + loopDist + "m, crow-fly " + (int) crowFly + "m, ratio " + String.format("%.1f", ratioThreshold) + "x at index " + matchIdx + ")");
+            io.logInfo("removeMicroDetours: removing " + (i - matchIdx) + " nodes (loop of " + loopDist + "m, crow-fly " + (int) crowFly + "m, ratio " + String.format("%.1f", ratioThreshold) + "x at index " + matchIdx + ")");
             int removeCount = i - matchIdx;
             nodes.subList(matchIdx + 1, i + 1).clear();
             WaypointSnapper.adjustWaypointIndices(waypoints, matchIdx, i, removeCount);
@@ -387,7 +393,7 @@ public final class RoundTripTrackCleanup {
         }
         WaypointSnapper.adjustWaypointIndices(waypoints, i, j - 1, oldInterior.size());
         totalDist -= (long) (arc - jump);
-        ops.logInfo(String.format(Locale.US,
+        io.logInfo(String.format(Locale.US,
           "removeArtifactSpurSpans: removed %.0fm spur span [%d..%d] (%s)",
           arc, i, j, thin ? "thin" : "overpriced"));
         changed = true;
@@ -441,11 +447,11 @@ public final class RoundTripTrackCleanup {
 
   /** Requested total loop distance from the request context, 0 when unknown. */
   private double roundTripExpectedDistance() {
-    if (ops.routingContext().roundTripLength != null) {
-      return ops.routingContext().roundTripLength;
+    if (ctx.routingContext().roundTripLength != null) {
+      return ctx.routingContext().roundTripLength;
     }
-    if (ops.routingContext().roundTripDistance != null && ops.routingContext().roundTripDistance > 0) {
-      return 2 * Math.PI * ops.routingContext().roundTripDistance; // roundTripDistance is a radius
+    if (ctx.routingContext().roundTripDistance != null && ctx.routingContext().roundTripDistance > 0) {
+      return 2 * Math.PI * ctx.routingContext().roundTripDistance; // roundTripDistance is a radius
     }
     return 0;
   }

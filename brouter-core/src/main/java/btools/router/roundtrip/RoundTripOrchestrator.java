@@ -32,7 +32,7 @@ public final class RoundTripOrchestrator {
     this.ops = ops;
     this.snapper = new WaypointSnapper(ops, ops, ops);
     this.placer = new GeometricWaypointPlacer(ops);
-    this.cleanup = new RoundTripTrackCleanup(ops);
+    this.cleanup = new RoundTripTrackCleanup(snapper, ops, ops, ops);
   }
 
   // A loop must enclose area: at least a triangle (start + 2 intermediate waypoints).

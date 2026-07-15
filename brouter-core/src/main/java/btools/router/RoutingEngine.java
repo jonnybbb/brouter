@@ -968,7 +968,8 @@ public class RoutingEngine extends Thread {
   /** Round-trip track post-processing, extracted behind the ops seam. */
   RoundTripTrackCleanup trackCleanup() {
     if (trackCleanup == null) {
-      trackCleanup = new RoundTripTrackCleanup(roundTripOps());
+      RoundTripEngineOps ops = roundTripOps();
+      trackCleanup = new RoundTripTrackCleanup(waypointSnapper(), ops, ops, ops);
     }
     return trackCleanup;
   }
