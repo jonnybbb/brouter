@@ -7,13 +7,13 @@ import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
 
 /**
- * Engine seam role: mutable request state shared between the round-trip
- * planners and the engine — result track/error, budgets, effort policy, and
- * the cross-tier latches. Intentionally the "shame list" of the seam split;
- * Phase A2 moves it into an orchestrator-owned request object. Two fields
- * have their read-only getters on {@link EngineContext}
- * ({@code roundTripSearchRadius}, {@code explicitViaRoundTrip}); only their
- * setters are here.
+ * Engine seam role: the engine's side of the request-state handoff. The
+ * mutable request state itself lives on the orchestrator-owned
+ * {@code RoundTripRequest}; this interface carries only the request-entry
+ * seeds (deadline, routing budget, effort policy), the runtime-hints
+ * publication for the engine's search loops, the engine-shared output lists
+ * (waypoints, matched waypoints), the result seed/publication (track/error),
+ * and the end-of-request telemetry publications.
  */
 public interface RoundTripRequestState {
 
