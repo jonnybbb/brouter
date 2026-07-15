@@ -8,10 +8,7 @@ import java.util.Locale;
 import btools.mapaccess.OsmNode;
 import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
-import btools.router.RoutingContext;
-import btools.router.RoutingEngine;
 import btools.util.CheapAngleMeter;
-import btools.util.CheapRuler;
 
 /**
  * Round-trip request orchestrator: the FAST &lt; BALANCED &lt; AUTO &lt; QUALITY
