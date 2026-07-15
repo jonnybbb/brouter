@@ -37,7 +37,7 @@ public class GraphNativeCandidateProviderTest {
       }
     };
 
-    GraphNativeCandidateProvider provider = new GraphNativeCandidateProvider(ops);
+    GraphNativeCandidateProvider provider = new GraphNativeCandidateProvider(ops, ops);
     int ilon = 180_000_000;
     int ilat = 90_000_000;
     // Two attempts at the same position and (rounded) radius, no refTrack -> the
@@ -59,186 +59,28 @@ public class GraphNativeCandidateProviderTest {
 
   /** A provider whose Dijkstra expansion always returns {@code pool}. */
   private static GraphNativeCandidateProvider providerReturning(final List<IsoCandidate> pool) {
-    return new GraphNativeCandidateProvider(new StubEngineOps() {
+    StubEngineOps ops = new StubEngineOps() {
       @Override
       public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius,
                                                             OsmTrack refTrack, boolean includeCandidateTracks) {
         return new IsochroneExpansionResult(null, pool);
       }
-    });
+    };
+    return new GraphNativeCandidateProvider(ops, ops);
   }
 
   /**
-   * Minimal seam stub: the provider touches only the expansion and the log.
+   * Minimal seam stub: the provider touches only the expansion and the log,
+   * so it stubs just the {@link LegRouter} + {@link EngineIO} roles.
    * Everything else throws — a test reaching further has outgrown this stub.
    */
-  private abstract static class StubEngineOps implements RoundTripEngineOps {
+  private abstract static class StubEngineOps implements LegRouter, EngineIO {
     @Override
     public void logInfo(String msg) {
     }
 
     @Override
-    public List<MatchedWaypoint> matchedWaypoints() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public List<OsmNodeNamed> waypoints() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public OsmTrack foundTrack() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setFoundTrack(OsmTrack track) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public String errorMessage() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setErrorMessage(String message) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void doRouting(long budgetMs) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public RoundTripEffortPolicy roundTripEffortPolicy() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setRoundTripEffortPolicy(RoundTripEffortPolicy policy) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public long roundTripRequestDeadline() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setRoundTripRequestDeadline(long deadlineMillis) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public long roundTripRoutingBudgetMs() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setRoundTripRoutingBudgetMs(long budgetMs) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setRoundTripSearchRadius(double searchRadius) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setLastRoundTripResult(RoundTripResult result) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public String startTileMissingError(OsmNodeNamed start) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void writeAdoptedTrackOutput(OsmTrack track) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void terminate() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void cleanupRoutingResources() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
     public void logException(Throwable t) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public FastPlacementOps fastPlacementOps() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public double getRandomDirectionFromData(OsmNodeNamed wp, double searchRadius) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public RoundTripQualityResult boundedGateVerdict() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setBoundedGateVerdict(RoundTripQualityResult verdict) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public OsmTrack[] greedyLegTracks() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setGreedyLegTracks(OsmTrack[] tracks) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public OsmTrack lastRejectedTrack() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setLastRejectedTrack(OsmTrack track) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean roundTripFerriesAllowed() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean roundTripQualityHardReject(RoundTripQualityResult quality) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public long remainingRequestBudgetMs() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public java.io.File segmentDir() {
       throw new UnsupportedOperationException();
     }
 
@@ -248,108 +90,12 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
-    public void setExplicitViaRoundTrip(boolean explicitVia) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean roundTripForcedCorridorAccepted() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setRoundTripForcedCorridorAccepted(boolean accepted) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void addLinksProcessed(long links) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius, OsmTrack refTrack, boolean includeCandidateTracks) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public btools.router.RoutingContext routingContext() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean isTerminated() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public long startTime() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public long maxRunningTime() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public double roundTripSearchRadius() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean isRoundTripMode() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean explicitViaRoundTrip() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void recalcTrack(OsmTrack track) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void buildPointsFromCircle(List<OsmNodeNamed> waypoints, double startAngle,
-                                      double searchRadius, int points) {
+    public void writeAdoptedTrackOutput(OsmTrack track) {
       throw new UnsupportedOperationException();
     }
 
     @Override
     public void consolidateRoundTripVoiceHints(OsmTrack track) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setMatchedWaypoints(List<MatchedWaypoint> waypoints) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setStartTime(long startTimeMillis) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setMaxRunningTime(long maxRunningTimeMillis) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setTransientExpansionDeadline(long deadlineMillis) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public double airDistanceCostFactor() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setAirDistanceCostFactor(double factor) {
       throw new UnsupportedOperationException();
     }
 
@@ -361,6 +107,12 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public OsmTrack findTrackUnguided(String operationName, MatchedWaypoint startWp,
+                                      MatchedWaypoint endWp) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp,
                                      MatchedWaypoint endWp, OsmTrack refTrack) {
       throw new UnsupportedOperationException();
@@ -368,7 +120,12 @@ public class GraphNativeCandidateProviderTest {
 
     @Override
     public MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name,
-                                                                   double maxSnapDist) {
+                                                  double maxSnapDist) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance) {
       throw new UnsupportedOperationException();
     }
 
@@ -378,13 +135,17 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
-    public OsmTrack findTrackUnguided(String operationName, MatchedWaypoint startWp,
-                                      MatchedWaypoint endWp) {
+    public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
       throw new UnsupportedOperationException();
     }
 
     @Override
-    public void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance) {
+    public void terminate() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isTerminated() {
       throw new UnsupportedOperationException();
     }
   }

@@ -914,7 +914,7 @@ public final class RoundTripOrchestrator {
           + ", hits=" + bias.hits + ", airDist=" + bias.airDistMeters + "m)");
       }
     }
-    GraphNativeCandidateProvider graphNativeProvider = new GraphNativeCandidateProvider(ops);
+    GraphNativeCandidateProvider graphNativeProvider = new GraphNativeCandidateProvider(ops, ops);
     RoundTripCandidateProvider provider = buildCandidateProvider(algo, start, searchRadius,
       effectiveDirection, iso, graphNativeProvider);
     int baseSubRouteCount = selectGreedySubRouteCount(desiredDistance, ops.routingContext().getProfileName());

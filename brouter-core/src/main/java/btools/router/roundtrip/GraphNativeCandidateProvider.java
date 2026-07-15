@@ -53,7 +53,8 @@ public final class GraphNativeCandidateProvider implements RoundTripCandidatePro
     }
   };
 
-  private final RoundTripEngineOps engine;
+  private final LegRouter legRouter;
+  private final EngineIO io;
   /**
    * Caches the <em>unfiltered</em> Dijkstra expansion per
    * (position, expansionRadius) — the full result, so both the candidate pool
@@ -93,8 +94,9 @@ public final class GraphNativeCandidateProvider implements RoundTripCandidatePro
     }
   }
 
-  public GraphNativeCandidateProvider(RoundTripEngineOps engine) {
-    this.engine = engine;
+  public GraphNativeCandidateProvider(LegRouter legRouter, EngineIO io) {
+    this.legRouter = legRouter;
+    this.io = io;
   }
 
   @Override
@@ -105,7 +107,7 @@ public final class GraphNativeCandidateProvider implements RoundTripCandidatePro
     double startDirection,
     OsmTrack refTrack) {
 
-    if (engine == null || airRadius <= 0) return new ArrayList<>();
+    if (legRouter == null || airRadius <= 0) return new ArrayList<>();
 
     int expansionRadius = roundedExpansionRadius(airRadius);
     IsochroneExpansionResult expansion;
@@ -217,10 +219,10 @@ public final class GraphNativeCandidateProvider implements RoundTripCandidatePro
     current.ilat = fromIlat;
     current.name = "graph_native_step";
 
-    IsochroneExpansionResult expansion = engine.runIsochroneExpansion(
+    IsochroneExpansionResult expansion = legRouter.runIsochroneExpansion(
       current, expansionRadius, refTrack, true);
     if (expansion == null || expansion.candidates == null || expansion.candidates.isEmpty()) {
-      engine.logInfo("graph-native candidates: no expansion result at radius "
+      io.logInfo("graph-native candidates: no expansion result at radius "
         + expansionRadius + "m");
       return null;
     }
