@@ -1,6 +1,7 @@
 package btools.router.roundtrip;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -25,6 +26,133 @@ public final class RoundTripOrchestrator {
 
   /** The active request's mutable state; recreated at each doRoundTrip entry. */
   private RoundTripRequest request = new RoundTripRequest();
+
+  /** One resolved rung of the tier ladder: which strategy runs, with which slice. */
+  private static final class Rung {
+    final RoundTripStrategy strategy;
+    final TierSlice slice;
+
+    Rung(RoundTripStrategy strategy, TierSlice slice) {
+      this.strategy = strategy;
+      this.slice = slice;
+    }
+  }
+
+  /** Waypoint-based tier: geometric/FAST placement, then one routing run. */
+  private final RoundTripStrategy fastStrategy = (request, slice) -> {
+    doWaypointBasedRoundTrip(slice.searchRadius, slice.direction, slice.algo);
+    return true;
+  };
+
+  /** Greedy plan-and-route tier (GREEDY / ISO_GREEDY). */
+  private final RoundTripStrategy greedyStrategy = (request, slice) -> {
+    doGreedyRoundTrip(slice.searchRadius, slice.direction, slice.algo);
+    return true;
+  };
+
+  /** Bounded tier: budget-sliced greedy attempt with a waypoint fallback. */
+  private final RoundTripStrategy boundedStrategy = (request, slice) -> {
+    doBoundedRoundTrip(slice.searchRadius, slice.direction, slice.effortPolicy,
+      slice.label, slice.greedyCapable);
+    return true;
+  };
+
+  /**
+   * AUTO candidate competition over child engines; self-finalizing (children
+   * are gated inside the competition, the winner is decorated on adoption).
+   * QUALITY is this strategy pinned to the MAX preset — configuration, not a
+   * separate implementation.
+   */
+  private final RoundTripStrategy autoCompetitionStrategy = (request, slice) -> {
+    request.effortPolicy = slice.effortPolicy;
+    runAutoCandidateCompetition(slice.searchRadius, slice.direction);
+    return false;
+  };
+
+  /**
+   * Resolve the tier ladder for this request context. QUALITY pins the
+   * competition to the MAX preset; AUTO resolves an effort preset from context
+   * and runs the competition — or, on constrained resources, the bounded tier;
+   * explicit BALANCED runs bounded; GREEDY/ISO_GREEDY run the planner when the
+   * request supports it; everything else (and every samewayback downgrade)
+   * runs the waypoint tier. Returns the rungs to attempt in order — currently
+   * always exactly one; multi-rung fallback is the extension point.
+   */
+  private List<Rung> resolveLadder(RoundTripAlgorithm algo, double searchRadius, double direction) {
+    // Request context for the effort policy: profile class from the profile's
+    // own validFor* globals (name-independent), coarse length class, and
+    // resources. Logged once so future policy rules land on recorded evidence.
+    RoundTripEffortPolicy.ProfileClass profileClass = classifyProfileClass();
+    RoundTripEffortPolicy.LengthClass lengthClass =
+      RoundTripEffortPolicy.classifyLength(2 * Math.PI * searchRadius);
+    if (profileClass == RoundTripEffortPolicy.ProfileClass.MOTOR) {
+      ops.logInfo("round trip: profile class MOTOR — loop quality is unvalidated for"
+        + " motorized profiles; using bike-derived policies (provisional)");
+    }
+
+    boolean greedyCapable = greedySupports(ops.routingContext().allowSamewayback, ops.waypoints().size());
+
+    // QUALITY: the full competition at max effort — both planners always run,
+    // wider routed top-K, doubled plan budget. NOT an ISO_GREEDY alias: greedy
+    // wins ~a quarter of competition cells.
+    if (algo == RoundTripAlgorithm.QUALITY && greedyCapable) {
+      ops.logInfo("round trip effort: " + RoundTripEffortPolicy.MAX_PRESET.rationale);
+      return Collections.singletonList(new Rung(autoCompetitionStrategy,
+        new TierSlice(algo, RoundTripEffortPolicy.MAX_PRESET, searchRadius, direction, true, "QUALITY")));
+    }
+    if (algo == RoundTripAlgorithm.QUALITY) {
+      // The planners do not honor allowSamewayback. Name the tier in the log —
+      // the silent rewrite below (QUALITY -> selectRoundTripAlgorithm ->
+      // WAYPOINT) otherwise hides that the MAX effort request was downgraded.
+      ops.logInfo("QUALITY round trip does not support allowSamewayback, falling back to waypoint algorithm");
+    }
+
+    // AUTO candidate competition, effort resolved from context. Constrained
+    // resources (short request budget, memory-constrained device) resolve to
+    // the BOUNDED preset — the bounded tier instead of the full competition,
+    // with the same fall-through to the shared floors and quality gate (an
+    // early return would ship ungated tracks that an identical explicit
+    // BALANCED request rejects or returns with a Warning).
+    if (algo == RoundTripAlgorithm.AUTO && greedyCapable) {
+      RoundTripEffortPolicy resolved = RoundTripEffortPolicy.resolveAuto(
+        profileClass, lengthClass, ops.routingContext().memoryclass, ops.maxRunningTime());
+      ops.logInfo("round trip effort: " + resolved.rationale);
+      if (resolved.preset != RoundTripEffortPolicy.Preset.BOUNDED) {
+        return Collections.singletonList(new Rung(autoCompetitionStrategy,
+          new TierSlice(algo, resolved, searchRadius, direction, true, "AUTO")));
+      }
+      return Collections.singletonList(new Rung(boundedStrategy,
+        new TierSlice(algo, resolved, searchRadius, direction, true, "AUTO(bounded)")));
+    }
+
+    if (algo == RoundTripAlgorithm.AUTO || algo == RoundTripAlgorithm.QUALITY) {
+      algo = selectRoundTripAlgorithm(searchRadius);
+    }
+    ops.logInfo("round trip algorithm: " + algo);
+
+    if (algo == RoundTripAlgorithm.BALANCED) {
+      // allowSamewayback is handled inside the bounded tier: the planner slice
+      // is skipped, but the waypoint placement keeps the tier budget instead
+      // of inheriting the full request budget.
+      return Collections.singletonList(new Rung(boundedStrategy,
+        new TierSlice(algo, RoundTripEffortPolicy.BOUNDED_PRESET, searchRadius, direction, greedyCapable, "BALANCED")));
+    }
+    if (algo == RoundTripAlgorithm.GREEDY || algo == RoundTripAlgorithm.ISO_GREEDY) {
+      if (!greedyCapable) {
+        // Greedy generates its own intermediate points and does not honor
+        // allowSamewayback. (User vias are handled in explicit-via mode.)
+        ops.logInfo("greedy round trip does not support allowSamewayback, falling back to waypoint algorithm");
+        return Collections.singletonList(new Rung(fastStrategy,
+          new TierSlice(RoundTripAlgorithm.WAYPOINT, null, searchRadius, direction, false, "WAYPOINT")));
+      }
+      // ISO_GREEDY: isochrone-derived candidate pool; falls back to plain
+      // GREEDY internally if the candidate pool is insufficient.
+      return Collections.singletonList(new Rung(greedyStrategy,
+        new TierSlice(algo, null, searchRadius, direction, true, algo.toString())));
+    }
+    return Collections.singletonList(new Rung(fastStrategy,
+      new TierSlice(algo, null, searchRadius, direction, greedyCapable, algo.toString())));
+  }
 
   /**
    * Publish the engine-read slice of the request (radius, deadline,
@@ -382,90 +510,14 @@ public final class RoundTripOrchestrator {
         }
         RoundTripAlgorithm algo = ops.routingContext().roundTripAlgorithm;
 
-        // Request context for the effort policy: profile class from the
-        // profile's own validFor* globals (name-independent), coarse length
-        // class, and resources. Logged once so future policy rules land on
-        // recorded evidence.
-        RoundTripEffortPolicy.ProfileClass profileClass = classifyProfileClass();
-        RoundTripEffortPolicy.LengthClass lengthClass =
-          RoundTripEffortPolicy.classifyLength(2 * Math.PI * searchRadius);
-        if (profileClass == RoundTripEffortPolicy.ProfileClass.MOTOR) {
-          ops.logInfo("round trip: profile class MOTOR — loop quality is unvalidated for"
-            + " motorized profiles; using bike-derived policies (provisional)");
-        }
-
-        boolean greedyCapable = greedySupports(ops.routingContext().allowSamewayback, ops.waypoints().size());
-
-        // QUALITY: the full competition at max effort — both planners always
-        // run, wider routed top-K, doubled plan budget. NOT an ISO_GREEDY
-        // alias: greedy wins ~a quarter of competition cells.
-        if (algo == RoundTripAlgorithm.QUALITY && greedyCapable) {
-          request.effortPolicy = RoundTripEffortPolicy.MAX_PRESET;
-          ops.logInfo("round trip effort: " + request.effortPolicy.rationale);
-          runAutoCandidateCompetition(searchRadius, direction);
-          return;
-        }
-        if (algo == RoundTripAlgorithm.QUALITY) {
-          // Same constraint as the greedy/BALANCED branches: the planners do
-          // not honor allowSamewayback. Name the tier in the log — the silent
-          // rewrite below (QUALITY -> selectRoundTripAlgorithm -> WAYPOINT)
-          // otherwise hides that the MAX effort request was downgraded.
-          ops.logInfo("QUALITY round trip does not support allowSamewayback, falling back to waypoint algorithm");
-        }
-
-        // AUTO candidate competition, effort resolved from context.
-        //
-        // Generated loops default to greedy Dijkstra construction. AUTO runs
-        // ISO_GREEDY first, then GREEDY, and considers the legacy
-        // WAYPOINT/probe path only as a separately scored fallback candidate
-        // if greedy cannot produce an accepted route (see
-        // runAutoCandidateCompetition for the full competition policy).
-        // Constrained resources (short request budget, memory-constrained
-        // device) resolve to the BOUNDED preset — the bounded dispatch below
-        // instead of the full competition.
-        if (algo == RoundTripAlgorithm.AUTO && greedyCapable) {
-          RoundTripEffortPolicy resolved = RoundTripEffortPolicy.resolveAuto(
-            profileClass, lengthClass, ops.routingContext().memoryclass, ops.maxRunningTime());
-          ops.logInfo("round trip effort: " + resolved.rationale);
-          if (resolved.preset != RoundTripEffortPolicy.Preset.BOUNDED) {
-            request.effortPolicy = resolved;
-            runAutoCandidateCompetition(searchRadius, direction);
-            // The competition method writes request.track / request.error directly
-            // (its children are gated inside the competition).
+        for (Rung rung : resolveLadder(algo, searchRadius, direction)) {
+          if (!rung.strategy.attempt(request, rung.slice)) {
+            // The strategy finalized the result itself: the competition tiers
+            // gate their candidates internally and decorate the winner.
             return;
           }
-          // Constrained resources: the same bounded dispatch as explicit
-          // BALANCED — and the same fall-through to the shared floors and
-          // quality gate below. The bounded tier adopts best-effort tracks
-          // and defers hard-reject to that uniform gate, so an early return
-          // here would ship ungated tracks that an identical explicit
-          // BALANCED request rejects or returns with a Warning.
-          doBoundedRoundTrip(searchRadius, direction, resolved, "AUTO(bounded)", true);
-        } else {
-          if (algo == RoundTripAlgorithm.AUTO || algo == RoundTripAlgorithm.QUALITY) {
-            algo = selectRoundTripAlgorithm(searchRadius);
-          }
-          ops.logInfo("round trip algorithm: " + algo);
-
-          if (algo == RoundTripAlgorithm.BALANCED) {
-            // allowSamewayback is handled inside the bounded tier: the planner
-            // slice is skipped, but the waypoint placement keeps the tier
-            // budget instead of inheriting the full request budget.
-            doBoundedRoundTrip(searchRadius, direction,
-              RoundTripEffortPolicy.BOUNDED_PRESET, "BALANCED", greedyCapable);
-          } else if (algo == RoundTripAlgorithm.GREEDY || algo == RoundTripAlgorithm.ISO_GREEDY) {
-            if (!greedySupports(ops.routingContext().allowSamewayback, ops.waypoints().size())) {
-              // Greedy generates its own intermediate points and does not honor
-              // allowSamewayback. (User vias are handled in explicitViaMode above.)
-              ops.logInfo("greedy round trip does not support allowSamewayback, falling back to waypoint algorithm");
-              doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
-            } else {
-              // ISO_GREEDY: isochrone-derived candidate pool. Falls back to plain
-              // GREEDY internally if the candidate pool is insufficient.
-              doGreedyRoundTrip(searchRadius, direction, algo);
-            }
-          } else {
-            doWaypointBasedRoundTrip(searchRadius, direction, algo);
+          if (request.track != null || request.error != null) {
+            break; // outcome decided — hand it to the shared floors + gate below
           }
         }
       }
