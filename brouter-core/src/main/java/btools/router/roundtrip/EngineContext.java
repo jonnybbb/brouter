@@ -8,55 +8,50 @@ import btools.router.OsmTrack;
 import btools.router.RoutingContext;
 
 /**
- * The read-only slice of the engine seam: the request context, engine
- * environment, and stateless engine primitives. Read-only is meant against
- * the round-trip request state — {@link #recalcTrack} mutates the track it is
- * given and {@link #addLinksProcessed} bumps a telemetry counter, but nothing
- * here mutates the request fields behind {@link RoundTripRequestState}. One of
- * the four role interfaces composed by {@link RoundTripEngineOps}.
+ * Engine seam role: read-only view of the request plus stateless engine
+ * primitives. Nothing here mutates the request fields behind
+ * {@link RoundTripRequestState}.
  */
 public interface EngineContext {
 
-  /** The request context (read-only use; the planner reads profile knobs). */
+  /** The request context. Do not mutate. */
   RoutingContext routingContext();
 
-  /** The engine's segment directory (child engine construction). */
+  /** Segment directory (used to construct child engines). */
   File segmentDir();
 
-  /** True when the engine runs in round-trip mode. */
   boolean isRoundTripMode();
 
   /** True while an explicit-via round trip is being generated. */
   boolean explicitViaRoundTrip();
 
-  /** The active round-trip search radius (0 outside round-trip requests). */
+  /** Active search radius; 0 outside round-trip requests. */
   double roundTripSearchRadius();
 
-  /** True when the active profile allows ferries (gate context). */
   boolean roundTripFerriesAllowed();
 
-  /** True when the uniform gate would hard-reject this verdict. */
+  /** True when the uniform quality gate would hard-reject this verdict. */
   boolean roundTripQualityHardReject(RoundTripQualityResult quality);
 
-  /** Canonical missing-start-tile error, or null when the tile is present. */
+  /** Missing-start-tile error, or null when the tile is present. */
   String startTileMissingError(OsmNodeNamed start);
 
-  /** Area-info based random direction pick (upstream engine primitive). */
+  /** Area-info based random direction pick. */
   double getRandomDirectionFromData(OsmNodeNamed wp, double searchRadius);
 
-  /** v1.7.8 geometric circle placement (upstream engine primitive). */
+  /** v1.7.8 geometric circle placement. */
   void buildPointsFromCircle(List<OsmNodeNamed> waypoints, double startAngle,
                              double searchRadius, int points);
 
-  /** Recalculate a track's totals (engine primitive shared with normal routing). */
+  /** Recalculate a track's totals. */
   void recalcTrack(OsmTrack track);
 
   /** The optimized-FAST placement seam of this engine. */
   FastPlacementOps fastPlacementOps();
 
-  /** Aggregate a child engine's link expansions into this engine's counter. */
+  /** Add a child engine's link expansions to this engine's counter. */
   void addLinksProcessed(long links);
 
-  /** Milliseconds left of the whole-request budget (Long.MAX_VALUE when untimed). */
+  /** Milliseconds left of the request budget; Long.MAX_VALUE when untimed. */
   long remainingRequestBudgetMs();
 }

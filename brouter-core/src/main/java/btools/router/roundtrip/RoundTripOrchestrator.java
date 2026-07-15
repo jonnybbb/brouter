@@ -13,13 +13,11 @@ import btools.util.CheapAngleMeter;
 import btools.util.CheapRuler;
 
 /**
- * The round-trip request orchestrator, extracted from RoutingEngine: the
- * FAST &lt; BALANCED &lt; AUTO &lt; QUALITY tier ladder, waypoint-based and
- * explicit-via generation, the greedy/bounded planner dispatch, the AUTO
- * candidate competition over child engines, tier/policy selection, and
- * placement-path telemetry. Reaches the engine only through
- * {@link RoundTripEngineOps}; child engines are driven through their public
- * API and their own ops seam.
+ * Round-trip request orchestrator: the FAST &lt; BALANCED &lt; AUTO &lt; QUALITY
+ * tier ladder, waypoint-based and explicit-via generation, greedy/bounded
+ * planner dispatch, and the AUTO candidate competition over child engines.
+ * Reaches the engine only through {@link RoundTripEngineOps}; child engines are
+ * driven through their public API and their own ops seam.
  */
 public final class RoundTripOrchestrator {
 
@@ -54,9 +52,8 @@ public final class RoundTripOrchestrator {
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
 
   /**
-   * Product sizing (2026-07): loops up to this length must work with the
-   * standard request budget; anything longer requires the caller to opt in
-   * with a raised timeout (see the gate in doRoundTrip).
+   * Loops up to this length must work on the standard request budget; longer
+   * loops require the caller to opt in with a raised timeout (gate in doRoundTrip).
    */
   static final double MAX_STANDARD_LOOP_METERS = 200_000;
 
@@ -64,30 +61,26 @@ public final class RoundTripOrchestrator {
   static final long LONG_LOOP_MIN_BUDGET_MS = 120_000;
 
   /**
-   * Unwind margin for the parallel AUTO GREEDY child join: how long past its
-   * own budget the request thread waits for the child to stop before
-   * terminating it and moving on. Bounds the join so a wedged or
-   * budget-overshooting child can never hang the request thread.
+   * Grace (ms) the request thread waits past a parallel AUTO GREEDY child's own
+   * budget before terminating it — bounds the join so a wedged or overshooting
+   * child can never hang the request thread.
    */
   private static final long AUTO_CHILD_JOIN_UNWIND_MS = 3_000;
 
   /**
-   * Issue #26 default: do not start plain GREEDY speculatively before
-   * ISO_GREEDY has proved it is needed. This avoids duplicate production
-   * algorithm runs on strong or provider-level graph-native-absorbed
-   * ISO_GREEDY results. Operators who prefer the old single-request latency
-   * tradeoff can opt back in with {@code -DroundTripSpeculativeAutoGreedy=true}.
+   * When false (default), do not start plain GREEDY speculatively before
+   * ISO_GREEDY proves it is needed — avoids duplicate runs on strong or
+   * graph-native-absorbed ISO_GREEDY results. Opt back into the old lower-latency
+   * tradeoff with {@code -DroundTripSpeculativeAutoGreedy=true}.
    */
   private static final boolean SPECULATIVE_AUTO_GREEDY =
     Boolean.getBoolean("roundTripSpeculativeAutoGreedy");
 
   /**
-   * Global bound on how many AUTO round-trip requests may run their speculative
-   * GREEDY child IN PARALLEL at once when {@link #SPECULATIVE_AUTO_GREEDY} is
-   * enabled (a non-blocking permit pool). Routing is CPU-bound, so this caps
-   * the extra CPU-bound threads the opt-in parallelism adds across the whole
-   * JVM. Tunable via {@code -DroundTripParallelAutoPermits}; set 0 to force
-   * fully-sequential AUTO competition even when speculative mode is enabled.
+   * JVM-wide permit pool capping how many AUTO requests run their speculative
+   * GREEDY child in parallel when {@link #SPECULATIVE_AUTO_GREEDY} is on — routing
+   * is CPU-bound, so this bounds the extra threads. Tune via
+   * {@code -DroundTripParallelAutoPermits}; 0 forces fully-sequential AUTO.
    */
   private static final java.util.concurrent.Semaphore PARALLEL_AUTO_SEMAPHORE =
     new java.util.concurrent.Semaphore(Math.max(0,
@@ -103,10 +96,8 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Append a one-line message to {@code track.message}, space-separated.
-   * Used to surface advisories and quality-gate disclosures so that
-   * downstream GPX/JSON formatters carry the information to the cyclist.
-   * No-op if either argument is null/empty.
+   * Append a space-separated line to {@code track.message} (advisories and gate
+   * disclosures for the GPX/JSON formatters). No-op if either argument is null/empty.
    */
   private static void appendRouteMessage(OsmTrack track, String message) {
     if (track == null || message == null || message.isEmpty()) return;
@@ -118,14 +109,10 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * AUTO's plain-GREEDY entitlement check.
-   *
-   * <p>Issue #26 absorption rule: a below-threshold ISO_GREEDY result does not
-   * automatically imply a useful second plain-GREEDY run. If ISO_GREEDY's
-   * provider fell back to graph-native candidates before planning, or if
-   * ISO_GREEDY already compared an internal graph-native-only branch, it has
-   * already used the same source truth as plain GREEDY. Running GREEDY again is
-   * duplicate work, not extra source truth.
+   * AUTO's plain-GREEDY entitlement check: a below-threshold ISO_GREEDY does not
+   * imply a useful second GREEDY run — if ISO_GREEDY already used graph-native
+   * candidates (provider fallback or internal graph-native compare), GREEDY would
+   * just duplicate the same source truth.
    */
   static boolean autoNeedsPlainGreedy(RoundTripCandidateResult isoGreedyR,
                                       long now, long deadline) {
@@ -152,7 +139,7 @@ public final class RoundTripOrchestrator {
     return null;
   }
 
-  /** Phase 2.1: human-readable axis label for the infeasibility error. */
+  /** Human-readable axis label for the infeasibility error. */
   private static String axisName(double axisBearingDegrees) {
     // axisBearingDegrees is canonical [0, 180). Snap to the nearest cardinal
     // pair for a readable label.
@@ -164,20 +151,18 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Budget (ms) for the next sequential AUTO candidate: the time remaining to
-   * the shared competition deadline, floored at {@link #MIN_CHILD_BUDGET_MS} so
-   * a candidate that is still spawned gets a usable slice rather than ~0.
+   * Budget (ms) for the next sequential AUTO candidate: time left to the shared
+   * competition deadline, floored at {@link #MIN_CHILD_BUDGET_MS} so a spawned
+   * candidate gets a usable slice rather than ~0.
    */
   static long childCandidateBudgetMs(long deadline, long now) {
     return Math.max(MIN_CHILD_BUDGET_MS, deadline - now);
   }
 
   /**
-   * Profile family from the profile's own validFor* globals — every standard
-   * profile declares exactly one (fastbike/trekking/mtb: validForBikes,
-   * hiking: validForFoot, car/moped: validForCars). Name-independent, so
-   * custom profiles classify correctly as long as they declare the global;
-   * undeclared profiles read UNKNOWN and keep standard-effort behavior.
+   * Profile family from the profile's own validFor* globals (name-independent):
+   * validForBikes, validForFoot, or validForCars. A profile declaring none reads
+   * UNKNOWN and keeps standard-effort behavior.
    */
   private RoundTripEffortPolicy.ProfileClass classifyProfileClass() {
     if (ops.routingContext() == null || ops.routingContext().expctxWay == null) {
@@ -190,17 +175,12 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * The uniform round-trip gate evaluation — single source of truth for the
-   * gate flags, shared by the verdict in {@code doRoundTrip} and the bounded
-   * tier's fallback decision so the two sites can never drift.
-   *
-   * <p>Explicit-via mode treats the requested distance as advisory only — the
-   * user-supplied skeleton defines the route, not the distance target; the
-   * gate still enforces beeline / closure / profile-hostility checks. A forced
-   * same-way-back corridor (planner found nothing clean in constrained
-   * terrain) is accepted as a disclosed OUT_AND_BACK rather than rejected —
-   * keep-when-forced; gratuitous corridors never reach here because the
-   * planner only sets the flag when no clean alternative exists.
+   * Uniform round-trip gate — the single source of truth for the gate flags,
+   * shared by {@code doRoundTrip}'s verdict and the bounded tier's fallback so the
+   * two can never drift. Explicit-via mode makes distance advisory (skeleton
+   * defines the route) but still enforces beeline/closure/hostility. A forced
+   * same-way-back corridor is accepted as a disclosed OUT_AND_BACK (keep-when-forced;
+   * the planner sets the flag only when no clean alternative exists).
    */
   private RoundTripQualityResult evaluateRoundTripGate(OsmTrack track, double searchRadius,
                                                        boolean explicitViaMode) {
@@ -209,13 +189,11 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * A blended verdict below the clear-accept bar (or none) warrants the
-   * internal graph-native comparison. The trigger and the selection both work
-   * on verdicts from {@link #scoreInternalGreedyResult}, so they can never
-   * judge a track differently — the flags drifted once (ferries hard-coded
-   * off in a separate trigger pipeline) and every ferry-using accepted loop
-   * paid a full spurious extra ladder. Package-visible so the trigger tests
-   * exercise the same predicate production calls.
+   * A blended verdict below the clear-accept bar (or null) warrants the internal
+   * graph-native comparison. Trigger and selection both read verdicts from
+   * {@link #scoreInternalGreedyResult} so they can never judge a track differently
+   * — they drifted once (ferries hard-coded off in a separate trigger path) and
+   * every ferry-using loop paid a spurious extra ladder.
    */
   static boolean internalBranchNeeded(RouteChoiceScore.Verdict blendedVerdict) {
     return blendedVerdict == null || blendedVerdict.score() < CLEAR_ACCEPT_THRESHOLD;
@@ -228,10 +206,9 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Selection between the blended result and the internal graph-native branch,
-   * on verdicts computed ONCE at the call site (each full-track gate+score
-   * pass rebuilds the crossing grid and corridor index — two per comparison
-   * suffice, not four).
+   * Pick between the blended result and the internal graph-native branch, on
+   * verdicts computed ONCE at the call site (each gate+score pass rebuilds the
+   * crossing grid and corridor index — two per comparison, not four).
    */
   private static RoundTripResult selectBetterInternalIsoGreedyResult(
       RoundTripResult blended, RouteChoiceScore.Verdict blendedScore,
@@ -632,29 +609,23 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Explicit-via round-trip: the caller supplied via points; route through
-   * them exactly, in input order, with no generated {@code rt*} ops.waypoints().
+   * Explicit-via round-trip: route through the caller's via points exactly, in
+   * input order, with no generated {@code rt*} waypoints.
    *
-   * <p>Routing skeleton:
+   * <p>Skeleton:
    * <ul>
    *   <li>{@code allowSamewayback=false}: {@code start → via1 → ... → viaN → start}</li>
-   *   <li>{@code allowSamewayback=true}:  {@code start → via1 → ... → viaN → viaN-1 → ... → via1 → start}
-   *       (mirroring is applied by the existing {@code doRouting} expansion;
-   *       this helper only supplies the forward chain).</li>
+   *   <li>{@code allowSamewayback=true}: forward chain only; {@code doRouting} mirrors it back.</li>
    * </ul>
    *
-   * <p>{@code roundTripPoints} is ignored. {@code roundTripDistance} /
-   * {@code roundTripLength} become advisory targets only — the quality gate
-   * runs in explicit-via mode and converts distance-ratio mismatch to a
-   * disclosure rather than a rejection. {@code startDirection} is logged but
-   * does not influence the via order.
+   * <p>{@code roundTripPoints} is ignored; {@code roundTripDistance}/{@code roundTripLength}
+   * and {@code startDirection} are advisory (distance-ratio mismatch becomes a
+   * disclosure, not a rejection; direction does not reorder vias). A via that
+   * cannot be snapped within range fails with an error naming it — user vias are
+   * hard constraints, never silently dropped (no-beeline invariant).
    *
-   * <p>A user via that cannot be snapped within range fails with an error
-   * naming the via (the no-beeline invariant is preserved). The helper never
-   * silently drops a user via.
-   *
-   * @param searchRadius used only to size the snap tolerance and for logging
-   * @param direction    logged for diagnostics; not used to reorder vias
+   * @param searchRadius sizes the snap tolerance; also logged
+   * @param direction    logged only; does not reorder vias
    */
   private void doExplicitViaRoundTrip(double searchRadius, double direction) {
     OsmNodeNamed start = ops.waypoints().get(0);
@@ -1265,26 +1236,21 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Bounded-effort dispatch (issue #27): one bounded, graph-aware planning run
-   * with predictable latency. Used by the BALANCED tier and by AUTO when the
-   * effort policy resolves BOUNDED (constrained resources).
+   * Bounded-effort dispatch: one bounded, graph-aware planning run with
+   * predictable latency. Used by the BALANCED tier and by AUTO when the effort
+   * policy resolves BOUNDED (constrained resources).
    *
-   * <p>Policy: a single ISO_GREEDY dispatch (its internal graph-native
-   * comparison branch from issue #26 stays available) under a hard
-   * {@code min(request budget, tierBudget)} deadline and a reduced per-step
-   * routed top-K. The Phase 2.1 axis retry and the ISO_GREEDY→GREEDY
-   * recursion are skipped ({@link RoundTripEffortPolicy#skipRetryLayers});
-   * a degraded-but-rideable planner loop is adopted best-effort for the
-   * lenient gate to grade. When the planner produces no track at all — or a
-   * track the uniform gate would hard-reject — the tier falls back to one
-   * FAST/WAYPOINT attempt, run under a fresh tier budget slice, because
-   * always returning some loop beats strict adherence to a single slice
-   * (the fallback fires mostly in constrained terrain where the greedy run
-   * burned its budget without closing a loop). With
-   * {@code greedyCapable == false} (allowSamewayback requests) the planner
-   * slice is skipped and only the budgeted fallback runs. The caller falls
-   * through to the shared floors and quality gate in {@code doRoundTrip} —
-   * this method never returns an ungated success.
+   * <p>A single ISO_GREEDY dispatch (its internal graph-native compare stays
+   * available) under a hard {@code min(request budget, tierBudget)} deadline and a
+   * reduced routed top-K. The Phase 2.1 axis retry and the ISO_GREEDY→GREEDY
+   * recursion are skipped ({@link RoundTripEffortPolicy#skipRetryLayers}); a
+   * degraded-but-rideable loop is adopted best-effort for the lenient gate. When
+   * the planner produces no track, or one the gate would hard-reject, the tier
+   * falls back to a single FAST/WAYPOINT attempt under a fresh tier slice — always
+   * returning some loop beats strict adherence to one slice. With
+   * {@code greedyCapable == false} (allowSamewayback) only the budgeted fallback
+   * runs. The caller passes through the shared floors and gate in
+   * {@code doRoundTrip}; this method never returns an ungated success.
    */
   private void doBoundedRoundTrip(double searchRadius, double direction,
                                   RoundTripEffortPolicy policy, String tierLabel,
@@ -1396,27 +1362,21 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * AUTO candidate competition for generated round trips (no user vias).
-   *
-   * <p>Runs greedy candidates first and uses the old probe/WAYPOINT generator
-   * only as a fallback:
+   * AUTO candidate competition for generated round trips (no user vias). Runs
+   * greedy candidates first, the legacy probe/WAYPOINT generator only as fallback:
    * <ol>
-   *   <li>ISO_GREEDY — iso-derived candidates fed to the greedy planner.
-   *       Profile-aware by construction.</li>
-   *   <li>GREEDY — plain greedy graph-native/top-k planner if ISO_GREEDY fails or is weak.</li>
-   *   <li>WAYPOINT/probe — legacy fallback only if greedy produced no accepted route.</li>
+   *   <li>ISO_GREEDY — iso-derived candidates fed to the greedy planner.</li>
+   *   <li>GREEDY — plain graph-native planner, if ISO_GREEDY fails or is weak.</li>
+   *   <li>WAYPOINT/probe — only if greedy produced no accepted route.</li>
    * </ol>
    *
-   * <p>Each candidate runs inside an isolated <em>child</em> {@link RoutingEngine}
-   * built from a request-fields-only copy of the parent's
-   * {@link RoutingContext} — no parsed/runtime state is shared. Child output
-   * is suppressed (no GPX/log written). After all candidates have run, the
-   * highest-scoring accepted candidate's {@link OsmTrack} is adopted as
-   * this engine's {@code ops.foundTrack()} and its disclosures are surfaced.
-   *
-   * <p>If no candidate passes strict validation, the lenient default adopts the
-   * least-bad QUALITY-tier best-effort track (see {@link #selectBestEffortCandidate});
-   * strict mode instead leaves {@code ops.foundTrack()} null and sets {@code ops.errorMessage()}.
+   * <p>Each candidate runs in an isolated child {@link RoutingEngine} built from a
+   * request-fields-only copy of the parent {@link RoutingContext} (no parsed/runtime
+   * state shared, output suppressed). The highest-scoring accepted candidate's
+   * {@link OsmTrack} is adopted; its disclosures are surfaced. If none pass strict
+   * validation, the lenient default adopts the least-bad best-effort track (see
+   * {@link #selectBestEffortCandidate}); strict mode leaves the track null and sets
+   * an error.
    */
   private void runAutoCandidateCompetition(double searchRadius, double direction) {
     long t0 = System.currentTimeMillis();
@@ -1636,9 +1596,8 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Run one AUTO candidate in an isolated child engine, score the result,
-   * and return the wrapper. Never throws — failures land in
-   * {@link RoundTripCandidateResult#ops.errorMessage()}.
+   * Run one AUTO candidate in an isolated child engine, score it, return the
+   * wrapper. Never throws — failures land in the result's {@code errorMessage}.
    */
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
                                                      double searchRadius, double direction,
@@ -1647,8 +1606,8 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Adopt the winning candidate's track as this engine's result, attach
-   * a summary diagnostic listing what was tried and which won.
+   * Adopt the winning candidate's track as this engine's result and attach a
+   * summary diagnostic of what was tried and which won.
    */
   private void adoptCandidateWinner(RoundTripCandidateResult winner,
                                     List<RoundTripCandidateResult> all, long totalMs) {
@@ -1712,18 +1671,12 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Rank degraded best-effort round-trip candidates and return the most rideable,
-   * or {@code null} if none have a track. Scores each with the multi-factor
-   * {@link RouteChoiceScore#scoreBestEffort}, which bypasses the scorer's
-   * accepted-only zero-guard (so a rejected track is ranked on its real geometry
-   * instead of collapsing to 0) while still consuming the candidate's gate
-   * verdict for the shape disclosure penalty — a rejected LOLLIPOP/OUT_AND_BACK
-   * must not rank as if it were a strict loop. Because every QUALITY failure
-   * also corresponds to a weak component in the score (distance miss → low
-   * distance term, hostile surface → low cost/m term, chaos/retrace → low reuse
-   * term), the least-bad overall candidate wins. Ties keep {@code candidates}
-   * order (the AUTO algorithm-quality order). Does no routing — the tracks are
-   * already built.
+   * Rank degraded best-effort candidates, return the most rideable (or {@code null}
+   * if none have a track). Uses {@link RouteChoiceScore#scoreBestEffort}, which
+   * bypasses the scorer's accepted-only zero-guard (a rejected track is ranked on
+   * real geometry, not collapsed to 0) but still applies the gate verdict's shape
+   * penalty, so a rejected LOLLIPOP/OUT_AND_BACK cannot outrank a strict loop.
+   * Ties keep {@code candidates} order (AUTO algorithm-quality order). Does no routing.
    */
   static RoundTripCandidateResult selectBestEffortCandidate(
       List<RoundTripCandidateResult> candidates, double expectedDistance,
@@ -1754,16 +1707,11 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Runs one greedy planning attempt — the inner sub-route-count loop with
-   * a single {@code tryDirection}. Used by Phase 2.1 to attempt the same
-   * planner twice (user direction first, axis-aligned direction on retry)
-   * without code duplication.
-   *
-   * <p>Stamps Phase 2.0 telemetry on the result and updates
-   * {@link #ops.lastRoundTripResult()} on every iteration so cross-attempt
-   * comparison sees consistent metadata. Returns the final
-   * {@link RoundTripResult} produced (which may be degraded — the caller
-   * decides whether to accept or retry).
+   * Run one greedy planning attempt — the inner sub-route-count loop for a single
+   * {@code tryDirection}. Stamps iso-asymmetry telemetry on the result and updates
+   * the last-round-trip-result on every iteration so cross-attempt comparison sees
+   * consistent metadata. The returned {@link RoundTripResult} may be degraded —
+   * the caller decides whether to accept or retry.
    */
   private RoundTripResult runGreedyAttempt(OsmNodeNamed start, double searchRadius,
                                            double desiredDistance, double tryDirection,
@@ -1828,10 +1776,9 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Build the appropriate candidate provider for the chosen mode. GREEDY uses
-   * per-step graph-native candidates. ISO_GREEDY blends a bounded start-centered
-   * isochrone pool with that same per-step graph-native provider. Geometric
-   * radial placement is intentionally not used by production greedy paths.
+   * Candidate provider for the mode: GREEDY uses per-step graph-native candidates;
+   * ISO_GREEDY blends a bounded start-centered isochrone pool with that same
+   * provider. Geometric radial placement is intentionally unused here.
    */
   private RoundTripCandidateProvider buildCandidateProvider(RoundTripAlgorithm algo,
                                                             OsmNodeNamed start,
@@ -1947,9 +1894,8 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Whether greedy round-trip planning can be applied with the given inputs.
-   * Greedy currently generates its own intermediate ops.waypoints() from the start,
-   * so user-supplied via points and allowSamewayback are not honored.
+   * Whether greedy planning applies: it generates its own intermediate waypoints,
+   * so user vias and allowSamewayback are not honored.
    */
   public static boolean greedySupports(boolean allowSamewayback, int waypointCount) {
     return !allowSamewayback && waypointCount <= 1;
@@ -1957,11 +1903,9 @@ public final class RoundTripOrchestrator {
 
   /**
    * One bounded tier slice: the tier budget clamped to the remaining request
-   * budget, floored at {@link #MIN_LADDER_RUNG_BUDGET_MS} — mirroring the
-   * competition's childCandidateBudgetMs contract, a nearly-spent request
-   * still funds ONE bounded run (a deliberate, bounded overrun: the caller
-   * gets a loop instead of a guaranteed instant timeout). An untimed request
-   * (deadline 0) gets the full tier budget.
+   * budget, floored at {@link #MIN_LADDER_RUNG_BUDGET_MS} so a nearly-spent
+   * request still funds ONE run (deliberate bounded overrun, not a guaranteed
+   * instant timeout). An untimed request (deadline 0) gets the full tier budget.
    */
   private static long tierSliceMs(long tierBudgetMs, long requestDeadline, long now) {
     return Math.min(tierBudgetMs, requestDeadline == 0 ? tierBudgetMs
@@ -1999,19 +1943,17 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Minimum remaining request budget worth starting another subRouteCount
-   * ladder rung, Phase-2.1 retry or ISO_GREEDY→GREEDY recursion for. Below
-   * this a fresh plan() could not route even a couple of legs, so the time is
-   * better left to the fallback/adoption path.
+   * Minimum remaining request budget worth starting another subRouteCount rung,
+   * Phase-2.1 retry, or ISO_GREEDY→GREEDY recursion — below this a fresh plan()
+   * could not route even a couple of legs, so leave the time to the fallback.
    */
   private static final long MIN_LADDER_RUNG_BUDGET_MS = 3_000;
 
   /**
-   * As above, additionally publishing the child engine into
-   * {@code engineOut[0]} as soon as it is constructed, so a concurrent
-   * coordinator can {@link #ops.terminate()} a speculative child whose result is
-   * no longer needed (the volatile kill flag is honoured per search pop and
-   * per expansion pop).
+   * As above, but publishes the child engine into {@code engineOut} as soon as it
+   * is constructed, so a concurrent coordinator can {@code terminate()} a
+   * speculative child no longer needed (the kill flag is honoured per search pop
+   * and per expansion pop).
    */
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
                                                      double searchRadius, double direction,
@@ -2095,17 +2037,11 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Greedy route-choice threshold for clear accept. If ISO_GREEDY scores
-   * below this, AUTO normally runs the plain GREEDY candidate as a comparison
-   * before considering the legacy WAYPOINT fallback. Graph-native absorption
-   * inside ISO_GREEDY is the measured exception.
-   *
-   * <p>Absorption path (issue #26): ISO_GREEDY now carries an internal
-   * graph-native fallback (see {@link IsoPoolHealth}) that demotes a thin,
-   * bunched, or repeatedly-losing iso pool mid-plan, so this separate GREEDY
-   * comparison should win less and less. It is deliberately retained until
-   * winner-attribution evidence proves it is no longer needed — grep AUTO
-   * competition logs for GREEDY winners and check the ISO_GREEDY candidate's
+   * Clear-accept threshold: below this, AUTO normally runs the plain GREEDY
+   * candidate as a comparison before the legacy WAYPOINT fallback. ISO_GREEDY's
+   * own internal graph-native fallback (see {@link IsoPoolHealth}) makes that
+   * comparison win less over time; it is retained until winner-attribution
+   * evidence proves it unneeded — check the ISO_GREEDY candidate's
    * {@code quotaAccepted}/{@code poolHealth}/{@code demotedAtStep} suffix
    * ({@link RoundTripCandidateResult#toString}) before removing it.
    */

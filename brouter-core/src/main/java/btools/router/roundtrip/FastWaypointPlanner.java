@@ -8,17 +8,16 @@ import btools.util.CheapRuler;
 import java.util.*;
 
 /**
- * Optimized FAST round-trip waypoint generation behind one deep module
- * ({@code .agents/fast-waypoint-planner-spec.md}): bearing generation,
- * probing, narrow-arc radius correction, confidence filtering, spread
- * selection, loop ordering, safeguard substitution, and the ring/circle
- * fallbacks live here so their call order cannot drift across call sites —
- * both regressions this module descends from were exactly that drift.
+ * Optimized FAST round-trip waypoint generation: bearing generation, probing,
+ * narrow-arc radius correction, confidence filtering, spread selection, loop
+ * ordering, safeguard substitution, and the ring/circle fallbacks all live here
+ * so their call order cannot drift across call sites — both regressions this
+ * module descends from were exactly that drift.
  *
  * <p>Scope: only the optimized FAST path ({@code roundtrip.fast.optimized},
- * default on). The ISOCHRONE, legacy A/B FAST, explicit-via and same-way-back
- * paths use the engine's shared helpers directly. AUTO exercises this module
- * through its FAST candidate child engines.
+ * default on). ISOCHRONE, legacy A/B FAST, explicit-via and same-way-back use
+ * the engine's shared helpers directly; AUTO reaches this module through its
+ * FAST candidate child engines.
  *
  * <p>The planner reaches the engine only through the narrow
  * {@link FastPlacementOps} seam, so scenario tests can drive it with a
@@ -40,11 +39,10 @@ public final class FastWaypointPlanner {
 
   /**
    * Bearings for a directional loop lobe: {@code count} vias fanned across the
-   * forward arc toward {@code direction}, reproducing the pre-903
-   * {@code buildPointsFromCircle} distribution (arc half-width 90-180/points, so
-   * a wider fan for more points). This is what makes FAST head in the requested
-   * direction instead of encircling the start. Deterministic given the inputs, so
-   * the derived radius scale — and thus the loop length — is stable.
+   * forward arc toward {@code direction} (arc half-width 90-180/points, so a
+   * wider fan for more points). This is what makes FAST head in the requested
+   * direction instead of encircling the start. Deterministic, so the derived
+   * radius scale — and thus the loop length — is stable.
    */
   static double[] directionalLobeBearings(double direction, int count) {
     int points = count + 1;
@@ -70,8 +68,8 @@ public final class FastWaypointPlanner {
 
   /**
    * The spread-selected direction subset placement will use — shared with the
-   * narrow-arc rescale trigger so it scores exactly the set placement
-   * consumes. Returned length doubles as placement's via-count target.
+   * narrow-arc rescale trigger so it scores exactly the set placement consumes.
+   * Returned length doubles as placement's via-count target.
    */
   private static double[] selectPreferredDirections(double[] viable, int targetPoints,
                                                     double startDirection) {
@@ -99,12 +97,11 @@ public final class FastWaypointPlanner {
   }
 
   /**
-   * Ring-probe confidence filter for the optimized FAST path: drop fragile
-   * single-snap bearings when enough two-snap-strong ones remain
-   * (see {@link PlacementGeometry#filterByProbeConfidence}) — the same guard the
-   * legacy probe+envelope path applies. The filtered set also bounds the
-   * replacement-selection substitutes, so a fragile bearing cannot re-enter
-   * as a stand-in for a dropped one.
+   * Ring-probe confidence filter: drop fragile single-snap bearings when enough
+   * two-snap-strong ones remain (see
+   * {@link PlacementGeometry#filterByProbeConfidence}). The filtered set also
+   * bounds the replacement-selection substitutes, so a fragile bearing cannot
+   * re-enter as a stand-in for a dropped one.
    */
   private static ProbeResult withConfidenceFilteredDirections(ProbeResult probe, int targetPoints) {
     if (probe == null) {
@@ -118,17 +115,17 @@ public final class FastWaypointPlanner {
   }
 
   /**
-   * Ring-mode probe refinement, one owner for both ring call sites (initial
-   * ring and the directional lobe's ring fallback), so scale measurement and
-   * the returned confidence-filtered probe cannot use different placement rules.
+   * Ring-mode probe refinement, one owner for both ring call sites (initial ring
+   * and the directional lobe's ring fallback), so scale measurement and the
+   * returned confidence-filtered probe cannot use different placement rules.
    *
-   * <p>Narrow-arc correction: the pre-probe shrink assumes a near-full ring of
-   * viable bearings; in constrained terrain (coast, valley) they bunch into a
-   * narrow arc whose correct scale — computed like the legacy path from the
-   * ACTUAL selected directions, which never shrinks a narrow arc — is much
-   * larger. One corrective re-probe at that radius keeps the loop near its
-   * target length instead of roughly half of it. Directional lobes skip this
-   * method entirely: their scale derives from the exact lobe distribution.
+   * <p>Narrow-arc correction: the pre-probe shrink assumes a near-full ring; in
+   * constrained terrain (coast, valley) viable bearings bunch into a narrow arc
+   * whose correct scale — measured from the ACTUAL selected directions, which
+   * never shrinks a narrow arc — is much larger. One corrective re-probe at that
+   * radius keeps the loop near target length instead of roughly half of it.
+   * Directional lobes skip this: their scale derives from the exact lobe
+   * distribution.
    */
   private ProbeResult refineRingProbe(ProbeResult probe, OsmNodeNamed start,
                                       double searchRadius, double nominalScale,
@@ -151,20 +148,13 @@ public final class FastWaypointPlanner {
   }
 
   /**
-   * Optimized FAST waypoint placement (ideas 1/2/4). Distribute the vias: a
-   * directional lobe toward the requested bearing (so the loop heads that way,
-   * like the pre-903 routine and AUTO/QUALITY), or a full ring when no bearing
-   * is set. Scale the probe radius from that exact distribution so the loop
-   * hits the target length — the lobe's perimeter/radius ratio differs from a
-   * ring, and using the real bearings keeps the length stable instead of
-   * jumping with a filtered grid. Cap the lobe's via count: like the pre-903
-   * routine (5 points), a handful of well-spread vias gives a clean
-   * directional loop; many vias just add road detours between them that
-   * inflate the routed length past target.
-   *
-   * <p>Builds the skeleton on a local list (build-then-commit): the caller
-   * adopts the outcome in one step and maps its placement path onto the
-   * 2-value telemetry counter.
+   * Optimized FAST waypoint placement. Distribute the vias as a directional lobe
+   * toward the requested bearing (so the loop heads that way), or a full ring
+   * when no bearing is set. Scale the probe radius from that exact distribution
+   * so the loop hits target length — the lobe's perimeter/radius ratio differs
+   * from a ring. Cap the lobe's via count: a handful of well-spread vias gives a
+   * clean directional loop, while many just add road detours that inflate the
+   * routed length past target.
    */
   public FastPlacementOutcome place(FastPlacementRequest req) {
     List<OsmNodeNamed> skeleton = new ArrayList<>();
@@ -231,19 +221,17 @@ public final class FastWaypointPlanner {
   }
 
   /**
-   * FAST placement (optimization idea 1) that reuses the probe's already-snapped
-   * road nodes as vias and dedups any that collapse onto the same node or the
-   * start — which both removes the redundant {@code validateAndAdjustWaypoints}
-   * re-matching pass and fixes the stacked-waypoint bug (multiple bearings
-   * snapping to one node were previously kept as duplicates).
+   * FAST placement that reuses the probe's already-snapped road nodes as vias,
+   * deduping any that collapse onto the same node or the start (which both skips
+   * the redundant {@code validateAndAdjustWaypoints} re-matching pass and fixes
+   * the stacked-waypoint bug — multiple bearings snapping to one node kept as
+   * duplicates).
    *
    * <p>Safeguards mirror the validation this path skips: ferry-like and
    * profile-hostile matches are never committed, and a dropped direction is
-   * replaced from the remaining viable pool instead of shrinking the ring —
-   * legacy validation had the same redundancy through its per-waypoint
-   * candidate groups. Selection ({@code selectProbeDirection}) already filters
-   * retained matches with the same rule, so the ferry/hostile counters here
-   * are belt-and-braces and should stay at zero.
+   * replaced from the remaining viable pool instead of shrinking the ring.
+   * Selection already filters retained matches with the same rule, so the
+   * ferry/hostile counters here are belt-and-braces and should stay at zero.
    */
   int placeWaypointsFromProbeMatches(List<OsmNodeNamed> waypoints, ProbeResult probe,
                                      double startDirection, int targetPoints) {

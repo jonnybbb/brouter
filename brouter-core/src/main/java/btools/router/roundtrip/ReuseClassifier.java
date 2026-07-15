@@ -6,117 +6,76 @@ import btools.router.OsmTrack;
 import java.util.*;
 
 /**
- * Semantic reuse classifier for round-trip routes.
- *
- * <p>The old quality gate used a single number — total reuse ratio — and
- * rejected anything above 50%. That number cannot tell apart:
+ * Semantic reuse classifier for round-trip routes. A single total-reuse ratio can't tell a good
+ * 30%-retraced lollipop (loop + short stick to a hub) from a bad 30%-retraced loop where the
+ * planner u-turned mid-route. This classifier walks the track once, finds <em>contiguous</em>
+ * reused stretches, and classifies each by where it sits in the cumulative-distance timeline:
  * <ul>
- *   <li>A 30% retraced lollipop where the cyclist gets a beautiful 70% loop
- *       plus a short retraced stick to a hub — perfectly good route.</li>
- *   <li>A 30% retraced loop where the planner accidentally u-turned in the
- *       middle, walking a back-and-forth that the cyclist would notice
- *       and complain about — bad route.</li>
+ *   <li><b>Short shared stem</b> at start/end — acceptable (driveway, only road out of the valley).</li>
+ *   <li><b>Terminal scenic spur</b> at start/end — acceptable as a disclosed lollipop/out-and-back.</li>
+ *   <li><b>Mid-route retrace</b> — suspect; if long, an accidental u-turn: reject.</li>
  * </ul>
- *
- * <p>This classifier walks the track once, identifies <em>contiguous</em>
- * stretches of reused edges (not just total counts), and classifies each
- * stretch by where it sits in the route's cumulative-distance timeline:
- * <ul>
- *   <li><b>Short shared stem</b> at start/end — acceptable. The hotel
- *       driveway, the only road out of the valley, the bridge crossing.</li>
- *   <li><b>Terminal scenic spur</b> at start/end — acceptable when
- *       disclosed as a lollipop or out-and-back. The road to the cape,
- *       the climb up to the pass.</li>
- *   <li><b>Mid-route retrace</b> — suspect. If long, this is the planner
- *       u-turning for no semantic reason; reject.</li>
- * </ul>
- *
- * <p>Classification uses graph/routing topology only: where in the route
- * the reuse appears, how long the stretch is, whether the first-visit
- * edges of a stretch lie at the matching opposite end of the route (the
- * "out" of an out-and-back). No POI/elevation/name data is required —
- * those signals could strengthen the verdict later but must not be
- * mandatory (we don't always have them, and graph evidence is more
- * reliable anyway).
+ * Uses graph/routing topology only (position, length, out-and-back structure) — no
+ * POI/elevation/name data, which could strengthen a verdict later but must not be required.
  */
 final class ReuseClassifier {
 
   // ---- Thresholds (spec-defined; expressible as constants for tests) -------
 
   /**
-   * Absolute upper bound on what counts as a short unavoidable shared stem
-   * near start/end (hotel driveway, only road out of valley). A stem longer
-   * than this is treated as either a scenic spur (if structural evidence
-   * supports it) or as suspect.
+   * Absolute cap on a short unavoidable shared stem near start/end (driveway, only road out of the
+   * valley). Longer stems are treated as a scenic spur (if structure supports it) or suspect.
    */
   static final int MAX_STEM_REUSE_METERS_ABS = 1500;
   /** Stem reuse cap as fraction of requested distance. */
   static final double MAX_STEM_REUSE_FRAC = 0.05;
 
   /**
-   * A boundary-touching <em>parallel-corridor</em> stretch (the return running
-   * alongside the outbound on a different way, detected spatially rather than
-   * by edge identity) longer than this is NOT forgiven as a short unavoidable
-   * stem — it downgrades the route to OUT_AND_BACK. Below it, a short forced
-   * parallel bit (the only metres of road out of a pinched start) is still
-   * tolerated as a stem.
+   * A boundary-touching <em>parallel-corridor</em> stretch (return running alongside the outbound
+   * on a different way, detected spatially) longer than this downgrades the route to OUT_AND_BACK;
+   * below it, a short forced parallel bit out of a pinched start is tolerated as a stem.
    */
   static final int PARALLEL_CORRIDOR_MIN_METERS = 300;
 
   /**
-   * Legacy fallback cap on mid-route retrace, used <em>only</em> when
-   * {@code requestedDistance ≤ 0} (degenerate test fixtures). Production
-   * code paths always have a positive requested distance and use
-   * {@link #MAX_UNCLASSIFIED_CONTIGUOUS_REUSE_FRAC} × distance instead.
-   *
-   * <p>The previous {@code Math.min(2000, 0.08 × distance)} clamp was
-   * removed: on long loops the absolute clamp was the binding constraint
-   * for 132/143 of {@code ≥ 50 km} retrace rejections, all of which sat
-   * below the 8% fraction rule and represented forced terrain rather
-   * than accidental backtracking.
+   * Legacy fallback cap on mid-route retrace, used <em>only</em> when {@code requestedDistance ≤ 0}
+   * (degenerate test fixtures); production uses {@link #MAX_UNCLASSIFIED_CONTIGUOUS_REUSE_FRAC} ×
+   * distance. The former {@code min(2000, 0.08×distance)} clamp was removed — the absolute clamp
+   * bound 132/143 of the {@code ≥ 50 km} retrace rejections, all below the 8% rule and forced
+   * terrain rather than accidental backtracking.
    */
   static final int MAX_UNCLASSIFIED_CONTIGUOUS_REUSE_METERS_ABS = 2000;
   /**
-   * Mid-route retrace cap as a fraction of requested distance. The
-   * dominant production threshold; resolves to e.g. 2 km on a 25 km loop,
-   * 4 km on a 50 km loop, 8 km on a 100 km loop.
+   * Mid-route retrace cap as a fraction of requested distance — the dominant production threshold
+   * (2 km on a 25 km loop, 4 km on 50 km, 8 km on 100 km).
    */
   static final double MAX_UNCLASSIFIED_CONTIGUOUS_REUSE_FRAC = 0.08;
 
   /**
-   * Soft band above the retrace cap: between cap and cap × this factor the
-   * route is ACCEPTED with a disclosure instead of rejected. Root-caused on
-   * freiburg_100km_fastbike_N (2026-06-11): the planner's natural closure was
-   * 147m (1.8%) over the 7,992m cap — a hard reject there forced a zigzag
-   * via-hop back across Waldkirch that bought three at-grade town crossings.
-   * Retrace is co-linear riding the cyclist barely notices; a marginal
-   * overage must not outweigh structural crossings. Above the band the hard
-   * reject stands — that is genuine accidental backtracking.
+   * Soft band above the retrace cap: between cap and cap × this factor the route is ACCEPTED with a
+   * disclosure, not rejected. Root-caused on freiburg_100km_fastbike_N: a 147m (1.8%) overage
+   * hard-rejected forced a zigzag via-hop buying three at-grade town crossings. Co-linear retrace
+   * the cyclist barely notices must not outweigh structural crossings. Above the band the hard
+   * reject stands (genuine accidental backtracking).
    */
   static final double UNCLASSIFIED_REUSE_SOFT_BAND = 1.25;
 
   /**
-   * For LOLLIPOP acceptance: the non-retraced "loop body" must be at least
-   * this fraction of the requested distance. Below this, the route is
-   * really a OUT_AND_BACK in disguise (trivial loop, mostly the
-   * stick) and should be treated as such.
+   * For LOLLIPOP acceptance: the non-retraced "loop body" must be at least this fraction of
+   * requested distance; below it the route is really an OUT_AND_BACK (mostly stick, trivial loop).
    */
   static final double MIN_LOLLIPOP_LOOP_FRACTION = 0.35;
 
   /**
-   * Above this reuse ratio the route is essentially out-and-back: any "loop"
-   * is trivial, and the cyclist will perceive it as same-way-back. Routes
-   * above this threshold are classified as OUT_AND_BACK regardless
-   * of structural detail.
+   * Above this reuse ratio any "loop" is trivial and the cyclist perceives same-way-back; the
+   * route is classified OUT_AND_BACK regardless of structure.
    */
   static final double OUT_AND_BACK_REUSE_RATIO = 0.85;
 
   /**
-   * Per-stretch "near boundary" threshold: a stretch touches a boundary if
-   * its start cumDist is within this fraction of total OR its end cumDist
-   * is within this fraction of total from the end. 8% is generous enough
-   * that a hotel-spur on a 50km loop (4km from the start) still counts as
-   * "near the boundary".
+   * Per-stretch "near boundary" threshold: a stretch touches a boundary if its start cumDist is
+   * within this fraction of total, or its end within this fraction of total from the end. 8% is
+   * generous enough that a hotel-spur 4 km into a 50 km loop still counts as near the boundary.
    */
   static final double BOUNDARY_PROXIMITY_FRAC = 0.08;
 
@@ -132,10 +91,8 @@ final class ReuseClassifier {
   }
 
   /**
-   * Resolve the mid-route retrace rejection cap for a route of the given
-   * requested distance. Production callers always pass a positive
-   * {@code requestedDistance} and get the fraction-based cap; the legacy
-   * absolute fallback is only used by degenerate test fixtures.
+   * Mid-route retrace rejection cap for the requested distance. Production callers pass a positive
+   * distance and get the fraction cap; the legacy absolute fallback is only for degenerate fixtures.
    */
   static int unclassifiedContiguousCap(double requestedDistance) {
     if (requestedDistance <= 0) return MAX_UNCLASSIFIED_CONTIGUOUS_REUSE_METERS_ABS;
@@ -143,10 +100,9 @@ final class ReuseClassifier {
   }
 
   /**
-   * Walk the track and produce the contiguous reuse stretches plus per-edge
-   * geometry needed for classification. Public so callers (planner scoring)
-   * can reuse the analysis without re-walking the track. O(n) over track
-   * edges; O(unique edges) memory.
+   * Walk the track and produce contiguous reuse stretches plus per-edge geometry for
+   * classification. Public so callers (planner scoring) can reuse the analysis without re-walking.
+   * O(n) over edges; O(unique edges) memory.
    */
   static TrackReuseProfile analyzeTrack(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) {
@@ -238,14 +194,9 @@ final class ReuseClassifier {
   }
 
   /**
-   * Classify a track and produce a structured quality verdict against the
-   * given hard-gate parameters. This is the central decision: given the
-   * track's topology (already validated for closure, distance, beelines
-   * elsewhere), produce the RouteShape and accept/reject decision.
-   *
-   * <p>The classifier focuses exclusively on the reuse semantics. Hard
-   * pre-checks (closure, distance ratio, beelines, profile-hostility) must
-   * already have been applied — see {@link RoundTripQualityGate#evaluate}.
+   * Classify a track into a {@link RouteShape} + accept/reject verdict from its reuse semantics
+   * alone. Hard pre-checks (closure, distance ratio, beelines, profile-hostility) must already
+   * have run — see {@link RoundTripQualityGate#evaluate}.
    */
   static RoundTripQualityResult classify(OsmTrack track,
                                                 double requestedDistance,
@@ -458,13 +409,10 @@ final class ReuseClassifier {
   // ---- Internals -----------------------------------------------------------
 
   /**
-   * Classify a single contiguous reuse stretch.
-   *
-   * <p>Stems and terminal spurs both touch a route boundary; they differ in
-   * length. A stretch is judged terminal if its first-visit edges form the
-   * outbound half of an out-and-back: i.e. the first visits sit at the
-   * opposite end of the route from the current stretch, and together they
-   * lead to/from the route's farthest-from-start point.
+   * Classify a single contiguous reuse stretch. Stems and terminal spurs both touch a route
+   * boundary and differ in length; a stretch is judged terminal if its first-visit edges form the
+   * outbound half of an out-and-back (first visits at the opposite end, leading to/from the
+   * route's farthest-from-start point).
    */
   static StretchKind classifyStretch(ReuseStretch s, TrackReuseProfile profile, int stemCap) {
     double totalDist = profile.totalDistance;
@@ -535,17 +483,12 @@ final class ReuseClassifier {
   }
 
   /**
-   * Decide whether the non-retraced portion of the track forms a "stem +
-   * closed loop" (true lollipop) or a one-way "A → apex" path (out-and-back
-   * disguised). The test: identify the node where the dominant reuse
-   * stretch begins (the "hub" candidate) and count its occurrences in the
-   * track prefix preceding the stretch. A true lollipop visits the hub at
-   * least twice in the prefix (once arriving from the stem, once returning
-   * from the loop body); an out-and-back visits the apex exactly once.
-   *
-   * <p>If no terminal reuse stretch is present, returns true (no out-and-
-   * back to disqualify). If the prefix is too short to form a loop, returns
-   * false (degenerate).
+   * Decide whether the non-retraced portion forms a "stem + closed loop" (true lollipop) or a
+   * one-way "A → apex" path (out-and-back in disguise). Test: at the node where the dominant reuse
+   * stretch begins (the hub candidate), count its occurrences in the preceding prefix — a true
+   * lollipop visits the hub ≥ 2 times (arriving from the stem, returning from the loop), an
+   * out-and-back visits the apex once. Returns true when no terminal reuse stretch exists (nothing
+   * to disqualify); false when the prefix is too short to form a loop.
    */
   static boolean isStructuralLollipop(TrackReuseProfile profile, OsmTrack track) {
     if (track == null || track.nodes == null || profile.stretches.isEmpty()) {
@@ -626,18 +569,14 @@ final class ReuseClassifier {
     /** Latest first-visit cumDist+segLen among edges in this stretch. */
     final double firstVisitCumMax;
     /**
-     * Maximum visit ordinal of any edge in this stretch. In a clean
-     * out-and-back or lollipop every edge is visited at most twice
-     * (once outbound, once inbound). A value &gt; 2 means at least one
-     * edge was traversed a third time — structural evidence of zigzag /
-     * accidental backtracking that we never accept as a scenic spur.
+     * Max visit ordinal of any edge in this stretch. A clean out-and-back/lollipop visits each edge
+     * at most twice; &gt; 2 means a third traversal — structural zigzag we never accept as a spur.
      */
     final int maxVisitOrdinal;
     /**
-     * True when every edge in this stretch is a spatial corridor overlap that
-     * is NOT also an edge-identity retrace — i.e. a parallel return on a
-     * different way. Such a stretch is classified {@link StretchKind#PARALLEL_CORRIDOR}
-     * (above the min length) rather than forgiven as a stem.
+     * True when every edge here is a spatial corridor overlap but NOT an edge-identity retrace — a
+     * parallel return on a different way, classified {@link StretchKind#PARALLEL_CORRIDOR} (above
+     * the min length) rather than forgiven as a stem.
      */
     final boolean spatialOnly;
 

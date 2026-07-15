@@ -9,35 +9,30 @@ import java.util.List;
  *
  * <p>Production implementations:
  * <ul>
- *   <li>{@link GraphNativeCandidateProvider} — bounded Dijkstra from the
- *       current graph position. This is the default GREEDY candidate source.</li>
- *   <li>{@link BlendedCandidateProvider} — the ISO_GREEDY source: it concatenates
- *       a start-centered {@link IsochroneCandidateProvider} pool with per-step
- *       graph-native candidates. {@link IsochroneCandidateProvider} is not wired
- *       on its own; it only feeds the blend.</li>
+ *   <li>{@link GraphNativeCandidateProvider} — bounded Dijkstra from the current
+ *       graph position; the default GREEDY source.</li>
+ *   <li>{@link BlendedCandidateProvider} — the ISO_GREEDY source: a start-centered
+ *       {@link IsochroneCandidateProvider} pool plus per-step graph-native
+ *       candidates. {@link IsochroneCandidateProvider} is only ever used through
+ *       this blend, never on its own.</li>
  * </ul>
  *
- * <p>The planner then routes a small number of these candidates and chooses the best
- * by actual routed distance, cost, reuse and shape — so candidate quality only has
- * to be good enough to rank well; the planner is the arbiter of final selection.
+ * <p>The planner routes a small subset and picks the best by actual routed
+ * distance, cost, reuse and shape, so candidates only need to rank well.
  */
 public interface RoundTripCandidateProvider {
 
   /**
-   * Return candidate next-step points from the current position. Caller is expected
-   * to route a subset of the returned candidates and pick the best by actual metrics.
+   * Return candidate next-step points from the current position.
    *
    * @param fromIlon       current position longitude (1e6 ilon units)
    * @param fromIlat       current position latitude  (1e6 ilat units)
-   * @param airRadius      target air-distance from the current position to the
-   *                       next waypoint (meters). Providers should center their
-   *                       output here but may return candidates inside a window.
+   * @param airRadius      target air-distance to the next waypoint (meters);
+   *                       providers center output here but may spread within a window
    * @param step           1-based current step (1 = first hop from start)
-   * @param totalSteps     total planned steps in the loop
    * @param startIlon      loop start longitude (the loop must close near here)
-   * @param startIlat      loop start latitude
    * @param startDirection user-requested initial bearing in [0, 360), or &lt;0 for ANY
-   * @return ordered candidates (any size; planner will route up to a small cap)
+   * @return ordered candidates (any size; planner routes up to a small cap)
    */
   List<CandidatePoint> candidatesForStep(
     int fromIlon, int fromIlat, double airRadius,
@@ -75,24 +70,23 @@ public interface RoundTripCandidateProvider {
     int sourceContour = NO_ISO_CONTOUR;
     /**
      * Optional graph-native leg from the current position to this candidate.
-     * When present, the greedy planner can score and accept this exact Dijkstra
-     * leg instead of routing to the candidate coordinate a second time.
+     * When present, the planner scores and accepts this exact Dijkstra leg
+     * instead of routing to the coordinate again.
      */
     OsmTrack routedTrack;
     /**
-     * Reachability-cloud cells occupied in the candidate's 5×5 neighborhood
-     * (0..25; see {@link IsochroneExpansionResult#reachableCellsAround}), or
-     * -1 when no cloud is available. Low values mark dead-end pockets / thin
-     * corridors — the placement signature behind teardrop and stub artifacts.
+     * Occupied reachability-cloud cells in the candidate's 5×5 neighborhood
+     * (0..25; see {@link IsochroneExpansionResult#reachableCellsAround}), or -1
+     * when no cloud is available. Low = dead-end pocket / thin corridor (the
+     * teardrop/stub signature).
      */
     int reachableCells = -1;
     /**
-     * Set by the planner's source quota when this candidate only got its
-     * routed slot via quota injection (it was not picked on heuristic score +
-     * angular spread). Source-attribution signal: a quota-injected candidate
-     * WINNING the routed comparison is direct evidence the iso pool had
-     * outranked a better local alternative. Candidate objects are built fresh
-     * per provider call, so the flag never leaks across steps or attempts.
+     * True when this candidate held its routed slot only via source-quota
+     * injection (not on heuristic score + angular spread). Such a candidate
+     * WINNING the routed comparison is direct evidence the iso pool outranked a
+     * better local alternative. Candidates are built fresh per provider call, so
+     * the flag never leaks across steps or attempts.
      */
     boolean quotaInjected;
   }

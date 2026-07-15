@@ -3,11 +3,10 @@ package btools.router.roundtrip;
 import btools.util.CheapAngleMeter;
 
 /**
- * Round-trip placement math, extracted from RoutingEngine when the round-trip
- * classes moved into this package: bearing grids, angular spread selection,
- * loop ordering, probe-confidence filtering, and the v1.7.8-parity radius
- * scale. Pure static functions of their inputs — no engine state. Used by
- * both the engine-side placement paths (envelope/isochrone/legacy FAST) and
+ * Round-trip placement math: bearing grids, angular spread selection, loop
+ * ordering, probe-confidence filtering, and the v1.7.8-parity radius scale.
+ * Pure static functions of their inputs — no engine state. Used by both the
+ * engine-side placement paths (envelope/isochrone/legacy FAST) and
  * {@link FastWaypointPlanner}.
  */
 public final class PlacementGeometry {
@@ -29,15 +28,12 @@ public final class PlacementGeometry {
   }
 
   /**
-   * FAST-tier helper: drop directions where only a single probe distance snapped, IF at
-   * least {@code max(targetPoints, 8)} multi-probe-strong directions remain. A lone snap
-   * (1 of the legacy 3 radii, or 1 of the optimized path's 2) usually marks a thin road
-   * sliver or sea-edge that snaps weakly; selecting it produces a fragile waypoint. When
-   * few strong directions exist (constrained terrain), we keep the weak ones to avoid
-   * collapsing to a circle fallback — which also makes it a no-op for directional lobes
-   * (their bearing count never reaches the threshold).
-   *
-   * @return the viable-direction subset to feed into placement
+   * Drop single-snap directions IF at least {@code max(targetPoints, 8)}
+   * multi-snap-strong directions remain. A lone snap usually marks a thin road
+   * sliver or sea-edge that snaps weakly, giving a fragile waypoint. When few
+   * strong directions exist (constrained terrain) the weak ones are kept to
+   * avoid collapsing to a circle fallback — which also makes it a no-op for
+   * directional lobes (their bearing count never reaches the threshold).
    */
   public static double[] filterByProbeConfidence(ProbeResult probe, int targetPoints) {
     if (probe == null) return null;
@@ -55,10 +51,9 @@ public final class PlacementGeometry {
   }
 
   /**
-   * Select N directions from the viable set that maximize angular spread.
-   * Uses a greedy approach: start with the direction closest to startDirection,
-   * then iteratively pick the direction that maximizes the minimum angular
-   * distance to all already-selected directions.
+   * Select {@code count} directions maximizing angular spread. Greedy: start
+   * closest to {@code startDirection}, then repeatedly pick the direction whose
+   * minimum angular distance to the already-selected set is largest.
    */
   public static double[] selectSpreadDirections(double[] viable, int count, double startDirection) {
     int n = viable.length;
@@ -103,8 +98,8 @@ public final class PlacementGeometry {
   }
 
   /**
-   * Sort directions to form a coherent loop, starting from the direction
-   * closest to startDirection and proceeding clockwise.
+   * Sort directions into loop order: from the one closest to
+   * {@code startDirection}, proceeding clockwise.
    */
   public static double[] sortDirectionsForLoop(double[] directions, double startDirection) {
     int n = directions.length;
@@ -130,16 +125,11 @@ public final class PlacementGeometry {
   }
 
   /**
-   * Compute a radius scaling factor so that a loop through the given sorted directions
-   * produces the same perimeter as v1.7.8's buildPointsFromCircle for the same targetPoints.
-   *
-   * v1.7.8 creates a narrow arc (108-152° depending on point count), while
-   * probe/isochrone create wider loops (270-360°). Without scaling, wider loops
-   * produce proportionally longer routes. This factor compensates for that.
-   *
-   * The geometric loop perimeter for waypoints at radius R is:
-   *   P = 2R (radial legs from center to circle) + sum of chord lengths between consecutive waypoints
-   * where each chord = 2R * sin(angularGap/2).
+   * Radius scaling factor so a loop through the given sorted directions matches
+   * the perimeter of v1.7.8's buildPointsFromCircle for the same targetPoints:
+   * v1.7.8 uses a narrow arc (108-152°) while probe/isochrone loops are wider
+   * (270-360°), which without scaling would run proportionally longer. Loop
+   * perimeter at radius R = 2R (radial legs) + chords of 2R·sin(gap/2).
    */
   public static double computeRadiusScale(double[] sortedDirections, int targetPoints) {
     double actualPerim = computeLoopPerimeterFactor(sortedDirections);
@@ -155,9 +145,8 @@ public final class PlacementGeometry {
   }
 
   /**
-   * Compute the geometric loop perimeter / R for waypoints at the given sorted directions.
-   * Includes 2 radial legs (center to first waypoint, last waypoint back to center)
-   * plus chords between consecutive waypoints.
+   * Loop perimeter / R for waypoints at the given sorted directions: 2 radial
+   * legs (center to first, last back to center) plus consecutive-waypoint chords.
    */
   static double computeLoopPerimeterFactor(double[] sortedDirs) {
     int n = sortedDirs.length;
@@ -174,9 +163,8 @@ public final class PlacementGeometry {
   }
 
   /**
-   * Compute the geometric loop perimeter / R for v1.7.8's buildPointsFromCircle.
-   * v1.7.8 creates (targetPoints-1) intermediate waypoints in an arc whose
-   * half-span = 90 - 180/targetPoints degrees.
+   * Loop perimeter / R for v1.7.8's buildPointsFromCircle: (targetPoints-1)
+   * intermediate waypoints in an arc of half-span 90 − 180/targetPoints degrees.
    */
   static double computeReferencePerimeterFactor(int targetPoints) {
     int intermediates = targetPoints - 1;

@@ -7,16 +7,18 @@ import btools.router.OsmTrack;
 import java.util.List;
 
 /**
- * Road-CHARACTER appeal of a finished route — "would a real cyclist want to ride this?" — measured
- * from the per-segment OSM tags ({@link MessageData#wayKeyValues}), NOT from the generating profile's
- * cost. That independence is the whole point: a route built by a residential-penalising profile must
- * be judged on the roads it actually uses (more tracks/through-roads, less village wiggle), not on the
- * inflated cost that profile assigned — otherwise the comparison is circular.
+ * Road-CHARACTER appeal of a finished route — "would a real cyclist want to ride
+ * this?" — measured from per-segment OSM tags ({@link MessageData#wayKeyValues}),
+ * NOT from the generating profile's cost. That independence is the point: a route
+ * built by a residential-penalising profile must be judged on the roads it
+ * actually uses, not on the cost that profile assigned — otherwise the comparison
+ * is circular.
  *
- * <p>{@link RouteChoiceScore} (RCS) measures loop GEOMETRY (distance ratio, reuse, self-crossings,
- * closure) and is blind to road character; that is the gap a rider's eye sees and RCS does not. This
- * class fills it with a length-weighted desirability per {@code highway} class for the gravel family:
- * tracks/paths/quiet lanes score high, busy arterials and residential-interior touring score low.
+ * <p>{@link RouteChoiceScore} (RCS) measures loop GEOMETRY (distance ratio, reuse,
+ * self-crossings, closure) and is blind to road character; this class fills that
+ * gap with a per-family, length-weighted desirability per {@code highway} class
+ * (for gravel: tracks/paths/quiet lanes high, busy arterials and
+ * residential-interior touring low).
  */
 final class RoadCharacterScore {
 
@@ -54,10 +56,10 @@ final class RoadCharacterScore {
   }
 
   /**
-   * Per-family rider desirability of a {@code highway} class, judged from the tag (profile-cost
-   * independent). Families differ sharply: a road/fastbike rider WANTS smooth paved arterials and
-   * avoids rough tracks; a gravel/mtb rider is the opposite. Applying one family's preference to
-   * another would mis-score the route, so RCS must pass the active profile name through.
+   * Per-family rider desirability of a {@code highway} class, judged from the tag
+   * (profile-cost independent). Families differ sharply — a road rider wants
+   * smooth paved arterials, a gravel/mtb rider the opposite — so the active
+   * profile name must be passed through or the route is mis-scored.
    */
   private static double desirability(int fam, String highway) {
     boolean none = (highway == null || highway.isEmpty());

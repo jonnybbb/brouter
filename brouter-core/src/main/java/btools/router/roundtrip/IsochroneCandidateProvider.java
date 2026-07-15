@@ -6,22 +6,22 @@ import btools.util.CheapRuler;
 import java.util.*;
 
 /**
- * Road-native candidate provider for the ISO_GREEDY planner. Takes a pool of
- * {@link IsoCandidate}s captured during a single start-centered isochrone expansion and
- * returns the candidates that fall within the planner's target sub-leg air-distance window
- * at each step. In production this provider is not used on its own: it is the iso half of a
- * {@link BlendedCandidateProvider}, which appends per-step graph-native candidates.
+ * Road-native candidate provider for the ISO_GREEDY planner: the iso half of a
+ * {@link BlendedCandidateProvider} (which appends per-step graph-native
+ * candidates). Holds {@link IsoCandidate}s from a single start-centered
+ * isochrone expansion and returns those within the planner's target sub-leg
+ * air-distance window at each step.
  *
- * <p>The pool is filtered once at construction (drop too-close, dedupe identical positions,
- * limit to a diverse 12-24 candidates per spec) and then queried unchanged for each step.
- * Construct it via {@link #fromPool}; {@code RoutingEngine.buildCandidateProvider} first
- * checks {@link #poolSize()} and {@link #isDiverse()} and drops to plain graph-native when
- * the pool is too small or corridor-only.
+ * <p>The pool is filtered once at construction (drop too-close, dedupe identical
+ * positions, limit to a diverse 12-24 candidates) then queried unchanged.
+ * Construct via {@link #fromPool}; {@code RoutingEngine.buildCandidateProvider}
+ * checks {@link #poolSize()} and {@link #isDiverse()} first and drops to plain
+ * graph-native when the pool is too small or corridor-only.
  *
- * <p>The planner's window filter naturally avoids picking the same candidate twice (a just-
- * picked candidate has air-distance ≈ 0 from current, falling outside the window). Because
- * the pool is start-centered, the stored paths are start-to-candidate only and must not be
- * adopted as a sub-leg from a later step's current node — the planner re-routes instead.
+ * <p>Because the pool is start-centered, the stored paths are start-to-candidate
+ * only and must not be adopted as a sub-leg from a later step's current node —
+ * the planner re-routes instead. (The window filter also avoids re-picking a
+ * just-picked candidate, whose air-distance ≈ 0 falls outside the window.)
  */
 public final class IsochroneCandidateProvider implements RoundTripCandidateProvider {
 
@@ -36,10 +36,9 @@ public final class IsochroneCandidateProvider implements RoundTripCandidateProvi
   private static final int DEDUPE_GRANULARITY = 100;
   /** Below this filtered-pool size, we relax the hits<3 filter (matches buildCandidateProvider gate). */
   private static final int MIN_DIVERSITY_BEFORE_RELAX = 6;
-  /** Minimum distinct angular buckets the filtered pool must span. Package-visible:
-   *  {@link IsoPoolHealth}'s calibration anchor (the weakest ADMITTED shape scores
-   *  exactly 0.50) references these admission thresholds structurally, so relaxing
-   *  the blend admission cannot silently invalidate the anchor. */
+  /** Minimum distinct angular buckets the filtered pool must span. Referenced by
+   *  {@link IsoPoolHealth}'s 0.50 calibration anchor, so relaxing the blend
+   *  admission cannot silently invalidate the anchor. */
   static final int MIN_DISTINCT_BUCKETS = 4;
   /** Minimum angular span of the filtered pool in degrees (avoid corridor-only pools). */
   static final double MIN_ANGULAR_SPAN_DEG = 180.0;
@@ -94,24 +93,20 @@ public final class IsochroneCandidateProvider implements RoundTripCandidateProvi
     return (TOTAL_BUCKETS - largestGap) * (360.0 / TOTAL_BUCKETS);
   }
 
-  /**
-   * Total angular buckets used by {@code RoutingEngine#runIsochroneExpansion}.
-   */
+  /** Total angular buckets used by {@code RoutingEngine#runIsochroneExpansion}. */
   private static final int TOTAL_BUCKETS = 36;
 
   /**
-   * Construct a provider from a raw candidate pool. Applies spec-mandated filters:
-   * drop too-close-to-start, drop sparse buckets when alternatives exist, dedupe
+   * Construct a provider from a raw candidate pool. Applies filters: drop
+   * too-close-to-start, drop sparse buckets when alternatives exist, dedupe
    * near-identical positions, ensure angular diversity, cap at {@link #POOL_CAP}.
    *
-   * @param startDirection start bearing in degrees used to anchor the
-   *                       angular-stride pick so the pool spans the full circle
-   *                       starting at the user's direction. Need not be
-   *                       normalized: any value (including a negative
-   *                       no-preference sentinel such as {@code -1}) is floored
-   *                       into its containing bucket modulo {@link #TOTAL_BUCKETS}
-   *                       (negative results wrap), so {@code -1} anchors at
-   *                       bucket 0 (North).
+   * @param startDirection start bearing (degrees) anchoring the angular-stride
+   *                       pick so the pool spans the full circle from the user's
+   *                       direction. Need not be normalized: any value is floored
+   *                       into its bucket modulo {@link #TOTAL_BUCKETS} (negatives
+   *                       wrap), so the {@code -1} no-preference sentinel anchors
+   *                       at bucket 0 (North).
    */
   public static IsochroneCandidateProvider fromPool(double searchRadius, double startDirection,
                                              List<IsoCandidate> rawPool) {
@@ -245,10 +240,9 @@ public final class IsochroneCandidateProvider implements RoundTripCandidateProvi
 
   /**
    * Whether the filtered pool spans enough distinct directions to plan a loop.
-   * Returns {@code false} for corridor-only or single-direction pools (e.g.,
-   * sparse rural terrain where every candidate clumps in a few buckets) — the
-   * caller ({@code RoutingEngine.buildCandidateProvider}) then falls back to the
-   * per-step {@link GraphNativeCandidateProvider} in that case.
+   * {@code false} for corridor-only or single-direction pools (sparse rural
+   * terrain), on which the caller falls back to the per-step
+   * {@link GraphNativeCandidateProvider}.
    */
   public boolean isDiverse() {
     return diverse;

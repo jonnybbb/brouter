@@ -7,56 +7,41 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Structured result from {@link RoundTripQualityGate#evaluate}.
- *
- * <p>Carries both the accept/reject verdict and a semantic description of
- * the route's shape, so callers can disclose to the cyclist what they're
- * actually getting (clean loop, lollipop with a scenic spur, out-and-back
- * to a cape) instead of receiving a binary "accepted/rejected" with no
- * context.
+ * Immutable structured result from {@link RoundTripQualityGate#evaluate}:
+ * accept/reject verdict plus a semantic {@link #shape} description, so callers
+ * can disclose what the cyclist is getting (clean loop, lollipop, out-and-back)
+ * rather than a bare accept/reject.
  *
  * <p>Field invariants:
  * <ul>
- *   <li>{@link #shape} is always set, even for rejected routes — it captures
- *       what the route IS, not what was accepted.</li>
+ *   <li>{@link #shape} is always set, even when rejected — it captures what the
+ *       route IS, not what was accepted.</li>
  *   <li>{@link #rejectionReason} is non-null iff {@link #accepted} is false.</li>
  *   <li>{@link #totalReuseRatio} is in [0, 1].</li>
- *   <li>{@link #maxContiguousReuseMeters} is the longest single contiguous
- *       retraced stretch — the most cyclist-visible reuse, regardless of
- *       where it sits in the route.</li>
- *   <li>{@link #terminalStemReuseMeters} is the length of reuse that the
- *       classifier accepts as a short unavoidable stem near start/end
- *       (typically a hotel-to-village access road).</li>
- *   <li>{@link #scenicSpurReuseMeters} is the length of reuse that the
- *       classifier accepts as a terminal spur (the road to the
- *       cape/pass/dead-end). For STRICT_LOOP this is 0.</li>
- *   <li>{@link #disclosures} is a human-readable list of facts the cyclist
- *       should know about the route (e.g. "contains retraced scenic spur:
- *       4.2km"). Always non-null, possibly empty.</li>
+ *   <li>{@link #maxContiguousReuseMeters}: longest single contiguous retraced
+ *       stretch — the most cyclist-visible reuse, wherever it sits.</li>
+ *   <li>{@link #terminalStemReuseMeters}: reuse accepted as a short unavoidable
+ *       stem near start/end (e.g. a hotel-to-village access road).</li>
+ *   <li>{@link #scenicSpurReuseMeters}: reuse accepted as a terminal spur (road
+ *       to the cape/pass/dead-end); 0 for STRICT_LOOP.</li>
+ *   <li>{@link #disclosures}: human-readable facts the cyclist should know
+ *       (e.g. "contains retraced scenic spur: 4.2km"). Non-null, possibly empty.</li>
  * </ul>
- *
- * <p>The class is intentionally immutable after construction: callers
- * receive an unambiguous snapshot, no risk of downstream code mutating
- * the verdict.
  */
 public final class RoundTripQualityResult {
 
   /**
-   * Why a route was rejected, split into the two tiers the engine treats
-   * differently:
-   * <ul>
-   *   <li><b>STRUCTURAL</b> — the route is broken / not a rideable loop
-   *       (no track, too few nodes, un-routable beeline, ferry without opt-in,
-   *       didn't close back to start). The engine always hard-rejects these:
-   *       there is nothing usable to offer.</li>
-   *   <li><b>QUALITY</b> — the route is rideable but suboptimal (off the
-   *       distance target, self-crossing/hairpin chaos, profile-hostile
-   *       surface, mid-route backtracking). By default the engine returns
-   *       these with an advisory warning and lets the user decide; strict
-   *       mode ({@link RoutingContext#roundTripStrictQuality}) hard-rejects
-   *       them like before.</li>
-   * </ul>
+   * Why a route was rejected; the engine treats the two tiers differently.
    * Only meaningful when {@link #isAccepted()} is false.
+   * <ul>
+   *   <li><b>STRUCTURAL</b> — broken / not a rideable loop (no track, too few
+   *       nodes, un-routable beeline, ferry without opt-in, didn't close).
+   *       Always hard-rejected: nothing usable to offer.</li>
+   *   <li><b>QUALITY</b> — rideable but suboptimal (off distance target,
+   *       self-crossing, profile-hostile surface, mid-route backtracking).
+   *       Returned with an advisory warning by default; strict mode
+   *       ({@link RoutingContext#roundTripStrictQuality}) hard-rejects.</li>
+   * </ul>
    */
   public enum RejectionTier { STRUCTURAL, QUALITY }
 
@@ -134,10 +119,9 @@ public final class RoundTripQualityResult {
 
     /**
      * Reject with an explicit tier and reason in one call. Preferred over the
-     * separate {@link #accepted}/{@link #rejectionTier}/{@link #rejectionReason}
-     * setters: the tier cannot be forgotten (it is a required argument), so a
-     * QUALITY rejection can never silently fall back to a STRUCTURAL hard-reject.
-     * Set {@link #shape} separately.
+     * separate setters: the tier is a required argument and cannot be forgotten,
+     * so a QUALITY rejection can never silently fall back to a STRUCTURAL
+     * hard-reject. Set {@link #shape} separately.
      */
     public Builder reject(RejectionTier tier, String reason) {
       this.accepted = false;

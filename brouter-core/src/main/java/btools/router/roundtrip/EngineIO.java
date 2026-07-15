@@ -2,24 +2,20 @@ package btools.router.roundtrip;
 
 import btools.router.OsmTrack;
 
-/**
- * The logging/output slice of the engine seam. One of the four role
- * interfaces composed by {@link RoundTripEngineOps}.
- */
+/** Engine seam role: logging and track output. */
 public interface EngineIO {
 
-  /** Engine log line; a no-op in {@code quite} child engines (AUTO candidates). */
+  /** Log line; a no-op in quiet child engines (AUTO candidates). */
   void logInfo(String msg);
 
-  /** Engine exception logging. */
   void logException(Throwable t);
 
-  /** Engine throwable logging (compact form). */
+  /** Compact form of {@link #logException}. */
   void logThrowable(Throwable t);
 
-  /** Write the adopted track to the engine's configured output (engine IO). */
+  /** Write the adopted track to the engine's configured output. */
   void writeAdoptedTrackOutput(OsmTrack track);
 
-  /** Merge duplicate round-trip voice hints (needs VoiceHint package internals). */
+  /** Merge duplicate voice hints (engine-side: needs VoiceHint internals). */
   void consolidateRoundTripVoiceHints(OsmTrack track);
 }

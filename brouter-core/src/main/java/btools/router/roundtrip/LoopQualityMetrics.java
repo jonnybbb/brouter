@@ -9,19 +9,14 @@ import btools.util.CheapRuler;
 import java.util.*;
 
 /**
- * Quality metrics for evaluating round-trip/loop routes. Computes road reuse
- * percentage, distance accuracy ratio, direction adherence, continuity,
- * compactness, cost, closure, spur/teardrop and self-intersection counts from
- * an {@link OsmTrack}.
+ * Quality metrics for a round-trip/loop {@link OsmTrack}: reuse %, distance ratio,
+ * direction adherence, continuity, compactness, cost, closure, spur/teardrop and
+ * self-intersection counts.
  *
- * <p>Two roles: (1) it backs the loop-quality report and integration-test
- * gates via {@link #compositeScore} and {@code toString}; (2) several of its
- * primitives ({@link #nearRevisitSpans}, {@link #crossingPoints},
- * {@link #computeRoadReusePercent}, {@link #beelineInSpurMeters}) are reused by
- * the production candidate ranker {@link RouteChoiceScore}. The COMPOSITE score
- * here is reporting/test-only — production candidate selection uses
- * {@code RouteChoiceScore#score}, which weighs the same raw metrics differently.
- * See the note on {@link #compositeScore}.
+ * <p>{@link #compositeScore} here is reporting/test-only; production candidate
+ * selection uses {@code RouteChoiceScore#score}, which weighs the same raw metrics
+ * differently. Several primitives ({@link #nearRevisitSpans}, {@link #crossingPoints},
+ * {@link #computeRoadReusePercent}, {@link #beelineInSpurMeters}) are reused there.
  */
 public final class LoopQualityMetrics {
 
@@ -42,17 +37,14 @@ public final class LoopQualityMetrics {
   private final int worstSpurMeters;
   /** Total self-intersections (transverse X-crossings) of the route shape. */
   private final int selfIntersections;
-  /** Of {@link #selfIntersections}, how many enclose only a SHORT arc — i.e. the
-   *  crossing is caused by a small detour loop/lasso rather than a far-apart
-   *  structural crossing (outbound leg vs return leg). See {@link #detectCrossings}. */
+  /** Of {@link #selfIntersections}, those enclosing only a SHORT arc — a small detour
+   *  loop/lasso rather than a structural outbound-vs-return crossing. See {@link #detectCrossings}. */
   private final int smallLoopCrossings;
 
   /**
-   * Reconstruct a metrics instance from primitive fields. Used by the
-   * test-time on-disk cache in {@code LoopQualityTest} to rehydrate results
-   * across Gradle test forks without depending on Java serialisation. Not
-   * part of the routing engine's normal write path — for new metrics
-   * always use {@link #compute(OsmTrack, int, double)}.
+   * Reconstruct from primitive fields. Used only by {@code LoopQualityTest}'s on-disk
+   * cache to rehydrate results across Gradle test forks; not part of the normal write
+   * path — use {@link #compute(OsmTrack, int, double)} for new metrics.
    */
   public static LoopQualityMetrics fromFields(double roadReusePercent, double distanceRatio,
                                               double directionDeltaDegrees, int actualDistanceMeters,
@@ -95,10 +87,7 @@ public final class LoopQualityMetrics {
   /**
    * Compute quality metrics for a round-trip track.
    *
-   * @param track                  the routed track
-   * @param requestedDistanceMeters the requested round-trip distance
-   * @param requestedDirectionDeg  the requested start direction in degrees [0, 360)
-   * @return computed metrics
+   * @param requestedDirectionDeg requested start direction, degrees [0, 360)
    */
   public static LoopQualityMetrics compute(OsmTrack track, int requestedDistanceMeters,
                                            double requestedDirectionDeg) {
@@ -150,10 +139,10 @@ public final class LoopQualityMetrics {
   /** Upper arc-gap bound (m): keeps the detection LOCAL so the loop's own closure
    *  (start≈end over the full perimeter) and broad legitimate lobes are not flagged. */
   static final double SPUR_MAX_ARC_GAP = 6000.0;
-  /** Wider arc-gap bound (m) for the beeline-in-spur detector. The 6 km
-   *  {@link #SPUR_MAX_ARC_GAP} misses the motivating Basel→Ettingen dead-end
-   *  out-and-back (~7.3 km); this matches {@code RouteChoiceScore.NEAR_REVISIT_MAX_ARC_M}
-   *  so the report telemetry and the AUTO teardrop term agree on the spur span. */
+  /** Wider arc-gap bound (m) for the beeline-in-spur detector: 6 km {@link #SPUR_MAX_ARC_GAP}
+   *  misses the Basel→Ettingen dead-end out-and-back (~7.3 km). Matches
+   *  {@code RouteChoiceScore.NEAR_REVISIT_MAX_ARC_M} so report telemetry and the AUTO
+   *  teardrop term agree on the spur span. */
   static final double BEELINE_MAX_ARC_GAP = 10000.0;
 
   /** A self-crossing whose smaller enclosed arc is at most this long (m) is
@@ -161,25 +150,19 @@ public final class LoopQualityMetrics {
    *  crossing (outbound leg vs return leg). */
   static final double SMALL_LOOP_MAX_ARC_METERS = 4000.0;
   /**
-   * Bound the O(n²) crossing scan: sample the shape to at most this many
-   * points. MUST match {@link RoundTripQualityGate}'s MAX_SHAPE_SCAN_NODES —
-   * stride decimation FABRICATES crossings by chord-cutting curvy geometry
-   * (root-caused twice: the 100km-formation-skips incident fixed the gate's
-   * cap 1500→10000 but left this one at 3000; on 2026-06-12 a clean Nice
-   * 100km track of 3,787 nodes read gateCount=0 but metricCount=57 — 57
-   * phantom crossings that drove two unnecessary mitigation rounds and fed
-   * phantom lasso severity into RouteChoiceScore ranking via crossingPoints).
+   * Bound the O(n²) crossing scan by sampling the shape to at most this many points.
+   * MUST match {@link RoundTripQualityGate}'s MAX_SHAPE_SCAN_NODES — stride decimation
+   * FABRICATES crossings by chord-cutting curvy geometry (a clean 3,787-node Nice track
+   * once read 57 phantom crossings against gate count 0, driving needless mitigation).
    */
   private static final int CROSS_SCAN_MAX_NODES = 10000;
 
   /**
-   * Detect transverse self-intersections (X-crossings) of the route and classify
-   * each by the arc it encloses. A crossing whose smaller enclosed sub-loop is
-   * short (≤ {@link #SMALL_LOOP_MAX_ARC_METERS}) is a SMALL DETOUR LOOP / lasso the
-   * planner emitted; a crossing enclosing most of the perimeter is a structural
-   * outbound-vs-return crossing. Uses the same CCW segment-intersection test as
-   * {@link RoundTripQualityGate#countSelfIntersections} (kept in sync), with a
-   * sampling cap to bound the O(n²) scan.
+   * Detect transverse self-intersections (X-crossings) and classify each by enclosed arc: a
+   * crossing whose smaller enclosed sub-loop is short (≤ {@link #SMALL_LOOP_MAX_ARC_METERS}) is a
+   * small detour loop/lasso; one enclosing most of the perimeter is a structural outbound-vs-return
+   * crossing. Same CCW segment-intersection test as
+   * {@link RoundTripQualityGate#countSelfIntersections} (keep in sync), with a sampling cap.
    *
    * @return int[]{totalCrossings, smallLoopCrossings}
    */
@@ -265,15 +248,11 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Like {@link #detectCrossings} but returns the crossing LOCATIONS for map
-   * highlighting: one {@code {lon, lat, enclosedArcMeters}} per crossing, in
-   * degrees. Mirrors detectCrossings' two passes (CCW segment scan + shared-
-   * junction transversal revisits), sampling cap, closure exclusion and
-   * ceiling — keep the two in sync. Report/visualization only: counts shown
-   * to users still come from detectCrossings on full-resolution geometry;
-   * this may be called on simplified geometry, where the positions survive
-   * (Douglas-Peucker removes points but does not move them) even though the
-   * exact count can differ.
+   * Like {@link #detectCrossings} but returns crossing LOCATIONS for map highlighting: one
+   * {@code {lon, lat, enclosedArcMeters}} per crossing, in degrees. Keep its two passes, sampling
+   * cap, closure exclusion and ceiling in sync with detectCrossings. Report/visualization only,
+   * and safe on simplified geometry — Douglas-Peucker removes points but does not move them, so
+   * positions survive even where the exact count differs.
    */
   public static List<double[]> crossingPoints(List<OsmPathElement> nodes) {
     List<double[]> out = new ArrayList<>();
@@ -383,22 +362,15 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Detect local out-and-back "spur" detours — the beeline back-and-forth the loop
-   * planner occasionally emits (e.g. a waypoint reachable only via a dead-end corridor,
-   * so the leg out and the leg back form a thin antenna).
+   * Detect local out-and-back "spur" detours (the thin antenna the planner emits for a waypoint
+   * reachable only via a dead-end corridor).
    *
-   * <p>A spur is a <em>local near-revisit</em>: the route returns within
-   * {@link #SPUR_EPS_METERS} of a point it already passed between {@link #SPUR_MIN_ARC_GAP}
-   * and {@link #SPUR_MAX_ARC_GAP} of riding earlier. The arc-gap band is the discriminator:
-   * <ul>
-   *   <li>the lower bound rejects switchback hairpins (adjacent arms are only a few hundred
-   *       metres of road apart) and trivial local weaving;</li>
-   *   <li>the upper bound keeps it LOCAL, so the loop's own closure and broad fat lobes
-   *       (whose arms are far apart) are not flagged.</li>
-   * </ul>
-   * Validated against a labelled example (Berlin gravel_E iso_greedy): flags exactly the
-   * eastern Wegendorf out-and-back and not the acceptable adjacent fat lobe. Reporting /
-   * gate signal only — not part of the production selection formula.
+   * <p>A spur is a <em>local near-revisit</em>: the route returns within {@link #SPUR_EPS_METERS}
+   * of a point passed {@link #SPUR_MIN_ARC_GAP}–{@link #SPUR_MAX_ARC_GAP} of riding earlier. The
+   * arc-gap band discriminates: the lower bound rejects switchback hairpins and local weaving;
+   * the upper bound keeps it LOCAL so the loop's own closure and broad fat lobes are not flagged.
+   * Validated against a labelled Berlin gravel_E case (flags the Wegendorf out-and-back, not the
+   * adjacent fat lobe). Reporting/gate signal only.
    *
    * @return int[]{spurCount, worstSpurArcMeters}
    */
@@ -438,23 +410,17 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Generalised near-revisit scan: the spans where a track returns within
-   * {@code epsMeters} of a point it already passed between {@code minArcMeters} and
-   * {@code maxArcMeters} of riding earlier. This is the same primitive as
-   * {@link #computeSpurInfo} but (a) parameterised and (b) returns the actual
-   * {@code [i, j]} node-index spans rather than a count, so a caller can map a span
-   * back to the leg(s) it falls in.
+   * Generalised, parameterised near-revisit scan: the spans where a track returns within
+   * {@code epsMeters} of a point passed {@code minArcMeters}–{@code maxArcMeters} of riding
+   * earlier. Same primitive as {@link #computeSpurInfo} but returns the {@code [i, j]} node-index
+   * spans, so a caller can map a span back to its leg(s). Spans are non-overlapping (after a hit
+   * the scan resumes at {@code j}).
    *
-   * <p>Used by the round-trip planner's elastic anti-reuse retry to decide whether a
-   * shipped leg (or the assembled loop) contains a penalty-induced out-and-back or a
-   * small sub-loop that rejoins near an earlier point. The detector is deliberately
-   * liberal: it is only a <em>trigger</em> for a re-route-and-compare, so a false
-   * positive costs one wasted re-route, never a wrong output.
-   *
-   * <p><b>Cap rationale:</b> {@link #computeSpurInfo} uses {@link #SPUR_MAX_ARC_GAP}
-   * (6 km), which <em>misses</em> the motivating Basel→Ettingen out-and-back (≈7.3 km).
-   * Callers targeting that class of detour pass a larger {@code maxArcMeters}
-   * (≈10 km). Spans are non-overlapping (after a hit, the scan resumes at {@code j}).
+   * <p>Used by the planner's elastic anti-reuse retry to decide whether a shipped leg contains a
+   * penalty-induced out-and-back. Deliberately liberal — only a <em>trigger</em> for a
+   * re-route-and-compare, so a false positive costs one wasted re-route, never a wrong output.
+   * Callers targeting the Basel→Ettingen class (≈7.3 km) pass {@code maxArcMeters} ≈10 km, wider
+   * than {@link #SPUR_MAX_ARC_GAP} (6 km).
    */
   public static List<int[]> nearRevisitSpans(List<OsmPathElement> nodes,
                                              double epsMeters, double minArcMeters,
@@ -493,19 +459,12 @@ public final class LoopQualityMetrics {
    * Length (m) of the longest single edge that is BOTH long and <em>null-way</em>
    * (no {@code wayKeyValues}) — the beeline fingerprint.
    *
-   * <p>The discriminator is a <b>conjunction</b>, established empirically:
-   * <ul>
-   *   <li><b>long + tagged</b> = a real rural road (e.g. an 800m {@code highway=service}
-   *       span with no intermediate OSM node) — legitimate;</li>
-   *   <li><b>short + null</b> = harmless undetailed geometry (shape nodes survive, so it
-   *       follows the real road shape) — pervasive on gravel because the metadata-detail
-   *       gate is paved-only, and visually fine;</li>
-   *   <li><b>long + null</b> = a beeline: a straight cut with no road shape AND no tags,
-   *       which is what {@link RoutingEngine#retrackForDetail} ships when it cannot snap a
-   *       straight expansion-guide onto the real road and falls back to the raw track.</li>
-   * </ul>
-   * Measuring the longest single null-way edge (not a contiguous sum) isolates the beeline
-   * from the pervasive-but-harmless undetailed-road population. Reporting / gate signal only.
+   * <p>The conjunction is the discriminator (established empirically): long+tagged is a real rural
+   * road; short+null is harmless undetailed geometry (shape nodes survive, so it follows the real
+   * road shape); long+null is a beeline — a straight cut with no shape and no tags, what
+   * {@link RoutingEngine#retrackForDetail} ships when it cannot snap a straight expansion-guide
+   * onto the real road. Measuring the longest single null-way edge (not a contiguous sum) isolates
+   * the beeline from harmless undetailed roads. Reporting/gate signal only.
    */
   public static int maxSingleNullEdgeMeters(OsmTrack track) {
     if (track == null || track.nodes == null) return 0;
@@ -524,19 +483,12 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * The beeline-in-dead-end fingerprint: the longest single null-way edge (m) that lies
-   * <em>inside a detected spur span</em> (see {@link #computeSpurInfo}). This is the
-   * <b>intersection</b> of the two signals that survives all the evidence:
-   * <ul>
-   *   <li>a long null-way edge ALONE over-fires — on gravel the metadata-detail gate is
-   *       paved-only, so even real long rural roads ship undetailed (null + long);</li>
-   *   <li>a near-revisit spur ALONE over-fires (~29%) — most out-and-backs are legitimate;</li>
-   *   <li>their intersection is precise: a straight untagged cut <em>within</em> a near-revisit
-   *       is the dead-end beeline — the route left the road, shot straight to a dead-end pinned
-   *       waypoint and came back, which {@link RoutingEngine#retrackForDetail} could not snap to
-   *       a real way (so it shipped raw + untagged). A real long road is traversed once, not
-   *       inside a near-revisit, so it is excluded.</li>
-   * </ul>
+   * The beeline-in-dead-end fingerprint: the longest single null-way edge (m) lying <em>inside a
+   * detected spur span</em> ({@link #computeSpurInfo}) — the <b>intersection</b> of two signals
+   * that each over-fire alone (a long null-way edge; a near-revisit spur). A straight untagged cut
+   * within a near-revisit is the dead-end beeline: the route shot straight to a dead-end waypoint
+   * and came back, which {@link RoutingEngine#retrackForDetail} could not snap to a real way. A
+   * real long road is traversed once, not inside a near-revisit, so it is excluded.
    * @return the longest single null-way edge within any spur span (m), 0 if none.
    */
   static int beelineInSpurMeters(OsmTrack track) {
@@ -545,10 +497,8 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Like {@link #beelineInSpurMeters} but also returns the flagged edge's
-   * endpoints so callers (gate diagnostics, calibration tooling) can locate it
-   * on the map. {@code [meters, startIlon, startIlat, endIlon, endIlat]};
-   * coordinates are 0 when no edge was flagged.
+   * Like {@link #beelineInSpurMeters} but also returns the flagged edge's endpoints for map
+   * location: {@code [meters, startIlon, startIlat, endIlon, endIlat]}; coordinates 0 when none.
    */
   static int[] beelineInSpurDetail(OsmTrack track) {
     int[] none = new int[]{0, 0, 0, 0, 0};
@@ -595,9 +545,8 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Compute the percentage of the track that reuses the same road edges.
-   * An edge is identified by the unordered pair of consecutive node positions.
-   * If an edge appears N times, (N-1) traversals count as reuse.
+   * Percentage of the track that reuses the same road edges. An edge is the unordered pair of
+   * consecutive node positions; if it appears N times, (N-1) traversals count as reuse.
    */
   static double computeRoadReusePercent(List<OsmPathElement> nodes) {
     if (nodes.size() < 2) return 0.0;
@@ -652,10 +601,8 @@ public final class LoopQualityMetrics {
   private static final double ZERO_SCORE_COST_PER_METER = 4.0;
 
   /**
-   * Score profile-match: how well the route's cost-per-meter matches a typical
-   * profile-preferred road. 1.0 at cost/m ≤ {@link #IDEAL_COST_PER_METER}, decays
-   * linearly to 0.0 at {@link #ZERO_SCORE_COST_PER_METER}+. Returns 0.0 if cost
-   * data is missing.
+   * Profile-match score in [0,1]: 1.0 at cost/m ≤ {@link #IDEAL_COST_PER_METER}, decaying linearly
+   * to 0.0 at {@link #ZERO_SCORE_COST_PER_METER}+. 0.0 if cost data is missing.
    */
   static double computeCostMatchScore(double avgCostPerMeter) {
     if (avgCostPerMeter <= 0) return 0.0;
@@ -664,16 +611,11 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Compute the angular delta between the requested direction and the
-   * actual principal axis of the track. Uses the bearing from start to
-   * the farthest point on the track.
-   *
-   * For round-trip loops, initial heading is ambiguous: clockwise vs
-   * counter-clockwise traversals of the same loop differ by ~180° in
-   * initial bearing. Measuring from start to farthest point captures
-   * the loop's principal axis, which is invariant to traversal direction.
-   * For open tracks, the farthest point is typically the endpoint, so
-   * this remains equivalent to overall-heading.
+   * Angular delta between the requested direction and the track's principal axis (bearing from
+   * start to the farthest point). For loops, initial heading is ambiguous — clockwise vs
+   * counter-clockwise differ by ~180° — so the farthest-point bearing captures the
+   * traversal-invariant principal axis. For open tracks the farthest point is usually the
+   * endpoint, so it stays equivalent to overall heading.
    */
   static double computeDirectionDelta(List<OsmPathElement> nodes,
                                       double requestedDirectionDeg) {
@@ -751,14 +693,9 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Compute the compactness score of the track shape.
-   * Uses the ratio of the convex hull area of track points to the area
-   * of a circle with the same circumference as the track distance.
-   * A perfect circle scores 1.0, an out-and-back line scores ~0.
-   *
-   * @param nodes    track points
-   * @param distance total track distance in meters
-   * @return compactness score clamped to [0, 1]
+   * Compactness score clamped to [0, 1]: convex-hull area of track points over the area of a
+   * circle with the same circumference as the track distance ({@code distance} in meters). A
+   * perfect circle scores 1.0, an out-and-back line ~0.
    */
   static double computeCompactnessScore(List<OsmPathElement> nodes, int distance) {
     if (nodes.size() < 3 || distance <= 0) return 0.0;
@@ -807,12 +744,7 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Compute the area of the convex hull of a set of 2D points using
-   * Andrew's monotone chain algorithm. O(n log n).
-   *
-   * @param xs x coordinates
-   * @param ys y coordinates
-   * @return area of the convex hull
+   * Area of the convex hull of 2D points via Andrew's monotone chain. O(n log n).
    */
   static double convexHullArea(double[] xs, double[] ys) {
     int n = xs.length;
@@ -866,31 +798,23 @@ public final class LoopQualityMetrics {
   }
 
   /**
-   * Compute a weighted composite quality score in [0, 1]. Higher is better.
-   *
-   * <p>Weights are aligned with what cyclists actually care about for a round-trip:
+   * Weighted composite quality score in [0, 1]; higher is better. Weights reflect what cyclists
+   * care about in a round-trip:
    * <ul>
    *   <li><b>25% distance</b> — total length close to target</li>
    *   <li><b>20% reuse</b> — no out-and-back / road retracing</li>
-   *   <li><b>20% continuity</b> — no synthetic beelines, with maxGap penalty baked in</li>
-   *   <li><b>20% profile match</b> — average cost/m matches profile-preferred roads</li>
+   *   <li><b>20% continuity</b> — no synthetic beelines, maxGap penalty baked in</li>
+   *   <li><b>20% profile match</b> — cost/m matches profile-preferred roads</li>
    *   <li><b>10% compactness</b> — convex hull area vs ideal-circle area</li>
-   *   <li><b>5% direction</b> — soft hint: user direction may not be reachable</li>
+   *   <li><b>5% direction</b> — soft hint: user direction may be unreachable</li>
    * </ul>
+   * Direction is low-weighted because in asymmetric terrain (valleys, coastlines) the requested
+   * direction may be unachievable and the bearing signal degrades to ~random. Closure is not
+   * scored — round-trips close by construction; bad closure is a hard gate, not a soft signal.
    *
-   * <p>Direction is intentionally low-weighted: in asymmetric terrain (valleys,
-   * coastlines) the user's requested direction may not be achievable on real
-   * roads, and the farthest-node-bearing signal degrades to ~random. Closure is
-   * not scored — round-trips close by construction; bad closure should be a hard
-   * gate, not a soft signal.
-   *
-   * <p><b>Reporting / test use only — NOT the production selection formula.</b>
-   * Production candidate ranking uses {@code RouteChoiceScore#score}, which applies
-   * different weights (it scores closure at 10% and adds shape penalties, splitting
-   * continuity/cost differently). This method has no production callers; it backs
-   * {@code toString()}, the loop-quality report generator, and integration-test
-   * gates. Keep the two in mind when tuning: changing weights here does not change
-   * which route production selects, and vice-versa.
+   * <p><b>Reporting / test use only — NOT the production selection formula.</b> Production ranking
+   * uses {@code RouteChoiceScore#score} with different weights (closure at 10%, added shape
+   * penalties). Changing weights here does not change which route production selects.
    */
   public double compositeScore() {
     double distScore = 1.0 - Math.min(1.0, Math.abs(distanceRatio - 1.0) / 0.5);
@@ -967,8 +891,8 @@ public final class LoopQualityMetrics {
     return selfIntersections;
   }
 
-  /** How many of {@link #getSelfIntersections} are caused by a small detour
-   *  loop / lasso (short enclosed arc), as opposed to a structural crossing. */
+  /** How many of {@link #getSelfIntersections} come from a small detour loop/lasso (short
+   *  enclosed arc) rather than a structural crossing. */
   public int getSmallLoopCrossings() {
     return smallLoopCrossings;
   }

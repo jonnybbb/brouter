@@ -15,13 +15,12 @@ import btools.util.CheapAngleMeter;
 import btools.util.CheapRuler;
 
 /**
- * Round-trip waypoint snapping, validation, and reachability probing,
- * extracted from RoutingEngine: road/profile-aware snaps for generated and
- * user vias, the ferry/hostile usability rules, the densified-via arc bulges
- * and their pinned-bulge repair, the circle-path validation pass, and the
- * bearing-grid reachability probes that feed ISOCHRONE and FAST placement.
- * Reaches the engine only through the {@link LegRouter}, {@link EngineIO},
- * and {@link EngineContext} roles of the engine seam.
+ * Round-trip waypoint snapping, validation, and reachability probing:
+ * road/profile-aware via snaps, ferry/hostile usability rules, densified-via
+ * arc bulges and their pinned-bulge repair, and the bearing-grid reachability
+ * probes that feed ISOCHRONE and FAST placement. Reaches the engine only
+ * through the {@link LegRouter}, {@link EngineIO}, and {@link EngineContext}
+ * roles.
  */
 public final class WaypointSnapper {
 
@@ -59,15 +58,13 @@ public final class WaypointSnapper {
   private static final String DENSIFIED_VIA_WAYPOINT_NAME = "dvia";
 
   /**
-   * Hard ceiling for the active profile's costfactor at a waypoint snap. A
-   * candidate's BEST road is REJECTED entirely if its costfactor exceeds this —
-   * better to drop the waypoint (route around the area) than commit to a
-   * profile-hostile road that the user will hit as a surprise mid-tour. A
-   * fastbike snap to a track grade-5 (costfactor 30) is far worse for the rider
-   * than skipping that waypoint and routing elsewhere.
+   * Hard ceiling for the active profile's costfactor at a waypoint snap: a
+   * candidate whose BEST road exceeds this is REJECTED entirely — better to drop
+   * the waypoint and route around than commit the rider to a profile-hostile
+   * road mid-tour (e.g. fastbike snapped to a grade-5 track, costfactor 30).
    *
-   * <p>Per-profile thresholds — fastbike rejects high-costfactor (≥5) tracks/unpaved;
-   * gravel allows moderate roughness; mtb is lenient because trails are its target.
+   * <p>Per-profile: fastbike rejects high-costfactor (≥5) tracks/unpaved; gravel
+   * allows moderate roughness; mtb is lenient (trails are its target).
    */
   private static final double SNAP_REJECT_COSTFACTOR_FASTBIKE = 5.0;
 
@@ -76,18 +73,16 @@ public final class WaypointSnapper {
   private static final double SNAP_REJECT_COSTFACTOR_DEFAULT = 10.0;
 
   /**
-   * Via-arc densification. Insert one generated "bulge" waypoint per
-   * perimeter leg of the anchor cycle [start, via1, ..., viaN, (back to start)],
-   * offset outward from the anchor centroid so each leg follows the loop perimeter
-   * instead of cutting the chord. User anchors stay hard constraints.
+   * Via-arc densification: insert one generated "bulge" waypoint per perimeter
+   * leg of the anchor cycle, offset outward from the centroid so each leg
+   * follows the loop perimeter instead of cutting the chord. User anchors stay
+   * hard constraints.
    *
-   * <p>Safety: a bulge is kept ONLY if it snaps to a profile-compatible way (cost-factor
-   * at or below the profile's snap-reject threshold, and not a ferry-like edge). Where
-   * "outward" is only profile-hostile or off-network (e.g. a road bike in sparse/alpine
-   * terrain), the bulge is dropped and that leg reverts to its baseline shortest-path
-   * form — so densification never forces the route onto a hostile road, which was the
-   * lost-route failure mode of the unguarded version.
-   * Returns the densified, ordered waypoint chain (without the closing start copy).
+   * <p>A bulge is kept ONLY if it snaps to a profile-compatible way (cost-factor
+   * at or below the snap-reject threshold, not ferry-like); otherwise the leg
+   * reverts to its baseline shortest-path form, so densification never forces
+   * the route onto a hostile road (the lost-route failure mode of the unguarded
+   * version). Returns the densified, ordered chain (without the closing start copy).
    */
   public List<OsmNodeNamed> densifyViaArcs(List<OsmNodeNamed> anchors, double searchRadius, double snapDist) {
     long sumLon = 0;
@@ -145,8 +140,8 @@ public final class WaypointSnapper {
   }
 
   /**
-   * A snap match is usable only if it resolved to a real road edge: both endpoints
-   * present and the matched edge short enough to be a road rather than a ferry-like
+   * A snap is usable only if it resolved to a real road edge: both endpoints
+   * present and the matched edge short enough to be a road, not a ferry-like
    * span (see {@link #FERRY_LIKE_EDGE_METERS}).
    */
   private static boolean isRoadSnap(MatchedWaypoint m) {
@@ -157,12 +152,10 @@ public final class WaypointSnapper {
   /**
    * Shared batch road-snap primitive: reset the node cache, wrap each point in a
    * {@link MatchedWaypoint}, and run the matcher once. Returns the matched list
-   * (same size and order as {@code points}; each entry's crosspoint/node1/node2
-   * populated where a road was found within {@code maxSnapDist}), or {@code null}
-   * if the matcher threw (callers treat that as "nothing matched"). Used by the
-   * profile-aware start/bulge snaps. {@link #snapWaypointsToRoad} keeps its own
-   * copy of this pattern because it additionally mutates the input waypoints and
-   * returns per-point booleans rather than the MatchedWaypoint objects.
+   * (same size/order as {@code points}), or {@code null} if the matcher threw
+   * (callers treat that as "nothing matched"). {@link #snapWaypointsToRoad} keeps
+   * its own copy because it also mutates the input waypoints and returns
+   * per-point booleans.
    */
   private List<MatchedWaypoint> batchMatchToRoads(List<OsmNode> points, double maxSnapDist, String nameTag) {
     router.resetCache(false);
@@ -182,16 +175,12 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Profile-aware point match for planner-generated round-trip vias. The plain
-   * nearest-road match commits the via to whatever way is closest — for
-   * fastbike that can be a grade2 track in a pocket whose only escape is more
-   * track, which pins a junk bulge into the loop (see
-   * {@link #repairViaPinnedBulges}). When (and only when) that nearest snap is
-   * profile-hostile ({@link #VIA_SNAP_HOSTILE_COSTFACTOR}), probe rings
-   * ({@link #VIA_SNAP_PROBE_RINGS}) are evaluated and the via moves to the
-   * best-scoring road ({@code costFactor*1000 + distance}) if it improves the
-   * cost factor by {@link #VIA_SNAP_MIN_IMPROVEMENT}; otherwise the plain
-   * nearest match is returned unchanged. Returns null when nothing matches.
+   * Profile-aware point match for planner-generated round-trip vias. Matches the
+   * plain nearest road first; only when that snap is profile-hostile
+   * ({@link #VIA_SNAP_HOSTILE_COSTFACTOR}) does it evaluate probe rings
+   * ({@link #VIA_SNAP_PROBE_RINGS}) and move the via to the best-scoring road
+   * ({@code costFactor*1000 + distance}), and only if that beats the original by
+   * {@link #VIA_SNAP_MIN_IMPROVEMENT}. Returns null when nothing matches.
    */
   public MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist) {
     // Loop-scale relocation bound (see VIA_RELOCATION_LOOP_FRACTION). When no
@@ -300,12 +289,9 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Filter round-trip waypoints that matched to bad positions.
-   * Removes intermediate waypoints (named "rt*") where:
-   * - The snap distance (waypoint to crosspoint) exceeds maxSnapDistance
-   * - Consecutive matched positions are too close together
-   * Never removes the first or last waypoint (start/end of loop).
-   * Preserves at least one intermediate waypoint.
+   * Drop intermediate round-trip waypoints ("rt*") that snapped badly: snap
+   * distance beyond maxSnapDistance, or matched positions too close together.
+   * Never removes the first/last waypoint; always keeps at least one intermediate.
    */
   public void filterRoundTripWaypoints(List<MatchedWaypoint> waypoints) {
     double maxSnapDistance = ctx.roundTripSearchRadius() * 0.5;
@@ -374,14 +360,10 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Snap intermediate roundtrip waypoints to the nearest intersection node.
-   * When a waypoint is matched to the middle of an edge (crosspoint between
-   * node1 and node2), routing to that mid-edge point can create small
-   * out-and-back tails. By moving the crosspoint to the closer of node1/node2
-   * (a real intersection), we avoid these tails entirely.
-   * This is analogous to GraphHopper's getBaseNode() approach.
-   * Only applied to generated roundtrip waypoints (rt*), not user waypoints
-   * or the start/end points.
+   * Snap intermediate roundtrip waypoints ("rt*") from a mid-edge crosspoint to
+   * the closer of node1/node2 (a real intersection). Routing to a mid-edge point
+   * can create small out-and-back tails; snapping to the junction avoids them.
+   * User waypoints and the start/end points are left alone.
    */
   public void snapToIntersection(List<MatchedWaypoint> waypoints) {
     for (int i = 1; i < waypoints.size() - 1; i++) {
@@ -401,11 +383,9 @@ public final class WaypointSnapper {
 
   /**
    * Snap a single waypoint to the nearest road within {@code maxSnapDist}.
-   * Returns true and rewrites the waypoint coordinates to the matched
-   * crosspoint when a match is found; returns false otherwise (waypoint left
-   * untouched). Used by round-trip code paths to ensure generated points are
-   * close enough to a road that final matchWaypointsToNodes (250m catching
-   * range) does not fall back to dynamic beeline insertion.
+   * Returns true and rewrites the waypoint to the matched crosspoint on success;
+   * false leaves it untouched. Keeps generated points within the final
+   * matchWaypointsToNodes 250m catching range so it doesn't fall back to a beeline.
    */
   public boolean snapWaypointToRoad(OsmNodeNamed wp, double maxSnapDist, String logTag) {
     return snapWaypointsToRoad(Collections.singletonList(wp), maxSnapDist, logTag).get(0);
@@ -413,9 +393,8 @@ public final class WaypointSnapper {
 
   /**
    * Per-profile snap-rejection threshold from the {@code SNAP_REJECT_COSTFACTOR_*}
-   * constants. Resolves the active profile by filename so a fastbike user
-   * doesn't end up snapped to a grade-5 track even when the engine has run a
-   * different profile previously on the same JVM.
+   * constants, resolved by profile filename (so a fastbike user isn't snapped to
+   * a grade-5 track after a different profile ran earlier on the same JVM).
    */
   private double snapRejectCostFactorForProfile() {
     String name = profileNameForLog();
@@ -438,17 +417,11 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Evaluate the active profile's costfactor for the road segment a candidate
-   * waypoint matched against (used by round-trip via-snapping to prefer
-   * profile-liked roads). Returns {@code 1.0f} on any failure to resolve the
-   * tags — that's the neutral value (preserves the geometric-only score).
-   *
-   * <p>The score comes straight from {@code mwp.wayDescription}: the waypoint
-   * matcher records the matched way's tag bytes at match time (the trailing
-   * way-description arg of {@code WaypointMatcher.start}). This method, reached
-   * only on the round-trip via-snap path, evaluates those tags through the
-   * profile's way context. {@code wayDescription} is null only when the match
-   * carried no way tags, in which case the neutral {@code 1.0f} is returned.
+   * Active profile's costfactor for the road a candidate matched against (used by
+   * via-snapping to prefer profile-liked roads). Returns neutral {@code 1.0f} on
+   * any failure to resolve the tags. The tags come from {@code mwp.wayDescription},
+   * captured by the matcher at match time; it is null only when the match carried
+   * no way tags.
    */
   private float snapCandidateCostFactor(MatchedWaypoint mwp) {
     // Evaluate the tag description the waypoint matcher captured from the
@@ -469,8 +442,7 @@ public final class WaypointSnapper {
   /**
    * One probe skeleton for both grids — the legacy 24-bearing × 3-radii sweep
    * and the optimized FAST 2-radii grid — so fixes to the snap rule, matcher
-   * error handling, or start-probe convention cannot drift between the paths
-   * (the two used to be near-verbatim forks kept alive for A/B comparison).
+   * error handling, or start-probe convention cannot drift between the two paths.
    */
   private ProbeResult probeDirections(OsmNodeNamed start, double searchRadius,
                                       double[] bearings, double[] distFactors,
@@ -527,10 +499,10 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Summarize one bearing's probe matches. The optimized FAST path counts and
-   * retains only road/profile-compatible matches, so a rejected nearer edge
-   * cannot hide a usable match from the other probe radius. The legacy probe
-   * keeps its historical raw-snap count and does not retain a match.
+   * Summarize one bearing's probe matches. The FAST path counts and retains only
+   * road/profile-compatible matches, so a rejected nearer edge can't hide a
+   * usable match at the other radius. The legacy probe keeps its raw-snap count
+   * and retains no match.
    */
   ProbeDirection selectProbeDirection(double direction, List<MatchedWaypoint> probes,
                                       int firstIndex, int count, boolean retainMatches,
@@ -554,12 +526,10 @@ public final class WaypointSnapper {
   }
 
   /**
-   * FAST-tier reachability probe (optimization ideas 1 + 2). Trims the grid to
-   * 12 bearings × 2 radii (vs the legacy 24 × 3) AND retains the best road match
-   * per direction, so {@code FastWaypointPlanner#placeWaypointsFromProbeMatches}
-   * can reuse those already-snapped nodes as vias — replacing both the geometric
-   * placement and the ~21-candidate-per-via re-matching in
-   * {@link #validateAndAdjustWaypoints}.
+   * FAST-tier reachability probe: 12 bearings × 2 radii (vs the legacy 24 × 3),
+   * retaining the best road match per direction so
+   * {@code FastWaypointPlanner#placeWaypointsFromProbeMatches} can reuse those
+   * snapped nodes as vias instead of re-matching in {@link #validateAndAdjustWaypoints}.
    */
   public ProbeResult probeReachableDirectionsFast(OsmNodeNamed start, double searchRadius, double[] bearings) {
     // 2 radii per bearing (vs the legacy 3) + best-match retention so
@@ -576,11 +546,9 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Snap the start (and closing) waypoint to the nearest road.
-   * Round-trip waypoints use the user's raw click position which may be
-   * far from any road. If the distance exceeds waypointCatchingRange (250m),
-   * the routing engine inserts a straight-line beeline instead of a road segment.
-   * This method matches the start to the road network and updates its position.
+   * Snap the start (and its mirrored closing waypoint) to the nearest road. A
+   * raw click far from any road (beyond the 250m catching range) would make the
+   * engine insert a straight-line beeline instead of a road segment.
    */
   public void snapStartToRoad(List<OsmNodeNamed> waypoints, double searchRadius) {
     if (waypoints.size() < 2) return;
@@ -596,10 +564,9 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Batch variant of {@link #snapWaypointToRoad}. One nodesCache reset and one
-   * matchWaypointsToNodes call for the whole list — avoids reallocating the
-   * cache per waypoint when many points need snapping (e.g. user via points).
-   * Returns a parallel list of booleans indicating which waypoints matched.
+   * Batch variant of {@link #snapWaypointToRoad}: one cache reset and one match
+   * call for the whole list (avoids per-waypoint cache reallocation). Returns a
+   * parallel boolean list of which waypoints matched.
    */
   public List<Boolean> snapWaypointsToRoad(List<OsmNodeNamed> wps, double maxSnapDist, String logTag) {
     router.resetCache(false);
@@ -641,22 +608,19 @@ public final class WaypointSnapper {
   /**
    * Detect and repair wide-mouth bulges pinned at generated round-trip vias.
    *
-   * <p>The planner can place a via in a pocket whose only escape is over roads
-   * the profile penalizes (Basel reference: via on a grade2 field track 750m
-   * west of a parallel asphalt cycle route — the loop pays ~11× the through
-   * cost to touch it). The resulting detour has no ≤50m pinch point, so
-   * {@code RoutingEngine#removeMicroDetours}' teardrop band never sees it; and it encloses
-   * real area (petal compactness ~0.9), so a thin-only filter can't separate
-   * it from scenic petals. What does separate it is price: the span rides
-   * roads at ≥{@link #BULGE_MIN_COST_FACTOR}× the track's average cost/m.
+   * <p>The planner can place a via in a pocket whose only escape is over
+   * profile-penalized roads (Basel: via on a grade2 track paying ~11× the
+   * through cost). Such a detour has no ≤50m pinch point (so removeMicroDetours
+   * misses it) and encloses real area (so a thin-only filter can't catch it);
+   * what marks it is price — the span rides roads at ≥{@link #BULGE_MIN_COST_FACTOR}×
+   * the track's average cost/m.
    *
-   * <p>Because the mouth is wide, the span cannot simply be deleted (that
-   * would leave an off-road beeline). Instead the mouth is re-routed: a local
-   * {@code RoutingEngine#findTrack} between the two mouth nodes, accepted only when the
-   * connector meaningfully shortens the span
-   * ({@link #BULGE_CONNECTOR_MAX_ARC_FRACTION}, {@link #BULGE_MIN_SAVED_M})
-   * and undercuts its cost/m ({@link #BULGE_CONNECTOR_COST_ADVANTAGE}) — when
-   * the network offers no better connector, the bulge was forced, and it stays.
+   * <p>The wide mouth can't just be deleted (that leaves an off-road beeline),
+   * so it is re-routed via a local {@code findTrack} between the two mouth nodes,
+   * accepted only when the connector meaningfully shortens the span
+   * ({@link #BULGE_CONNECTOR_MAX_ARC_FRACTION}, {@link #BULGE_MIN_SAVED_M}) and
+   * undercuts its cost/m ({@link #BULGE_CONNECTOR_COST_ADVANTAGE}); otherwise the
+   * bulge was network-forced and stays.
    */
   public void repairViaPinnedBulges(OsmTrack track, List<MatchedWaypoint> waypoints) {
     List<OsmPathElement> nodes = track.nodes;
@@ -759,16 +723,11 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Validate round-trip waypoints against segment data before routing.
-   * For each generated waypoint, checks if profile-compatible ways exist
-   * nearby by matching against the routing segments. Waypoints that fall
-   * in unreachable areas (water, no compatible ways) are relocated by
-   * trying alternative positions at varied angles and distances from the
-   * start point. Unmatched waypoints are removed if enough remain.
-   *
-   * The matching is profile-aware: during segment decoding, only ways
-   * with accessType >= 2 (compatible with the current routing profile)
-   * are considered.
+   * Validate generated round-trip waypoints against segment data before routing.
+   * Waypoints in unreachable areas (water, no profile-compatible ways) are
+   * relocated by trying alternative angles/distances from the start; unmatched
+   * ones are removed while enough remain. Matching is profile-aware (only ways
+   * with accessType >= 2 are considered).
    */
   public void validateAndAdjustWaypoints(List<OsmNodeNamed> waypoints, double searchRadius) {
     router.resetCache(false);
@@ -924,41 +883,35 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Relocation triggers only when the plain nearest snap is meaningfully
-   * profile-hostile. Below this cost factor the original snap is fine and the
-   * cached graph-native leg (if any) stays valid — relocating on marginal wins
-   * (cf 1.2 → 1.1) was measured to fire on most candidates, paying an extra
-   * leg Dijkstra each (~6× shard runtime) and churning routes for no artifact
-   * being prevented.
+   * Relocation triggers only when the plain nearest snap is at least this
+   * profile-hostile. Below it the original snap is fine and its cached
+   * graph-native leg stays valid — relocating on marginal wins (cf 1.2 → 1.1)
+   * fired on most candidates, paying an extra leg Dijkstra each (~6× shard
+   * runtime) for no artifact prevented.
    */
   private static final double VIA_SNAP_HOSTILE_COSTFACTOR = 2.0;
 
   /**
-   * Loop-scale relocation bound: a via may relocate at most this fraction of
-   * the round-trip search radius away from the planner's intended position.
-   * The probe rings ({@link #VIA_SNAP_PROBE_RINGS}) and {@code maxSnapDist}
-   * are absolute, so without this bound a small loop can have a via pulled
-   * sideways by a distance comparable to the whole loop radius — measured on
-   * the r=1000m fixture (after the 8802e75b metadata-consistency fix made
-   * snap cost factors real): the GREEDY dir90 loop flipped clean →
-   * 19%-retraced OUT_AND_BACK. At production radii (≥8000m) the cap reaches
-   * {@code maxSnapDist} and behaviour is unchanged — the junk-pocket bulges
-   * this relocation prevents are a long-loop phenomenon.
+   * Loop-scale relocation bound: a via may move at most this fraction of the
+   * round-trip search radius from the planner's intended position. The probe
+   * rings ({@link #VIA_SNAP_PROBE_RINGS}) and {@code maxSnapDist} are absolute,
+   * so without this a small loop can have a via pulled sideways by ~its whole
+   * radius (measured on r=1000m: the GREEDY dir90 loop flipped clean →
+   * 19%-retraced OUT_AND_BACK). At production radii (≥8000m) the cap reaches
+   * {@code maxSnapDist} and behaviour is unchanged.
    */
   private static final double VIA_RELOCATION_LOOP_FRACTION = 0.25;
 
   /**
-   * Batch-snap candidate bulge points, accepting a bulge ONLY if it matches a
-   * profile-compatible road and is not a ferry-like long edge. Accepted bulges are
-   * moved to their crosspoint. Returns a boolean[] parallel to {@code bulges}:
-   * {@code accepted[i]} is true iff {@code bulges.get(i)} was accepted — indexed,
-   * not coordinate-keyed, so two bulges snapping to the same node stay distinct.
+   * Batch-snap candidate bulges, accepting one ONLY if it matches a
+   * profile-compatible, non-ferry-like road; accepted bulges move to their
+   * crosspoint. Returns a boolean[] parallel to {@code bulges} (indexed, not
+   * coordinate-keyed, so two bulges on the same node stay distinct).
    *
-   * <p>The cost-factor ceiling is {@code RoutingContext#explicitViaDensifyMaxCostFactor},
-   * intentionally stricter than the lenient user-snap reject threshold in
-   * {@link #validateAndAdjustWaypoints}: a bulge is an optional nicety, so a
-   * fastbike facing only tracks drops it and reverts to its baseline leg instead
-   * of being forced onto a hostile detour.
+   * <p>The ceiling is {@code RoutingContext#explicitViaDensifyMaxCostFactor},
+   * intentionally stricter than the lenient user-snap threshold in
+   * {@link #validateAndAdjustWaypoints}: a bulge is optional, so a fastbike
+   * facing only tracks drops it rather than take a hostile detour.
    */
   private boolean[] snapBulgesProfileAware(List<OsmNodeNamed> bulges, double maxSnapDist) {
     boolean[] accepted = new boolean[bulges.size()];
@@ -991,27 +944,24 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Weight on the profile costfactor in waypoint-snap scoring (line ~1218 of this
-   * file). Combined with the geometric score as {@code geom × (1 + W × (costfactor - 1))}.
+   * Weight on the profile costfactor in waypoint-snap scoring, combined with the
+   * geometric score as {@code geom × (1 + W × (costfactor - 1))}.
    *
-   * <p>Empirical calibration with W=0.5:
+   * <p>Calibration with W=0.5:
    * <ul>
-   *   <li>50m grade5 track (fastbike costfactor 30) score = 50 × (1 + 0.5 × 29) = 775,
-   *       loses to 200m tertiary (costfactor 1, score 200) — correct: fastbike won't
-   *       snap to a forest track when there's a paved road nearby.</li>
-   *   <li>50m cycleway (costfactor 1.3) score = 50 × 1.15 = 57.5 still beats a
-   *       200m tertiary (score 200) — correct: short snap to a cyclist-preferred
-   *       road remains the better pick.</li>
+   *   <li>50m grade5 track (fastbike costfactor 30): 50 × (1 + 0.5 × 29) = 775,
+   *       loses to a 200m tertiary (score 200) — correct.</li>
+   *   <li>50m cycleway (costfactor 1.3): 50 × 1.15 = 57.5, still beats a 200m
+   *       tertiary — correct: a short snap to a cyclist-preferred road wins.</li>
    * </ul>
    * Falls back to 1.0 (no penalty) when the link can't be resolved.
    */
   private static final double SNAP_PROFILE_COST_WEIGHT = 0.5;
 
   /**
-   * Probe-ring radii for {@link #profileAwareMatchPoint}. The inner ring covers
-   * "good road just past the nearest track" cases; the outer ring covers
-   * pocket escapes (the Basel reference via sat 750m from the parallel asphalt
-   * cycle route, with nothing but grade2 track in between).
+   * Probe-ring radii for {@link #profileAwareMatchPoint}: the inner ring covers
+   * "good road just past the nearest track", the outer covers pocket escapes
+   * (Basel: via 750m from the parallel asphalt cycle route, only grade2 track between).
    */
   private static final double[] VIA_SNAP_PROBE_RINGS = {300, 700};
 
@@ -1020,23 +970,20 @@ public final class WaypointSnapper {
   private static final double VIA_SNAP_MIN_IMPROVEMENT = 0.6;
 
   /**
-   * Junk filter: the span's average cost/m must be at least this multiple of
-   * the whole track's average. A deliberate scenic petal rides roads the
-   * profile likes (span cost/m ≈ track average) and is kept; only overpriced
-   * detours — the profile got dragged onto roads it penalizes — qualify.
-   * Deliberately loose (the Basel reference span measures 1.38× because
-   * {@link #spanCostPerMeter} skips the leg-reset edge); the connector
-   * cost-advantage check below is the decisive guard.
+   * Junk filter: the span's average cost/m must be at least this multiple of the
+   * track's average. A scenic petal rides roads the profile likes (span cost/m ≈
+   * track average) and is kept; only overpriced detours qualify. Deliberately
+   * loose (the Basel reference span measures 1.38× because {@link #spanCostPerMeter}
+   * skips the leg-reset edge) — the connector cost-advantage check is decisive.
    */
   private static final double BULGE_MIN_COST_FACTOR = 1.2;
 
   /**
-   * Repair acceptance: the connector must be at most this fraction of the
-   * bulge arc. This is an efficiency criterion, not a straightness one — a
-   * winding connector on profile-friendly roads still beats a junk-road bulge
-   * (Basel via3: 839m connector at 1.44 cost/m vs 3231m span at 3.92). When
-   * the shortest connector is comparable to the bulge itself, the bulge was
-   * network-forced, not via-pinned — keep it.
+   * Repair acceptance: the connector must be at most this fraction of the bulge
+   * arc. An efficiency criterion, not a straightness one — a winding connector
+   * on profile-friendly roads still beats a junk-road bulge (Basel via3: 839m at
+   * 1.44 cost/m vs 3231m span at 3.92). A connector comparable to the bulge
+   * itself means it was network-forced, not via-pinned — keep it.
    */
   private static final double BULGE_CONNECTOR_MAX_ARC_FRACTION = 0.6;
 
@@ -1048,11 +995,10 @@ public final class WaypointSnapper {
   private static final double BULGE_CONNECTOR_COST_ADVANTAGE = 1.3;
 
   /**
-   * Via-pinned teardrop band: a detour pinned at a generated via (the planner
-   * placed a waypoint in a one-way-out pocket; the anti-reuse penalty then
-   * shapes the escape into a thin offset loop instead of an exact retrace the
-   * symmetric spur remover could strip) may be removed up to this arc length —
-   * well beyond the plain micro-detour cap.
+   * Via-pinned teardrop band: a detour pinned at a generated via (the anti-reuse
+   * penalty shapes the pocket escape into a thin offset loop the symmetric spur
+   * remover can't strip) may be removed up to this arc length — well beyond the
+   * plain micro-detour cap.
    */
   public static final int VIA_TEARDROP_MAX_ARC_M = 4000;
 
@@ -1060,14 +1006,13 @@ public final class WaypointSnapper {
   public static final double VIA_TEARDROP_MAX_ARC_FRAC = 0.15;
 
   /**
-   * Profile-aware start snap for explicit-via round trips. The plain nearest-road snap
-   * ({@link #snapWaypointToRoad}) matches the nearest <em>accessible</em> way, which for a
-   * road bike can be a track right next to a paved road — starting the loop on unpaved.
-   * This evaluates the original click plus a small ring of nearby positions and moves the
-   * start to the most profile-compatible road (lowest cost-factor), tie-broken by proximity,
-   * within {@code maxSnapDist}. The original position is always a candidate, so the start is
-   * never moved unless a clearly more compatible road is genuinely nearby — and never moved
-   * further than {@code maxSnapDist}.
+   * Profile-aware start snap for explicit-via round trips. The plain nearest-road
+   * snap ({@link #snapWaypointToRoad}) can match a track right next to a paved
+   * road (starting a road bike on unpaved). This evaluates the original click
+   * plus a ring of nearby positions and moves the start to the most
+   * profile-compatible road (lowest cost-factor, tie-broken by proximity), within
+   * {@code maxSnapDist}; the original is always a candidate, so it never moves
+   * without a clearly better road nearby.
    */
   public void snapStartProfileAware(OsmNodeNamed start, double maxSnapDist) {
     int origLon = start.ilon;
@@ -1120,19 +1065,17 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Whether this waypoint is engine-generated (greedy planner vias carry the
-   * {@code generated} flag; the WAYPOINT algorithm's points use the "rt" name
-   * prefix). User-supplied waypoints match neither — they express route
-   * intent and must never be repaired away.
+   * Whether this waypoint is engine-generated: greedy planner vias carry the
+   * {@code generated} flag, the WAYPOINT algorithm's points use the "rt" name
+   * prefix. User waypoints match neither and must never be repaired away.
    */
   public static boolean isGeneratedRoundTripWaypoint(MatchedWaypoint wp) {
     return wp.generated || (wp.name != null && wp.name.startsWith("rt"));
   }
 
   /**
-   * Adjust waypoint track indices after removing a range of nodes.
-   * Waypoints beyond the removed range are shifted back; waypoints
-   * inside the range are clamped to rangeStart.
+   * Adjust waypoint track indices after removing a node range: waypoints past the
+   * range shift back by {@code removeCount}; waypoints inside it clamp to rangeStart.
    */
   public static void adjustWaypointIndices(List<MatchedWaypoint> waypoints, int rangeStart, int rangeEnd, int removeCount) {
     for (MatchedWaypoint mwp : waypoints) {
@@ -1146,11 +1089,10 @@ public final class WaypointSnapper {
 
   /**
    * Find a low-progress span pinned at a generated via: the pair (i, j) with
-   * i &lt; viaIdx &lt; j maximizing {@code arc - BULGE_MIN_PROGRESS_RATIO * crowFly}
-   * (the "excess length" of the detour), subject to {@code BULGE_MIN_ARC_M ≤ arc
-   * ≤ maxArcM}. Unlike removeMicroDetours this needs no ≤50m pinch point — it
-   * catches wide-mouth bulges whose outbound and return legs never come close
-   * (e.g. parallel field lanes 400m apart). Returns {@code {i, j}} or null.
+   * i &lt; viaIdx &lt; j maximizing {@code arc - BULGE_MIN_PROGRESS_RATIO * crowFly},
+   * subject to {@code BULGE_MIN_ARC_M ≤ arc ≤ maxArcM}. Needs no ≤50m pinch point
+   * (unlike removeMicroDetours), so it catches wide-mouth bulges whose legs never
+   * come close (parallel field lanes 400m apart). Returns {@code {i, j}} or null.
    */
   static int[] findViaPinnedBulgeSpan(List<OsmPathElement> nodes, int viaIdx,
                                       int loIdx, int hiIdx, int maxArcM) {
@@ -1186,11 +1128,10 @@ public final class WaypointSnapper {
   }
 
   /**
-   * Average cost per meter over a node span, summing per-edge cost deltas.
-   * Node costs are cumulative per routed leg and reset to 0 at leg joins in
-   * planner-merged tracks; a negative delta marks such a reset and that edge's
-   * cost is skipped (slightly underestimates the span — conservative for the
-   * junk filter, which requires the span to be expensive).
+   * Average cost per meter over a node span. Node costs are cumulative per routed
+   * leg and reset to 0 at leg joins; a negative delta marks such a reset and that
+   * edge's cost is skipped (slightly underestimates — conservative for the junk
+   * filter, which needs the span to be expensive).
    */
   public static double spanCostPerMeter(List<OsmPathElement> nodes, int fromIdx, int toIdx) {
     double cost = 0;
@@ -1207,10 +1148,10 @@ public final class WaypointSnapper {
   private static final int BULGE_MIN_ARC_M = 600;
 
   /**
-   * Geometric trigger for a via-pinned bulge: the route arc across the span
-   * must be at least this multiple of the mouth's crow-fly distance. The Basel
-   * reference artifact (1.85km of grade2 track for 410m of progress) measures
-   * 4.5; 3.0 keeps margin against firing on ordinary loop curvature near a via.
+   * Geometric trigger for a via-pinned bulge: the span's route arc must be at
+   * least this multiple of the mouth's crow-fly distance. The Basel artifact
+   * (1.85km of grade2 track for 410m of progress) measures 4.5; 3.0 keeps margin
+   * against firing on ordinary loop curvature near a via.
    */
   private static final double BULGE_MIN_PROGRESS_RATIO = 3.0;
 }

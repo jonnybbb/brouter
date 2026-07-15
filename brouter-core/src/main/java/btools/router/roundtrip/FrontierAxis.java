@@ -3,11 +3,10 @@ package btools.router.roundtrip;
 import btools.router.RoutingEngine;
 
 /**
- * Result of {@link RoutingEngine}'s Phase 2.1 frontier-axis analysis for
- * round trips: the principal axis of the reachable-frontier displacements,
- * with eigenvalue-ratio strength. When a user-requested direction is
- * perpendicular to a strong terrain axis (the Inn-Valley pattern), the
- * engine retries the loop along the axis instead.
+ * Result of {@link RoutingEngine}'s Phase 2.1 frontier-axis analysis: the
+ * principal axis of the reachable-frontier displacements with eigenvalue-ratio
+ * strength. When a user-requested direction is perpendicular to a strong terrain
+ * axis (the Inn-Valley pattern), the engine retries the loop along the axis.
  */
 public final class FrontierAxis {
   public static final FrontierAxis NONE = new FrontierAxis(false, Double.NaN, 0.0);

@@ -5,64 +5,43 @@ import btools.util.CheapAngleMeter;
 import java.util.Locale;
 
 /**
- * Per-plan health model of the ISO_GREEDY start-centered candidate pool
- * (issue #26 — "make ISO_GREEDY absorb plain GREEDY fallback").
+ * Per-plan health model of the ISO_GREEDY start-centered candidate pool: a
+ * monotonically-decreasing trust score in {@code [0, 1]} answering "is the pool
+ * trustworthy right now?"
  *
  * <p>ISO_GREEDY plans against a pool captured by ONE start-centered isochrone
  * expansion. That prior is powerful when the pool represents the reachable
- * terrain (valleys, coastlines, return difficulty), and harmful when it is
- * thin, bunched in a corridor, or no longer representative of the loop's
- * current lobe. This class turns "is the pool trustworthy right now?" into an
- * explicit, monotonically-decreasing score in {@code [0, 1]} built from:
- *
- * <ul>
- *   <li><b>Static pool shape</b> ({@link PoolShape}, measured once after the
- *       pool filter): distinct angular sectors, angular span, contour spread,
- *       and whether a {@link ReturnDistanceOracle} could be calibrated.</li>
- *   <li><b>Dynamic in-plan evidence</b> (recorded by
- *       {@link GreedyRoundTripPlanner} as the plan unfolds): graph-native
- *       candidates winning mixed-source routed comparisons (worse when the
- *       source quota had to inject the winner), iso-sourced legs undone by
- *       length/detail/closure rejections, accepted vias bunching in one
- *       angular sector, closure-check failures, and return estimates falling
- *       back from the oracle to the global EMA.</li>
- * </ul>
+ * terrain, and harmful when it is thin, bunched in a corridor, or no longer
+ * representative of the loop's current lobe. The score is built from static pool
+ * shape ({@link PoolShape}, measured once) and dynamic in-plan evidence recorded
+ * by {@link GreedyRoundTripPlanner}: graph-native candidates winning mixed-source
+ * routed comparisons, iso legs undone by rejections, accepted vias bunching in
+ * one angular sector, closure failures, and return estimates falling back from
+ * the oracle to the global EMA.
  *
  * <p>The score maps to a {@link State} ladder with two demotion effects the
  * planner applies from the NEXT candidate decision on:
- *
  * <ul>
  *   <li>{@link State#DEGRADED} — iso influence is reduced: iso-pool candidates
- *       lose their prior-based scoring terms (density bonus, contour-depth
- *       preference, iso-hostility estimate) and compete on geometry alone,
- *       and the graph-native routed-slot quota grows by one seat.</li>
+ *       lose their prior-based scoring terms and compete on geometry alone, and
+ *       the graph-native routed-slot quota grows by one seat.</li>
  *   <li>{@link State#UNHEALTHY} — the planner goes graph-native-only for the
- *       remaining steps (the internal plain-GREEDY fallback): fresh per-step
- *       expansions replace the stale pool entirely. This is deliberately the
- *       "refresh" response — re-running the start-centered expansion would
+ *       remaining steps (the internal plain-GREEDY fallback). This is the
+ *       "refresh" response: re-running the start-centered expansion would
  *       reproduce the same pool (the staleness is positional, not temporal),
- *       while the per-step graph-native expansion IS the fresh, targeted
- *       re-sampling of the loop's current lobe.</li>
+ *       while per-step graph-native expansion re-samples the loop's current
+ *       lobe.</li>
  * </ul>
  *
  * <p>The score only ever decreases (deductions are capped per signal), so a
- * demotion is sticky for the remainder of the plan — by the time the evidence
- * has accumulated, flip-flopping back would re-trust a pool the plan just
- * proved stale. Weights are heuristics calibrated for 3-6 step plans and
- * sanity-checked on a 25-scenario forced-ISO_GREEDY sweep (Garmisch/Lozère/
- * Girona/Dreieich × 30-80km × all directions, 2026-07-07 tiles, base vs this
- * change): demotions fired on 9/25 stress cases and changed 3 shipped loops —
- * all in Garmisch, the documented plain-GREEDY-win region, all gate-accepted,
- * with distance error and cost/m improving (RCS −0.002…+0.011) — while every
- * control scenario stayed byte-identical. A later issue-#26 absorption pass
- * tightened repeated graph-native wins: three honest graph-native routed wins
- * now cross the DEGRADED bar for a rich pool, while the cap still prevents
- * graph-native wins alone from forcing graph-native-only mode. The full
- * loop-quality matrix remains the authoritative recalibration pass.
+ * demotion is sticky for the rest of the plan — flip-flopping back would
+ * re-trust a pool the plan just proved stale. Weights are heuristics calibrated
+ * for 3-6 step plans; the full loop-quality matrix is the authoritative
+ * recalibration pass.
  *
- * <p>One instance per {@link GreedyRoundTripPlanner#plan} run (the planner is
- * built fresh per ladder rung). Null on plain GREEDY / graph-native-only
- * providers — every planner hook is null-guarded, keeping GREEDY bit-identical.
+ * <p>One instance per {@link GreedyRoundTripPlanner#plan} run. Null on plain
+ * GREEDY / graph-native-only providers — every planner hook is null-guarded,
+ * keeping GREEDY bit-identical.
  */
 public final class IsoPoolHealth {
 
@@ -80,8 +59,8 @@ public final class IsoPoolHealth {
   // reduction exists for — while any single static weakness stays HEALTHY and
   // UNHEALTHY stays reachable only through in-plan evidence.
   static final int SECTORS_GOOD = 10;
-  /** The provider's admission floors, referenced (not copied) so the 0.50
-   *  calibration anchor tracks the blend admission filter structurally. */
+  /** References the provider's admission floor so the 0.50 calibration anchor
+   *  tracks the blend admission filter structurally. */
   static final int SECTORS_POOR = IsochroneCandidateProvider.MIN_DISTINCT_BUCKETS;
   /** Max deduction for a narrow angular span (full at ≤{@link #SPAN_POOR_DEG}°, none at 360°). */
   static final double W_SPAN = 0.18;
@@ -109,9 +88,9 @@ public final class IsoPoolHealth {
   static final double CAP_CLOSURE_REJECTION = 0.10;
   /**
    * Max deduction for EMA-fallback-dominated return estimates: scales with the
-   * fallback share above 50%, and only once {@link #MIN_RETURN_ESTIMATES}
-   * estimates exist (small samples are noise). A pool whose oracle cannot
-   * answer where the plan actually goes is not covering the loop's lobe.
+   * fallback share above 50%, once ≥{@link #MIN_RETURN_ESTIMATES} exist (small
+   * samples are noise). An oracle that cannot answer where the plan goes is not
+   * covering the loop's lobe.
    */
   static final double W_EMA_SHARE = 0.10;
   static final int MIN_RETURN_ESTIMATES = 8;
@@ -141,25 +120,21 @@ public final class IsoPoolHealth {
   private int oracleEstimates;
   private int emaEstimates;
   /**
-   * Latched EMA-share deduction. The live share recovers when later estimates
-   * land inside oracle coverage, but the sticky-score contract (score only
-   * ever decreases over a plan) requires this deduction to keep its
-   * high-water mark — otherwise a DEGRADED demotion silently reverts
-   * mid-plan. NOTE: the aggregate score is only monotone because EVERY term
-   * is — the counters grow monotonically and this one term latches. Any
-   * future ratio-based (or otherwise non-monotone) signal must latch the
-   * same way and extend the sticky-demotion test.
+   * Latched EMA-share deduction (high-water mark). The live share can recover,
+   * but the sticky-score contract requires this term to stay latched or a
+   * DEGRADED demotion would silently revert mid-plan. The aggregate score is
+   * monotone only because every term is: the counters grow and this one latches
+   * — any future non-monotone signal must latch the same way.
    */
   private double emaShareDeduction;
   /** Bit i set = an accepted via already landed in 45°-sector i. */
   private int acceptedSectorMask;
 
   /**
-   * A step whose routed top-K mixed both sources committed a leg: record which
-   * source won the routed-truth comparison. Only graph-native wins deduct —
-   * they are direct evidence the pool was hiding a better local alternative;
-   * an extra deduction applies when the winner only got its routed slot via
-   * the source quota (the pool had actively outranked it in phase 1).
+   * Record which source won a mixed-source routed comparison. Only graph-native
+   * wins deduct — direct evidence the pool hid a better local alternative; an
+   * extra deduction applies when the winner only reached its routed slot via the
+   * source quota (the pool had actively outranked it in phase 1).
    */
   void recordRoutedComparison(boolean isoWon, boolean winnerWasQuotaInjected) {
     if (isoWon) return;
@@ -190,8 +165,8 @@ public final class IsoPoolHealth {
 
   /**
    * A leg committed with its via at the given bearing from the loop start.
-   * Repeated acceptance in one 45° sector is the bunching signature — a loop
-   * sweeping around the start should visit a fresh sector nearly every step.
+   * Repeated acceptance in one 45° sector is the bunching signature — a healthy
+   * loop visits a fresh sector nearly every step.
    */
   void recordAcceptedLegBearing(double bearingFromStartDeg) {
     int sector = sectorOf(bearingFromStartDeg);
@@ -269,8 +244,7 @@ public final class IsoPoolHealth {
   /**
    * Immutable pool-shape metrics, measured once per pool from the filtered
    * {@link IsochroneCandidateProvider} plus oracle availability. Shared across
-   * the subRouteCount ladder (each rung gets a fresh {@link IsoPoolHealth}
-   * around the same shape).
+   * the subRouteCount ladder (each rung gets a fresh {@link IsoPoolHealth}).
    */
   public static final class PoolShape {
     final int poolSize;

@@ -8,15 +8,14 @@ import java.util.*;
 
 /**
  * Per-step graph-native candidate provider for greedy round-trip planning.
+ * Instead of inventing coordinates on a geometric ring, each greedy step runs a
+ * bounded Dijkstra expansion from the current graph position and returns real
+ * reached nodes near the requested sub-leg air distance.
  *
- * <p>This provider does not invent coordinates on a geometric ring. For every greedy
- * step it runs a bounded Dijkstra expansion from the current graph position and
- * returns real reached graph nodes near the requested sub-leg air distance.
- *
- * <p>When the expansion can compile the exact graph path to a candidate, the
- * provider attaches it so the planner can adopt that leg directly and only run
- * a metadata retrack before committing. If no exact path is available, the
- * planner falls back to normal point-to-point routing for that candidate.
+ * <p>When the expansion can compile the exact graph path to a candidate, it is
+ * attached so the planner adopts that leg directly (only a metadata retrack
+ * before committing); otherwise the planner falls back to normal
+ * point-to-point routing for that candidate.
  */
 public final class GraphNativeCandidateProvider implements RoundTripCandidateProvider {
 
@@ -29,12 +28,10 @@ public final class GraphNativeCandidateProvider implements RoundTripCandidatePro
   private static final int DEDUPE_GRANULARITY = 100;
 
   /**
-   * Hoisted template ranking comparator: distanceError ascending, then more
-   * bucketHits first, then higher sourceContour first. Pure (captures no
-   * state), so a shared static instance ranks byte-identically to the former
-   * per-call allocation while removing comparator + 3 lambda allocations from
-   * every {@code buildTemplates} call. {@code List.sort} stability preserves
-   * the pre-sort insertion order for fully-equal templates.
+   * Template ranking: distanceError ascending, then more bucketHits first, then
+   * higher sourceContour first. Pure and shared static (no per-call allocation).
+   * {@code List.sort} stability preserves insertion order for fully-equal
+   * templates.
    */
   private static final Comparator<Template> BY_TEMPLATE_RANK = new Comparator<>() {
     // Explicit compare instead of Comparator.comparingDouble/thenComparing:
@@ -56,24 +53,22 @@ public final class GraphNativeCandidateProvider implements RoundTripCandidatePro
   private final LegRouter legRouter;
   private final EngineIO io;
   /**
-   * Caches the <em>unfiltered</em> Dijkstra expansion per
-   * (position, expansionRadius) — the full result, so both the candidate pool
-   * and the reachability cloud are reused. The expensive expansion genuinely
-   * is the same for a given rounded radius; the airRadius-specific window/sort
-   * is applied per call in {@link #buildTemplates}, so callers whose airRadius
-   * rounds to the same expansionRadius share the expansion without poisoning
-   * each other's window.
+   * Caches the <em>unfiltered</em> Dijkstra expansion per (position,
+   * expansionRadius), reusing both the candidate pool and the reachability
+   * cloud. The airRadius-specific window/sort runs per call in
+   * {@link #buildTemplates}, so callers whose airRadius rounds to the same
+   * expansionRadius share the expansion without poisoning each other's window.
    */
   private final Map<CacheKey, IsochroneExpansionResult> expansionCache = new HashMap<>();
 
   /**
-   * Single-slot reuse cache for WITH-refTrack expansions (the no-ref cache
-   * above cannot serve them because poisoning depends on the committed
-   * route). Keyed by position + refTrack INSTANCE identity + radius: the
-   * planner builds one refTrack per step and reuses it across all backoff
-   * attempts, whose radii only shrink — so the step's first (largest)
-   * expansion serves every later attempt. A new step or a new plan builds a
-   * new refTrack instance, which naturally invalidates the slot.
+   * Single-slot reuse cache for WITH-refTrack expansions (the no-ref cache above
+   * cannot serve them because poisoning depends on the committed route). Keyed
+   * by position + refTrack INSTANCE identity + radius: the planner builds one
+   * refTrack per step and reuses it across all backoff attempts, whose radii
+   * only shrink, so the step's first (largest) expansion serves every later
+   * attempt. A new step or plan builds a new refTrack instance, naturally
+   * invalidating the slot.
    */
   private RefExpansionCacheEntry refExpansionCache;
 

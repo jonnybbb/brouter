@@ -13,36 +13,30 @@ import java.util.Map;
  * Spatial corridor-overlap detector for round-trip routes.
  *
  * <p>The reuse signals in {@link ReuseClassifier} and {@link LoopQualityMetrics}
- * are keyed on <em>edge identity</em> (the undirected node-pair hash). That is
- * blind to a return path that runs <em>alongside</em> the outbound on a
- * parallel/different way a few tens of metres over — the route never re-uses
- * the same edge, yet a cyclist perceives it as same-corridor-back. This class
- * adds the missing signal: it flags edges whose ground track passes within
- * {@link #CORRIDOR_RADIUS_M} of an earlier part of the same track that is far
- * away in <em>path</em> distance (more than {@link #OVERLAP_PATHDIST_WINDOW_M}).
+ * are keyed on <em>edge identity</em> (the undirected node-pair hash), which is
+ * blind to a return path running <em>alongside</em> the outbound on a parallel
+ * way a few tens of metres over — never the same edge, yet same-corridor-back to
+ * a cyclist. This adds the missing signal: it flags edges whose ground track
+ * passes within {@link #CORRIDOR_RADIUS_M} of an earlier part of the same track
+ * far away in <em>path</em> distance (more than {@link #OVERLAP_PATHDIST_WINDOW_M}).
+ * Only the <em>later</em> traversal is flagged, mirroring edge-identity
+ * semantics so the two signals union cleanly.
  *
- * <p>Only the <em>later</em> traversal of a co-located pair is flagged (the
- * outbound is the "first visit", the parallel return is the "reuse") — this
- * mirrors edge-identity semantics so the two signals union cleanly.
+ * <p><b>Fixed-scale invariant.</b> The ilon/ilat → metre conversion uses one
+ * lat-scale, computed once from the track's start latitude. CheapRuler caches
+ * its scale in ~11 km latitude bands, so recomputing per segment could map one
+ * physical point into two grid cells across a loop and corrupt occupancy.
  *
- * <p><b>Fixed-scale invariant.</b> The integer ilon/ilat → metre conversion
- * uses one lat-scale, computed once from the track's start latitude. CheapRuler
- * caches its scale in ~11 km latitude bands, so recomputing the scale per
- * segment could map one physical point into two different grid cells across a
- * loop and silently corrupt occupancy. The scale is therefore captured once and
- * reused for every sample.
- *
- * <p>Post-hoc only (one pass over a finished track); the per-candidate
- * incremental occupancy used by the planner lives in a separate store.
+ * <p>Post-hoc only (one pass over a finished track); the planner's per-candidate
+ * incremental occupancy lives in a separate store.
  */
 final class CorridorOverlapIndex {
 
   /**
-   * Corridor half-width: two ground tracks closer than this are treated as the
-   * same corridor. Also the spatial-hash cell size. 40 m catches a tight
-   * parallel return while leaving 100–200 m-separated parallel streets (a
-   * legitimate loop-through, not a same-way-back) un-flagged. Load-bearing —
-   * pinned by {@code CorridorOverlapIndexTest}'s lower and upper guards.
+   * Corridor half-width (and spatial-hash cell size): two ground tracks closer
+   * than this are the same corridor. 40 m catches a tight parallel return while
+   * leaving 100–200 m-separated parallel streets (a legitimate loop-through)
+   * un-flagged. Load-bearing — pinned by {@code CorridorOverlapIndexTest}.
    */
   static final double CORRIDOR_RADIUS_M = 40.0;
 
@@ -51,17 +45,17 @@ final class CorridorOverlapIndex {
 
   /**
    * Minimum path-distance separation for two co-located samples to count as a
-   * corridor overlap. Below this they are trivial along-path neighbours (the
-   * point just before/after, or a tight local switchback) — never a retrace.
+   * corridor overlap. Below this they are trivial along-path neighbours (a tight
+   * local switchback), never a retrace.
    */
   static final double OVERLAP_PATHDIST_WINDOW_M = 600.0;
 
   /**
    * Narrow closure exclusion: a closed loop legitimately shares ground at its
-   * start/end pin. Samples whose <em>both</em> ends lie within this radius of
-   * the start pin are exempt from overlap, so a clean loop closing at a point
-   * is not mistaken for a corridor. Kept small so it does not erase a genuine
-   * parallel corridor that merely begins near the start.
+   * start/end pin. A sample pair with <em>both</em> ends within this radius of
+   * the start pin is exempt, so a clean loop closing at a point is not mistaken
+   * for a corridor. Kept small so it does not erase a genuine parallel corridor
+   * that merely begins near the start.
    */
   static final double CLOSURE_EXCLUDE_M = 100.0;
 
@@ -71,18 +65,15 @@ final class CorridorOverlapIndex {
    * Flag, per edge, whether that edge's ground track parallels an earlier and
    * path-distant part of the same track.
    *
-   * @return {@code boolean[track.nodes.size() - 1]}; {@code [i]} is the edge
-   *         from node {@code i} to node {@code i + 1}. Empty array for tracks
-   *         with fewer than two nodes.
+   * @return {@code boolean[nodes.size() - 1]}; {@code [i]} is the edge from node
+   *         {@code i} to {@code i + 1}. Empty for tracks with fewer than 2 nodes.
    */
   static boolean[] computeEdgeOverlap(OsmTrack track) {
     return computeEdgeOverlap(track == null ? null : track.nodes);
   }
 
-  /**
-   * Node-list overload — shared by the gate ({@link ReuseClassifier}) and the
-   * reuse metric ({@link LoopQualityMetrics}) so they cannot drift.
-   */
+  /** Node-list overload — shared by {@link ReuseClassifier} and
+   *  {@link LoopQualityMetrics} so they cannot drift. */
   static boolean[] computeEdgeOverlap(List<OsmPathElement> nodes) {
     if (nodes == null || nodes.size() < 2) {
       return new boolean[0];

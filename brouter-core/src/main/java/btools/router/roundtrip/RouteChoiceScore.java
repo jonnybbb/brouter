@@ -9,35 +9,18 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Soft ranking score for choosing among accepted round-trip candidates.
+ * Soft ranking score for choosing among round-trip candidates that already PASSED
+ * {@link RoundTripQualityGate} — it ranks, it does not gate. The gate makes the hard
+ * accept/reject decision; failed candidates are excluded from scoring.
  *
- * <p>This is a deliberately separate concern from {@link RoundTripQualityGate}.
- * The gate makes the hard accept/reject decision (beelines, broken closure,
- * profile-hostile surfaces, accidental retraces). Any candidate that fails
- * the gate is excluded from scoring entirely. Among candidates that DO pass,
- * the score ranks them — it does not gate.
+ * <p>Design: score in {@code [0, 1]}, higher better, with a reason breakdown; production-neutral
+ * preferred bands (no {@code LoopTestRegion}/benchmark deps); direction a weak factor that cannot
+ * dominate reuse/closure/distance; cost/m a soft preference; scores the final {@link OsmTrack}
+ * only; penalises surprising shapes (LOLLIPOP/OUT_AND_BACK rank below a clean STRICT_LOOP).
  *
- * <p>Design constraints:
- * <ul>
- *   <li>numeric score + a reason breakdown the caller can surface for
- *       debugging or explanation;</li>
- *   <li>hard-coded production-neutral preferred bands, no dependency on
- *       {@code LoopTestRegion} or benchmark constants;</li>
- *   <li>direction is a weak factor only — it cannot dominate severe reuse,
- *       closure, or distance issues;</li>
- *   <li>profile-specific cost/m is a soft preference;</li>
- *   <li>scores the final {@link OsmTrack} only, not pre-final planner state;</li>
- *   <li>penalises route-shape disclosures that indicate surprising
- *       behavior (LOLLIPOP and OUT_AND_BACK are still acceptable
- *       but rank below clean STRICT_LOOP all else equal).</li>
- * </ul>
- *
- * <p>The score is in {@code [0, 1]}. Higher is better. AUTO should use
- * {@link #score(OsmTrack, double, String, RoundTripQualityResult, double)} so
- * the requested direction participates as the weak direction factor; the
- * four-argument overload is retained for callers that do not have a requested
- * direction. The returned {@link Verdict} carries both the numeric score and
- * the per-component contributions.
+ * <p>AUTO should use {@link #score(OsmTrack, double, String, RoundTripQualityResult, double)} so
+ * the requested direction participates; the four-arg overload is for callers without one. The
+ * {@link Verdict} carries the score and per-component contributions.
  */
 public final class RouteChoiceScore {
 
@@ -64,9 +47,9 @@ public final class RouteChoiceScore {
   static final double W_COMPACTNESS = 0.10;
   /**
    * Road-CHARACTER preference (profile-aware highway desirability from the route's tags) — the
-   * "would a real cyclist want to ride this" dimension. Validated against the user's eye on the
-   * Basel/Freiburg matrix (residential-avoiding loops score higher). Now the dominant soft term so
-   * an appealing route out-ranks a marginally-better-distance one.
+   * "would a real cyclist want to ride this" dimension. Now the dominant soft term so an appealing
+   * route out-ranks a marginally-better-distance one. Validated against the user's eye on the
+   * Basel/Freiburg matrix (residential-avoiding loops score higher).
    */
   static final double W_CHARACTER  = clamp01x(0.17, 0.30);
   /** Profile-specific cost/m soft preference. */
@@ -79,64 +62,44 @@ public final class RouteChoiceScore {
   static final double SHAPE_PENALTY_LOLLIPOP = 0.05;
   public static final double SHAPE_PENALTY_OUT_AND_BACK = 0.15;
   /**
-   * Self-intersection penalty per crossing. Crossings are a route-shape defect
-   * the cyclist sees but no other RCS term captures (reuse measures co-linear
-   * retrace, not transverse crossings). Subtracted per crossing so AUTO prefers
-   * the cleaner of two otherwise-comparable candidates.
+   * Self-intersection penalty per crossing — a route-shape defect the cyclist sees that no other
+   * term captures (reuse measures co-linear retrace, not transverse crossings). Subtracted per
+   * crossing so AUTO prefers the cleaner of two comparable candidates.
    *
-   * <p>Measured (full loop-quality matrix, offline AUTO simulation, 2026-06):
-   * today's AUTO ships 12.8% crossed loops; this term at 0.08/crossing drops that
-   * to 3.7% (the residual where BOTH greedy and iso_greedy cross, so no clean
-   * alternative exists) with no reuse/distance regression — it works by letting
-   * the selector see crossings and pick the already-existing cleaner candidate.
+   * <p>Measured (full loop-quality matrix, offline AUTO, 2026-06): 0.08/crossing takes shipped
+   * crossed loops 12.8%→3.7% (residual = both candidates cross) with no reuse/distance regression.
    *
-   * <p>Ranking-only: RCS never gates acceptance ({@link RoundTripQualityGate}
-   * does), so this cannot cause a no-route. Tunable for the gold-standard
-   *. The gate caps accepted loops at
-   * {@link RoundTripQualityGate#MAX_SELF_INTERSECTIONS}, so the penalty is bounded.
+   * <p>Ranking-only — RCS never gates acceptance ({@link RoundTripQualityGate} does), so it cannot
+   * cause a no-route; the gate caps accepted loops at
+   * {@link RoundTripQualityGate#MAX_SELF_INTERSECTIONS}, bounding the penalty.
    */
   static final double SHAPE_PENALTY_PER_SELF_INTERSECTION =
     0.08;
 
   /**
-   * Lasso surcharge — shape term #9b (loop-review backlog item 3).
-   * {@link LoopQualityMetrics#crossingPoints} classifies each crossing by its
-   * enclosed arc: ≤ {@link LoopQualityMetrics#SMALL_LOOP_MAX_ARC_METERS} means
-   * a small detour loop / lasso the cyclist actually rides around — a worse,
-   * more visible defect than a far-apart structural outbound-vs-return
-   * crossing. ADDITIVE on top of #9's per-crossing penalty so #9's measured
-   * calibration (shipped crossings 12.8%→3.7%) holds unchanged for structural
-   * crossings.
+   * Lasso surcharge, ADDITIVE on top of {@link #SHAPE_PENALTY_PER_SELF_INTERSECTION}, for crossings
+   * whose enclosed arc is short (≤ {@link LoopQualityMetrics#SMALL_LOOP_MAX_ARC_METERS}) — a small
+   * detour loop the cyclist rides around, a more visible defect than a structural crossing. Keeping
+   * it additive preserves that term's measured calibration for structural crossings.
    *
-   * <p><b>Size-faded</b> (user label, Basel 80km fastbike E, 2026-06-11: a
-   * detour loop "big enough" to ride is fine): per-lasso severity =
-   * {@code 1 − enclosedArc / SMALL_LOOP_MAX_ARC_METERS}, so a 400m circle
-   * pays ~the full surcharge (effective ~2.5× a structural crossing — the
-   * middle of the review's 2-3× band) while a near-cap 3.5km loop pays
-   * almost nothing. Ranking-only like #9 (excluded from
-   * {@link Verdict#qualityScore()}).
+   * <p><b>Size-faded</b>: per-lasso severity = {@code 1 − enclosedArc / SMALL_LOOP_MAX_ARC_METERS},
+   * so a 400m circle pays ~the full surcharge (~2.5× a structural crossing) while a near-cap 3.5km
+   * loop pays almost nothing. Ranking-only, excluded from {@link Verdict#qualityScore()}.
    */
   static final double SHAPE_PENALTY_LASSO_EXTRA =
     0.12;
 
   /**
-   * Near-revisit / "teardrop" penalty — shape term #10. Catches the defect that
-   * {@link #SHAPE_PENALTY_PER_SELF_INTERSECTION} (#9) MISSES: a loop that returns to
-   * within {@link #NEAR_REVISIT_EPS_M} of an earlier point and rejoins (a "small loop back
-   * to the same point") without a <em>transverse</em> crossing — a clean teardrop, which
-   * {@link RoundTripQualityGate#countSelfIntersections} (a strict segment-cross test) scores
-   * as 0. Measured motivating case: Basel 30 km gravel ships an ISO_GREEDY loop with a 7.3 km
-   * teardrop to Ettingen (countSelfIntersections=0) while a teardrop-free GREEDY alternative
-   * exists; AUTO couldn't see the defect so it shipped on distance.
+   * Near-revisit / "teardrop" penalty — catches the defect
+   * {@link #SHAPE_PENALTY_PER_SELF_INTERSECTION} MISSES: a loop that returns within
+   * {@link #NEAR_REVISIT_EPS_M} of an earlier point and rejoins without a <em>transverse</em>
+   * crossing (a clean teardrop, scored 0 by {@link RoundTripQualityGate#countSelfIntersections}).
+   * Motivating case: Basel 30 km gravel ships a 7.3 km teardrop to Ettingen while a teardrop-free
+   * alternative exists.
    *
-   * <p>Severity-weighted by excursion arc (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})),
-   * NOT a flat per-span count, so a 7 km teardrop outweighs a 600 m wiggle — this is what
-   * keeps the penalty from promoting a clean-but-much-shorter loop over a good-distance one
-   * with only a minor near-revisit.
-   *
-   * <p>Ranking-only and excluded from {@link Verdict#qualityScore()} exactly like #9: it lets
-   * AUTO pick the cleaner of two comparable candidates, but a terrain-forced teardrop shipping
-   * as best-available is not double-penalised in the soft quality floor. The default is provisional pending the corpus A/B calibration.
+   * <p>Severity-weighted by excursion arc (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})), not a
+   * flat count, so a 7 km teardrop outweighs a 600 m wiggle. Ranking-only, excluded from
+   * {@link Verdict#qualityScore()}. Default is provisional pending corpus A/B calibration.
    */
   static final double SHAPE_PENALTY_PER_TEARDROP =
     0.12;
@@ -218,17 +181,15 @@ public final class RouteChoiceScore {
       this.reasons = Collections.unmodifiableList(new ArrayList<>(reasons));
     }
 
-    /** Ranking score, including the self-intersection penalty. AUTO uses this to
-     *  prefer the cleaner of two otherwise-comparable candidates. */
+    /** Ranking score, including the self-intersection penalty (AUTO uses it to prefer the cleaner
+     *  of two comparable candidates). */
     public double score() { return score; }
 
     /**
-     * Multi-dimension quality score EXCLUDING the self-intersection penalty —
-     * for soft quality-floor checks (e.g. the loop-quality suite's MIN_RCS_PASS).
-     * Crossings are already hard-gated by {@link RoundTripQualityGate}
-     * (≤ MAX_SELF_INTERSECTIONS), so the soft floor must not double-count them;
-     * {@link #score()} keeps the penalty for ranking. All other shape penalties
-     * (LOLLIPOP/OUT_AND_BACK) remain in both, as they are not hard-gated.
+     * Multi-dimension quality score EXCLUDING the self-intersection penalty, for soft quality-floor
+     * checks (e.g. MIN_RCS_PASS). Crossings are already hard-gated by {@link RoundTripQualityGate},
+     * so the floor must not double-count them; {@link #score()} keeps the penalty for ranking.
+     * Other shape penalties (LOLLIPOP/OUT_AND_BACK) remain in both.
      */
     public double qualityScore() { return qualityScore; }
     public List<Reason> reasons() { return reasons; }
@@ -256,16 +217,12 @@ public final class RouteChoiceScore {
   // ---- Public API --------------------------------------------------------
 
   /**
-   * Score a candidate. The candidate must already have passed
-   * {@link RoundTripQualityGate} ({@code qualityGate.isAccepted() == true});
-   * scoring a rejected candidate is meaningless — return a zero-score Verdict.
+   * Score a candidate that already passed {@link RoundTripQualityGate}; scoring a rejected
+   * candidate returns a zero-score Verdict.
    *
-   * @param track             the final routed track for this candidate
-   * @param requestedDistance the loop distance the cyclist requested (meters)
-   * @param profileName       the active profile name (used for cost/m bands)
-   * @param qualityGate       the gate verdict (used for shape penalty + disclosure
-   *                          penalty); may be null in which case shape defaults
-   *                          to STRICT_LOOP and no disclosure penalty applies
+   * @param profileName the active profile name (used for cost/m bands)
+   * @param qualityGate gate verdict for the shape + disclosure penalty; null defaults shape to
+   *                    STRICT_LOOP with no disclosure penalty
    */
   public static Verdict score(OsmTrack track, double requestedDistance,
                               String profileName, RoundTripQualityResult qualityGate) {
@@ -279,12 +236,10 @@ public final class RouteChoiceScore {
   }
 
   /**
-   * Best-effort ranking variant: scores a gate-REJECTED track on its real
-   * geometry (bypasses the rejected-gate zero guard) while still consuming the
-   * gate's shape for the disclosure penalty (term #8). Used when AUTO must rank
-   * degraded candidates that all failed the gate — passing {@code null} instead
-   * would also bypass the guard, but silently lose the LOLLIPOP/OUT_AND_BACK
-   * penalty and rank a rejected corridor as if it were a strict loop.
+   * Best-effort ranking variant: scores a gate-REJECTED track on its real geometry (bypasses the
+   * rejected-gate zero guard) while still using the gate's shape for the disclosure penalty.
+   * Passing {@code null} would also bypass the guard but silently lose the LOLLIPOP/OUT_AND_BACK
+   * penalty and rank a rejected corridor as a strict loop.
    */
   public static Verdict scoreBestEffort(OsmTrack track, double requestedDistance,
                                         String profileName, RoundTripQualityResult qualityGate,
@@ -461,9 +416,9 @@ public final class RouteChoiceScore {
   }
 
   /**
-   * Sum of teardrop severities (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})) over the
-   * track's near-revisit spans, excluding the loop's own start≈end closure. Drives the
-   * #10 shape penalty. See {@link LoopQualityMetrics#nearRevisitSpans}.
+   * Sum of teardrop severities (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})) over the track's
+   * near-revisit spans, excluding the loop's own start≈end closure. Drives the #10 shape penalty.
+   * See {@link LoopQualityMetrics#nearRevisitSpans}.
    */
   private static double teardropSeverity(OsmTrack track) {
     if (track == null || track.nodes == null) return 0;

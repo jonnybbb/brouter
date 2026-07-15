@@ -45,37 +45,18 @@ public class RoutingEngine extends Thread {
   private static final int CEILING_ISOCHRONE_MAX_NODES = 1_500_000;
 
   /**
-   * Isochrone Dijkstra cost-budget calibration.
-   *
-   * <p>A fixed budget {@code searchRadius × ISO_BUDGET_FLOOR_FACTOR} produces
-   * wildly different physical pool depths depending on the profile's effective
-   * cost-per-air-meter: ~2× searchRadius air reach for fastbike (costfactor
-   * ≈ 1.3 × road indirectness ≈ 1.5), ~1.3× for mtb (costfactor ≈ 3), and a
-   * starvation collapse for high-penalty profiles (an escape-class profile
-   * measured at cost/m 8.9 reached only ~0.45× searchRadius — a 5.7km pool for
-   * a 12.7km radius). A shallow, clustered pool makes the greedy planner
-   * collapse to roughly half the requested loop length.
-   *
-   * <p>Fix: single-pass in-flight calibration. Dijkstra pops arrive in strictly
-   * increasing cost order, so the pops whose cost falls in
-   * {@code [ISO_CALIBRATION_SAMPLE_LO, 1.0] × searchRadius} form exactly the
-   * frontier band a separate probe expansion would measure. Their median
-   * cost-per-air-meter ({@code path.cost / airDist}) estimates the terrain's
-   * effective costfactor × indirectness. At the first pop past the checkpoint
-   * ({@code cost > searchRadius}) the budget is recomputed as
+   * Isochrone Dijkstra cost-budget calibration. A fixed cost budget gives very
+   * different physical pool depths per profile (fastbike reaches ~2× searchRadius;
+   * a high-penalty escape profile collapsed to ~0.45× — half-length loops). So the
+   * budget is calibrated in flight: pops in
+   * {@code [ISO_CALIBRATION_SAMPLE_LO, 1.0] × searchRadius} yield a median
+   * cost-per-air-meter, and at the first pop past searchRadius the budget becomes
    * {@code ISO_TARGET_REACH_FACTOR × searchRadius × medianCostEff}, clamped to
-   * {@code [ISO_BUDGET_FLOOR_FACTOR, ISO_BUDGET_CAP_FACTOR] × searchRadius}.
-   *
-   * <p>Why this is safe for the contour picks: the floor keeps every possible
-   * contour target (25% of a ≥4× budget = ≥1× searchRadius) at or after the
-   * checkpoint. When a raise fires, the frontier/contour best-scores are reset;
-   * every node that could competitively fit the raised targets pops after the
-   * checkpoint, so the reset discards nothing that could have won. When no
-   * raise fires (fastbike lands on the floor), behavior is bit-identical to
-   * the historical fixed budget. The geographic cutoff (1.5× searchRadius)
-   * stays the outer physical bound — the raised budget lets slow directions
-   * reach it instead of starving; {@code maxNodes} and the expansion deadline
-   * still bound worst-case work.
+   * [floor, cap] × searchRadius. Safe: the floor keeps every contour target at or
+   * after the checkpoint, and a fired raise resets the frontier/contour
+   * best-scores, so nothing that could win is discarded; with no raise, behavior
+   * is bit-identical to the historical fixed budget. The 1.5× geographic cutoff,
+   * {@code maxNodes}, and the expansion deadline still bound worst-case work.
    */
   static final double ISO_BUDGET_FLOOR_FACTOR = 4.0;
   static final double ISO_BUDGET_CAP_FACTOR = 12.0;
@@ -91,20 +72,16 @@ public class RoutingEngine extends Thread {
   protected OsmTrack foundTrack = new OsmTrack();
   private OsmTrack foundRawTrack = null;
   /**
-   * The round-trip track that was rejected by the quality gate, if any.
-   * {@link #foundTrack} is nulled on rejection so callers see a clean
-   * "no track" outcome; this field preserves the rejected geometry for
-   * post-mortem analysis (visual route inspection, failure
-   * categorization, regression tests). Only populated for round-trip
-   * mode; null in plain routing.
+   * Round-trip track rejected by the quality gate ({@link #foundTrack} is
+   * nulled on rejection), kept for diagnostics. Null in plain routing.
    */
   private OsmTrack lastRejectedTrack;
   private RoundTripResult lastRoundTripResult;
   /**
-   * Set by {@link #doGreedyRoundTrip} when the adopted loop is a forced
-   * same-way-back corridor (no clean alternative in constrained terrain). The
-   * uniform round-trip gate then evaluates it with allowSamewayback=true so the
-   * rideable corridor is accepted (disclosed) rather than rejected.
+   * Latched by the greedy adoption when the loop is a forced same-way-back
+   * corridor (no clean alternative in constrained terrain); the gate then
+   * evaluates with allowSamewayback=true so the rideable corridor is
+   * disclosed rather than rejected.
    */
   private boolean roundTripForcedCorridorAccepted;
   private int alternativeIndex = 0;
@@ -143,11 +120,9 @@ public class RoutingEngine extends Thread {
   // bounded. 0 (the CLI default) keeps the legacy no-timeout behaviour.
   private long roundTripRoutingBudgetMs;
   /**
-   * Absolute wall-clock deadline (epoch ms) for the whole round-trip request,
-   * set once by doRun(). Every retry layer (subRouteCount ladder, Phase 2.1
-   * axis retry, ISO_GREEDY→GREEDY recursion, fallback doRouting) and the
-   * isochrone expansion loop consult it, so the retry machinery can no longer
-   * multiply the request budget into minutes. 0 = unbounded (CLI / doRun(0)).
+   * Wall-clock deadline (epoch ms) for the whole round-trip request, set once
+   * by doRun() and consulted by every retry layer and the isochrone expansion
+   * loop — retries cannot multiply the request budget. 0 = unbounded.
    */
   volatile long roundTripRequestDeadline;
 
@@ -159,23 +134,17 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * The request's resolved effort configuration. BALANCED pins the BOUNDED
-   * preset (reduced top-K, hard 8s-per-slice budget, no retry ladders),
-   * QUALITY pins MAX (both planners always, top-K 4/6, doubled plan budget),
-   * and AUTO resolves a preset from context — profile class, length class,
-   * resources (see {@link RoundTripEffortPolicy#resolveAuto}). Planners
-   * constructed under this engine read their knobs from it; AUTO child
-   * engines inherit it.
+   * The request's resolved effort preset: BALANCED pins BOUNDED, QUALITY pins
+   * MAX, AUTO resolves from context ({@link RoundTripEffortPolicy#resolveAuto}).
+   * Planners read their knobs from it; AUTO child engines inherit it.
    */
   RoundTripEffortPolicy roundTripEffortPolicy = RoundTripEffortPolicy.STANDARD_PRESET;
 
   /**
-   * Per-call wall-clock bound for the next {@link #runIsochroneExpansion}
-   * (epoch ms, 0 = none), set/cleared by the greedy planner around
-   * candidatesForStep. The expansion loop historically had NO time or
-   * termination check at all — only cost/geo/node caps — so a single
-   * dense-area expansion (up to 1.5M pops) could neither respect the plan
-   * deadline nor be killed by the watchdog.
+   * Wall-clock bound (epoch ms, 0 = none) for the next
+   * {@link #runIsochroneExpansion}, set/cleared by the greedy planner — the
+   * expansion loop has no other time or termination check, only cost/geo/node
+   * caps.
    */
   volatile long transientExpansionDeadline;
   public SearchBoundary boundary;
@@ -200,15 +169,11 @@ public class RoutingEngine extends Thread {
   double roundTripSearchRadius = 0;
 
   /**
-   * Set by {@link #doExplicitViaRoundTrip} when the request supplies user
-   * via points in round-trip mode. Routing-time micro-detour and back-and-forth
-   * removal must be skipped in this mode — those passes were designed for
-   * auto-generated loops with many rt* waypoints, and they aggressively
-   * delete the entire route when the closing waypoint sits at the same
-   * position as the start (crow-fly = 0, which always trips the ratio
-   * threshold). User-via routes are also typically short and shape-
-   * preserving by intent; the user picked them, the engine should not
-   * post-edit them away.
+   * True while routing a user-supplied-via round trip. Micro-detour and
+   * back-and-forth removal are skipped in this mode: they target auto-generated
+   * loops and would delete a route whose closing waypoint sits on the start
+   * (crow-fly 0 always trips the ratio threshold) — and user-picked shapes must
+   * not be post-edited away.
    */
   boolean explicitViaRoundTrip = false;
 
@@ -264,10 +229,9 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Generated cycling loops default to no ferries. Point-to-point routing keeps
-   * the profile defaults, but loop generation must not discover an attractive
-   * ferry shortcut unless the caller explicitly opts in via
-   * {@code profile:allow_ferries=true}.
+   * Generated loops default to no ferries: loop generation must not discover a
+   * ferry shortcut unless the caller opts in via {@code profile:allow_ferries=true}.
+   * Point-to-point routing keeps the profile defaults.
    */
   private static void applyRoundTripProfileDefaults(RoutingContext rc) {
     if (rc == null) return;
@@ -666,30 +630,6 @@ public class RoutingEngine extends Thread {
     }
   }
 
-  /**
-   * Top-level driver for round-trip (loop) generation, called from {@code doRun}
-   * for {@link #BROUTER_ENGINEMODE_ROUNDTRIP}. Steps:
-   * <ol>
-   *   <li>Derive the internal {@code searchRadius} from {@code roundTripLength}
-   *       (total loop distance / 2π) or {@code roundTripDistance} (radius).</li>
-   *   <li>Resolve the start bearing (user-supplied or data-driven random draw).</li>
-   *   <li>Dispatch: explicit-via mode when the caller supplied via points
-   *       ({@link #doExplicitViaRoundTrip}); otherwise pick the planner —
-   *       AUTO normally runs {@link #runAutoCandidateCompetition} (which writes
-   *       {@code foundTrack}/{@code errorMessage} and returns early), else one of
-   *       the greedy ({@link #doGreedyRoundTrip}) or waypoint
-   *       ({@link #doWaypointBasedRoundTrip}) planners.</li>
-   *   <li>Run the uniform acceptance gate ({@link RoundTripQualityGate#evaluate})
-   *       on the produced loop, then either hard-reject (nulling {@code foundTrack}
-   *       into {@code lastRejectedTrack}) or keep it and surface advisory/disclosure
-   *       messages. Lenient by default; {@code roundTripStrictQuality=1} hard-rejects
-   *       QUALITY-tier failures.</li>
-   *   <li>{@link #ensureInfoMessage} syncs the messages onto the track so they reach
-   *       GPX/JSON output.</li>
-   * </ol>
-   * The result is the loop in {@code foundTrack}, or {@code errorMessage} set and
-   * {@code foundTrack} null on failure.
-   */
   private RoundTripOrchestrator roundTripOrchestrator;
 
   /** The round-trip tier ladder and candidate competition, behind the ops seam. */
@@ -716,19 +656,19 @@ public class RoutingEngine extends Thread {
     return null;
   }
 
-  /** Bounded-tier verdict handoff: set by doBoundedRoundTrip when its
-   *  pre-gate accepted the planner track, consumed (once) by the shared gate
-   *  in doRoundTrip so the same track is not fully evaluated twice. */
+  /**
+   * Bounded-tier verdict handoff: set when the bounded pre-gate accepted the
+   * planner track, consumed once by the shared gate so the same track is not
+   * evaluated twice.
+   */
   private RoundTripQualityResult boundedGateVerdict;
 
   /**
-   * Single source of truth for the round-trip lenient/strict policy: whether a
-   * non-accepted quality verdict must be hard-rejected rather than returned with
-   * an advisory. STRUCTURAL failures (broken / un-routable / not-a-loop) are
-   * always hard-rejected; QUALITY failures (rideable but suboptimal) are
-   * advisory by default and hard-rejected only in strict mode
-   * ({@link RoutingContext#roundTripStrictQuality}). Used by the gate path and
-   * the AUTO best-effort fallback so the two never drift apart.
+   * Single source of truth for lenient/strict acceptance: STRUCTURAL failures
+   * (broken / un-routable / not-a-loop) always hard-reject; QUALITY failures
+   * (rideable but suboptimal) are advisory unless
+   * {@link RoutingContext#roundTripStrictQuality} is set. Shared by the gate
+   * path and the AUTO best-effort fallback so the two never drift apart.
    */
   private boolean roundTripQualityHardReject(RoundTripQualityResult quality) {
     return quality.getRejectionTier() != RoundTripQualityResult.RejectionTier.QUALITY
@@ -736,13 +676,10 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Keep the round-trip lifecycle equivalent to the normal {@link #doRouting(long)}
-   * finally block: release the parsed profile, close any cache/log resources,
-   * clear search state, and signal {@link #isFinished()}.
-   *
-   * <p>This is intentionally idempotent. Some round-trip paths delegate through
-   * {@code doRouting()}, which already performs the same cleanup, while direct
-   * planner-track adoption paths never enter {@code doRouting()} at all.
+   * Round-trip equivalent of the {@link #doRouting(long)} finally block:
+   * release profile/cache/log resources and signal {@link #isFinished()}.
+   * Idempotent — some round-trip paths already clean up via doRouting, and
+   * direct planner-track adoption paths never enter it.
    */
   private void cleanupRoutingResources() {
     if (hasInfo() && routingContext.expctxWay != null) {
@@ -830,13 +767,11 @@ public class RoutingEngine extends Thread {
   private static final double ROUNDTRIP_VOICEHINT_MERGE_DIST = 25.0; // meters
 
   /**
-   * Collapse clusters of voice hints produced by synthetic round-trip geometry
-   * (waypoint-snapping wiggles and curves reported as several turns). Within a run
-   * of hints spaced closer than {@link #ROUNDTRIP_VOICEHINT_MERGE_DIST}, if the net
-   * turn is near-straight the whole cluster is dropped; otherwise only the single
-   * dominant turn is kept. Roundabouts, beelines and the end marker are never merged,
-   * and the conservative distance threshold leaves genuine close turns intact.
-   * Round-trip only — does not affect normal point-to-point routes.
+   * Collapse voice-hint clusters from synthetic round-trip geometry: within a
+   * run of hints closer than {@link #ROUNDTRIP_VOICEHINT_MERGE_DIST}, a
+   * near-straight net turn drops the whole cluster, otherwise only the dominant
+   * turn stays. Roundabouts, beelines, and the end marker are never merged.
+   * Round-trip only.
    */
   private void consolidateRoundTripVoiceHints(OsmTrack track) {
     if (track.voiceHints == null || track.voiceHints.list.size() < 2) return;
@@ -887,25 +822,12 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Probe the surrounding area for road reachability in all directions.
-   * Sends probes at 15° intervals (24 directions) at three distances
-   * (0.7R, 1.0R, 1.3R) and snaps each to the road network. Returns the
-   * viable bearings plus a per-direction successful-probe count (the FAST tier
-   * consumes that count via {@link PlacementGeometry#filterByProbeConfidence} to drop one-shot
-   * weak picks).
-   *
-   * @param start        the start waypoint
-   * @param searchRadius the round-trip search radius in meters
-   * @return viable bearings + per-direction scoring; {@code null} on probe failure
-   */
-  /**
-   * Reachability guard (optimization idea 3): {@code true} unless {@code viaMatch}'s
-   * road component is a small island that cannot reach the start within
-   * {@link #MAXNODES_ISLAND_CHECK} nodes. Reuses the exact bounded-{@code findTrack}
-   * primitive as the routing-time "target island" check, so the FAST placement can
-   * drop islanded vias before routing instead of failing the whole loop. Cheap: a
-   * bounded search that exhausts a small island quickly and gives up on large
-   * (reachable) components at the node budget.
+   * Reachability guard: {@code true} unless {@code viaMatch}'s road component
+   * is a small island that cannot reach the start within
+   * {@link #MAXNODES_ISLAND_CHECK} nodes — lets FAST placement drop islanded
+   * vias before routing instead of failing the whole loop. Cheap: the bounded
+   * search exhausts a small island quickly and gives up on large (reachable)
+   * components at the node budget.
    */
   private boolean isViaReachableFromStart(MatchedWaypoint viaMatch, MatchedWaypoint startMatch) {
     if (viaMatch == null || viaMatch.node1 == null || viaMatch.node2 == null
@@ -937,25 +859,9 @@ public class RoutingEngine extends Thread {
     }
   }
 
-  /**
-   * Production adapter for the {@link FastWaypointPlanner} seam: coarse
-   * delegates to the engine's shared probe/snap/island/circle primitives, so
-   * the planner never touches the node cache, {@code findTrack}, or mutable
-   * engine fields directly. Package-private so tests can drive the planner
-   * through a real engine.
-   */
-
-  /**
-   * Production adapter for the round-trip planners' engine seam
-   * ({@link RoundTripEngineOps}): coarse delegates to the engine's internal
-   * leg router, matcher, expansion, timers, and logging. This single public
-   * accessor replaces direct cross-package access to engine members, which
-   * stay package-private. Delegates qualify with {@code RoutingEngine.this}
-   * so an engine subclass override (tests) still receives the call.
-   */
   private GeometricWaypointPlacer waypointPlacer;
 
-  /** Envelope/isochrone via placement, extracted behind the ops seam. */
+  /** Envelope/isochrone via placement. */
   GeometricWaypointPlacer waypointPlacer() {
     if (waypointPlacer == null) {
       waypointPlacer = new GeometricWaypointPlacer(roundTripOps());
@@ -965,7 +871,7 @@ public class RoutingEngine extends Thread {
 
   private RoundTripTrackCleanup trackCleanup;
 
-  /** Round-trip track post-processing, extracted behind the ops seam. */
+  /** Round-trip track post-processing. */
   RoundTripTrackCleanup trackCleanup() {
     if (trackCleanup == null) {
       RoundTripEngineOps ops = roundTripOps();
@@ -976,7 +882,7 @@ public class RoutingEngine extends Thread {
 
   private WaypointSnapper waypointSnapper;
 
-  /** Round-trip snap/validate/probe helpers, extracted behind the ops seam. */
+  /** Round-trip snap/validate/probe helpers. */
   WaypointSnapper waypointSnapper() {
     if (waypointSnapper == null) {
       RoundTripEngineOps ops = roundTripOps();
@@ -985,6 +891,13 @@ public class RoutingEngine extends Thread {
     return waypointSnapper;
   }
 
+  /**
+   * Production adapter for the round-trip engine seam: delegates to the
+   * engine's leg router, matcher, expansion, timers, and logging, so engine
+   * members stay package-private. Delegates qualify with
+   * {@code RoutingEngine.this} so engine subclass overrides (tests) still
+   * receive the call.
+   */
   public RoundTripEngineOps roundTripOps() {
     return new RoundTripEngineOps() {
       @Override
@@ -1320,16 +1233,10 @@ public class RoutingEngine extends Thread {
   static final double AIR_REACH_BONUS_WEIGHT = 0.10;
 
   /**
-   * Score a Dijkstra-popped node against a target cost level. Lower wins.
-   * {@code costError} is the normalized distance from {@code targetCost};
-   * {@code airReachBonus} rewards farther-reached nodes as a soft tiebreaker.
-   * Used by {@link #runIsochroneExpansion} to pick the per-bucket frontier
-   * node and the 25/50/75% contour candidates.
-   *
-   * @param pathCost     Dijkstra path cost from start, in cost-units
-   * @param targetCost   target cost level (costBudget or a contour fraction of it)
-   * @param dist         air-distance from start to the popped node, in meters
-   * @param searchRadius round-trip search radius, used to normalize air-reach
+   * Score a Dijkstra-popped node against a target cost level; lower wins.
+   * Normalized cost error, minus a soft air-reach tiebreaker for
+   * farther-reached nodes. Used by {@link #runIsochroneExpansion} for the
+   * per-bucket frontier node and the 25/50/75% contour candidates.
    */
   static double costContourScore(int pathCost, int targetCost, double dist, double searchRadius) {
     return costContourScore(pathCost, targetCost, clampedAirReachBonus(dist, searchRadius));
@@ -1387,15 +1294,9 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Run a cost-limited Dijkstra expansion from the start point to discover
-   * the reachable road network frontier in all directions.
-   *
-   * <p>Uses the match → resetCache → getGraphNode pattern from _findTrack to
-   * correctly initialize graph nodes from production segment files.
-   *
-   * @param start        the start waypoint
-   * @param searchRadius the round-trip search radius in meters
-   * @return frontier table + road-native candidate pool; {@code null} on failure
+   * Cost-limited Dijkstra expansion from the start: the reachable road-network
+   * frontier in all directions. Returns frontier table + road-native candidate
+   * pool, or {@code null} on failure.
    */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
     // Start-centered expansion (ISO_GREEDY pool, frontier table): budget
@@ -1777,18 +1678,11 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Place waypoints using per-direction indirectness from the isochrone expansion.
-   *
-   * The isochrone gives [direction, airDistance, routeCost] per angular bucket.
-   * The ratio cost/airDist is the road indirectness factor for that direction:
-   * - In a flat valley (E-W at Innsbruck): indirectness ~1.3 (roads follow valley)
-   * - Across mountains (N-S at Innsbruck): indirectness ~3-5× (switchbacks)
-   *
-   * To hit the target loop distance, we compute a per-leg route-distance budget
-   * and convert it to air distance using the per-direction indirectness:
-   *   airDist = targetLegRouteDistance / indirectness
-   *
-   * This naturally produces elongated loops in valleys and compact loops in open terrain.
+   * Production adapter for the {@link FastWaypointPlanner} seam. Placement uses
+   * per-direction indirectness from the isochrone (route cost / air distance:
+   * ~1.3 along a valley, 3–5× across mountains) to convert the per-leg
+   * route-distance budget into air distance — elongated loops in valleys,
+   * compact loops in open terrain.
    */
   private FastPlacementOps fastPlacementOps() {
     return new FastPlacementOps() {
@@ -3227,36 +3121,22 @@ public class RoutingEngine extends Thread {
 
 
   /**
-   * Re-tracking pass that takes a raw track produced by single-pass
-   * {@link #findTrack} and produces a detailed copy with per-edge
-   * {@code MessageData} populated. The same pass that
-   * {@link #searchRoutedTrack} runs internally as its final step,
-   * exposed for the round-trip planner which needs detailed tracks
-   * for its committed legs without paying the 2-pass routing cost
-   * for every candidate it evaluates.
-   *
-   * <p>The single-pass tracks have correct geometry and cost but lack
-   * the {@code wayKeyValues} fields required by the quality gate's
-   * paved-profile hostility check. Re-tracking walks the existing path
-   * via {@code guideTrack} so the resulting track follows exactly the
-   * same nodes, just with full per-edge metadata.
-   *
-   * <p>{@code refTrack} is accepted for call-site compatibility but is not
-   * applied during this pass. Reuse penalties belong to route choice; this
-   * method only annotates an already-chosen route.
-   */
-  /**
-   * Fallback time budget for the guided detail-retrack when the caller imposed
-   * none ({@code maxRunningTime <= 0} — e.g. the quality tests' {@code doRun(0)}
-   * or an untimed CLI run). The guided pass normally visits few nodes, but if it
-   * exceeds the guide-track cost cap it can fall back to a free search; this caps
-   * that so a pathological retrack cannot run unbounded (it then times out and
-   * gracefully returns the raw track via the catch below). Production
-   * ({@code maxRunningTime > 0}) is already bounded by the request budget and is
-   * left unchanged.
+   * Fallback time budget for the guided detail-retrack when the caller set no
+   * budget ({@code maxRunningTime <= 0}, e.g. an untimed CLI run): past the
+   * guide-track cost cap the pass can fall back to a free search, and this
+   * bounds it — on timeout the raw track is returned. Timed runs are already
+   * bounded by the request budget.
    */
   private static final long RETRACK_DETAIL_FALLBACK_BUDGET_MS = 60_000;
 
+  /**
+   * Re-run a raw single-pass {@link #findTrack} result at full detail: walks
+   * the same nodes via {@code guideTrack} and fills the per-edge
+   * {@code MessageData} (the {@code wayKeyValues} the gate's paved-hostility
+   * check needs) without the 2-pass routing cost. {@code refTrack} is accepted
+   * for call-site compatibility but not applied — reuse penalties belong to
+   * route choice, not to annotating an already-chosen route.
+   */
   OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp, OsmTrack refTrack) {
     if (rawTrack == null || rawTrack.nodes == null || rawTrack.nodes.size() < 2) return rawTrack;
     double savedAirDistFactor = airDistanceCostFactor;
@@ -3891,13 +3771,11 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Aggregates a child engine's work count into this (parent) engine.
-   * Synchronized: in speculative AUTO mode the GREEDY child runs
-   * runChildCandidate on its own thread concurrently with the request
-   * thread's ISO_GREEDY aggregation — an unsynchronized += on the shared
-   * parent field loses one child's entire count. The engine's own hot-loop
-   * {@code linksProcessed++} stays unsynchronized (single-threaded per
-   * engine); only the cross-engine aggregation contends.
+   * Aggregate a child engine's work count into this (parent) engine.
+   * Synchronized: in speculative AUTO mode a child aggregates concurrently
+   * with the request thread, and an unsynchronized += would lose a child's
+   * whole count. The engine's own hot-loop {@code linksProcessed++} stays
+   * unsynchronized (single-threaded per engine).
    */
   private synchronized void addLinksProcessed(int childLinks) {
     linksProcessed += childLinks;

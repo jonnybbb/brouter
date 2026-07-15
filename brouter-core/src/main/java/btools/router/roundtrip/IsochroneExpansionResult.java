@@ -4,27 +4,20 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Result of {@code RoutingEngine#runIsochroneExpansion}.
- *
- * <p>Holds both the per-bucket frontier table (used by the legacy
- * {@code RoutingEngine#placeWaypointsFromIsochrone} debug-only path) and the road-native
- * candidate pool (used by ISO_GREEDY via {@link IsochroneCandidateProvider}).
- * Returning both as one value keeps callers from reading stale data via a
- * side-channel field.
+ * Result of {@code RoutingEngine#runIsochroneExpansion}: the per-bucket frontier
+ * table (legacy debug-only placement) and the road-native candidate pool (used
+ * by ISO_GREEDY via {@link IsochroneCandidateProvider}). Returning both as one
+ * value keeps callers off a stale side-channel field.
  */
 public final class IsochroneExpansionResult {
 
   /**
    * Per-bucket frontier table. Each entry is {@code [direction_deg, airDist_m,
-   * cost, hits, ilon, ilat]} — the first four fields are the legacy contract
-   * (existing readers keep working); the trailing {@code ilon}/{@code ilat}
-   * expose the road-native coordinate of the selected frontier node so direct
-   * ISOCHRONE placement can avoid synthesizing waypoint positions via
-   * {@link btools.util.CheapRuler#destination CheapRuler.destination}.
-   *
-   * <p>Probe-only entries injected by {@code RoutingEngine#mergeIsochroneWithProbe}
-   * remain 4-element (no road-native data available); callers must guard with
-   * {@code entry.length >= 6} before reading {@code ilon}/{@code ilat}.
+   * cost, hits, ilon, ilat]}; the first four are the legacy contract, and the
+   * trailing {@code ilon}/{@code ilat} give the frontier node's road-native
+   * coordinate (so ISOCHRONE placement need not synthesize positions). Probe-only
+   * entries from {@code RoutingEngine#mergeIsochroneWithProbe} stay 4-element, so
+   * guard with {@code entry.length >= 6} before reading {@code ilon}/{@code ilat}.
    */
   public final double[][] frontier;
 
@@ -32,14 +25,12 @@ public final class IsochroneExpansionResult {
   public final List<IsoCandidate> candidates;
 
   /**
-   * Downsampled reachability cloud: every node the expansion popped, bucketed
-   * into ~{@code RoutingEngine#REACHABILITY_CELL_M}-sized grid cells (fixed
-   * per-expansion scale; divisors below), mapped to the minimum Dijkstra cost
-   * at which the cell was first reached (pops arrive in cost order, so the
-   * first touch is the cell's minimum). Key presence answers "reachable"
-   * (pocket-avoiding waypoint placement); the cost value is the raw material
-   * for {@link ReturnDistanceOracle}'s sector-resolved return estimates.
-   * Empty for legacy constructions.
+   * Downsampled reachability cloud: popped nodes bucketed into
+   * ~{@code RoutingEngine#REACHABILITY_CELL_M}-sized cells (divisors below),
+   * mapped to the minimum Dijkstra cost at which each cell was first reached
+   * (pops arrive in cost order, so first touch is the minimum). Key presence
+   * answers "reachable" (pocket-avoiding placement); the cost feeds
+   * {@link ReturnDistanceOracle}. Empty for legacy constructions.
    */
   final java.util.Map<Long, Integer> cellMinCost;
   /** ilon units per reachability cell (longitude divisor), 0 when no cloud. */
@@ -61,11 +52,10 @@ public final class IsochroneExpansionResult {
   }
 
   /**
-   * Count occupied reachability cells in the 5×5 neighborhood (~750×750m)
-   * around the given position — 0..25, or -1 when no cloud was collected.
-   * A half-disk at the expansion's geographic edge still scores ~12, so a
-   * penalty threshold around 10 does not punish well-connected candidates
-   * near the edge.
+   * Occupied reachability cells in the 5×5 neighborhood (~750×750m) around the
+   * position — 0..25, or -1 when no cloud was collected. A half-disk at the
+   * expansion edge still scores ~12, so a penalty threshold near 10 does not
+   * punish well-connected edge candidates.
    */
   int reachableCellsAround(int ilon, int ilat) {
     if (cellMinCost.isEmpty() || cellDivLon <= 0 || cellDivLat <= 0) return -1;

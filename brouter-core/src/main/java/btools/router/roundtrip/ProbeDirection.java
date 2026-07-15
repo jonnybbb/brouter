@@ -3,20 +3,12 @@ package btools.router.roundtrip;
 import btools.mapaccess.MatchedWaypoint;
 
 /**
- * Per-direction reachability summary produced by {@code RoutingEngine#probeReachableDirections}.
- *
- * <p>Each compass direction is tested at distances {0.7R, 1.0R, 1.3R}. This record
- * carries the direction and how many of those probes snapped to a road. The FAST
- * tier uses {@link #successfulProbeCount} (via
- * {@link PlacementGeometry#filterByProbeConfidence}) to drop one-shot directions when
- * enough strong alternatives exist, so the chosen waypoint ring avoids fragile
- * sea/dead-end picks.
- *
- * <p>{@link #bestMatch} carries the closest road match found for this direction
- * (smallest snap distance across the probed radii), or {@code null} for the legacy
- * probe. The optimized FAST placement reuses it directly as a via instead of
- * re-matching a fresh candidate grid — see
- * {@code RoutingEngine#probeReachableDirectionsFast}.
+ * Per-direction reachability summary from {@code RoutingEngine#probeReachableDirections}.
+ * Each compass direction is tested at {0.7R, 1.0R, 1.3R}; the FAST tier uses
+ * {@link #successfulProbeCount} (via
+ * {@link PlacementGeometry#filterByProbeConfidence}) to drop one-shot directions
+ * when strong alternatives exist, avoiding fragile sea/dead-end picks. Optimized
+ * FAST placement reuses {@link #bestMatch} directly as a via.
  */
 public final class ProbeDirection {
 

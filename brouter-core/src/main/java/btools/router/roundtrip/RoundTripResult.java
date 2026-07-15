@@ -8,16 +8,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Mutable result of a round-trip planning attempt, produced by the greedy
- * planner (GREEDY / ISO_GREEDY) and read by {@code RoutingEngine}.
- *
- * <p>Carries the chosen {@link OsmTrack}, the loop waypoints/matched waypoints,
- * a few summary metrics (distance, reuse ratio, tolerance flag), and a large
- * block of diagnostic telemetry. The telemetry fields are write-once by the
- * planner and read-only afterwards; they are sentinel-valued (NaN / -1 / false)
- * when the producing path did not run, so a reader can tell "not applied" from
- * a real measurement. Setters exist only so the planner and engine can populate
- * the fields in stages — callers downstream treat the result as read-only.
+ * Mutable result of a round-trip planning attempt (GREEDY / ISO_GREEDY), read
+ * by {@code RoutingEngine}. Carries the chosen {@link OsmTrack}, loop
+ * waypoints, summary metrics, and diagnostic telemetry. Telemetry fields are
+ * sentinel-valued (NaN / -1 / false) when their producing path did not run, so
+ * a reader can tell "not applied" from a real measurement. Treated as
+ * read-only downstream; setters exist only for staged population.
  */
 public class RoundTripResult {
 
@@ -131,10 +127,9 @@ public class RoundTripResult {
   }
 
   /**
-   * True when the returned loop is a rideable same-way-back corridor that the
-   * planner kept because no clean alternative exists in this (constrained)
-   * terrain. The request gate should accept it (disclosed) rather than reject
-   * it as a plain corridor. See {@code GreedyRoundTripPlanner} keep-when-forced.
+   * True when the loop is a rideable same-way-back corridor the planner kept
+   * because no clean alternative exists in this terrain. The gate should accept
+   * it (disclosed), not reject it as a plain corridor.
    */
   private boolean forcedCorridorAccepted = false;
 
@@ -207,9 +202,9 @@ public class RoundTripResult {
   public void setAcceptedNonIsoLegs(int v) { this.acceptedNonIsoLegs = v; }
 
   /** Accepted legs whose candidate held its routed slot only via source-quota
-   *  injection. A high value means the iso pool kept outranking the local
-   *  alternatives that then won on routed truth — the plain-GREEDY-win
-   *  signature the health tracker demotes on. */
+   *  injection. High = the iso pool kept outranking local alternatives that then
+   *  won on routed truth — the plain-GREEDY-win signature the health tracker
+   *  demotes on. */
   public int getAcceptedQuotaInjectedLegs() { return acceptedQuotaInjectedLegs; }
   public void setAcceptedQuotaInjectedLegs(int v) { this.acceptedQuotaInjectedLegs = v; }
 
@@ -223,22 +218,19 @@ public class RoundTripResult {
   public double getIsoPoolHealthScore() { return isoPoolHealthScore; }
   public void setIsoPoolHealthScore(double v) { this.isoPoolHealthScore = v; }
 
-  /** True when ISO_GREEDY ran an internal graph-native-only branch and compared
-   *  it before returning this result. AUTO can then skip a duplicate plain
-   *  GREEDY child for the same request. */
+  /** True when ISO_GREEDY already compared an internal graph-native-only branch,
+   *  so AUTO can skip a duplicate plain-GREEDY child for this request. */
   public boolean isInternalGraphNativeCompared() { return internalGraphNativeCompared; }
   public void setInternalGraphNativeCompared(boolean v) { this.internalGraphNativeCompared = v; }
 
   /** The engine's explicit start-policy decision: this plan ran on graph-native
    *  candidates only (iso pool unadmitted or statically unhealthy). AUTO's
-   *  plain-GREEDY absorption decision reads THIS — inferring it from telemetry
-   *  sentinels silently flipped the decision when telemetry semantics moved. */
+   *  plain-GREEDY absorption reads THIS, not inferred telemetry sentinels. */
   boolean isGraphNativeOnlyStart() { return graphNativeOnlyStart; }
   public void setGraphNativeOnlyStart(boolean v) { this.graphNativeOnlyStart = v; }
 
-  /** Whether Phase 2.0 isochrone-asymmetry bearing bias fired for this loop.
-   *  False when the algorithm wasn't ISO_GREEDY, when the user provided an
-   *  explicit direction, or when no frontier bucket met the quality
+  /** Whether the Phase 2.0 iso-asymmetry bearing bias fired. False for non-ISO_GREEDY,
+   *  an explicit user direction, or no bucket meeting the frontier-quality
    *  thresholds (airDist &gt;= 0.6 * searchRadius AND hits &gt;= 3). */
   boolean isIsoAsymmetryBearingApplied() { return isoAsymmetryBearingApplied; }
   public void setIsoAsymmetryBearingApplied(boolean v) { this.isoAsymmetryBearingApplied = v; }
@@ -262,15 +254,14 @@ public class RoundTripResult {
   int getIsoAsymmetryBestBucketAirDistMeters() { return isoAsymmetryBestBucketAirDistMeters; }
   public void setIsoAsymmetryBestBucketAirDistMeters(int v) { this.isoAsymmetryBestBucketAirDistMeters = v; }
 
-  /** Whether the Phase 2.1 axis-retry path fired. True when the first
-   *  attempt (with user direction) produced a degraded result AND the
-   *  frontier showed a strong terrain axis perpendicular to user direction. */
+  /** Whether the Phase 2.1 axis-retry path fired: the first attempt (user
+   *  direction) degraded AND the frontier showed a strong terrain axis
+   *  perpendicular to that direction. */
   boolean isPhase21AxisRetryTriggered() { return phase21AxisRetryTriggered; }
   public void setPhase21AxisRetryTriggered(boolean v) { this.phase21AxisRetryTriggered = v; }
 
-  /** Whether the Phase 2.1 axis retry produced an acceptable (non-degraded)
-   *  loop. False either when retry was not triggered, or when retry also
-   *  produced a degraded result (geographic infeasibility). */
+  /** Whether the Phase 2.1 axis retry produced a non-degraded loop. False when
+   *  retry did not trigger, or retry also degraded (geographic infeasibility). */
   boolean isPhase21AxisRetrySucceeded() { return phase21AxisRetrySucceeded; }
   public void setPhase21AxisRetrySucceeded(boolean v) { this.phase21AxisRetrySucceeded = v; }
 

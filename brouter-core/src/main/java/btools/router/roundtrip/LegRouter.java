@@ -7,19 +7,18 @@ import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
 
 /**
- * The leg-search slice of the engine seam: single-leg searches, waypoint
- * matching, isochrone expansion, and the engine kill switch. One of the four
- * role interfaces composed by {@link RoundTripEngineOps}.
+ * Engine seam role: leg searches, waypoint matching, isochrone expansion,
+ * and the kill switch.
  */
 public interface LegRouter {
 
-  /** One leg search — the engine's internal findTrack primitive. */
+  /** One leg search — the engine's findTrack primitive. */
   OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
                      OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc);
 
   /**
-   * One leg search with the engine's live guide track suspended — a local
-   * repair search must not be steered by the track it is repairing.
+   * Leg search with the engine's live guide track suspended — a local repair
+   * search must not be steered by the track it is repairing.
    */
   OsmTrack findTrackUnguided(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp);
 
@@ -30,22 +29,20 @@ public interface LegRouter {
   /** Profile-aware road snap for a single point. */
   MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist);
 
-  /** Batch waypoint matching through the engine's node cache + island pairs. */
+  /** Batch waypoint matching through the engine's node cache. */
   void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance);
 
-  /** Reset the engine's node cache. */
   void resetCache(boolean detailed);
 
-  /** Start-centered isochrone expansion, placement variant (2-arg overload). */
+  /** Start-centered isochrone expansion (placement variant). */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius);
 
-  /** Start-centered isochrone expansion (see {@code RoutingEngine#runIsochroneExpansion}). */
+  /** Start-centered isochrone expansion. */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius,
                                                  OsmTrack refTrack, boolean includeCandidateTracks);
 
   /** Terminate the engine's current search (volatile kill flag). */
   void terminate();
 
-  /** True when the engine was terminated (watchdog/cancel). */
   boolean isTerminated();
 }

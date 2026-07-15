@@ -7,108 +7,96 @@ import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
 
 /**
- * The mutable request-state slice of the engine seam: result track/error,
- * budgets, effort policy, and the cross-tier latches. One of the four role
- * interfaces composed by {@link RoundTripEngineOps}.
- *
- * <p>This is intentionally the "shame list" of the seam split — every method
- * here is shared mutable state on the engine that Phase A2 wants to move into
- * an orchestrator-owned request object. Read-only views of two of these
- * fields ({@code explicitViaRoundTrip}, {@code roundTripSearchRadius}) live on
- * {@link EngineContext}; only their setters are here.
+ * Engine seam role: mutable request state shared between the round-trip
+ * planners and the engine — result track/error, budgets, effort policy, and
+ * the cross-tier latches. Intentionally the "shame list" of the seam split;
+ * Phase A2 moves it into an orchestrator-owned request object. Two fields
+ * have their read-only getters on {@link EngineContext}
+ * ({@code roundTripSearchRadius}, {@code explicitViaRoundTrip}); only their
+ * setters are here.
  */
 public interface RoundTripRequestState {
 
-  /** The live request waypoint list (the orchestrator appends generated vias). */
+  /** Live request waypoint list; the orchestrator appends generated vias. */
   List<OsmNodeNamed> waypoints();
 
-  /** The engine's current result track (null while unset / after a reset). */
+  /**
+   * The engine's result track; null while unset. Exactly one of foundTrack
+   * and errorMessage is set on a finished request.
+   */
   OsmTrack foundTrack();
 
-  /** Set the engine's result track. */
   void setFoundTrack(OsmTrack track);
 
-  /** The engine's current error message (track-XOR-error contract). */
+  /** The engine's error message; see {@link #foundTrack()} for the contract. */
   String errorMessage();
 
-  /** Set the engine's error message. */
   void setErrorMessage(String message);
 
-  /** The engine's published matched waypoints. */
+  /** Matched waypoints of the final track. */
   List<MatchedWaypoint> matchedWaypoints();
 
-  /** Publish the matched waypoints of the final track on the engine. */
   void setMatchedWaypoints(List<MatchedWaypoint> waypoints);
 
-  /** Engine start wall-clock millis (deadline arithmetic). */
+  /** Engine start wall-clock millis. Planners save and restore around a leg. */
   long startTime();
 
-  /** Set the engine start wall-clock (planner saves and restores around a leg). */
   void setStartTime(long startTimeMillis);
 
-  /** Engine run budget in millis, 0 = untimed. */
+  /** Engine run budget in millis; 0 = untimed. Saved/restored like startTime. */
   long maxRunningTime();
 
-  /** Set the engine run budget (planner saves and restores around a leg). */
   void setMaxRunningTime(long maxRunningTimeMillis);
 
-  /** Absolute wall-clock deadline for the whole round-trip request; 0 = untimed. */
+  /** Wall-clock deadline for the whole round-trip request; 0 = untimed. */
   long roundTripRequestDeadline();
 
-  /** Set the request deadline. */
   void setRoundTripRequestDeadline(long deadlineMillis);
 
   /** Per-leg routing budget for the round-trip fallthrough. */
   long roundTripRoutingBudgetMs();
 
-  /** Set the per-leg routing budget. */
   void setRoundTripRoutingBudgetMs(long budgetMs);
 
-  /** The active effort policy preset (null outside bounded dispatch). */
+  /** Active effort policy preset; null outside bounded dispatch. */
   RoundTripEffortPolicy roundTripEffortPolicy();
 
-  /** Set the active effort policy preset. */
   void setRoundTripEffortPolicy(RoundTripEffortPolicy policy);
 
-  /** Set the active search radius (consulted by engine-side matching hooks). */
+  /** Getter lives on {@link EngineContext#roundTripSearchRadius()}. */
   void setRoundTripSearchRadius(double searchRadius);
 
-  /** Mark/unmark the explicit-via round-trip mode. */
+  /** Getter lives on {@link EngineContext#explicitViaRoundTrip()}. */
   void setExplicitViaRoundTrip(boolean explicitVia);
 
-  /** The forced-corridor acceptance latch from the greedy adoption. */
+  /** Forced-corridor acceptance latch from the greedy adoption. */
   boolean roundTripForcedCorridorAccepted();
 
-  /** Set the forced-corridor acceptance latch. */
   void setRoundTripForcedCorridorAccepted(boolean accepted);
 
-  /** The bounded tier's gate verdict, published for the shared doRun advisory. */
+  /** Bounded tier's gate verdict, published for the shared doRun advisory. */
   RoundTripQualityResult boundedGateVerdict();
 
-  /** Set the bounded tier's gate verdict. */
   void setBoundedGateVerdict(RoundTripQualityResult verdict);
 
   /** Per-leg guide tracks from a greedy adoption, consulted by doRouting. */
   OsmTrack[] greedyLegTracks();
 
-  /** Set the per-leg guide tracks. */
   void setGreedyLegTracks(OsmTrack[] tracks);
 
-  /** The last gate-rejected track (diagnostics surface). */
+  /** Last gate-rejected track (diagnostics). */
   OsmTrack lastRejectedTrack();
 
-  /** Set the last gate-rejected track. */
   void setLastRejectedTrack(OsmTrack track);
 
-  /** Publish the planner result for telemetry consumers. */
+  /** Publish the planner result for telemetry. */
   void setLastRoundTripResult(RoundTripResult result);
 
   /** Wall-clock bound for the next isochrone expansion; 0 clears it. */
   void setTransientExpansionDeadline(long deadlineMillis);
 
-  /** Pass-1 air-distance cost factor currently active on the engine. */
+  /** Pass-1 air-distance cost factor. Planners save and restore around a leg. */
   double airDistanceCostFactor();
 
-  /** Set the pass-1 air-distance cost factor (planner saves and restores it). */
   void setAirDistanceCostFactor(double factor);
 }

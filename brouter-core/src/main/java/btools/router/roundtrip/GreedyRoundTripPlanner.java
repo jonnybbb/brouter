@@ -9,48 +9,34 @@ import btools.util.CheapRuler;
 import java.util.*;
 
 /**
- * Greedy routed-leg planner for cycling round-trip generation. Builds a loop one
- * sub-route ("leg") at a time, walking a chain of vias outward from the start and
- * back. {@code RoutingEngine#doGreedyRoundTrip} constructs it, calls {@link #plan},
- * and adopts the returned loop (or falls through to WAYPOINT on a "rejected"
- * fallback reason).
+ * Greedy routed-leg planner for cycling round-trips. Builds a loop one leg at a
+ * time, walking a chain of vias outward from the start and back;
+ * {@code RoutingEngine#doGreedyRoundTrip} constructs it, calls {@link #plan}, and
+ * adopts the loop (or falls through to WAYPOINT when the fallback reason starts
+ * with "rejected"). Follows CEUR-WS Vol-3885.
  * <p>
- * Follows the pattern from "Efficient Dijkstra-Based Greedy Algorithm for
- * Cycle-Route Planning" (CEUR-WS Vol-3885). Per {@code step} (= one leg):
- * <ol>
- *   <li>A {@link RoundTripCandidateProvider} generates candidate via points near
- *       the target sub-route distance.</li>
- *   <li>Score ALL candidates by air-distance heuristics (O(1) each, no routing) via
- *       {@link CandidateScorer} plus the placement terms below.</li>
- *   <li>Rank by score, then route a small top-K with angular spread
- *       ({@link #pickDiverseTopK}, {@link #MAX_ROUTE_ATTEMPTS}) via full Dijkstra
- *       and re-score each on its actual routed distance, edge reuse, and cost.</li>
- *   <li>Commit the best routed candidate; on failure shrink the radius and retry.</li>
- *   <li>Compute ONE return path to start; check if the loop closes within
- *       {@code tolerance}.</li>
- *   <li>Repeat until the loop closes or the steps / deadline run out.</li>
- * </ol>
- * Routing only the top-K (a few Dijkstra) per step instead of every candidate
- * (N per step) is what keeps the algorithm practical for real-time use.
+ * Per step (= one leg): a {@link RoundTripCandidateProvider} generates vias near
+ * the target sub-distance; ALL are scored by O(1) air-distance heuristics
+ * ({@link CandidateScorer} plus the placement terms below); a small top-K with
+ * angular spread ({@link #pickDiverseTopK}) is routed with full Dijkstra and
+ * re-scored on routed distance, edge reuse, and cost; the best is committed (on
+ * failure the radius shrinks and retries); then ONE return path checks closure
+ * within {@code tolerance}. Routing only the top-K per step, not every candidate,
+ * is what keeps it real-time.
  * <p>
- * The greedy per-step scorer is biased toward a clean loop SHAPE by several
- * placement terms layered on top of {@link CandidateScorer#score}: heading
- * persistence ({@link #headingPersistencePenalty}), angular-sweep convexity
+ * The per-step scorer is biased toward a clean loop SHAPE by three placement terms
+ * on top of {@link CandidateScorer#score}: heading persistence
+ * ({@link #headingPersistencePenalty}), angular-sweep convexity
  * ({@link #loopSweepPenalty}), and unimodal radius ({@link #unimodalRadiusPenalty}).
- * All three fade with terrain freedom ({@link #headingTerrainFreedom}) and switch
- * off after repeated closure rejections, so constrained (coastal/valley) loops that
+ * All fade with terrain freedom ({@link #headingTerrainFreedom}) and switch off
+ * after repeated closure rejections, so constrained (coastal/valley) loops that
  * cannot sweep a full circle stay feasible.
  * <p>
- * In ISO_GREEDY mode (blended provider) the planner additionally tracks the
- * start-centered pool's trustworthiness via {@link IsoPoolHealth} (issue #26):
- * mixed-source routed comparisons, quota injections, iso-leg rejections, sector
- * bunching, closure failures, and return-oracle coverage feed a per-plan health
- * score. A DEGRADED pool loses its prior-based scoring terms and cedes an extra
- * routed slot to graph-native candidates; an UNHEALTHY pool switches the plan to
- * graph-native-only steps — the internal plain-GREEDY fallback that lets
- * ISO_GREEDY preserve graph-native local truth when the pool goes stale. Every
- * accepted leg records a source-attribution diagnostic ("leg N source: …") so
- * matrix runs can prove whether separate plain-GREEDY runs are still needed.
+ * In ISO_GREEDY mode the planner also tracks the start-pool's trustworthiness via
+ * {@link IsoPoolHealth} (issue #26). A DEGRADED pool loses its prior-based scoring
+ * terms and cedes an extra routed slot to graph-native candidates; an UNHEALTHY
+ * pool switches to graph-native-only steps (the internal plain-GREEDY fallback).
+ * Every accepted leg records a source-attribution diagnostic ("leg N source: …").
  */
 public class GreedyRoundTripPlanner {
 
@@ -59,56 +45,48 @@ public class GreedyRoundTripPlanner {
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final double ROAD_INDIRECTNESS = 1.3;
   /**
-   * Adaptive indirectness bounds (root-caused on freiburg_100km_fastbike_N,
-   * 2026-06-11): the flat 1.3 air-to-road factor under-modeled an Elz-valley
-   * leg that routed at 2.0× air distance (25.7km against a 16.65km target),
-   * over-extending the loop and cornering the closure into a zigzag. The
-   * planner now updates a per-plan estimate from each routed leg's observed
-   * ratio (EMA, alpha 0.5), clamped to [ROAD_INDIRECTNESS, this max] — it can
-   * only become MORE conservative than the baseline, never more optimistic,
-   * so flat-terrain behaviour is unchanged.
+   * Upper clamp on the adaptive air-to-road factor. The flat 1.3 baseline
+   * under-modeled an Elz-valley leg that routed at 2.0× air distance,
+   * over-extending the loop into a zigzag closure (freiburg_100km_fastbike_N).
+   * The planner learns a per-plan estimate from each routed leg (EMA, alpha
+   * {@link #INDIRECTNESS_EMA_ALPHA}), clamped to [{@link #ROAD_INDIRECTNESS}, this]
+   * — it can only grow more conservative, never more optimistic, so flat terrain
+   * is unchanged.
    */
   private static final double MAX_INDIRECTNESS_EST = 2.5;
   private static final double INDIRECTNESS_EMA_ALPHA = 0.5;
 
   /**
-   * Heading-persistence term (loop-shape work, 2026-06-11): a smooth loop
-   * changes heading by ~360°/subRouteCount per step; a candidate whose bearing
-   * kinks beyond that quota (with {@link #HEADING_QUOTA_SLACK} slack for
-   * terrain) pays this weight × the normalized excess. Rounds via corners into
-   * sweeping arcs and discourages sharp heading reversals — the precursor of
-   * the zigzag/crossing mechanism root-caused on freiburg_100km_fastbike_N
-   * (a heading-monotone loop cannot self-intersect). Soft by design: terrain
-   * may force a sharp bend (valley exits), so this only tilts near-ties —
-   * never a hard rule (the beeline-gate lesson applies to shape rules too).
-   * Score scale is O(1-10); a full 180° reversal at slack-quota 90° costs
-   * 0.5 × weight.
+   * Heading-persistence weight. A smooth loop turns ~360°/subRouteCount per step;
+   * a candidate kinking beyond that quota (plus {@link #HEADING_QUOTA_SLACK}) pays
+   * this × the normalized excess, rounding corners into arcs and blocking the
+   * sharp reversals that precede self-crossing zigzags (a heading-monotone loop
+   * cannot self-intersect). Soft by design — terrain may force a sharp bend, so it
+   * only tilts near-ties. A full 180° reversal at slack-quota 90° costs 0.5 × weight.
    */
   private static final double W_HEADING_PERSISTENCE = 1.0;
   /** Slack factor on the per-step heading quota (1.5 → 90° allowed at 6 steps). */
   private static final double HEADING_QUOTA_SLACK = 1.5;
   /**
-   * Terrain gate for the heading term (matrix A/B 2026-06-12): at full weight,
-   * constrained coastal/mountain cells blew up (coastal_nice_100km_gravel E/N
-   * went 0→43/0→42 crossings — terrain FORCES sharp macro-turns there, and
-   * penalizing them made legs weave instead), while open networks improved
-   * across the board (spurs −30%, lassos −25%). The per-plan adaptive
-   * indirectness estimate is a ready-made terrain-freedom signal: ~1.3 on
-   * open networks, →2.0+ where the graph forces indirect roads. Weight fades
-   * linearly from full at the baseline to zero at this estimate.
+   * Indirectness at which the heading term fully fades to zero. At full weight,
+   * constrained coastal/mountain cells blew up (coastal_nice_100km_gravel: 0→43
+   * crossings — terrain forces sharp macro-turns there) while open networks
+   * improved (spurs −30%, lassos −25%). The adaptive indirectness estimate is the
+   * terrain-freedom signal: ~1.3 open, →2.0+ where the graph forces indirect
+   * roads. Weight fades linearly from full at the baseline to zero here.
    */
   private static final double HEADING_TERRAIN_FADE_MAX = 2.0;
   /**
-   * Distress brake: after this many closed-loop rejections in one plan, the
-   * heading term is disabled for the remainder — the planner is provably
-   * struggling to close, and shape preferences must yield to feasibility.
+   * After this many closed-loop rejections in one plan, the heading term is
+   * disabled for the rest: the planner is struggling to close and shape
+   * preferences must yield to feasibility.
    */
   static final int HEADING_BRAKE_REJECTIONS = 2;
 
   /**
-   * Terrain-freedom factor in [0,1] for the heading term: 1 at the calibrated
-   * indirectness baseline (open network), 0 at {@link #HEADING_TERRAIN_FADE_MAX}
-   * (terrain dictates the headings — do not fight it).
+   * Terrain-freedom factor in [0,1] for the heading term: 1 at the indirectness
+   * baseline (open network), 0 at {@link #HEADING_TERRAIN_FADE_MAX} (terrain
+   * dictates headings).
    */
   static double headingTerrainFreedom(double indirectnessEst) {
     double f = (HEADING_TERRAIN_FADE_MAX - indirectnessEst)
@@ -117,9 +95,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Normalized penalty for a candidate bearing that kinks beyond the smooth-
-   * loop quota relative to the previous leg's bearing. 0 within quota; up to
-   * (180 − quota)/180 for a full reversal.
+   * Normalized penalty for a candidate bearing kinking beyond the smooth-loop
+   * quota vs the previous leg's bearing: 0 within quota, up to (180 − quota)/180
+   * for a full reversal.
    */
   static double headingPersistencePenalty(double prevLegBearing, double candidateBearing,
                                           int subRouteCount) {
@@ -152,12 +130,11 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Penalty for a candidate via that fails to advance the loop's angular sweep
-   * around the start. The previous leg (prevPrev→current, both as bearings FROM
-   * START) establishes the rotation sense; the candidate's incremental sweep
-   * (current→candidate, from start) should match {@code ±360/subRouteCount}.
-   * A stall (≈0) or backtrack (opposite sign) — the lobe signature — scores high.
-   * Returns 0 until rotation is established (prevPrev must be a real point clear
-   * of the start, and the prior sweep non-trivial). Capped to bound outliers.
+   * around the start. The prior sweep (prevPrev→current, as bearings FROM START)
+   * sets the rotation sense; the candidate's increment should match
+   * {@code ±360/subRouteCount}. A stall or backtrack (the lobe signature) scores
+   * high. Returns 0 until rotation is established (prevPrev clear of the start,
+   * prior sweep non-trivial). Capped.
    */
   static double loopSweepPenalty(int sLon, int sLat, int ppLon, int ppLat,
                                  int curLon, int curLat, int cpLon, int cpLat,
@@ -177,9 +154,9 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Penalty for distance-from-start growing past the loop's apogee (phase ≥ 0.5):
-   * a unimodal loop only contracts toward home after the midpoint, so a candidate
-   * whose radius exceeds the previous via's radius is climbing back out (the via4
-   * bump). 0 before apogee or when contracting. Capped.
+   * a unimodal loop only contracts after the midpoint, so a candidate radius
+   * exceeding the previous via's is climbing back out. 0 before apogee or when
+   * contracting. Capped.
    */
   static double unimodalRadiusPenalty(double candRadius, double prevRadius,
                                       int step, int subRouteCount) {
@@ -191,25 +168,23 @@ public class GreedyRoundTripPlanner {
 
   private static final long SUB_ROUTE_TIMEOUT_MS = 10000;
   /**
-   * Salvage margin past the request deadline for the force-close leg only: a
-   * nearly-complete loop is worth a bounded overrun, an unbounded one is not.
+   * Salvage margin (ms) past the request deadline for the force-close leg only: a
+   * nearly-complete loop is worth a bounded overrun.
    */
   private static final long FORCE_CLOSE_GRACE_PAST_BUDGET_MS = 2000;
   /**
-   * Per-Dijkstra budget scaling: base + per-air-km allowance, capped at
-   * {@link #SUB_ROUTE_TIMEOUT_MS}. A flat 10s cap let two pathological
-   * searches eat 2/3 of a 30s plan; with goal-directed legs (see
-   * {@link #timedFindTrack}) a healthy leg finishes far below its scaled cap,
-   * so a stuck search is cut off in proportion to what it could possibly need.
+   * Per-Dijkstra budget = base + per-air-km, capped at {@link #SUB_ROUTE_TIMEOUT_MS}.
+   * A flat 10s cap let two pathological searches eat 2/3 of a 30s plan; with
+   * goal-directed legs ({@link #timedFindTrack}) a healthy leg finishes well below
+   * its scaled cap, so a stuck search is cut in proportion to its need.
    */
   private static final long FIND_TRACK_BASE_BUDGET_MS = 2000;
   private static final long FIND_TRACK_BUDGET_MS_PER_AIR_KM = 700;
   /**
-   * Whole-plan wall-clock ceiling. Worst-case per-sub-route timing
-   * (subRouteCount × maxAttempts × MAX_ROUTE_ATTEMPTS × SUB_ROUTE_TIMEOUT_MS)
-   * blows past 20 minutes; this is the safety net. Each timedFindTrack call
-   * uses min(SUB_ROUTE_TIMEOUT_MS, deadline - now) so the planner stops
-   * issuing new Dijkstras after the deadline.
+   * Whole-plan wall-clock ceiling (ms). Worst-case per-sub-route timing blows past
+   * 20 minutes; this is the safety net. Each {@link #timedFindTrack} caps at
+   * min(SUB_ROUTE_TIMEOUT_MS, deadline − now) so no new Dijkstras start past the
+   * deadline.
    */
   private static final long DEFAULT_PLAN_DEADLINE_MS = 30_000;
   /** Loop length at which the plan budget is exactly {@link #DEFAULT_PLAN_DEADLINE_MS}. */
@@ -217,30 +192,26 @@ public class GreedyRoundTripPlanner {
   /** Budget scale ceiling: a 200km+ loop gets at most 2x the reference budget. */
   private static final double PLAN_BUDGET_MAX_SCALE = 2.0;
   /**
-   * Fraction of the plan budget reserved for the late (closure) steps: early
-   * steps stop issuing work at the early deadline, so a plan that burned its
-   * budget on the outbound legs still has search time to close the loop.
+   * Fraction of the plan budget reserved for the late closure steps: early steps
+   * stop at the early deadline, so a plan that burned its budget on outbound legs
+   * still has search time to close.
    */
   private static final double CLOSURE_RESERVE_FRACTION = 0.25;
   /** Minimum per-Dijkstra timeout. Below this it's cheaper to skip than try. */
   private static final long MIN_FIND_TRACK_MS = 250;
   /**
-   * Backoff factors:
-   *   - "no routable candidate found at this radius" — gentle shrink so we don't
-   *     skip viable nearby radii after a few candidates fail to snap/route.
-   *   - "route too long" — aggressive shrink, the radius really needs to come down.
-   * Both clamp at MIN_LOCAL_RADIUS_M so we don't collapse to a degenerate 0m radius.
+   * Radius backoff factors: gentle for "no routable candidate at this radius"
+   * (don't skip viable nearby radii), aggressive for "route too long" (radius must
+   * come down). Both clamp at {@link #MIN_LOCAL_RADIUS_M}.
    */
   private static final double BACKOFF_FACTOR_NO_CANDIDATE = 0.8;
   private static final double BACKOFF_FACTOR_TOO_LONG = 0.5;
   private static final double MIN_LOCAL_RADIUS_M = 200;
 
   /**
-   * Quality gates on bestFallback / forced-closure loops. A loop that's
-   * grossly the wrong length, retraces > half itself, or doesn't close gets
-   * downgraded — caller (RoutingEngine.doGreedyRoundTrip) treats a result
-   * with fallbackReason starting with "rejected" as a planner failure and
-   * falls through to WAYPOINT, rather than ship a low-quality loop as success.
+   * Fallback-reason prefix marking a rejected low-quality loop (wrong length,
+   * &gt;half retrace, or non-closing). RoutingEngine.doGreedyRoundTrip treats a
+   * "rejected" reason as planner failure and falls through to WAYPOINT.
    */
   public static final String DEGRADED_FALLBACK_PREFIX = "rejected: ";
   // Max candidates to route per step (heuristic top-K, with angular spread).
@@ -248,20 +219,18 @@ public class GreedyRoundTripPlanner {
   /** Raised cap on late steps or after a failed attempt, where extra exploration pays off. */
   private static final int MAX_ROUTE_ATTEMPTS_LATE = 5;
   /**
-   * Min angular separation between routed candidates within a step. Top-K by raw
-   * heuristic score is often spatially redundant in dense networks (two adjacent
-   * road choices have similar scores); enforcing a 30° gap gives diverse routed
-   * options instead of three picks in the same micro-direction.
+   * Min angular separation between routed candidates in a step. Top-K by raw score
+   * is often spatially redundant in dense networks; a 30° gap gives diverse routed
+   * options instead of three picks in one micro-direction.
    */
   private static final double MIN_ANGULAR_SEPARATION_DEG = 30.0;
   // Weight applied to cost-per-meter when picking among routed candidates.
   // Magnitude is similar to scorer.score() output; 0.5 keeps both signals relevant.
   static final double COST_PER_METER_WEIGHT = 0.5;
   /**
-   * Weight applied per self-intersection introduced by a tentative partial
-   * loop. This is a placement-side signal: among otherwise similar routed
-   * candidates, prefer the one that keeps the loop geometry clean before the
-   * final hard gate sees the completed route.
+   * Weight per self-intersection a tentative partial loop introduces: among
+   * similar routed candidates, prefer the one keeping loop geometry clean before
+   * the final gate sees the completed route.
    */
   // Phase 2.2 chaos-avoidance tuning. Raised from 0.3 → 1.0 per the
   // directive "zick zack and chaos routing must be avoided" — at 0.3
@@ -279,39 +248,33 @@ public class GreedyRoundTripPlanner {
   private static final double RETURN_SKIP_SAFETY = 1.5;
   /**
    * Skip-safety when the return estimate is oracle-backed: the sector-resolved
-   * estimate already contains the graph's detour factor toward this position
-   * (the 1.5 fudge existed to cover exactly that blindness in the global-EMA
-   * guess), so only snap/one-way/anti-reuse slack remains to absorb.
+   * estimate already carries the graph's detour factor (what the 1.5 fudge
+   * covered), so only snap/one-way/anti-reuse slack remains.
    */
   private static final double RETURN_SKIP_SAFETY_ORACLE = 1.15;
   /**
-   * When the profile-aware candidate snap relocates a via further than this
-   * from the original graph-native candidate node, the pre-routed leg (which
-   * ends at the original node) is discarded and the leg is re-routed. Below
-   * this the cached leg still effectively reaches the via (final waypoint
-   * matching catches within 250m).
+   * When the profile-aware snap relocates a via further than this from the
+   * original graph-native node, the pre-routed leg (which ends at the original
+   * node) is discarded and re-routed. Below this the cached leg still reaches the
+   * via (final matching catches within 250m).
    */
   private static final double VIA_RELOCATION_DROP_CACHED_LEG_M = 50;
 
   /**
-   * Hoisted ranking comparators. Both are pure (capture no state) and use
-   * {@link Comparator#comparingDouble}'s {@link Double#compare} semantics, so a
-   * shared static instance ranks identically to a per-call allocation while
-   * avoiding a comparator + lambda allocation on every attempt. {@code List.sort}
-   * is stable, so equal-key ties still resolve by pre-sort insertion order.
+   * Hoisted ranking comparators. Both are stateless, so a shared static instance
+   * ranks identically to a per-call allocation. {@code List.sort} is stable, so
+   * equal-key ties resolve by insertion order.
    */
   private static final Comparator<RoundTripCandidateProvider.CandidatePoint> BY_HEURISTIC_SCORE =
     (a, b) -> Double.compare(a.score, b.score);
   private static final Comparator<ScoredRoute> BY_ROUTED_SCORE =
     (a, b) -> Double.compare(a.routedScore, b.routedScore);
   /**
-   * Max length of a single untagged edge tolerated on a committed leg. In
-   * detail mode every link is subdivided at its OSM shape points and carries
-   * tags, so edges are short and tagged; one long null-tag edge is the chord
-   * fingerprint of a failed detail pass — the shipped geometry cuts straight
-   * across terrain where the real road curves (the user-visible "beeline").
-   * Ground-truthed on Lozère gravel (2026-06-09): flagged 300-950m chords all
-   * had a real curving road between the same endpoints.
+   * Max length of a single untagged edge tolerated on a committed leg. In detail
+   * mode every link is subdivided and tagged, so one long null-tag edge is the
+   * chord fingerprint of a failed detail pass — the shipped geometry cuts straight
+   * across terrain where the road curves (the "beeline"). Ground-truthed on Lozère
+   * gravel: flagged 300-950m chords all had a real curving road.
    */
   // Package-visible: doRoundTrip's residual-chord disclosure uses the same
   // threshold, so the advisory and the planner's fidelity retry never disagree
@@ -325,23 +288,18 @@ public class GreedyRoundTripPlanner {
   private final int maxAttempts;
 
   /**
-   * Round-trip variety seed: the request's {@code alternativeidx}, reused as a
-   * deterministic seed in round-trip mode. 0 means inert — the planner output is
-   * bit-identical to the unseeded baseline. Any value &gt;= 1 enables
-   * {@link #VARIETY_JITTER_AMPLITUDE multiplicative jitter} on the heuristic
-   * candidate score, so different seeds route different near-tie candidates while
-   * the direction focus stays untouched. This is how a caller asks for an
-   * alternative loop: same start/distance/direction, a different seed, a
-   * different-but-equally-valid route.
+   * Round-trip variety seed (the request's {@code alternativeidx}). 0 = inert
+   * (output bit-identical to the unseeded baseline); &gt;= 1 enables
+   * {@link #VARIETY_JITTER_AMPLITUDE} jitter on the heuristic score so different
+   * seeds route different near-tie candidates while direction focus stays fixed.
+   * This is how a caller asks for an alternative loop.
    */
   private int varietySeed;
 
   /**
-   * Multiplicative amplitude of the variety-seed score jitter: score ×
-   * (1 + amplitude × unit), unit uniform in [-1, 1). ±10% flips only
-   * near-tie rankings — the calibration knob for the seed feature; tune it
-   * from full-matrix A/B evidence (divergence between seeds vs. gate
-   * pass-rate against seed 0), not by feel.
+   * Amplitude of the variety-seed score jitter (adds ±amplitude × |score| × unit,
+   * unit uniform in [-1, 1)). ±10% flips only near-tie rankings; tune from
+   * full-matrix A/B evidence, not by feel.
    */
   static final double VARIETY_JITTER_AMPLITUDE = 0.10;
   private final LegRouter router;
@@ -349,23 +307,19 @@ public class GreedyRoundTripPlanner {
   private final EngineIO io;
   private final EngineContext ctx;
   /**
-   * Active profile name, set by {@link btools.router.RoutingEngine} before planning.
-   * The planner's internal {@link #qualityGateReason fallback gate}
-   * forwards to {@link RoundTripQualityGate#evaluate}, which needs the
-   * profile name to apply the paved-vs-other hostility branch correctly.
-   * When null (back-compat for older direct callers) the gate uses
-   * profile-agnostic defaults.
+   * Active profile name, set by {@link btools.router.RoutingEngine} before
+   * planning. The internal {@link #qualityGateReason fallback gate} forwards it to
+   * {@link RoundTripQualityGate#evaluate} for the paved-vs-other branch; null
+   * (older direct callers) uses profile-agnostic defaults.
    */
   private String profileName;
 
   /**
-   * Pocket-avoidance weight on the candidate heuristic score. Applied to
-   * {@link #pocketPenalty}'s [0,1] output; at 2.0 a true pocket candidate
-   * (≤3 reachable cells) loses to any well-connected alternative whose other
-   * terms are within ~2 score units — strong enough to steer vias off
-   * dead-end small roads in residual areas (the root cause behind teardrop
-   * and stub artifacts), weak enough that a genuinely better-positioned
-   * pocket can still win when nothing else closes the loop.
+   * Pocket-avoidance weight on {@link #pocketPenalty}'s [0,1] output. At 2.0 a
+   * true pocket (≤3 reachable cells) loses to any well-connected alternative
+   * within ~2 score units — enough to steer vias off dead-end roads (teardrop/stub
+   * source), weak enough that a well-positioned pocket can still win when nothing
+   * else closes.
    */
   static final double POCKET_PENALTY_WEIGHT = 2.0;
   /** Reachable-cell count at/above which a candidate is fully safe (no penalty). */
@@ -374,12 +328,10 @@ public class GreedyRoundTripPlanner {
   static final int POCKET_MIN_CELLS = 3;
 
   /**
-   * [0,1] pocket penalty from the candidate's reachability-cell density
-   * (see {@link IsochroneExpansionResult#reachableCellsAround}): 0 at
-   * ≥{@link #POCKET_SAFE_CELLS} (junction-rich neighborhood, also clears a
-   * well-connected expansion-edge half-disk at ~12), 1 at
-   * ≤{@link #POCKET_MIN_CELLS} (thin dead-end corridor). Candidates without
-   * a cloud (-1: radial/iso-start providers) get 0 — no signal, no penalty.
+   * [0,1] pocket penalty from reachability-cell density (see
+   * {@link IsochroneExpansionResult#reachableCellsAround}): 0 at
+   * ≥{@link #POCKET_SAFE_CELLS} (junction-rich), 1 at ≤{@link #POCKET_MIN_CELLS}
+   * (thin dead-end). No cloud (-1) gets 0 — no signal, no penalty.
    */
   static double pocketPenalty(int reachableCells) {
     if (reachableCells < 0) return 0;
@@ -389,9 +341,9 @@ public class GreedyRoundTripPlanner {
   }
   /**
    * Iso-pool health tracker (issue #26); null for plain GREEDY / graph-native
-   * providers, where every hook is a no-op and behaviour is bit-identical to
-   * the pre-health planner. Set by {@code RoutingEngine#doGreedyRoundTrip}
-   * alongside the return oracle, one fresh instance per plan.
+   * providers, where every hook is a no-op (behaviour bit-identical to the
+   * pre-health planner). Set by {@code RoutingEngine#doGreedyRoundTrip}, one fresh
+   * instance per plan.
    */
   private IsoPoolHealth poolHealth;
 
@@ -408,10 +360,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Enable iso-hostility scoring on the scorer. Only call this for paved
-   * profiles whose typical {@code costFromStart/airDist} is close to 1.0;
-   * other profiles (gravel, MTB) have baselines around 9 and would have
-   * every candidate flagged as hostile. See {@link CandidateScorer#setHostilityActive}.
+   * Enable iso-hostility scoring on the scorer. Only for paved profiles whose
+   * typical {@code costFromStart/airDist} is near 1.0; gravel/MTB baselines around
+   * 9 would flag every candidate. See {@link CandidateScorer#setHostilityActive}.
    */
   public void setHostilityActive(boolean active) {
     scorer.setHostilityActive(active);
@@ -423,11 +374,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Per-step routed top-K, settable by the effort policy
-   * ({@link RoundTripEffortPolicy}): BALANCED runs 2/3, standard AUTO 3/5,
-   * QUALITY 4/6. Each routed candidate is a full Dijkstra leg, so this is the
-   * planner's main per-step cost knob. Everything else (scoring, quota,
-   * ladder, deadlines) is unchanged — wall-clock bounding comes from
+   * Per-step routed top-K, set by the effort policy ({@link RoundTripEffortPolicy}):
+   * BALANCED 2/3, AUTO 3/5, QUALITY 4/6. Each routed candidate is a full Dijkstra
+   * leg, so this is the main per-step cost knob; wall-clock bounding is
    * {@link #setExternalDeadline}.
    */
   private int topKNormal = MAX_ROUTE_ATTEMPTS;
@@ -450,13 +399,12 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Absolute wall-clock ceiling (epoch ms) imposed by the caller — the
-   * request-level deadline. plan()'s own {@link #DEFAULT_PLAN_DEADLINE_MS}
-   * used to be the ONLY bound, so the subRouteCount ladder, the Phase-2.1
-   * axis retry, the ISO_GREEDY→GREEDY recursion and the AUTO children each
-   * multiplied a fresh 30s per plan into a minutes-long worst case. The
-   * effective plan deadline is the minimum of both. Defaults to unbounded
-   * for direct callers and tests ({@code <= 0} also means unbounded).
+   * Absolute wall-clock ceiling (epoch ms) from the caller — the request-level
+   * deadline. Without it, plan()'s own {@link #DEFAULT_PLAN_DEADLINE_MS} was the
+   * only bound, and the subRouteCount ladder, axis retry, ISO_GREEDY→GREEDY
+   * recursion, and AUTO children each multiplied a fresh 30s into a minutes-long
+   * worst case. Effective deadline = min of both. {@code <= 0} = unbounded
+   * (default for direct callers and tests).
    */
   private long externalDeadline = Long.MAX_VALUE;
 
@@ -465,29 +413,20 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Sector-resolved return-distance estimates (F6 oracle); null = fall back to
-   * the global {@code indirectnessEst} EMA. Set by the engine from the
-   * ISO_GREEDY pool expansion — deliberately NOT built for plain GREEDY:
-   * a lazy oracle from GREEDY's small step-1 expansion was implemented and
-   * measured quality-NEGATIVE (2 better / 5 worse on the anchor corpus). The
-   * step-1 disk covers only the loop's near side, so scoring mixed oracle and
-   * EMA estimate regimes around the coverage boundary and distorted candidate
-   * ranking exactly in constrained starts (coastal half-planes). Revisit only
-   * with a dedicated full-radius start expansion and its own measurement.
+   * Sector-resolved return-distance estimates (F6 oracle); null = fall back to the
+   * global {@code indirectnessEst} EMA. Set from the ISO_GREEDY pool expansion,
+   * deliberately NOT for plain GREEDY: a lazy oracle from GREEDY's small step-1
+   * disk covers only the loop's near side, and mixing oracle/EMA regimes around
+   * the coverage boundary measured quality-NEGATIVE (2 better / 5 worse). Revisit
+   * only with a dedicated full-radius start expansion.
    *
-   * <p><b>Consumer scope: the return-check skip decision ONLY.</b> The oracle
-   * originally also fed candidate scoring (phase-1 + routed re-score); the
-   * 548-cell corpus A/B measured that as a net-neutral wash hiding a new
-   * failure class — four 30km distR crashes (0.86-0.97 → 0.59-0.66), all
-   * caused by moderate return over-estimates (elevation-asymmetric sectors:
-   * costly climb out, cheap ride back) steering placement into premature
-   * contraction. Consumer attribution (three-way: full / scoring-only /
-   * skip-only) pinned every crash on the scoring path and showed the skip
-   * path strictly benign — it even fixes the flagship undershoot cell better
-   * (mallorca_75km distR 0.51 → 0.92) because a skip-path over-estimate is
-   * self-correcting: it only triggers the real return Dijkstra earlier,
-   * converting the estimate into truth, while a ranking over-estimate
-   * substitutes for truth with no correction.
+   * <p><b>Consumer scope: the return-check skip decision ONLY.</b> It once also
+   * fed candidate scoring; the 548-cell A/B measured that as a net-neutral wash
+   * hiding four 30km distR crashes — return over-estimates on elevation-asymmetric
+   * sectors (costly climb out, cheap ride back) steering placement into premature
+   * contraction. A skip-path over-estimate is self-correcting (it only triggers
+   * the real return Dijkstra earlier); a ranking over-estimate substitutes for
+   * truth with no correction.
    */
   private ReturnDistanceOracle returnOracle;
   /** Telemetry: return estimates answered by the oracle vs the EMA fallback. */
@@ -511,12 +450,9 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Deterministic uniform value in [-1, 1) from a seed and two salts
-   * (splitmix64-style finalizer). Keyed on stable inputs only — candidate
-   * coordinates or fixed knob ids, never iteration order — so the same
-   * request + seed reproduces the same route. Shared by the greedy score
-   * jitter and the WAYPOINT/ISOCHRONE geometry knobs in
-   * {@code RoutingEngine.doWaypointBasedRoundTrip} (a private method, so not a
-   * resolvable {@code @link} target from here).
+   * (splitmix64-style). Keyed on stable inputs only (coordinates or fixed knob
+   * ids, never iteration order), so the same request + seed reproduces the same
+   * route. Shared by the greedy jitter and the WAYPOINT/ISOCHRONE geometry knobs.
    */
   public static double seededUnit(int seed, int saltA, int saltB) {
     long h = seed * 0x9E3779B97F4A7C15L;
@@ -543,12 +479,11 @@ public class GreedyRoundTripPlanner {
   private int acceptedNonIsoLegs;
 
   /**
-   * Length fraction of {@code leg} whose segments run between nodes the
-   * reference track visited. Node membership (not traveled-edge membership)
-   * by design: the variant legs are raw junction sequences while the
-   * reference track is detailed, so consecutive-pair granularities differ;
-   * for a bounded-retrace MEASUREMENT the looser node test is the right
-   * trade (the penalty itself uses the strict edge test in OsmPath).
+   * Length fraction of {@code leg} whose segments run between nodes the reference
+   * track visited. Uses node membership, not traveled-edge membership, by design:
+   * variant legs are raw junction sequences while the refTrack is detailed, so a
+   * looser node test is the right trade for a bounded-retrace MEASUREMENT (the
+   * penalty itself uses the strict edge test in OsmPath).
    */
   public static double reuseFraction(OsmTrack leg, OsmTrack refTrack) {
     if (leg == null || leg.nodes == null || leg.nodes.size() < 2 || refTrack == null) {
@@ -574,10 +509,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Return-distance estimate in meters from the given position to the loop
-   * start: sector-resolved when the oracle covers the position, the legacy
-   * {@code airDist × indirectnessEst} guess otherwise. {@code air} is passed
-   * in because every caller has already computed it.
+   * Return-distance estimate (meters) to the loop start: sector-resolved when the
+   * oracle covers the position, else {@code air × indirectnessEst}. {@code air} is
+   * passed in because every caller already has it.
    */
   private double estimateReturnMeters(int ilon, int ilat, double air, double indirectnessEst) {
     if (returnOracle != null) {
@@ -597,10 +531,8 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Set the active profile name. Should be called by {@link btools.router.RoutingEngine}
-   * during planner construction, immediately after the planner is
-   * instantiated, so the internal fallback gate matches what the
-   * production gate will evaluate downstream.
+   * Set the active profile name. Call during planner construction so the internal
+   * fallback gate matches the production gate downstream.
    */
   public void setProfileName(String profileName) {
     this.profileName = profileName;
@@ -611,19 +543,11 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Delegate the planner's internal fallback-quality check to the
-   * production gate ({@link RoundTripQualityGate#evaluate}). Pre-Phase 1.5
-   * this used independent {@code FALLBACK_MIN_RATIO} / {@code FALLBACK_MAX_RATIO}
-   * / {@code FALLBACK_MAX_REUSE} / {@code FALLBACK_MAX_CLOSURE_M}
-   * thresholds, which let the planner ship fallback loops the production
-   * gate would then reject — wasting the retry budget on outcomes that
-   * couldn't survive. Delegating closes that loop: the planner now
-   * rejects (and retries) using the same criteria the engine will apply
-   * downstream.
-   *
-   * <p>{@code allowSamewayback} is hard-coded to false: greedy never
-   * produces same-way-back routes (it requires a normal loop closure),
-   * so the gate's same-way-back permissive path is not relevant here.
+   * Delegate the planner's internal fallback-quality check to the production gate
+   * ({@link RoundTripQualityGate#evaluate}), so the planner rejects (and retries)
+   * on the same criteria the engine applies downstream instead of shipping
+   * fallback loops the gate would then reject. {@code allowSamewayback} is
+   * hard-coded false: greedy never produces same-way-back routes.
    */
   // Package-private for direct testing — see GreedyRoundTripPlannerTest's
   // Phase 1.5 delegation verification.
@@ -641,12 +565,10 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Fallback soundness rank (lower = better) for a gate verdict. A clean
-   * accepted loop (0) beats a structurally-sound but same-way-back loop —
-   * a parallel corridor or out-and-back (1) — which in turn beats a chaotic
-   * loop (2: self-intersections, beelines, hostile surface, mid-route zigzag).
-   * When the planner can find nothing clean, shipping the rideable corridor
-   * (rank 1) is far better than wandering into a 21-crossing chaos loop.
+   * Fallback soundness rank (lower = better): clean accepted loop (0) beats a
+   * sound same-way-back corridor / out-and-back (1) beats a chaotic loop (2:
+   * self-intersections, beelines, hostile surface, zigzag). Shipping the rideable
+   * corridor beats wandering into a chaos loop.
    */
   static int fallbackSeverity(RoundTripQualityResult verdict) {
     if (verdict == null) return 3;
@@ -661,11 +583,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Distance-share of the track on edges traversed more than once — matches
-   * {@link LoopQualityMetrics#computeRoadReusePercent}'s definition (first
-   * visit not reuse; subsequent visits ARE reuse). Self-contained (does not
-   * depend on the planner's running visit counts); use this when evaluating
-   * the FINAL loop, not when scoring per-step candidates.
+   * Distance-share of the track on edges traversed more than once (first visit not
+   * reuse), matching {@link LoopQualityMetrics#computeRoadReusePercent}.
+   * Self-contained — use on the FINAL loop, not per-step candidate scoring.
    */
   static double finalTrackReuseRatio(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) return 0.0;
@@ -687,21 +607,11 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Stamp planner telemetry on the result including start-iso/non-start-iso
-   * source breakdown. The 5-arg overload was replaced by this — callers that
-   * don't track source type pass 0 for those four counters. Internally
-   * uses {@link #stampBaseTelemetry} for the underlying counters.
-   */
-  /**
-   * Budget-pressure diagnostic: the direct answer to "was the plan budget
-   * enough?". Emitted on every plan() exit — grep production logs / corpus
-   * diagnostics for "budget:" and look at the headroom distribution: a
-   * healthy fleet has P95 headroom well above 0 and near-zero "EXHAUSTED"
-   * lines for the standard 40-100km class.
-   *
-   * <p>Also stamps the instance-held plan-exit telemetry the static
-   * {@link #stampTelemetry} cannot reach: the return-oracle usage split and
-   * the iso-pool health summary + source-attribution counters (issue #26).
+   * Budget-pressure diagnostic: "was the plan budget enough?". Emitted on every
+   * plan() exit; grep "budget:" and read the headroom distribution (healthy fleet
+   * = P95 headroom well above 0, near-zero "EXHAUSTED" for the 40-100km class).
+   * Also stamps the instance-held plan-exit telemetry {@link #stampTelemetry}
+   * (static) can't reach: return-oracle usage and iso-pool health + source counters.
    */
   private void stampBudgetDiagnostic(RoundTripResult result, long planStart,
                                      long planBudgetMs, long deadline) {
@@ -790,36 +700,28 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Minimum graph-native (per-step, non-iso) candidates guaranteed a routed
-   * slot when the step's candidate list mixes sources (the ISO_GREEDY blend).
+   * Minimum graph-native (per-step, non-iso) candidates guaranteed a routed slot
+   * when a step mixes sources (the ISO_GREEDY blend).
    *
-   * <p>Why: phase-1 ranks candidates on estimated leg distance. Graph-native
-   * candidates carry their expansion-compiled routed truth (detours included)
-   * while start-pool iso candidates are estimated as airDist × indirectnessEst
-   * — systematically optimistic exactly where warped terrain makes real legs
-   * long. In a mixed sort the optimistic guesses outrank the honest
-   * measurements, iso picks monopolize the routed top-K, and the fair,
-   * cost-aware routed comparison ({@link #combinedRoutedScore}) never gets to
-   * price the fresh local alternative. The 2026-07 AUTO winner-attribution
-   * study measured the downstream effect: of 139 cases where plain GREEDY beat
-   * ISO_GREEDY, the dominant loss clusters were pricier surfaces (38 cases,
-   * median +0.8 cost/m on gravel) and extra self-crossings (38 cases) — both
-   * shapes of "the cheaper, cleaner local leg was never routed". Reserving a
-   * seat changes nothing when the honest pick deserves to lose — phase-2
-   * still judges on routed truth.
+   * <p>Why: phase-1 ranks on estimated leg distance. Graph-native candidates carry
+   * expansion-compiled routed truth while start-pool iso candidates use the
+   * optimistic {@code airDist × indirectnessEst}, so in a mixed sort the guesses
+   * outrank the measurements and iso monopolizes the routed top-K —
+   * {@link #combinedRoutedScore} never prices the honest local leg. The 2026-07
+   * AUTO winner study: of 139 plain-GREEDY wins, the loss clusters were pricier
+   * surfaces (38) and extra self-crossings (38) — both "the cleaner local leg was
+   * never routed". Reserving a seat changes nothing when the honest pick deserves
+   * to lose; phase-2 still judges on routed truth.
    */
   private static final int GRAPH_NATIVE_MIN_ROUTED = 1;
   /** Quota at the late/retry budget ({@link #MAX_ROUTE_ATTEMPTS_LATE} slots). */
   private static final int GRAPH_NATIVE_MIN_ROUTED_LATE = 2;
 
   /**
-   * Graph-native routed-seat quota for one attempt. A DEGRADED pool cedes one
-   * more seat to graph-native truth — the automatic influence reduction for
-   * thin/bunched/losing pools — but the quota never fills the whole routed
-   * top-K: DEGRADED means the pool keeps competing on routed truth (total
-   * eviction is UNHEALTHY's provider switch), so under small budgets (the
-   * BOUNDED preset routes top-K 2/3) one seat always stays contestable by
-   * iso picks.
+   * Graph-native routed-seat quota for one attempt. A DEGRADED pool cedes one more
+   * seat, but the quota never fills the whole routed top-K: DEGRADED still competes
+   * on routed truth (total eviction is UNHEALTHY's provider switch), so under small
+   * budgets one seat always stays contestable by iso picks.
    */
   static int graphNativeQuota(boolean lateStep, boolean degraded, int routeBudget) {
     int quota = lateStep ? GRAPH_NATIVE_MIN_ROUTED_LATE : GRAPH_NATIVE_MIN_ROUTED;
@@ -834,10 +736,8 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Start-pool iso candidates carry a real {@code costFromStart}; per-step
-   * graph-native candidates carry the {@code NO_ISO_COST} sentinel (they have
-   * real {@code bucketHits} but no start-anchored cost). Single source of
-   * truth for the source split used by the routed-slot quota and the
-   * routed-iso diagnostics.
+   * graph-native candidates carry the {@code NO_ISO_COST} sentinel. Single source
+   * of truth for the source split used by the routed-slot quota and diagnostics.
    */
   static boolean isIsoPoolCandidate(RoundTripCandidateProvider.CandidatePoint cp) {
     return cp.costFromStart != RoundTripCandidateProvider.NO_ISO_COST;
@@ -845,13 +745,10 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Undo a tentatively committed leg — the shared tail of all four rejection
-   * sites (too-long raw, detail reject, too-long detailed, closure reject).
-   * Removes the leg and its via, reverses the attribution counters, and fires
-   * the iso-rejection health hook. Sites past {@code addVisitedEdges} call
-   * {@code removeVisitedEdges} themselves first (the operations are
-   * order-independent). Returns the restored total distance; the caller
-   * re-reads the current anchor from the stack and restores its loop-local
-   * prev coordinates.
+   * sites. Removes the leg and its via, reverses the attribution counters, and
+   * fires the iso-rejection health hook. Sites past {@code addVisitedEdges} call
+   * {@code removeVisitedEdges} first (order-independent). Returns the restored
+   * total distance; the caller re-reads the anchor and restores prev coordinates.
    */
   private double undoTentativeLeg(ScoredRoute accepted, List<OsmTrack> segments,
                                   List<MatchedWaypoint> waypointStack,
@@ -878,15 +775,11 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Source attribution for a leg that COMMITTED (issue #26 §4): one grep-able
-   * diagnostic per accepted leg recording its source, whether the source quota
-   * injected it, the return-estimate regime, where routed truth and closure
-   * trials moved it from its heuristic rank ({@code heurRank} &gt; 0 = the
-   * routed comparison overrode the heuristic winner; {@code trial} &gt; 0 =
-   * closure feasibility overrode the routed ranking), and the pool health at
-   * that step. Also feeds the health tracker: a mixed-source routed top-K that
-   * a graph-native candidate won is the pool-loss signal, and the committed
-   * via's bearing feeds the sector-bunching signal.
+   * Source attribution for a COMMITTED leg (issue #26): one grep-able diagnostic
+   * per accepted leg (source, quota injection, return regime, how routed truth and
+   * closure trials moved it from its heuristic rank, pool health). Also feeds the
+   * health tracker: a mixed-source routed top-K won by graph-native is the
+   * pool-loss signal, and the via's bearing feeds sector-bunching.
    */
   private void recordAcceptedLegAttribution(RoundTripResult result, ScoredRoute accepted,
                                             int step, int trial, boolean mixedSourceRouting,
@@ -912,15 +805,11 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Ensure at least {@code minNonIso} graph-native candidates hold routed
-   * slots in {@code picked} when {@code sorted} has them to offer: add while
-   * under {@code k}, otherwise evict the worst-scored iso pick per injection.
-   * Quota picks skip the angular-spread rule deliberately — at K=3 source
-   * fairness outranks spread, and the routed re-score judges the outcome
-   * either way. No-op for single-source lists (plain GREEDY, or the iso
-   * provider's graph-native fallback). On change, {@code picked} is re-sorted
-   * by heuristic score so downstream ordering semantics stay score-ordered;
-   * returns whether anything changed.
+   * Ensure at least {@code minNonIso} graph-native candidates hold routed slots in
+   * {@code picked}: add while under {@code k}, else evict the worst-scored iso
+   * pick. Quota picks skip the angular-spread rule (at K=3 source fairness outranks
+   * spread; phase-2 judges the outcome). No-op for single-source lists. On change,
+   * {@code picked} is re-sorted by heuristic score; returns whether anything changed.
    */
   static boolean enforceSourceQuota(List<RoundTripCandidateProvider.CandidatePoint> picked,
                                     List<RoundTripCandidateProvider.CandidatePoint> sorted,
@@ -960,12 +849,10 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Pick up to {@code k} candidates from the score-sorted list with angular
-   * spread: walk in score order, accept each pick if it is at least
-   * {@link #MIN_ANGULAR_SEPARATION_DEG} away from every previously picked
-   * candidate's bearing. If diversity culling leaves fewer than {@code k},
-   * back-fill with the next best-scored candidates regardless of spread so
-   * we never under-budget.
+   * Pick up to {@code k} score-sorted candidates with angular spread: accept each
+   * if it is ≥{@link #MIN_ANGULAR_SEPARATION_DEG} from every prior pick. If culling
+   * leaves fewer than {@code k}, back-fill with the next best-scored so we never
+   * under-budget.
    */
   static List<RoundTripCandidateProvider.CandidatePoint> pickDiverseTopK(
     List<RoundTripCandidateProvider.CandidatePoint> sorted, int k) {
@@ -1000,9 +887,8 @@ public class GreedyRoundTripPlanner {
   // Package-private (not private) so RoutingIslandExceptionTest can drive the
   // unroutable-leg path directly via a RoutingEngine test double.
   /**
-   * Cap on how much of a relaxed-penalty return variant may retrace the
-   * committed legs (node-membership length fraction). Bounds the trade this
-   * search is allowed to make: a bounded same-way-back stretch may replace a
+   * Cap on how much of a relaxed-penalty return variant may retrace the committed
+   * legs (node-membership fraction): a bounded same-way-back stretch may replace a
    * self-crossing return, a full retrace may not.
    */
   private static final double MAX_VARIANT_REUSE_FRACTION = 0.5;
@@ -1916,15 +1802,12 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Scored return variants (loop-review backlog item 2, post-debunk scope):
-   * route the closing leg under the standard full anti-reuse penalty first;
-   * when — and only when — that return crosses the committed path (the
-   * shipped-teardrop fingerprint), re-route it with the refTrack penalty
-   * relaxed ({@link #RETURN_VARIANT_FACTORS}) and pick the best variant by
-   * (crossings, reuse fraction, distance error), lexicographically. Variants
-   * retracing more than {@link #MAX_VARIANT_REUSE_FRACTION} of their length
-   * are discarded. The clean common case costs zero extra Dijkstras and is
-   * bit-identical to the pre-variant behaviour.
+   * Route the closing leg under the full anti-reuse penalty; only when that return
+   * crosses the committed path (the teardrop fingerprint), re-route with the
+   * refTrack penalty relaxed ({@link #RETURN_VARIANT_FACTORS}) and pick the best
+   * variant by (crossings, reuse fraction, distance error) lexicographically.
+   * Variants retracing more than {@link #MAX_VARIANT_REUSE_FRACTION} are discarded.
+   * The clean common case costs zero extra Dijkstras.
    */
   private OsmTrack routeReturnWithVariants(List<OsmTrack> segments, OsmTrack returnRef,
                                            MatchedWaypoint fromMwp, MatchedWaypoint toMwp,
@@ -1995,11 +1878,10 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Detail-retrack {@code leg} and, when the result's fidelity is too low
-   * (the retrack fell back to raw geometry somewhere — see
-   * {@link #detailFidelityTooLow}), re-route the leg once and retrack that.
-   * Returns the best track obtained; callers re-check fidelity and decide
-   * whether to commit, retry, or accept best-effort.
+   * Detail-retrack {@code leg}; when fidelity is too low (retrack fell back to raw
+   * geometry — see {@link #detailFidelityTooLow}), re-route once and retrack that.
+   * Returns the best track; callers re-check fidelity and decide to commit, retry,
+   * or accept best-effort.
    */
   private OsmTrack detailWithFallback(String name, OsmTrack leg, MatchedWaypoint fromMwp,
                                       MatchedWaypoint toMwp, OsmTrack refTrack, long deadline) {
@@ -2071,20 +1953,16 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Whether a detailed leg is unfit to commit. Two concerns, scoped
-   * differently:
+   * Whether a detailed leg is unfit to commit, on two scopes:
    * <ul>
-   *   <li><b>Chord fingerprint (all profiles)</b> — a long null-tag edge means
-   *       the detail pass fell back to raw geometry there and the shipped
-   *       polyline cuts straight across terrain (the user-visible "beeline").
-   *       Many SHORT null edges are visually fine (geometry still follows the
-   *       road shape), so the fingerprint, not the fraction, is the geometry
-   *       criterion. Keeping the fraction profile-agnostic was measured to
-   *       roughly double matrix runtime via unnecessary gravel reroutes and
-   *       contributed to an AUTO budget exhaustion no-route (grenoble 50km).</li>
-   *   <li><b>Metadata coverage (paved only)</b> — the gate's hostility check
-   *       needs verifiable tags; unverifiable distance above the ceiling is a
-   *       paved-profile safety concern, the original rationale.</li>
+   *   <li><b>Chord fingerprint (all profiles)</b> — a long null-tag edge means the
+   *       detail pass fell back to raw geometry, shipping a straight cut across
+   *       terrain (the "beeline"). Many SHORT null edges are fine, so the
+   *       fingerprint, not the fraction, is the criterion: a profile-agnostic
+   *       fraction roughly doubled matrix runtime via needless gravel reroutes.</li>
+   *   <li><b>Metadata coverage (paved only)</b> — the gate's hostility check needs
+   *       verifiable tags; unverifiable distance over the ceiling is a paved
+   *       safety concern.</li>
    * </ul>
    */
   private boolean detailFidelityTooLow(OsmTrack track) {
@@ -2102,11 +1980,10 @@ public class GreedyRoundTripPlanner {
   // --- Waypoint matching ---
 
   /**
-   * Profile-aware variant of {@link #matchPoint} for candidate-via targets:
-   * delegates to {@code RoutingEngine#profileAwareMatchPoint} (probe rings,
-   * cost-factor scored) with the same null-on-any-failure contract. Falls back
-   * to the plain nearest match when the probe matching throws or finds nothing,
-   * so candidate handling is never stricter than before.
+   * Profile-aware variant of {@link #matchPoint} for candidate vias: delegates to
+   * {@code RoutingEngine#profileAwareMatchPoint} (probe rings, cost-factor scored),
+   * same null-on-failure contract, falling back to the plain nearest match on
+   * throw or miss so candidate handling is never stricter than before.
    */
   private MatchedWaypoint matchCandidatePointProfileAware(int ilon, int ilat) {
     try {
@@ -2156,21 +2033,16 @@ public class GreedyRoundTripPlanner {
   /**
    * Count self-intersections of the committed prefix + one candidate leg.
    *
-   * <p>SAFE-4: {@code committedPrefixNodes} is the node list of the merged
-   * committed segments, built ONCE per attempt by the caller and shared
-   * read-only across all routed candidates of that attempt — replacing the
-   * former per-candidate re-merge of the whole prefix. We copy it into a fresh
-   * list and append only this candidate's nodes (replicating
-   * {@link #appendTrack}'s first-node dedupe), so the resulting node sequence
-   * is element-identical to {@code mergeSegmentsNoMap(segments, candidate)} and
-   * the crossing count is bit-identical. The shared prefix list is never
-   * mutated.
+   * <p>SAFE-4: {@code committedPrefixNodes} is the merged committed segments' node
+   * list, built once per attempt and shared read-only. We copy it and append only
+   * this candidate's nodes (replicating {@link #appendTrack}'s first-node dedupe),
+   * so the sequence is element-identical to
+   * {@code mergeSegmentsNoMap(segments, candidate)} and the count is bit-identical.
+   * The shared list is never mutated.
    *
    * <p>SAFE-1: the tentative track is consumed only by
    * {@link RoundTripQualityGate#countSelfIntersections}, which reads
-   * {@code track.nodes} exclusively (sampled shape nodes + integer ccw
-   * geometry) and never touches {@code nodesMap}/{@code containsNode}, so no
-   * map build is needed.
+   * {@code track.nodes} exclusively, so no {@code nodesMap} build is needed.
    */
   private int countTentativeSelfIntersections(List<OsmPathElement> committedPrefixNodes,
                                               OsmTrack candidateSegment) {
@@ -2190,10 +2062,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Append {@code source} nodes onto {@code targetNodes}, skipping the first
-   * source node when it duplicates the current tail — the exact node-dedupe
-   * {@link #appendTrack} performs (distance/ascend/cost are irrelevant here
-   * because the only consumer reads the node sequence).
+   * Append {@code source} onto {@code targetNodes}, skipping the first source node
+   * when it duplicates the current tail — the exact node-dedupe {@link #appendTrack}
+   * performs (distance/ascend/cost irrelevant; the only consumer reads nodes).
    */
   // Package-private for unit testing the dedupe contract (SAFE-4 parity).
   static void appendNodesDeduped(List<OsmPathElement> targetNodes,
@@ -2213,23 +2084,18 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Leg-junction seam gap above which the merged loop is considered to carry a
-   * synthetic splice defect. Adjacent legs share their junction node by
-   * construction (leg N+1 routes from leg N's matched endpoint), so any larger
-   * jump means some machinery (via relocation, cached-leg reuse, repair splice)
-   * glued non-adjacent endpoints — the merged track ships that jump as a
-   * silent straight edge that neither the DIRECT-waypoint nor the
-   * direct_segment marker ever sees.
+   * Leg-junction seam gap above which the merged loop carries a splice defect.
+   * Adjacent legs share their junction node by construction, so a larger jump
+   * means some machinery (via relocation, cached-leg reuse, repair splice) glued
+   * non-adjacent endpoints, shipping a silent straight edge no marker sees.
    */
   static final int MAX_SEAM_GAP_METERS = 100;
 
   /**
-   * Leg-junction contiguity check (loop-review backlog item 1). Returns one
-   * human-readable description per seam whose endpoints differ by more than
-   * {@link #MAX_SEAM_GAP_METERS}. Detection-only by the beeline-gate lesson
-   * (a geometric hard gate fired 1283x/run on legitimate chord geometry):
-   * callers log + attach diagnostics, never reject — by construction this
-   * should never fire, so any hit is a planner bug worth a grep-able trace.
+   * Leg-junction contiguity check. Returns one description per seam whose endpoints
+   * differ by more than {@link #MAX_SEAM_GAP_METERS}. Detection-only (the
+   * beeline-gate lesson: a geometric hard gate fired 1283x/run on legitimate
+   * chords) — callers log, never reject; by construction any hit is a planner bug.
    */
   static List<String> seamGapsMeters(List<OsmTrack> segments, OsmTrack finalSegment) {
     List<String> gaps = new ArrayList<>();
@@ -2269,10 +2135,9 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Concatenate {@code segments} (then optional {@code finalSegment}) into one
-   * track WITHOUT building the node lookup map. The map is only needed by
-   * callers that do {@code containsNode}/{@code nodesMap} lookups on the
-   * merged track (refTrack poisoning, final/snapshot output); callers that
-   * only read the node sequence should use this and skip the map build.
+   * track WITHOUT the node lookup map. Use this when only reading the node
+   * sequence; callers doing {@code containsNode}/{@code nodesMap} lookups need
+   * {@link #mergeSegments}.
    */
   private OsmTrack mergeSegmentsNoMap(List<OsmTrack> segments, OsmTrack finalSegment) {
     OsmTrack merged = new OsmTrack();
@@ -2292,14 +2157,11 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Like {@link #mergeSegments} but also carries each detailed leg's detour data
-   * onto the merged loop, so the result track has the {@code detourMap}
-   * {@link OsmTrack#processVoiceHints} needs to emit turn instructions. The
-   * greedy legs are already retracked for detail (frozen detourMap), so this is
-   * a metadata-only merge: node geometry is identical to {@link #mergeSegments},
-   * so a track validated by the quality gate stays valid. Used only for the
-   * final result track, not the per-step refTrack merges (which don't need
-   * detours).
+   * Like {@link #mergeSegments} but also carries each leg's detour data onto the
+   * merged loop, so the result has the {@code detourMap}
+   * {@link OsmTrack#processVoiceHints} needs. Metadata-only merge — node geometry
+   * is identical to {@link #mergeSegments}, so a gate-validated track stays valid.
+   * Used only for the final result track.
    */
   private OsmTrack mergeSegmentsDetoured(List<OsmTrack> segments, OsmTrack finalSegment) {
     OsmTrack merged = new OsmTrack();
@@ -2371,22 +2233,17 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Position-weighted distance-share reuse ratio. Sum of (segment-length ×
-   * position-penalty) of reused edges divided by total track length. Matches
-   * {@link LoopQualityMetrics}'s distance-weighted definition for the
-   * unweighted case ({@link #BOUNDARY_PROXIMITY_FRAC} = 0) and adds a
-   * boundary-proximity multiplier: reuse where either the first visit or the
-   * current re-visit is within {@link #BOUNDARY_PROXIMITY_FRAC} of the loop's
-   * start or end gets full weight (1.0); mid-loop reuse gets reduced weight
-   * ({@link #MID_LOOP_REUSE_WEIGHT}). Implements the cyclist's intuition that
-   * back-and-forth near start/end is much more annoying than mid-loop reuse.
+   * Position-weighted distance-share reuse ratio: sum of (segment-length ×
+   * position-penalty) over reused edges / total length. Matches
+   * {@link LoopQualityMetrics}'s distance-weighted definition when
+   * {@link #BOUNDARY_PROXIMITY_FRAC}=0, plus a boundary-proximity multiplier —
+   * reuse within {@link #BOUNDARY_PROXIMITY_FRAC} of loop start/end gets full
+   * weight, mid-loop reuse {@link #MID_LOOP_REUSE_WEIGHT} (back-and-forth near
+   * start/end is more annoying than mid-loop).
    *
-   * @param trackStartCumDist cumulative loop distance at the start of {@code track}
-   * @param desiredDistance   target total loop distance (for proximity normalisation)
-   * @param segLens SAFE-5 precomputed per-segment distances ({@code segLens[i-1]}
-   *                = distance from node i-1 to i), or {@code null} to compute
-   *                inline. When non-null it must equal {@code calcDistance} for
-   *                every segment — it is the same int widened to double.
+   * @param segLens SAFE-5 precomputed per-segment distances, or {@code null} to
+   *                compute inline; when non-null must equal {@code calcDistance}
+   *                for every segment.
    */
   private double computeTrackVisitedRatio(OsmTrack track, VisitedEdgeStore edges,
                                           double trackStartCumDist, double desiredDistance,
@@ -2421,23 +2278,16 @@ public class GreedyRoundTripPlanner {
   private static final double MID_LOOP_REUSE_WEIGHT = 0.5;
 
   /**
-   * Returns 1.0 when either {@code firstPos} or {@code currentPos} is within
-   * {@link #BOUNDARY_PROXIMITY_FRAC} of loop start (0) or loop end
-   * (desiredDistance); {@link #MID_LOOP_REUSE_WEIGHT} when both are mid-loop.
-   * Matches the cyclist's intuition: visible/annoying retraces are at the
-   * boundaries; mid-loop crossings are often unavoidable and barely noticed.
+   * 1.0 when either {@code firstPos} or {@code currentPos} is within
+   * {@link #BOUNDARY_PROXIMITY_FRAC} of loop start (0) or end (desiredDistance);
+   * {@link #MID_LOOP_REUSE_WEIGHT} when both are mid-loop. Boundary retraces are
+   * visible/annoying; mid-loop crossings are often unavoidable.
    *
-   * <p>Distinguishing scenic stems from accidental backtracks is the job of
-   * the final {@link ReuseClassifier} gate — the per-edge heuristic here is
-   * a planner steering hint, not a semantic classifier. An earlier attempt to
-   * push that semantic distinction down to the per-edge level (forgiving
-   * stems, penalising mid-loop) caused a real regression: in constrained
-   * road networks like Dreieich, raising the mid-loop penalty pushed the
-   * planner off the only viable paved loops and onto path/track terrain
-   * that the profile gate then rejected outright. Keeping the per-edge
-   * weights neutral (boundary=visible, mid=tolerable) lets the planner find
-   * the route, and the post-routing classifier decides whether it's a
-   * lollipop or accidental retrace.
+   * <p>Deliberately neutral per-edge weights: an earlier attempt to push the
+   * scenic-stem-vs-backtrack distinction down here regressed constrained networks
+   * (Dreieich — raising the mid-loop penalty pushed the planner off the only paved
+   * loops onto profile-rejected track terrain). The final {@link ReuseClassifier}
+   * gate makes that semantic call; this is only a steering hint.
    */
   static double boundaryProximityWeight(double firstPos, double currentPos, double desiredDistance) {
     if (desiredDistance <= 0) return 1.0;
@@ -2450,11 +2300,11 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * SAFE-5: per-segment integer distances of {@code track}, indexed so
-   * {@code result[i-1] == nodes[i-1].calcDistance(nodes[i])}. Shared by
+   * SAFE-5: per-segment integer distances of {@code track}
+   * ({@code result[i-1] == nodes[i-1].calcDistance(nodes[i])}). Shared by
    * {@link #computeTrackVisitedRatio} and
-   * {@link RoundTripQualityGate#worstContiguousCostlyMetersForScorer} on the
-   * same track so the {@link CheapRuler} distance is computed once, not twice.
+   * {@link RoundTripQualityGate#worstContiguousCostlyMetersForScorer} so the
+   * {@link CheapRuler} distance is computed once.
    */
   private static int[] segmentDistances(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) {
@@ -2477,9 +2327,8 @@ public class GreedyRoundTripPlanner {
 
 
   /**
-   * Convert the waypoint stack (MatchedWaypoints) to a list of OsmNodeNamed
-   * forming a closed loop: [start, wp1, wp2, ..., closing_point].
-   * The closing point is a copy of start to form the return leg.
+   * Convert the waypoint stack to a closed-loop list of OsmNodeNamed
+   * [start, wp1, …, closing]; the closing point copies start to form the return leg.
    */
   private List<OsmNodeNamed> buildLoopWaypoints(List<MatchedWaypoint> stack) {
     List<OsmNodeNamed> wps = new ArrayList<>();
@@ -2508,10 +2357,10 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Build a list of pre-matched waypoints for the final routing pass.
-   * Preserves node1/node2/crosspoint from the greedy planner's matching,
-   * so doRouting() skips re-matching and uses the exact same road segments.
-   * The start and closing waypoints are re-matched from the original start MWP.
+   * Pre-matched waypoints for the final routing pass, preserving
+   * node1/node2/crosspoint from greedy matching so doRouting() skips re-matching
+   * and reuses the same road segments. Start and closing waypoints are re-matched
+   * from the original start MWP.
    */
   List<MatchedWaypoint> buildMatchedWaypoints(
     List<MatchedWaypoint> stack, MatchedWaypoint startMwp) {
@@ -2581,9 +2430,8 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Combine the routed scorer score with cost-per-meter so candidate selection
-   * accounts for both route shape (visited reuse, distance, loop feasibility)
-   * and road quality (cost).
+   * Combine the routed scorer score with cost-per-meter so selection weighs both
+   * route shape (reuse, distance, feasibility) and road quality (cost).
    */
   static double combinedRoutedScore(double scorerScore, double costPerMeter) {
     return scorerScore + COST_PER_METER_WEIGHT * costPerMeter;
@@ -2595,17 +2443,14 @@ public class GreedyRoundTripPlanner {
    * recorded waypoints and leg list.
    */
   /**
-   * Fallback-selection rule: a candidate closed loop replaces the incumbent
-   * best fallback when it is gate-accepted and the incumbent is not (regardless
-   * of error), or — when both share the same gate verdict — when its geometric
-   * error is lower. This prevents latching a gate-rejected low-error loop and
-   * discarding a usable gate-accepted higher-error one.
+   * Fallback-selection rule: a candidate closed loop replaces the incumbent when
+   * it is gate-accepted and the incumbent is not (any error), or — same gate
+   * verdict — when its geometric error is lower.
    *
-   * <p><b>Two-state convenience only:</b> this overload maps {@code accepted=false}
-   * to the chaos rank (2) and therefore <em>cannot express the middle tier</em>
-   * (severity 1 = sound same-way-back corridor). Callers that need the full
-   * three-tier preference (e.g. the production fallback selection at the
-   * {@code severity}-based call site) must use the {@code int} overload below.
+   * <p><b>Two-state only:</b> this overload maps {@code accepted=false} to chaos
+   * rank (2) and cannot express the middle tier (severity 1 = sound corridor);
+   * callers needing the full three-tier preference must use the {@code int}
+   * overload below.
    */
   static boolean isBetterFallback(boolean candidateAccepted, double candidateError,
                                   boolean incumbentAccepted, double incumbentError) {
@@ -2615,9 +2460,8 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Prefer the lower soundness rank (accepted &gt; sound corridor &gt; chaos);
-   * among equal ranks, the lower geometric error. This keeps a rideable
-   * same-way-back loop as the fallback instead of latching a low-error but
-   * chaotic (self-intersecting) loop the planner wandered into while retrying.
+   * among equal ranks, the lower geometric error. Keeps a rideable same-way-back
+   * loop as fallback instead of latching a low-error but chaotic loop.
    */
   static boolean isBetterFallback(int candidateSeverity, double candidateError,
                                   int incumbentSeverity, double incumbentError) {
@@ -2662,9 +2506,8 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * A candidate that has been routed. Package-private so unit tests can
-   * construct instances and verify candidate-list ordering (Phase 1 Step 2
-   * of the closure-aware control-node planning spec).
+   * A routed candidate. Package-private so unit tests can construct instances and
+   * verify candidate-list ordering.
    */
   static final class ScoredRoute {
     OsmTrack track;
@@ -2678,9 +2521,8 @@ public class GreedyRoundTripPlanner {
     /** True iff the routed re-score's return estimate was oracle-backed (vs EMA fallback). */
     boolean oracleBackedReturn;
     /**
-     * Final routed score after combinedRoutedScore() and the partial
-     * self-intersection penalty (lower is better). Used to sort the
-     * per-step candidate list and as the input to the Step 5 closure score.
+     * Final routed score (lower is better) after {@link #combinedRoutedScore} and
+     * the partial self-intersection penalty. Sorts the per-step candidate list.
      */
     double routedScore;
     /** Index of this candidate in the per-step trial loop (0-based). */
@@ -2688,22 +2530,17 @@ public class GreedyRoundTripPlanner {
     /** Tentative self-intersections of the routed leg against committed segments. */
     int tentativeSelfIntersections;
     /**
-     * Longest contiguous hostile stretch in the routed leg, in meters,
-     * computed via {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}.
-     * Sentinel {@code -1} on non-paved profiles where the predicate would
-     * over-flag.
+     * Longest contiguous hostile stretch in the routed leg (meters), via
+     * {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}. Sentinel
+     * {@code -1} on non-paved profiles where the predicate would over-flag.
      */
     int routedLegWorstHostileMeters;
   }
 
   /**
-   * Sort routed candidates ascending by {@link ScoredRoute#routedScore}
-   * (lower is better). Stable: candidates with equal score retain their
-   * insertion order, which preserves the legacy first-best-wins tie-break.
-   *
-   * <p>Package-private for unit testing (Phase 1 Step 2 acceptance criterion:
-   * "routed candidates are sorted by routedScore; partial self-intersection
-   * penalty affects ordering").
+   * Sort routed candidates ascending by {@link ScoredRoute#routedScore} (lower =
+   * better). Stable, so equal scores keep insertion order (the legacy
+   * first-best-wins tie-break). Package-private for unit testing.
    */
   static void sortByRoutedScore(List<ScoredRoute> candidates) {
     Collections.sort(candidates, BY_ROUTED_SCORE);

@@ -17,12 +17,11 @@ import btools.util.CheapAngleMeter;
  *         + w_isoHostility * hostility            // 0 unless hostilityActive (paved profiles)
  *         + w_isoBonus    * isoContourDepthMismatch(sourceContour, step, totalSteps)
  *
- * The last three terms are the ISO-aware contribution: a bucket-density bonus
- * (lower score) for candidates reached by a Dijkstra expansion — start-centered
- * iso or per-step graph-native — a hostility penalty applied only
- * when {@link #setHostilityActive(boolean)} is on, and a contour-depth-mismatch
- * penalty. {@code hostility} is the contiguous-hostile-meters penalty when routed
- * leg data is available, else the cost-per-airmeter penalty.
+ * <p>The last three terms are the ISO-aware contribution: a bucket-density bonus for
+ * Dijkstra-expansion candidates, a hostility penalty active only when
+ * {@link #setHostilityActive(boolean)} is on, and a contour-depth-mismatch penalty.
+ * {@code hostility} is the contiguous-hostile-meters penalty when routed leg data is
+ * available, else the cost-per-airmeter penalty.
  */
 public class CandidateScorer {
 
@@ -37,14 +36,11 @@ public class CandidateScorer {
   /** Penalty weight for high cost-per-airmeter at the candidate (hostility signal). */
   private final double wIsoHostility;
   /**
-   * Whether iso-hostility scoring is active. The hostility metric
-   * ({@link #isoHostilityPenalty}) assumes a paved-profile cost-per-airmeter
-   * baseline of ~1.3; for MTB/gravel the baseline is ~9 (path_preference=20
-   * for MTB inflates costfactor on any paved way). Applying the same
-   * threshold to all profiles fires hostility on every candidate for MTB,
-   * collapsing ISO_GREEDY's selection space. Off by default — turn on
-   * explicitly via {@link #setHostilityActive(boolean)} only for profiles
-   * whose typical cost/airDist is close to 1.0.
+   * Whether iso-hostility scoring is active. {@link #isoHostilityPenalty} assumes a paved-profile
+   * cost-per-airmeter baseline of ~1.3; MTB/gravel run ~9 (path_preference inflates costfactor on
+   * paved ways), so the same threshold fires hostility on every candidate and collapses
+   * ISO_GREEDY's selection space. Off by default — enable via {@link #setHostilityActive(boolean)}
+   * only for profiles whose typical cost/airDist is near 1.0.
    */
   private boolean hostilityActive;
 
@@ -65,11 +61,10 @@ public class CandidateScorer {
   }
 
   /**
-   * Full ctor including the ISO-aware weights. The bonus rewards iso-validated
-   * candidates of acceptable bucket density (small constant, tie-break only);
-   * the hostility weight penalises candidates whose Dijkstra cost-per-airmeter
-   * is high (mountains, switchbacks, sea-blocked sectors). Both default to 0
-   * for radial candidates with no iso metadata.
+   * Full ctor including the ISO-aware weights. The bonus rewards iso-validated candidates of
+   * acceptable bucket density (small constant, tie-break only); the hostility weight penalises high
+   * Dijkstra cost-per-airmeter (mountains, switchbacks, sea-blocked sectors). Both default to 0 for
+   * radial candidates with no iso metadata.
    */
   CandidateScorer(double wDist, double wLoop, double wDir, double wReuse, double wSpread,
                          double wPrev, double wIsoBonus, double wIsoHostility) {
@@ -85,12 +80,10 @@ public class CandidateScorer {
   }
 
   /**
-   * Enable or disable iso-hostility scoring. Only enable for paved profiles
-   * (fastbike, road) where {@link #isoHostilityPenalty}'s 1.5-4.0 indirectness
-   * thresholds match the profile's cost-per-airmeter baseline. MTB/gravel
-   * profiles have a baseline of ~9 (every paved way costs 9× ideal) and the
-   * penalty fires on every candidate, collapsing the candidate pool. The
-   * other ISO weights (bonus, contour-mismatch) remain active either way.
+   * Enable/disable iso-hostility scoring. Enable only for paved profiles (fastbike, road) whose
+   * cost-per-airmeter baseline matches {@link #isoHostilityPenalty}'s 1.5–4.0 thresholds. MTB/gravel
+   * baseline ~9 fires the penalty on every candidate, collapsing the pool. The other ISO weights
+   * (bonus, contour-mismatch) stay active either way.
    */
   void setHostilityActive(boolean active) {
     this.hostilityActive = active;
@@ -146,13 +139,11 @@ public class CandidateScorer {
   /**
    * Score a candidate, with optional ISO-aware metadata (option A).
    *
-   * @param costFromStart Dijkstra cost-units from the loop start to this
-   *                      candidate; {@link RoundTripCandidateProvider#NO_ISO_COST}
-   *                      when the candidate is from a non-iso provider.
-   * @param bucketHits    Population of the candidate's angular bucket;
-   *                      {@link RoundTripCandidateProvider#NO_ISO_DENSITY} when
-   *                      unavailable. Higher = denser road network in that
-   *                      sector.
+   * @param costFromStart Dijkstra cost-units from loop start to candidate;
+   *                      {@link RoundTripCandidateProvider#NO_ISO_COST} for non-iso providers.
+   * @param bucketHits    population of the candidate's angular bucket (higher = denser road
+   *                      network in that sector);
+   *                      {@link RoundTripCandidateProvider#NO_ISO_DENSITY} when unavailable.
    */
   double score(double candidateDistance, double subRouteTarget,
                       double totalSoFar, double returnDistance, double desiredTotal,
@@ -168,19 +159,12 @@ public class CandidateScorer {
   }
 
   /**
-   * Phase 2 v2 entry point. {@code routedLegWorstContiguousHostileMeters}
-   * is the longest unbroken hostile stretch in the candidate's routed
-   * sub-track. The planner computes it with the scorer-side approximation
-   * {@link RoundTripQualityGate#worstContiguousCostlyMetersForScorer}, which
-   * works on the single-pass tracks scoring sees (the gate's stricter
-   * tag-aware {@link RoundTripQualityGate#worstContiguousHostileMetersPaved}
-   * needs per-edge metadata it does not yet have). When ≥ 0 it REPLACES the
-   * {@link #isoHostilityPenalty} term — the routed signal is strictly more
-   * accurate than iso-Dijkstra indirectness because the route is now known,
-   * not estimated. Pass {@code -1} to retain the legacy iso behaviour.
-   *
-   * <p>Only paved profiles activate hostility (gated by
-   * {@link #setHostilityActive}); gravel/MTB routes ignore the signal.
+   * Phase 2 v2 entry point. {@code routedLegWorstContiguousHostileMeters} is the longest unbroken
+   * hostile stretch in the candidate's routed sub-track (computed via the scorer-side approximation
+   * {@link RoundTripQualityGate#worstContiguousCostlyMetersForScorer}). When ≥ 0 it REPLACES the
+   * {@link #isoHostilityPenalty} term — the routed signal is strictly more accurate than
+   * iso-Dijkstra indirectness. Pass {@code -1} to retain the legacy iso behaviour. Only paved
+   * profiles activate hostility (gated by {@link #setHostilityActive}); gravel/MTB ignore it.
    */
   double score(double candidateDistance, double subRouteTarget,
                       double totalSoFar, double returnDistance, double desiredTotal,
@@ -220,10 +204,9 @@ public class CandidateScorer {
   }
 
   /**
-   * Phase-appropriate depth penalty for iso candidates: early loop steps (1–2)
-   * should prefer deep frontier candidates (contour 100); late steps should
-   * prefer shallower candidates (closer to current). Penalty in [0, 1]; 0 when
-   * the contour is missing or already matches the step's preferred depth.
+   * Phase-appropriate depth penalty for iso candidates: early steps prefer deep frontier candidates
+   * (contour 100), late steps prefer shallower ones. Penalty in [0, 1]; 0 when the contour is
+   * missing or already matches the step's preferred depth.
    */
   double isoContourDepthMismatch(int sourceContour, int step, int totalSteps) {
     if (sourceContour == RoundTripCandidateProvider.NO_ISO_CONTOUR) return 0;
@@ -239,19 +222,12 @@ public class CandidateScorer {
   }
 
   /**
-   * Bonus (subtracted from the score, so makes the candidate better) for a
-   * Dijkstra-expansion candidate of acceptable bucket density. Plateaus at
-   * hits≥3 — extra-dense buckets do NOT score better than typical-dense ones
-   * (we don't want to over-prefer urban-grid candidates). Sparse buckets
-   * (hits&lt;3) ramp down to 0 (fragility signal — one-shot road slivers,
-   * usually dead-end pockets that force the next leg to backtrack out).
-   *
-   * <p>Gated on bucket density ALONE: per-step graph-native candidates (the
-   * production GREEDY default) carry real {@code bucketHits} but a sentinel
-   * {@code costFromStart} — the former conjunctive guard zeroed the dead-end
-   * signal exactly on that path. {@code costFromStart} stays in the signature
-   * for callers/tests but no longer gates the bonus.
-   * Radial candidates (no density metadata) get 0.
+   * Bonus (subtracted from the score) for a Dijkstra-expansion candidate of acceptable bucket
+   * density. Plateaus at hits ≥ 3 (don't over-prefer urban-grid candidates); sparse buckets
+   * (hits &lt; 3) ramp to 0 (fragility — one-shot road slivers / dead-end pockets that force the
+   * next leg to backtrack). Gated on bucket density ALONE — {@code costFromStart} stays in the
+   * signature for callers/tests but no longer gates the bonus (the old conjunctive guard zeroed the
+   * dead-end signal on the production graph-native path). Radial candidates (no density) get 0.
    */
   double isoValidatedBonus(double costFromStart, int bucketHits) {
     if (bucketHits == RoundTripCandidateProvider.NO_ISO_DENSITY) {
@@ -262,11 +238,10 @@ public class CandidateScorer {
   }
 
   /**
-   * Penalty for high cost-per-airmeter at the candidate — Dijkstra had to spend
-   * many cost-units per meter of straight-line distance to reach it, which
-   * means hostile terrain (mountains, sea-blocked, low road density).
-   * Profile-typical roads have cost/airDist ≈ 1.3; mountains/switchbacks 3-5.
-   * Scaled to [0, 1] linearly between 1.5 and 4.0; 0 if iso data is missing.
+   * Penalty for high cost-per-airmeter — Dijkstra spent many cost-units per straight-line meter to
+   * reach the candidate, signalling hostile terrain (mountains, sea-blocked, low road density).
+   * Profile-typical ≈ 1.3, mountains/switchbacks 3–5. Scaled to [0, 1] linearly between 1.5 and
+   * 4.0; 0 if iso data is missing.
    */
   double isoHostilityPenalty(double costFromStart, double distFromStart) {
     if (costFromStart == RoundTripCandidateProvider.NO_ISO_COST || distFromStart <= 50) {
@@ -279,19 +254,13 @@ public class CandidateScorer {
   }
 
   /**
-   * Phase 2 v2: penalty for the longest unbroken hostile stretch in a
-   * routed sub-track. Mirrors {@link RoundTripQualityGate}'s contiguous-
-   * stretch ceiling — the cyclist's complaint surface is "I was sent
-   * down 2 km of farm track," not "my route averaged a 1.4 cost ratio."
-   * Feeding this back into candidate scoring lets the planner prefer
-   * sub-routes whose worst stretch stays well under the gate's cap.
+   * Phase 2 v2: penalty for the longest unbroken hostile stretch in a routed sub-track — the
+   * cyclist's complaint is "2 km of farm track," not "a 1.4 average cost ratio." Lets the planner
+   * prefer sub-routes whose worst stretch stays under the gate's cap.
    *
-   * <p>Mapping: 0 m → 0; ramps linearly from {@code SAFE_FLOOR} to
-   * {@code MAX_CONTIGUOUS_HOSTILE_METERS}; saturates at 1 once the
-   * routed leg already exceeds the gate's hard ceiling.
-   *
-   * <p>Sentinel {@code -1} signals "no data" (e.g. non-paved profile,
-   * or caller did not compute) and returns 0.
+   * <p>0 m → 0; ramps linearly from {@code SAFE_FLOOR} to
+   * {@link RoundTripQualityGate#MAX_CONTIGUOUS_HOSTILE_METERS}, saturating at 1 above the ceiling.
+   * Sentinel {@code -1} (no data — non-paved profile, or not computed) returns 0.
    */
   double contiguousHostilityPenalty(int worstStretchMeters) {
     if (worstStretchMeters < 0) return 0;
@@ -302,10 +271,7 @@ public class CandidateScorer {
     return (worstStretchMeters - safeFloor) / (double) (cap - safeFloor);
   }
 
-  /**
-   * How far the candidate distance is from the sub-route target.
-   * Normalized to [0, ~1] range.
-   */
+  /** How far the candidate distance is from the sub-route target. Normalized to [0, ~1]. */
   double distanceScore(double candidateDistance, double subRouteTarget) {
     if (subRouteTarget <= 0) return 0;
     return Math.abs(candidateDistance - subRouteTarget) / subRouteTarget;
@@ -322,20 +288,18 @@ public class CandidateScorer {
   }
 
   /**
-   * Strengthen the direction preference so a round-trip keeps a coherent outward
-   * heading instead of wandering / doubling back into self-crossings. On by
-   * default. Strength and late-step retention are calibrated constants.
+   * Strengthen the direction preference so a round-trip keeps a coherent outward heading instead of
+   * wandering into self-crossings. On by default; strength and late-step retention are calibrated.
    */
   public static final boolean STRONG_DIRECTION = true;
   private static final double STRONG_DIRECTION_MULT = 2.5;
   /** Direction retention for steps &gt; 2 in strong mode (0 = off after step 2, lets closure win late). */
   private static final double STRONG_DIRECTION_LATE = 0.3;
   /**
-   * Terrain-feasibility guard: scale the direction term's influence down when the
-   * requested heading is unreachable this step (the best candidate is far
-   * off-bearing — sea, no roads that way), so direction never forces a route
-   * into terrain it cannot traverse. The planner sets {@link #dirReferenceOffset}
-   * (best achievable |Δbearing|) each step. On by default. Mountains keep direction (roads exist, just
+   * Terrain-feasibility guard: scale the direction term down when the requested heading is
+   * unreachable this step (best candidate far off-bearing — sea, no roads), so direction never
+   * forces the route into impassable terrain. The planner sets {@link #dirReferenceOffset} (best
+   * achievable |Δbearing|) each step. On by default. Mountains keep direction (roads exist, just
    * costlier) — only true blockage relaxes it.
    */
   static final boolean DIR_FEASIBILITY = true;
@@ -345,10 +309,9 @@ public class CandidateScorer {
   void setDirectionReferenceOffset(double deg) { this.dirReferenceOffset = deg; }
 
   /**
-   * Penalty for a candidate bearing that misaligns with the direction preference.
-   * Scales by {@link #directionFade}(step) (full early, tapering late) and by the
-   * terrain-feasibility factor (see {@link #DIR_FEASIBILITY}); 0 when the
-   * preference is {@link DirectionPreference#ANY} or the fade has reached 0.
+   * Penalty for a candidate bearing that misaligns with the direction preference. Scales by
+   * {@link #directionFade}(step) and the terrain-feasibility factor ({@link #DIR_FEASIBILITY});
+   * 0 when the preference is {@link DirectionPreference#ANY} or the fade has reached 0.
    */
   double directionScore(double candidateBearing, DirectionPreference pref, int step) {
     if (pref == null || pref == DirectionPreference.ANY) return 0;
@@ -368,9 +331,8 @@ public class CandidateScorer {
   }
 
   /**
-   * Direction preference fades: full weight at step 1, half at step 2, zero after.
-   * Strong-direction mode keeps a gentle outward pull through later steps so the
-   * loop stays coherent (loop-closure feasibility, w_loop, still dominates late).
+   * Direction preference fades: full weight at step 1, half at step 2, zero after. Strong-direction
+   * mode keeps a gentle outward pull through later steps (loop-closure feasibility still dominates).
    */
   double directionFade(int step) {
     if (STRONG_DIRECTION) {
@@ -384,15 +346,13 @@ public class CandidateScorer {
   }
 
   /**
-   * Penalizes candidates whose air distance from the previous waypoint differs
-   * from the target sub-route distance. Implements the Silesian algorithm's
-   * (d(prev, candidate) - target)^2 term which naturally prevents waypoint clustering
-   * without a hard angular filter.
+   * Penalizes candidates whose air distance from the previous waypoint differs from the target
+   * sub-route distance — the Silesian algorithm's (d(prev, candidate) − target)² term, which
+   * prevents waypoint clustering without a hard angular filter.
    *
-   * @param distFromPrevious air distance from previous waypoint to candidate (meters),
-   *                         or -1 if no previous waypoint (first step)
-   * @param subRouteTarget   target sub-route distance (meters)
-   * @return penalty in [0, inf), 0 when distFromPrevious == -1 (first step)
+   * @param distFromPrevious air distance from previous waypoint to candidate (meters), or -1 on the
+   *                         first step
+   * @return penalty in [0, ∞), 0 when distFromPrevious == -1
    */
   double previousDistancePenalty(double distFromPrevious, double subRouteTarget) {
     if (distFromPrevious < 0 || subRouteTarget <= 0) return 0;
@@ -401,10 +361,9 @@ public class CandidateScorer {
   }
 
   /**
-   * Penalizes candidates based on their distance from start relative to the loop phase.
-   * Early steps: penalize staying too close to start (want exploration).
-   * Late steps: penalize being too far from start (want closure).
-   * Uses a smooth blend over phase [0.4, 0.8] to avoid abrupt preference flips.
+   * Penalizes candidate distance from start by loop phase: early steps penalize staying too close
+   * (want exploration), late steps penalize being too far (want closure), with a smooth blend over
+   * phase [0.4, 0.8] to avoid abrupt flips.
    */
   double spreadPenalty(double distFromStart, double searchRadius, int step, int totalSteps) {
     if (searchRadius <= 0 || totalSteps <= 0) return 0;

@@ -6,19 +6,18 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Result of the optimized FAST waypoint placement: a complete, committed-once
- * waypoint skeleton plus which placement path produced it. The caller replaces
- * its waypoint list with {@link #skeleton} in one step (build-then-commit), so
- * a failed or degraded placement can never leave partial waypoints behind.
+ * Result of the optimized FAST waypoint placement: a complete waypoint skeleton
+ * plus which placement path produced it. The caller swaps in {@link #skeleton}
+ * in one step (build-then-commit), so a failed placement never leaves partial
+ * waypoints behind.
  */
 public final class FastPlacementOutcome {
 
   /**
    * Full skeleton: start, intermediate vias, closing start. Fully validated on
-   * every path — the optimized paths commit only road-snapped, deduped,
-   * reachability-checked vias, and the circle fallback runs the shared
-   * matching pass behind {@link FastPlacementOps#circleFallbackValidated}. The
-   * caller routes it as-is (plus the start snap it owns).
+   * every path (optimized paths commit only road-snapped, deduped,
+   * reachability-checked vias; the circle fallback runs the shared matching pass
+   * behind {@link FastPlacementOps#circleFallbackValidated}). Routed as-is.
    */
   public final List<OsmNodeNamed> skeleton;
   final Path path;
@@ -39,7 +38,7 @@ public final class FastPlacementOutcome {
   /**
    * Which placement path produced the skeleton. The first three map to the
    * {@code ENVELOPE_FAST} telemetry counter, {@code CIRCLE_FALLBACK} to
-   * {@code CIRCLE} — the 2-value counter is a stable corpus contract.
+   * {@code CIRCLE}; that 2-value counter is a stable corpus contract.
    */
   enum Path {RING, DIRECTIONAL_LOBE, RING_FALLBACK, CIRCLE_FALLBACK}
 }

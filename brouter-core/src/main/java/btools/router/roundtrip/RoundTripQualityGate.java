@@ -11,63 +11,27 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Production-safety acceptance gate for round-trip routes.
+ * Uniform hard acceptance gate for round-trip routes, applied to every
+ * algorithm (WAYPOINT, ISOCHRONE, GREEDY, ISO_GREEDY). A failing hard check
+ * sets {@code foundTrack=null} and surfaces a rejection reason; the algorithm's
+ * "best effort" must NOT silently downgrade to a surprising route.
  *
- * <p>A generated round-trip is unsafe to ship to a cyclist if any of the
- * following hard checks fails:
- * <ul>
- *   <li>a synthetic beeline segment (the engine inserted a straight line
- *       across un-routable terrain);</li>
- *   <li>a ferry segment unless the request explicitly allowed ferries;</li>
- *   <li>chaotic geometry with many self-crossings or hairpin reversals;</li>
- *   <li>a closure gap larger than {@link #MAX_CLOSURE_METERS} (the route
- *       did not actually return to the origin);</li>
- *   <li>a distance ratio outside {@code [MIN_DISTANCE_RATIO,
- *       MAX_DISTANCE_RATIO]} (the route is much shorter or much longer
- *       than the cyclist asked for);</li>
- *   <li>too few nodes to be a real loop;</li>
- *   <li>for a paved-only profile (fastbike/road), a significant share of
- *       distance on path/track/footway/unpaved surfaces — the cyclist
- *       cannot safely ride those on a road bike.</li>
- * </ul>
+ * <p>Hard rejects: synthetic beeline segment; ferry unless opted in; chaotic
+ * geometry (self-crossings/hairpins); closure gap over {@link #MAX_CLOSURE_METERS};
+ * distance ratio outside {@code [MIN_DISTANCE_RATIO, MAX_DISTANCE_RATIO]}; too
+ * few nodes; and, for a paved-only profile, too much distance on
+ * path/track/footway/unpaved surface (see {@link #checkHostileSegmentsPaved}).
  *
- * <p>The paved-profile hostility check is surface-aware: a soft highway
- * tag ({@code highway=path}, {@code highway=footway}, {@code highway=bridleway})
- * combined with a hard {@code surface=} tag ({@code asphalt}, {@code paved},
- * {@code paving_stones}, {@code concrete}, {@code chipseal}) is treated as
- * paved cycleway infrastructure, NOT as off-road. OSM data routinely uses
- * {@code highway=path} for paved cycleways, and the {@code surface=} tag is
- * the more reliable signal. {@code highway=steps} stays hostile regardless of
- * surface. {@code highway=track} is hostile <em>unless</em> it carries an
- * explicit hard surface (and is not {@code tracktype=grade2..5}), or is a
- * {@code tracktype=grade1} track on an OSM cycle network — see
- * {@link #isRoadBikeSuitablePavedTrack(String)}.
+ * <p>On top of the hard checks a {@link ReuseClassifier semantic reuse
+ * classifier} labels the loop: STRICT_LOOP (accept), LOLLIPOP (accept with
+ * disclosure — a retraced terminal spur to a cape/pass/dead-end valley),
+ * OUT_AND_BACK (accept only when {@code allowSamewayback=true}), INVALID_RETRACE
+ * (reject — accidental mid-loop backtracking).
  *
- * <p>On top of those hard checks the gate runs a <em>semantic reuse
- * classifier</em> ({@link ReuseClassifier}) that distinguishes:
- * <ul>
- *   <li><b>STRICT_LOOP</b> — a clean loop. Accepted.</li>
- *   <li><b>LOLLIPOP</b> — a loop with a retraced terminal spur (e.g. a
- *       scenic spur to a cape, climb to a pass, valley with one access
- *       road). Accepted with a disclosure.</li>
- *   <li><b>OUT_AND_BACK</b> — essentially out-and-back along the
- *       same road. Accepted only when {@code allowSamewayback=true}.</li>
- *   <li><b>INVALID_RETRACE</b> — accidental backtracking in the middle of
- *       a loop. Always rejected.</li>
- * </ul>
- *
- * <p>This is a HARD gate applied uniformly to all round-trip algorithms
- * (WAYPOINT, ISOCHRONE, GREEDY, ISO_GREEDY). A failing check sets
- * {@code foundTrack=null} and surfaces the rejection reason; the
- * algorithm-internal "best effort" must NOT silently downgrade to a
- * surprising route.
- *
- * <p>The thresholds intentionally err toward rejection: a clearly-bad
- * route is far worse user experience than "no route available, try a
- * different start or distance". <em>But</em> the classifier explicitly
- * preserves iconic forced-spur routes (mountain pass, cape, dead-end
- * valley) by recognising their structural signature rather than treating
- * all retracing as failure.
+ * <p>Thresholds err toward rejection: a clearly-bad route is worse than "no
+ * route, try a different start or distance". The classifier deliberately
+ * preserves iconic forced-spur routes by their structural signature rather than
+ * treating all retracing as failure.
  */
 public final class RoundTripQualityGate {
 
@@ -80,125 +44,84 @@ public final class RoundTripQualityGate {
   /** Minimum acceptable node count for a real loop (start + intermediate + close ≥ 4). */
   static final int MIN_NODES = 4;
   /**
-   * Maximum self-crossings allowed before a route is considered chaotic.
-   *
-   * <p>Calibrated against the mallorca-75km probe-baseline (18 self-
-   * crossings, clearly chaotic) vs iso_greedy-baseline (3, clean). The
-   * {@code <= 5} cap matches the AUTO competition's quality bar in
-   * {@code RoutingEngineAutoCompetitionTest.mallorca75kmFastbikeAutoBeatsProbeSpike}.
-   *
-   * <p>A briefly-tried relaxation to {@code 15} (during Phase 2 v3) was
-   * reverted on user direction: empirically the cyclist-acceptable
-   * geometry is much tighter than "fewer than 15 self-crossings", and
-   * routes with 6-10 incidental crossings tend to be the chaotic
-   * planner outputs the gate should keep rejecting. The shape-aware
-   * variants (greedy / iso_greedy) routinely produce 0-3 crossings;
-   * routes that exceed 5 typically indicate a planner choosing through
-   * a dense road grid in a way that looks like spaghetti on the map.
+   * Max self-crossings before a route is chaotic. Calibrated against the
+   * mallorca-75km probe baseline (18 crossings, chaotic) vs iso_greedy (3,
+   * clean); shape-aware variants produce 0-3, and routes over 5 are the
+   * spaghetti planner outputs the gate must keep rejecting. A relaxation to 15
+   * (Phase 2 v3) was reverted on user direction as far too loose.
    */
   static final int MAX_SELF_INTERSECTIONS = 5;
   /** Maximum hairpin-like turns allowed before a route is considered chaotic. */
   static final int MAX_HAIRPIN_TURNS = 20;
   /**
    * Node cap above which the self-intersection scan falls back to stride
-   * decimation. Set high enough that it is only ever a degenerate-input guard:
-   * a 100km loop is ~3300 nodes, 250km ~8000, and the O(n²) scan with the
-   * {@link #countSelfIntersections} early-exit ceiling runs sub-second at this
-   * size. Decimation is NOT shape-preserving — stride sampling replaces curved
-   * sub-paths with straight chords, fabricating crossings on dense switchback
-   * tracks (gate=21 where the full-resolution count is 0; measured on the
-   * alpine/coastal 100km loops). It under-counts on other geometries. So the
-   * scan must run at full node resolution for any realistic loop and only
-   * decimate as a last-resort cost guard on pathological input.
+   * decimation — a degenerate-input guard only (a 100km loop is ~3300 nodes,
+   * 250km ~8000, and the bounded O(n²) {@link #countSelfIntersections} scan runs
+   * sub-second at this size). Decimation is NOT shape-preserving: stride sampling
+   * replaces curves with chords, fabricating crossings on switchback tracks
+   * (measured gate=21 where the full count is 0). So realistic loops must scan at
+   * full resolution; decimate only as a last-resort cost guard.
    */
   private static final int MAX_SHAPE_SCAN_NODES = 10000;
   /** Ignore tiny digitization jitter when counting U-turns. */
   private static final int MIN_HAIRPIN_SEGMENT_METERS = 25;
 
   /**
-   * Maximum acceptable fraction of distance on profile-hostile edges. For a
-   * paved profile, hostile means {@code highway=path|track|footway|...} or
-   * a high-cost spike. 10% is intentionally tight: 10% of a 50km loop is
-   * 5km of dirt/path the cyclist would hit unexpectedly.
+   * Max fraction of distance on profile-hostile edges (paved profile:
+   * {@code highway=path|track|footway|...} or a high-cost spike). 10% is
+   * intentionally tight — 10% of a 50km loop is 5km of unexpected dirt.
+   * Complemented by {@link #MAX_CONTIGUOUS_HOSTILE_METERS}, which bounds the
+   * longest unbroken hostile stretch (the physical "sent down 2km of farm track"
+   * complaint surface).
    *
-   * <p>The total-fraction check is complemented by
-   * {@link #MAX_CONTIGUOUS_HOSTILE_METERS} which bounds the longest
-   * unbroken hostile stretch — a cyclist's complaint surface is "I was
-   * sent down 2 km of farm track" rather than "12 % of my route was mixed
-   * surface in 200 m bursts", and the contiguous-stretch length is the
-   * physical experience metric.
-   *
-   * <p><b>Phase 3 calibration (kept at 0.10).</b> The gate-tuning spec asked
-   * whether the post-Phase-1 fraction check could be slackened in favour of
-   * the contiguous-stretch check alone. We sampled the rejections after
-   * Phase 1 landed and found only four scenarios where total-fraction was
-   * the sole trip wire (every other rejection was already caught by the
-   * contiguous-stretch sub-cap or hard cost spikes). Slackening the
-   * fraction would have admitted those four — all with hostile mileage
-   * distributed in many small bursts on an otherwise paved loop — which is
-   * exactly the "death by a thousand cuts" pattern Phase 1's contiguous
-   * cap can't see. So the constant stays at 0.10 by deliberate choice, not
-   * inheritance.
+   * <p>Kept at 0.10 by deliberate Phase-3 calibration, not inheritance:
+   * slackening it in favour of the contiguous check alone would admit the
+   * "death by a thousand cuts" routes — hostile mileage in many small bursts on
+   * an otherwise paved loop — that the contiguous cap cannot see.
    */
   static final double MAX_HOSTILE_FRACTION = 0.10;
 
   /**
-   * Maximum combined share of distance that is either confirmed-hostile OR
-   * unverifiable (missing/unknown metadata). The hostile and suspect fractions
-   * each have their own {@link #MAX_HOSTILE_FRACTION} ceiling, but a route that
-   * sits just under both (e.g. 9% hostile + 9% suspect = 18% non-confirmed-paved)
-   * would otherwise pass while delivering far more questionable surface than a
-   * road-bike rider should get. This ceiling is the aggregate backstop; it sits
-   * above each individual ceiling so the more specific single-bucket messages
+   * Max combined share of distance that is confirmed-hostile OR unverifiable
+   * (missing metadata). Aggregate backstop above each bucket's own
+   * {@link #MAX_HOSTILE_FRACTION} ceiling, so a route just under both (e.g. 9%
+   * hostile + 9% suspect) still fails; set higher so the single-bucket messages
    * fire first.
    */
   static final double MAX_QUESTIONABLE_FRACTION = 0.15;
 
   /**
-   * Maximum length of a single unbroken hostile stretch on a paved
-   * profile, regardless of total share. Routes pass the total-fraction
-   * check but trip this one when they contain one long off-road section
-   * — a 1.5 km farm-track detour mid-loop is the kind of surprise
-   * cyclists complain about even if the rest of the loop is asphalt.
+   * Max length of a single unbroken hostile stretch on a paved profile,
+   * regardless of total share — a 1.5km farm-track detour mid-loop is the
+   * surprise cyclists complain about even when the rest of the loop is asphalt.
    */
   static final int MAX_CONTIGUOUS_HOSTILE_METERS = 1500;
 
   /**
-   * Costfactor above which a single edge is considered profile-hostile,
-   * independent of its tags. Paved profiles return {@code costfactor=1.0}
-   * for preferred ways (residential/cycleway/tertiary) and >4 only when
-   * the way is something the profile actively avoids (track grade5,
-   * unpaved primary, etc.).
+   * Costfactor above which a single edge is profile-hostile regardless of tags.
+   * Paved profiles return 1.0 for preferred ways (residential/cycleway/tertiary)
+   * and >4 only for ways they actively avoid (track grade5, unpaved primary).
    */
   static final double HOSTILE_COSTFACTOR_THRESHOLD = 4.0;
 
   /**
-   * Lower costfactor threshold used by the scorer-side approximation
-   * {@link #worstContiguousCostlyMetersForScorer}. The scorer cannot use
-   * tag-based hostility detection on single-pass tracks (wayKeyValues is
-   * null), so it compensates by flagging edges with moderately elevated
-   * costfactor — many hostile-by-tag edges sit in the 2-4 costfactor
-   * band under the fastbike profile, below the gate's hard threshold but
-   * already indicating "the profile is paying a real penalty here".
-   *
-   * <p>Calibrated to: (a) not flag quiet rural roads (~1.0-2.0) and
-   * (b) catch tracks/paths whose costfactor isn't quite at 4.0 but tags
-   * would have flagged them on a detailed track.
+   * Lower costfactor threshold for the scorer-side approximation
+   * {@link #worstContiguousCostlyMetersForScorer}, which can't do tag-based
+   * detection on single-pass tracks ({@code wayKeyValues} null). Set to 3.0 to
+   * catch hostile-by-tag edges in the 2-4 fastbike cost band (below the gate's
+   * hard 4.0) without flagging quiet rural roads (~1.0-2.0).
    */
   static final double SCORER_HOSTILE_COSTFACTOR_THRESHOLD = 3.0;
 
   /**
-   * Way-tag fragments that signal profile-hostile terrain for a paved
-   * profile. We match by substring against {@code MessageData.wayKeyValues}
-   * because the cost lookup may not have populated {@code costfactor} for
-   * every edge (e.g. data-error fallbacks).
+   * Way-tag fragments signalling profile-hostile terrain for a paved profile,
+   * matched by substring against {@code MessageData.wayKeyValues} because the
+   * cost lookup may not have populated {@code costfactor} for every edge.
    *
-   * <p>Rough but rideable paved surfaces — {@code surface=cobblestone},
-   * {@code surface=pebblestone} — are deliberately <em>not</em> listed
-   * here: uncomfortable on narrow tyres, fine to ride on a road bike,
-   * and present in real cycle networks (German pedestrian zones, Belgian
-   * cycle paths). Their inclusion in earlier versions of this list was
-   * triggering false-positive rejections in suburban regions.
+   * <p>Rough-but-rideable paved surfaces ({@code surface=cobblestone},
+   * {@code pebblestone}) are deliberately excluded: fine on a road bike and
+   * present in real cycle networks; listing them caused false-positive
+   * rejections in suburban regions.
    */
   private static final String[] PAVED_PROFILE_HOSTILE_TAG_FRAGMENTS = {
     "highway=path",
@@ -222,13 +145,10 @@ public final class RoundTripQualityGate {
 
   /**
    * Surface fragments that override a hostile {@code highway=} classification
-   * for paved profiles. A {@code highway=path} edge with one of these surface
-   * tags is paved infrastructure (typical: rural cycleways tagged generically
-   * as {@code path}/{@code footway}/{@code bridleway}) and IS rideable on a
-   * road bike. The OSM tagging convention is inconsistent here — cycleways
-   * get tagged as {@code path} or {@code footway} more often than they
-   * should, and the {@code surface=} tag is the more reliable signal for
-   * rideability.
+   * for paved profiles: a {@code highway=path} edge with one of these is paved
+   * infrastructure (rural cycleways mis-tagged as path/footway/bridleway) and IS
+   * road-bike rideable. OSM tagging is inconsistent, so {@code surface=} is the
+   * more reliable rideability signal.
    */
   private static final String[] PAVED_PROFILE_HARD_SURFACE_FRAGMENTS = {
     "surface=asphalt",
@@ -248,14 +168,12 @@ public final class RoundTripQualityGate {
   };
 
   /**
-   * Highway= fragments whose hostility may be overridden by a
-   * {@link #PAVED_PROFILE_HARD_SURFACE_FRAGMENTS} surface. Subset of
-   * {@link #PAVED_PROFILE_HOSTILE_TAG_FRAGMENTS} that is commonly mis-tagged
-   * to mean "narrow paved cycleway" rather than "off-road". Plain
-   * {@code highway=track} is handled by
-   * {@link #isRoadBikeSuitablePavedTrack(String)} because it needs stronger
-   * evidence than just {@code surface=asphalt}; {@code highway=steps} cannot
-   * be rideable regardless of surface.
+   * Highway fragments whose hostility a
+   * {@link #PAVED_PROFILE_HARD_SURFACE_FRAGMENTS} surface may override — the
+   * subset of {@link #PAVED_PROFILE_HOSTILE_TAG_FRAGMENTS} commonly mis-tagged as
+   * "narrow paved cycleway". Plain {@code highway=track} needs stronger evidence
+   * ({@link #isRoadBikeSuitablePavedTrack(String)}); {@code highway=steps} is
+   * never rideable regardless of surface.
    */
   private static final String[] SOFT_HIGHWAY_OVERRIDABLE = {
     "highway=path",
@@ -269,29 +187,12 @@ public final class RoundTripQualityGate {
 
   /**
    * Run all hard checks plus the semantic reuse classifier and return a
-   * structured verdict. Callers that want the route shape, disclosures, and
-   * specific reuse measurements (stem length, scenic spur length, max
-   * contiguous retrace) should use this entry point.
-   *
-   * <p>Order of evaluation:
-   * <ol>
-   *   <li>Null / too-few-nodes / closure / distance ratio — fast structural
-   *       checks. Failures here always produce {@link RouteShape#INVALID_RETRACE}
-   *       with a descriptive reason; the route never reached the loop
-   *       classifier because it doesn't even resemble a loop.</li>
-   *   <li>Beeline/ferry markers — synthetic gap and disallowed ferry detection.</li>
-   *   <li>Shape chaos — self-crossings and excessive hairpin turns.</li>
-   *   <li>Profile-hostility — for paved profiles, reject path/track-heavy
-   *       routes. This gate applies <em>regardless</em> of route shape:
-   *       a scenic spur on a fastbike profile that's mostly track is still
-   *       a bad route, no matter how iconic.</li>
-   *   <li>{@link ReuseClassifier#classify Semantic reuse classification} —
-   *       decides STRICT_LOOP vs LOLLIPOP vs OUT_AND_BACK vs
-   *       INVALID_RETRACE and produces the final accept/reject verdict.</li>
-   * </ol>
-   *
-   * <p>This three-arg overload is for auto-generated round-trip mode; see
-   * the four-arg overload for explicit-via-mode semantics.
+   * structured verdict — route shape, disclosures, and reuse measurements (stem
+   * length, scenic-spur length, max contiguous retrace). Evaluation order:
+   * structural (null/nodes/closure/distance) → beeline/ferry → shape chaos →
+   * profile-hostility → {@link ReuseClassifier#classify semantic reuse}; the
+   * first failure wins. Auto-generated mode; see the {@code explicitViaMode}
+   * overload for explicit-via semantics.
    */
   public static RoundTripQualityResult evaluate(OsmTrack track, double desiredDistance,
                                                 String profileName, boolean allowSamewayback) {
@@ -299,19 +200,11 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Same as the four-arg {@link #evaluate} above but with an explicit-via
-   * mode flag. When {@code explicitViaMode} is true:
-   * <ul>
-   *   <li>distance-ratio mismatch is downgraded from rejection to a soft
-   *       disclosure — the user-supplied via skeleton defines the route,
-   *       not the {@code roundTripDistance} target;</li>
-   *   <li>the semantic reuse classification stays informational; an
-   *       INVALID_RETRACE verdict on an explicit-via route only attaches
-   *       a disclosure rather than failing acceptance — the user picked
-   *       the vias, the engine just connects them.</li>
-   * </ul>
-   * Hard safety checks (closure, beeline, profile-hostility) remain
-   * active in explicit-via mode.
+   * As {@link #evaluate(OsmTrack, double, String, boolean)} but with explicit-via
+   * mode. When {@code explicitViaMode} is true the user's via skeleton defines
+   * the route, so a distance-ratio mismatch and an INVALID_RETRACE verdict
+   * downgrade from rejection to a disclosure. Hard safety checks (closure,
+   * beeline, profile-hostility) stay active.
    */
   public static RoundTripQualityResult evaluate(OsmTrack track, double desiredDistance,
                                                 String profileName, boolean allowSamewayback,
@@ -320,9 +213,8 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Full structured gate with explicit ferry opt-in. Generated loops call this
-   * overload so {@code route=ferry}/{@code ferry=*} tags are hard failures by
-   * default, while ferry-aware callers can deliberately allow them.
+   * Full structured gate with explicit ferry opt-in: {@code route=ferry}/
+   * {@code ferry=*} tags are hard failures unless {@code allowFerries} is set.
    */
   public static RoundTripQualityResult evaluate(OsmTrack track, double desiredDistance,
                                                 String profileName, boolean allowSamewayback,
@@ -499,12 +391,7 @@ public final class RoundTripQualityGate {
     return tags.contains("route=ferry") || tags.contains("ferry=");
   }
 
-  /**
-   * Chaos verdict carrying the crossing count so {@link #evaluate}'s tier
-   * decision can reuse it — the tier check used to re-run the full
-   * bounded-quadratic {@link #countSelfIntersections} a second time on
-   * exactly the rejection path that triggers planner retries.
-   */
+  /** Chaos verdict carrying the crossing count so {@link #evaluate}'s tier decision can reuse it. */
   private static final class ChaosCheck {
     final String reason;
     final int selfIntersections;
@@ -531,22 +418,18 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Crossings whose segments lie within this arc distance of the route start
-   * or end are NOT counted (user labeling, 2026-06-11): leaving and returning
-   * through the same home neighborhood crosses the outbound path by
-   * construction — expected, not a defect.
+   * Crossings within this arc distance (m) of the route start or end are not
+   * counted: leaving and returning through the same home neighborhood crosses
+   * the outbound path by construction — expected, not a defect.
    */
   static final double CROSSING_START_END_EXEMPT_M = 500;
 
   /**
-   * Vertical-separation exemption (user labeling, 2026-06-11): a geometric
-   * crossing where either involved edge is a bridge or tunnel is not an
-   * at-grade crossing — the dominant false-positive classes were bridge-ramp
-   * loops (route crosses under its own bridge approach, e.g. a spiral ramp
-   * built to avoid stairs) and river crossings re-crossed on different
-   * bridges. Edge tags ride on the edge's END element ({@code message} of
-   * {@code nodes[i]} describes edge i-1→i); raw tracks without messages keep
-   * the historic behaviour (no exemption).
+   * Vertical-separation exemption: a geometric crossing where either edge is a
+   * bridge or tunnel is not at-grade (dominant false positives were bridge-ramp
+   * loops and rivers re-crossed on different bridges). Edge tags ride on the
+   * edge's END element ({@code message} of {@code nodes[i]} describes edge
+   * i-1→i); raw tracks without messages get no exemption.
    */
   static boolean bridgeOrTunnelEdge(OsmPathElement edgeEnd) {
     if (edgeEnd == null || edgeEnd.message == null || edgeEnd.message.getWayKeyValues() == null) {
@@ -594,8 +477,8 @@ public final class RoundTripQualityGate {
   private static final int GRID_MIN_SEGMENTS = 512;
   /**
    * Grid cell edge in raw ilon/ilat units (microdegrees): ~220m in latitude.
-   * Typical sampled-shape segments (10-50m edges, occasional 200-950m chords)
-   * cover 1-4 cells, so bucket occupancy stays small and the scan near-linear.
+   * Typical sampled segments cover 1-4 cells, keeping bucket occupancy small and
+   * the scan near-linear.
    */
   private static final int GRID_CELL_UNITS = 2000;
 
@@ -609,17 +492,12 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Count crossing segment pairs (j >= i+2, both outside the start/end
-   * exemption windows and not bridge/tunnel, closure pair (0, n-2) excluded).
-   * Dispatches to a uniform spatial-hash grid above {@link #GRID_MIN_SEGMENTS}
-   * segments — the historical all-pairs scan is O(n²) with NO early exit for
-   * clean loops (~5.4M pair tests for a 100km loop) and runs up to ~380× per
-   * greedy plan (once per routed candidate, per return variant and per gate
-   * verdict). The grid produces the IDENTICAL count: a crossing point lies in
-   * both segments' bounding boxes, so the pair shares at least one covered
-   * cell; the stamp array dedupes multi-cell pairs; and the count is
-   * order-independent (below the ceiling all crossing pairs are counted, above
-   * it both variants return ceiling+1).
+   * Count crossing segment pairs (j >= i+2, both outside the start/end exemption
+   * windows and not bridge/tunnel; closure pair (0, n-2) excluded). Dispatches to
+   * a spatial-hash grid above {@link #GRID_MIN_SEGMENTS} segments; the grid yields
+   * the IDENTICAL count as the O(n²) brute scan (a crossing lies in both segments'
+   * bounding boxes so they share a cell; below the ceiling all pairs are counted,
+   * above it both return ceiling+1).
    */
   static int countSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
                                        double perim, int absoluteCeiling) {
@@ -727,11 +605,11 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Count node revisits where the second pass crosses the first TRANSVERSELY —
-   * the four incident path directions interleave around the shared node. A
-   * touch-and-turn (teardrop pinch: both pass-2 directions inside one sector
-   * of pass 1) and a same-edge retrace (shared neighbor) are NOT crossings;
-   * the former is the near-revisit detector's domain, the latter is reuse.
+   * Count node revisits where the second pass crosses the first transversely —
+   * the four incident directions interleave around the shared node. A
+   * touch-and-turn (teardrop pinch) and a same-edge retrace (shared neighbor) are
+   * NOT crossings; the former is the near-revisit detector's domain, the latter
+   * is reuse.
    */
   private static int countTransverseNodeRevisits(List<OsmPathElement> nodes, int ceiling, double[] cum) {
     int n = nodes.size();
@@ -828,27 +706,23 @@ public final class RoundTripQualityGate {
   // ======================================================================
 
   /**
-   * Upper bound on shared-run length (m) for a corridor to count as a crossing.
-   * Longer same-direction overlaps are road reuse, not knots (see section note).
+   * Upper bound on shared-run length (m) for a corridor to count as a crossing;
+   * longer same-direction overlaps are road reuse, not knots (see section note).
    */
   static final double MAX_CORRIDOR_CROSS_M = 300;
 
   /**
    * Maximal shared corridors of a closed track: runs of >=2 consecutive node
-   * revisits (i.e. at least one shared EDGE — the single-node case stays with
+   * revisits (>=1 shared EDGE; the single-node case stays with
    * {@link #isTransverseRevisit}). Returns one {@code int[]{a1, a2, b1, b2,
-   * sameDir, crossing}} per run, where {@code a1..a2} is the pass-1 index
-   * span, {@code b1..b2} the pass-2 span, {@code sameDir} whether pass 2
-   * rides the run in the same direction (always true on oneway/roundabout
-   * edges), and {@code crossing} whether the loop transversally crosses
-   * itself through this run. {@code crossing} requires three things:
-   * same-direction (opposite-direction runs are a two-way retrace, the
-   * reuse/CorridorOverlapIndex domain — counting them would mislabel measured
-   * retraces like Route de Clermont), a shared run no longer than
-   * {@link #MAX_CORRIDOR_CROSS_M} (longer = reuse, not a knot), and a
-   * transversal side-swap ({@link #corridorCrosses}).
+   * sameDir, crossing}} per run — pass-1 span {@code a1..a2}, pass-2 span
+   * {@code b1..b2}, {@code sameDir} whether pass 2 rides the run the same way,
+   * {@code crossing} whether the loop crosses itself through it. Crossing
+   * requires all three: same-direction (opposite = two-way retrace, the reuse
+   * domain), run no longer than {@link #MAX_CORRIDOR_CROSS_M}, and a transversal
+   * side-swap ({@link #corridorCrosses}).
    *
-   * <p>Caller passes FULL-resolution nodes: sampling breaks the node-identity
+   * <p>Caller must pass FULL-resolution nodes: sampling breaks the node-identity
    * adjacency this grouping relies on.
    */
   static List<int[]> sharedCorridors(List<OsmPathElement> nodes) {
@@ -910,17 +784,13 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Exact corridor-contracted transversality: does pass 2 (entering the shared
-   * run at node {@code a1} from {@code nodes[b1-1]}, exiting at {@code a2}
-   * toward {@code nodes[b2+1]}) cross pass 1's path (… {@code a1-1} → run →
-   * {@code a2+1} …)? Since pass 2 rides exactly ON pass 1's run, side-of-path
-   * propagates consistently along it, so the run contracts to its two end
-   * nodes: at each end, pass 1's outgoing and incoming rays split the angular
-   * circle, and pass 2 crosses iff its attachment falls in different sectors
-   * at the two ends (same outgoing-then-incoming boundary order at both ends
-   * keeps the sector orientation comparable). This is the corridor analogue of
-   * {@link #isTransverseRevisit}'s single-node test, with real node geometry —
-   * no centroid approximation.
+   * Corridor-contracted transversality: does pass 2, riding the shared run from
+   * {@code a1} to {@code a2}, cross pass 1's path? Since pass 2 rides exactly ON
+   * pass 1's run, side-of-path propagates consistently, so the run contracts to
+   * its two end nodes and pass 2 crosses iff its attachment falls in different
+   * angular sectors at the two ends. The corridor analogue of
+   * {@link #isTransverseRevisit}'s single-node test, with real node geometry (no
+   * centroid approximation).
    */
   private static boolean corridorCrosses(List<OsmPathElement> nodes, int a1, int a2, int b1, int b2) {
     int n = nodes.size();
@@ -949,9 +819,8 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Count over {@link #sharedCorridors}: one crossing per qualifying
-   * same-direction run. Added to {@link #countSelfIntersections} (see the call
-   * site there); pass FULL-resolution nodes.
+   * One crossing per qualifying same-direction run from {@link #sharedCorridors};
+   * added into {@link #countSelfIntersections}. Pass FULL-resolution nodes.
    */
   public static int countCorridorCrossings(List<OsmPathElement> nodes) {
     int crossings = 0;
@@ -1029,21 +898,14 @@ public final class RoundTripQualityGate {
   // ---- Profile-hostility helpers (unchanged from prior implementation) -----
 
   /**
-   * Walk track edges and reject on either:
-   * <ul>
-   *   <li>a single unbroken hostile stretch longer than
-   *       {@link #MAX_CONTIGUOUS_HOSTILE_METERS} (the cyclist's "I was
-   *       sent down 2km of farm track" complaint surface), or</li>
-   *   <li>total hostile distance share above {@link #MAX_HOSTILE_FRACTION},
-   *       or</li>
-   *   <li>missing-metadata (suspect) distance share above
-   *       {@link #MAX_HOSTILE_FRACTION}.</li>
-   * </ul>
-   * Missing metadata is treated as suspect, never as proof of quality.
-   * Suspect edges <em>break</em> the contiguous-hostile run (reset to 0): an
-   * unknown span is conservatively assumed to interrupt the hostile stretch, so
-   * the worst contiguous hostile length is under-reported rather than spanned
-   * across unknown gaps (see {@link #worstContiguousHostileMetersPaved}).
+   * Walk track edges and reject on any of: a single unbroken hostile stretch
+   * over {@link #MAX_CONTIGUOUS_HOSTILE_METERS} (the "sent down 2km of farm
+   * track" complaint surface); total hostile share over
+   * {@link #MAX_HOSTILE_FRACTION}; or suspect (missing-metadata) share over
+   * {@link #MAX_HOSTILE_FRACTION}. Missing metadata is suspect, never proof of
+   * quality, and breaks the contiguous-hostile run (reset to 0), so the worst
+   * stretch is under-reported rather than spanned across unknown gaps (see
+   * {@link #worstContiguousHostileMetersPaved}).
    */
   private static String checkHostileSegmentsPaved(OsmTrack track) {
     double total = 0;
@@ -1127,76 +989,47 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Walk the track and return the longest unbroken run of paved-profile-hostile
-   * edges in meters. The same predicate as {@link #checkHostileSegmentsPaved}
-   * uses for the gate's contiguous-stretch ceiling, exposed so the
-   * candidate scorer (Phase 2 v2) can prefer routes whose worst contiguous
-   * stretch stays well under {@link #MAX_CONTIGUOUS_HOSTILE_METERS} — the
-   * same metric the gate enforces, fed back into candidate selection.
-   *
-   * <p>Suspect edges (missing tags) break the streak. They neither extend
-   * the hostile run nor are counted as clean; treating them as breaks is
-   * conservative (under-reports the worst stretch).
-   *
-   * <p>Returns 0 for an empty or single-node track.
+   * Longest unbroken run of paved-profile-hostile edges in meters — the same
+   * predicate {@link #checkHostileSegmentsPaved} uses for the contiguous-stretch
+   * ceiling, exposed so the candidate scorer can prefer routes staying well under
+   * {@link #MAX_CONTIGUOUS_HOSTILE_METERS}. Suspect (missing-tag) edges break the
+   * streak (conservative under-report). Returns 0 for an empty/single-node track.
    */
   static int worstContiguousHostileMetersPaved(OsmTrack track) {
     return worstHostileStretchPaved(track).meters;
   }
 
   /**
-   * Scorer-side approximation of {@link #worstContiguousHostileMetersPaved}
-   * that works on single-pass tracks (where {@code MessageData.wayKeyValues}
-   * is null and the tag-based hostility check at
-   * {@link #isHostileForPavedProfile} silently returns false).
+   * Scorer-side approximation of {@link #worstContiguousHostileMetersPaved} for
+   * single-pass tracks, where {@code MessageData.wayKeyValues} is null and the
+   * tag-based check returns false (so the precise metric always returns 0 and the
+   * scorer's contiguous-hostility penalty never fires). Bypasses the null-tags
+   * guard and uses ONLY per-edge {@code costfactor} at the lower
+   * {@link #SCORER_HOSTILE_COSTFACTOR_THRESHOLD} (3.0 vs the gate's
+   * {@link #HOSTILE_COSTFACTOR_THRESHOLD} of 4.0) to catch hostile-by-tag edges
+   * in the 2-4 fastbike cost band. Ranking only — gate enforcement must keep
+   * using the tag-aware {@link #worstContiguousHostileMetersPaved}.
    *
-   * <p>The gate's precise predicate uses both costfactor and tag matching,
-   * and breaks the contiguous run on any edge with null {@code wayKeyValues}.
-   * That design is correct for the gate (don't reject without evidence) but
-   * produces a near-useless signal for candidate ranking: single-pass tracks
-   * always return 0, so the scorer's
-   * {@code contiguousHostilityPenalty} never fires and hostile candidates
-   * keep their high routedScore rank. The gate later rejects them post-
-   * detail, and the planner has to shrink radius or pick a worse-shape
-   * alternate to recover.
-   *
-   * <p>This method bypasses the {@code wayKeyValues == null} guard and
-   * uses ONLY the per-edge {@code costfactor} (which IS populated during
-   * single-pass routing). It uses a lower threshold than the gate
-   * ({@link #SCORER_HOSTILE_COSTFACTOR_THRESHOLD} = 3.0 vs
-   * {@link #HOSTILE_COSTFACTOR_THRESHOLD} = 4.0) to compensate for the
-   * missing tag check — many hostile-by-tag edges have costfactor in the
-   * 2-4 range under the fastbike profile, just below the gate's cost-only
-   * threshold. The lower bound is calibrated to flag edges whose cost
-   * already signals "the profile is paying a real penalty here" without
-   * firing on quiet rural roads (typically costfactor ~1.0-2.0).
-   *
-   * <p>Intended for candidate <em>ranking</em> only. Gate enforcement must
-   * continue to use the precise tag-aware
-   * {@link #worstContiguousHostileMetersPaved}.
-   *
-   * @return longest unbroken meters of edges with costfactor &gt;
-   *         {@link #SCORER_HOSTILE_COSTFACTOR_THRESHOLD}; 0 on tracks
-   *         without MessageData.
+   * @return longest unbroken meters with costfactor &gt;
+   *         {@link #SCORER_HOSTILE_COSTFACTOR_THRESHOLD}; 0 without MessageData.
    */
   static int worstContiguousCostlyMetersForScorer(OsmTrack track) {
     return worstContiguousMetersAboveCostfactor(track, SCORER_HOSTILE_COSTFACTOR_THRESHOLD, null);
   }
 
   /**
-   * SAFE-5 overload: same as {@link #worstContiguousCostlyMetersForScorer(OsmTrack)}
-   * but uses caller-precomputed per-segment distances ({@code segLens[i-1]} =
-   * distance from node i-1 to i) instead of recomputing {@code calcDistance}.
-   * {@code segLens} must match {@code calcDistance} for every segment (it is the
-   * same int), so the result is bit-identical.
+   * As {@link #worstContiguousCostlyMetersForScorer(OsmTrack)} but with
+   * caller-precomputed per-segment distances ({@code segLens[i-1]} = distance
+   * from node i-1 to i). Must match {@code calcDistance}, so the result is
+   * bit-identical.
    */
   static int worstContiguousCostlyMetersForScorer(OsmTrack track, int[] segLens) {
     return worstContiguousMetersAboveCostfactor(track, SCORER_HOSTILE_COSTFACTOR_THRESHOLD, segLens);
   }
 
   /**
-   * Costfactor-only worst-contiguous-stretch finder. Package-private for
-   * unit testing different thresholds; the production path uses
+   * Costfactor-only worst-contiguous-stretch finder. Package-private for testing
+   * different thresholds; production uses
    * {@link #worstContiguousCostlyMetersForScorer}.
    */
   static int worstContiguousMetersAboveCostfactor(OsmTrack track, double threshold) {
@@ -1204,11 +1037,9 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * @param segLens SAFE-5 precomputed per-segment distances ({@code segLens[i-1]}
-   *                = distance from node i-1 to i), or {@code null} to compute
-   *                inline. The original always computed {@code calcDistance}
-   *                for every segment (before the null-message check), so a
-   *                fully-populated buffer reproduces the scan exactly.
+   * @param segLens precomputed per-segment distances ({@code segLens[i-1]} =
+   *                distance from node i-1 to i), or {@code null} to compute inline
+   *                (must match {@code calcDistance} to reproduce the scan exactly).
    */
   static int worstContiguousMetersAboveCostfactor(OsmTrack track, double threshold, int[] segLens) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) return 0;
@@ -1234,11 +1065,11 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Return details for the longest unbroken hostile run on a paved profile.
-   * This is intentionally diagnostic-only: validation still depends on
-   * {@link #worstContiguousHostileMetersPaved(OsmTrack)}, but tests and
-   * planner instrumentation need coordinates to distinguish unavoidable
-   * terrain from planner-induced bad choices.
+   * Details (coordinates, tags) for the longest unbroken hostile run on a paved
+   * profile. Diagnostic-only — validation uses
+   * {@link #worstContiguousHostileMetersPaved(OsmTrack)}; tests and planner
+   * instrumentation need the coordinates to tell unavoidable terrain from
+   * planner-induced bad choices.
    */
   static HostileStretch worstHostileStretchPaved(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) return HostileStretch.NONE;
@@ -1347,13 +1178,11 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Fraction of route distance whose target node lacks source way metadata.
-   * Paved-profile validation treats these edges as suspect because it cannot
-   * prove whether they are asphalt, track, ferry, or direct fallback geometry.
-   *
-   * <p>This is exposed for greedy planning so a committed graph-native leg can
-   * verify that its metadata retracking pass actually succeeded before the leg
-   * becomes part of the mutable loop state.
+   * Fraction of route distance whose target node lacks source way metadata —
+   * suspect for paved-profile validation, which can't prove asphalt vs track vs
+   * ferry vs direct fallback. Exposed so a committed greedy graph-native leg can
+   * verify its metadata retracking succeeded before joining the mutable loop
+   * state.
    */
   static double missingMetadataFraction(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 2) return 0.0;
@@ -1433,9 +1262,9 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Whether the way carries a poor tracktype (grade2-5), a stronger
-   * surface-quality signal than the surface tag. Used to veto the
-   * "hard surface ⇒ rideable" overrides for both tracks and soft highways.
+   * Whether the way has a poor tracktype (grade2-5) — a stronger surface-quality
+   * signal than the surface tag, used to veto the "hard surface ⇒ rideable"
+   * overrides for both tracks and soft highways.
    */
   private static boolean hasPoorTracktype(String tags) {
     return tags.contains("tracktype=grade2")
@@ -1452,33 +1281,18 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Whether the way is a road-bike-suitable {@code highway=track}. Three
-   * evidence cascades, any of which is sufficient (the way still needs
-   * to be free of explicit bicycle restrictions in all cases):
-   *
+   * Whether the way is a road-bike-suitable {@code highway=track}. Any one
+   * cascade suffices (all require no explicit bicycle restriction):
    * <ol>
-   *   <li><b>hardSurface alone</b> — {@code surface=asphalt|paved|paving_stones|
-   *       concrete|chipseal}. Asphalt is asphalt regardless of {@code tracktype};
-   *       cyclists routinely ride paved tracks without explicit cycling tagging
-   *       (B.2 evidence: Kandel "Saubergweg" appears in 2 different Freiburg
-   *       routes as {@code highway=track surface=asphalt} with no tracktype).</li>
-   *   <li><b>grade1 + cycle network</b> — {@code tracktype=grade1 +
-   *       route_bicycle_lcn|rcn|ncn|icn=yes}. The OSM definition of grade1
-   *       is "Solid hard surface, typically tarmac/asphalt/concrete," so the
-   *       hard surface is implicit. The cycle-network tag is curated evidence
-   *       that the route is rideable (B.1 evidence: Baar grade1+lcn track
-   *       appears in 2 different Freiburg routes; cycle networks aren't
-   *       routed over unpaved unless explicitly so tagged).</li>
-   *   <li><b>grade1 + explicit hard surface</b> — the original strict case,
-   *       kept for symmetry and the rare grade1 way that has both an
-   *       explicit surface tag and isn't part of a cycle network.</li>
+   *   <li>hard surface alone ({@code asphalt|paved|paving_stones|concrete|
+   *       chipseal}) — asphalt is rideable regardless of tracktype;</li>
+   *   <li>{@code tracktype=grade1} + on a cycle network (grade1 implies a hard
+   *       surface; the network tag is curated evidence of rideability);</li>
+   *   <li>grade1 + explicit hard surface — the original strict case.</li>
    * </ol>
-   *
-   * <p>Evidence backing: 1032 cyclist-curated GPX routes replayed
-   * point-to-point (Basel + Mallorca + Innsbruck + Freiburg) — 95.9% pass
-   * rate. The remaining failures cluster on genuine gravel sections
-   * (defensible) or these grade1-no-surface / asphalt-no-grade patterns
-   * this predicate now accepts.
+   * Evidence: 1032 cyclist-curated GPX routes replayed point-to-point (Basel +
+   * Mallorca + Innsbruck + Freiburg), 95.9% pass; residual failures are genuine
+   * gravel or the grade1-no-surface / asphalt-no-grade patterns this accepts.
    */
   private static boolean isRoadBikeSuitablePavedTrack(String tags) {
     if (!tags.contains("highway=track")) return false;
@@ -1495,10 +1309,9 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Whether the way is tagged as part of an OSM cycle network. Strong
-   * curated evidence that the route is rideable — these networks aren't
-   * routed over unpaved unless the unpaved section is explicitly
-   * surface-tagged that way.
+   * Whether the way is on an OSM cycle network — curated evidence of
+   * rideability, since those networks aren't routed over unpaved unless the
+   * unpaved section is explicitly surface-tagged.
    */
   private static boolean hasCycleNetworkTag(String tags) {
     return tags.contains("route_bicycle_lcn=yes")
@@ -1508,12 +1321,10 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Explicit access denials that override "default permissive" tagging.
-   * {@code bicycle=no} is the direct denial; {@code access=private} and
-   * {@code access=no} are blanket denials that include bicycles. We do NOT
-   * treat {@code bicycle=dismount} as a restriction here — that's a
-   * surface-quality hint, not a legal denial, and the cost-function
-   * already penalises it appropriately.
+   * Explicit access denials overriding "default permissive" tagging:
+   * {@code bicycle=no}, {@code access=private}, {@code access=no}.
+   * {@code bicycle=dismount} is NOT treated as a restriction — a surface hint
+   * the cost function already handles, not a legal denial.
    */
   private static boolean hasExplicitBicycleRestriction(String tags) {
     return hasTag(tags, "bicycle=no")
@@ -1523,12 +1334,9 @@ public final class RoundTripQualityGate {
 
   /**
    * Whether {@code keyValue} appears as a whole token in {@code tags} (a
-   * space-joined list of {@code key=value} pairs from
-   * {@link btools.expressions.BExpressionContext#getKeyValueDescription}).
-   * Token-boundary matching avoids the substring trap where a naive
-   * {@code contains("bicycle=no")} also matches the cyclist-friendly
-   * {@code oneway:bicycle=no} (cyclists exempted from a oneway — the opposite
-   * of a ban).
+   * space-joined {@code key=value} list). Token-boundary matching avoids the
+   * substring trap where {@code contains("bicycle=no")} also matches the
+   * cyclist-friendly {@code oneway:bicycle=no} (the opposite of a ban).
    */
   static boolean hasTag(String tags, String keyValue) {
     if (tags == null) return false;
@@ -1545,45 +1353,36 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Lower bound on cf(grade3 gravel track) / cf(paved residential) at or above
-   * which a profile is classified paved-only — i.e. it treats loose unpaved
-   * surface as effectively off-limits, so a round-trip routed onto it should be
-   * rejected. Validated against every profile whose vehicle cannot ride loose
-   * unpaved (all well above 5.0): fastbike 8.3, skating 9523, moped 5015,
-   * car-vario 10000, velomobil 23.5; versus the unpaved-tolerant bikes well
-   * below it: trekking 2.65, gravel 0.79, mtb 0.57. The ratio (not the absolute
-   * cost) is the discriminator: mtb penalises unpaved heavily too (abs 7.5) but
-   * penalises paved even harder (13.6), giving 0.55.
+   * Lower bound on cf(grade3 gravel track) / cf(paved residential) at/above which
+   * a profile is paved-only — treats loose unpaved as off-limits, so a round-trip
+   * routed onto it is rejected. Vehicles that can't ride loose unpaved sit well
+   * above 5.0 (fastbike 8.3, velomobil 23.5, car-vario 10000); unpaved-tolerant
+   * bikes below (trekking 2.65, gravel 0.79, mtb 0.57). The ratio, not the
+   * absolute cost, discriminates: mtb penalises unpaved heavily (abs 7.5) but
+   * paved harder (13.6), giving 0.55.
    */
   static final double PAVED_PROBE_RATIO = 5.0;
 
   /**
-   * Memoised paved/road-bike classification, keyed by profile name. Populated by
-   * {@link #classifyPavedProfile} (which has the expression context) and read by
-   * {@link #isPavedProfile} (which only has the name). A single routing JVM
-   * serves a stable set of profiles, so name is an adequate cache key.
+   * Memoised paved/road-bike classification, keyed by profile name. Written by
+   * {@link #classifyPavedProfile} (has the expression context), read by
+   * {@link #isPavedProfile} (has only the name). One JVM serves a stable set of
+   * profiles, so name is an adequate key.
    */
   private static final Map<String, Boolean> PAVED_CLASSIFICATION = new ConcurrentHashMap<>();
 
   /**
-   * Classify whether a profile is paved/road-bike by what its cost model
-   * actually charges for an unpaved way — independent of the profile's name.
-   * The result is memoised by {@code profileName} and subsequently returned by
-   * {@link #isPavedProfile}. Call this once per request at round-trip setup,
-   * while the way-expression context is available.
+   * Classify a profile as paved/road-bike by what its cost model charges for an
+   * unpaved way, independent of name. Memoised by {@code profileName} and later
+   * returned by {@link #isPavedProfile}; call once per request at round-trip
+   * setup, while the way-expression context is available.
    *
-   * <p>Resolution order:
-   * <ol>
-   *   <li>explicit author override global {@code roadbikeSurfaceGate}
-   *       ({@code 1} = paved-only, {@code 0} = not) — lets a profile force the
-   *       classification when the probe would be ambiguous;</li>
-   *   <li>cost-model probe: {@code cf(gravel track) / cf(paved residential)} at
-   *       or above {@link #PAVED_PROBE_RATIO}.</li>
-   * </ol>
-   *
-   * <p>When no way context is available to probe (only the case in isolated
-   * unit tests — production always parses a profile), the profile is treated as
-   * not-paved so the hostile-surface gate is simply not imposed.
+   * <p>Resolution order: (1) explicit author override {@code roadbikeSurfaceGate}
+   * ({@code 1}=paved-only, {@code 0}=not); (2) cost-model probe
+   * {@code cf(gravel track)/cf(paved residential)} >= {@link #PAVED_PROBE_RATIO}.
+   * With no way context (isolated unit tests only; production always parses a
+   * profile) the profile is treated as not-paved, so the hostile-surface gate is
+   * simply not imposed.
    */
   public static boolean classifyPavedProfile(BExpressionContextWay expctxWay, String profileName) {
     boolean paved;
@@ -1613,35 +1412,15 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Probe the profile's surface policy: a profile is paved-only if it makes a
-   * representative loose-unpaved way (grade3 gravel track) far costlier than a
-   * paved residential road. Returns false if the context cannot be probed.
-   *
-   * <p>Measured ratio cf(grade3-gravel-track)/cf(paved-residential):
-   * <pre>
-   *   fastbike                  8.33    paved
-   *   fastbike-verylowtraffic   8.33    paved
-   *   skating                  ~9523    paved (rollerblades — forbids tracks)
-   *   moped                    ~5015    paved
-   *   car-vario               ~10000    paved
-   *   vm-velomobil             23.53    paved (faired road vehicle — cannot ride gravel)
-   *   trekking                  2.65    NOT paved (tolerates loose surface)
-   *   gravel                    0.79    NOT paved
-   *   mtb                       0.57    NOT paved (penalises paved even harder)
-   *   shortest                  1.00    NOT paved
-   * </pre>
-   * Every vehicle that cannot ride loose unpaved scores well above 5.0; the
-   * unpaved-tolerant bikes sit at or below 2.65 — a wide, robust margin. The
-   * verdict is a ratio against the paved reference, so it is invariant to a
-   * global scaling of the profile's costfactors (cost is relative — scaling
-   * every costfactor by a constant changes neither the chosen route nor the
-   * classification).
-   *
-   * <p>grade3 is the probe point because grade1 does not discriminate: a road
-   * bike rides a well-graded grade1 track cheaply (fastbike 1.0x paved) but
-   * skating/moped/car penalise even grade1 — so "rides grade1 cheaply" is NOT a
-   * universal paved-only trait, and a profile the grade3 probe misjudges can set
-   * the {@code roadbikeSurfaceGate} override.
+   * Probe the profile's surface policy: paved-only iff a loose-unpaved way
+   * (grade3 gravel track) is far costlier than a paved residential road
+   * ({@code cf} ratio &gt;= {@link #PAVED_PROBE_RATIO}). Returns false if the
+   * context can't be probed. The ratio is invariant to a global scaling of the
+   * profile's costfactors. grade3 is the probe point because grade1 doesn't
+   * discriminate — a road bike rides grade1 cheaply but skating/moped/car
+   * penalise even grade1, so "rides grade1 cheaply" is not a universal paved-only
+   * trait; a profile the probe misjudges can set the {@code roadbikeSurfaceGate}
+   * override.
    */
   static boolean probePavedFromCostModel(BExpressionContextWay expctxWay) {
     float unpaved = wayCostFactor(expctxWay, "highway=track", "tracktype=grade3", "surface=gravel");
@@ -1672,11 +1451,9 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Paved/road-bike classification for a profile, by name.
-   *
-   * <p>Returns the cost-model-probe result recorded by {@link #classifyPavedProfile}
-   * (the round-trip path warms it once at setup). A profile that has not been
-   * classified is treated as not-paved — there is no name-based guess.
+   * Paved/road-bike classification for a profile by name — the probe result
+   * recorded by {@link #classifyPavedProfile} (warmed once at round-trip setup).
+   * An unclassified profile is treated as not-paved; there is no name-based guess.
    */
   public static boolean isPavedProfile(String profileName) {
     if (profileName == null) {
@@ -1687,9 +1464,8 @@ public final class RoundTripQualityGate {
   }
 
   /**
-   * Test-only seam: seed the classification cache directly, so unit tests that
-   * exercise the gate's paved-surface behaviour can mark a profile name as
-   * paved/not-paved without parsing a real profile to run the probe.
+   * Test-only seam: seed the classification cache directly so gate tests can mark
+   * a profile paved/not-paved without parsing a real profile to run the probe.
    */
   public static void putPavedClassificationForTest(String profileName, boolean paved) {
     PAVED_CLASSIFICATION.put(profileName, paved);

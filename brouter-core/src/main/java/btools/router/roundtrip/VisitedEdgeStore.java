@@ -1,35 +1,27 @@
 package btools.router.roundtrip;
 
 /**
- * SAFE-3: primitive open-addressing store for the greedy planner's visited-edge
- * tracking, replacing the boxed {@code HashMap<Long,Integer>} (reuse counts) +
- * {@code HashMap<Long,Double>} (first-visit cumulative distance) pair.
- *
- * <p>The two former maps are maintained in lock-step — a key gains both its
- * count and its first-visit position on the first visit, and loses both
- * together when its count drops to zero — so they are folded into one table
- * with a {@code count} and a {@code firstPos} column per slot. This removes the
- * {@code Long}/{@code Integer}/{@code Double} autoboxing on the planner's
+ * Primitive open-addressing store for the greedy planner's visited-edge
+ * tracking, replacing a boxed {@code HashMap<Long,Integer>} (reuse counts) +
+ * {@code HashMap<Long,Double>} (first-visit cumulative distance) pair. The two
+ * were maintained in lock-step, so they fold into one table with a {@code count}
+ * and a {@code firstPos} column per slot, removing autoboxing on the planner's
  * hottest per-segment loop.
  *
- * <p><b>Result-preservation invariants</b> (SAFE-3 — these keep the primitive
- * store behaviour-identical to the boxed maps it replaced):
+ * <p>Behaviour-identical to the boxed maps, resting on these invariants:
  * <ul>
- *   <li>The store is only ever accessed by keyed point operations — never
- *       iterated — so the internal slot layout never influences a routing
- *       decision.</li>
- *   <li>Occupancy is tracked with an explicit {@code used} flag, NOT a sentinel
- *       key: edge keys (packed by ReuseClassifier's edge-key encoding) span the full 64-bit range, so any
- *       reserved key value (0L, -1L, MIN_VALUE, …) could be a real edge.</li>
+ *   <li>Accessed only by keyed point operations, never iterated — the slot
+ *       layout never influences a routing decision.</li>
+ *   <li>Occupancy uses an explicit {@code used} flag, NOT a sentinel key: edge
+ *       keys span the full 64-bit range, so any reserved value could be a real
+ *       edge.</li>
  *   <li>{@code firstPos} can legitimately be {@code 0.0} (a 1-metre first edge
- *       at loop start), so presence is the {@code used} flag, NOT a sentinel
- *       double.</li>
+ *       at loop start), so presence is the {@code used} flag, not a sentinel.</li>
  *   <li>{@link #count} returns {@code 0} for an absent key; stored counts are
- *       always {@code >= 1}, so {@code 0} unambiguously means "absent",
- *       reproducing the former {@code prev == null || prev == 0} test.</li>
+ *       always {@code >= 1}, so {@code 0} unambiguously means "absent".</li>
  * </ul>
- * Deletion uses Knuth's backward-shift algorithm (no tombstones) so the table
- * stays a clean linear-probe structure across the planner's accept/undo churn.
+ * Deletion uses Knuth's backward-shift (no tombstones), keeping a clean
+ * linear-probe structure across the planner's accept/undo churn.
  *
  * <p>Not thread-safe; one instance is confined to a single {@code plan()} call.
  */
@@ -95,9 +87,8 @@ final class VisitedEdgeStore {
   }
 
   /**
-   * Set the first-visit position for {@code key}, creating the slot (with
-   * count 0) if absent. Mirrors the former {@code edgeFirstPos.put}, which in
-   * the planner always precedes the matching {@link #increment}.
+   * Set the first-visit position for {@code key}, creating the slot (count 0) if
+   * absent. In the planner this always precedes the matching {@link #increment}.
    */
   void setFirstPos(long key, double pos) {
     int i = slotOf(key);
@@ -131,11 +122,10 @@ final class VisitedEdgeStore {
   }
 
   /**
-   * Decrement {@code key}'s count by one. Precondition: the key is present with
-   * count &gt; 1 — the sole caller ({@code removeVisitedEdges}) calls {@link #remove}
-   * instead when the count would reach 0, so this never drives a slot to a
-   * negative ("zombie") count in practice. The {@code used[i]} check keeps a
-   * stray call on an absent key a harmless no-op rather than corrupting a slot.
+   * Decrement {@code key}'s count by one. Precondition: present with count
+   * &gt; 1 — the sole caller ({@code removeVisitedEdges}) calls {@link #remove}
+   * when the count would reach 0, so this never drives a slot negative. The
+   * {@code used[i]} check keeps a stray call on an absent key a harmless no-op.
    */
   void decrement(long key) {
     int i = slotOf(key);

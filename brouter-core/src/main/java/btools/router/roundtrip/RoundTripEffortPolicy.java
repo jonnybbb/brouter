@@ -3,21 +3,16 @@ package btools.router.roundtrip;
 import java.util.Locale;
 
 /**
- * Resolved effort configuration for one round-trip request.
+ * Resolved effort configuration for one round-trip request. BALANCED pins
+ * {@link #BOUNDED_PRESET}, QUALITY pins {@link #MAX_PRESET}; AUTO
+ * {@link #resolveAuto resolves} a preset from request context.
  *
- * <p>The user-facing tiers map to fixed presets — BALANCED pins
- * {@link #BOUNDED_PRESET}, QUALITY pins {@link #MAX_PRESET} — while AUTO
- * {@link #resolveAuto resolves} a preset from request context: profile class,
- * loop length class, and resources (memoryclass + request budget).
- *
- * <p>v1 resolution deliberately changes behavior only on the evidence-backed
- * rule: constrained resources (a short request budget or a small memoryclass)
- * resolve to BOUNDED effort — the direct answer to on-device latency reports,
- * where the full competition took 3-4x the pre-#903 logic. Profile and length
- * classes are classified and logged (the {@link #rationale} travels to the
- * request log) so future rules land on recorded evidence; motorized profiles
- * additionally get a provisional-quality advisory because no loop-quality
- * corpus covers them yet.
+ * <p>Resolution changes behavior only on the evidence-backed rule: constrained
+ * resources (short request budget or small memoryclass) resolve to BOUNDED
+ * effort. Profile and length classes are only classified and logged (via
+ * {@link #rationale}) so future rules land on recorded evidence; motorized
+ * profiles get a provisional-quality advisory, as no loop-quality corpus covers
+ * them yet.
  */
 public final class RoundTripEffortPolicy {
 
@@ -26,12 +21,10 @@ public final class RoundTripEffortPolicy {
   static final int LONG_LOOP_MIN_M = 100_000;
   static final int XL_LOOP_MIN_M = 200_000;
   /**
-   * Resources thresholds for the BOUNDED resolution rule. memoryclass 48
-   * catches genuinely memory-constrained devices (the server default is 64;
-   * modern phones report far more, and get BOUNDED only via a short budget or
-   * an explicit BALANCED). A request budget at or below 10s cannot fund the
-   * full competition anyway — resolving BOUNDED returns a disclosed
-   * best-effort loop instead of a half-run competition.
+   * Resource thresholds for the BOUNDED rule. memoryclass 48 catches genuinely
+   * memory-constrained devices (server default is 64; modern phones report far
+   * more). A budget at or below 10s cannot fund the full competition, so BOUNDED
+   * returns a disclosed best-effort loop instead of a half-run competition.
    */
   static final int CONSTRAINED_MEMORYCLASS_MAX = 48;
   static final long CONSTRAINED_BUDGET_MAX_MS = 10_000;
@@ -61,9 +54,9 @@ public final class RoundTripEffortPolicy {
   public final String rationale;
 
   /**
-   * Resolve AUTO's effort from request context. Constrained resources resolve
-   * to BOUNDED (the evidence-backed rule); everything else keeps standard
-   * effort, with the context classes recorded in the rationale for the log.
+   * Resolve AUTO's effort from request context: constrained resources give
+   * BOUNDED, everything else STANDARD, with the context classes recorded in the
+   * rationale.
    */
   public static RoundTripEffortPolicy resolveAuto(ProfileClass profileClass, LengthClass lengthClass,
                                            int memoryclass, long requestBudgetMs) {
@@ -88,9 +81,9 @@ public final class RoundTripEffortPolicy {
   }
 
   /**
-   * Classify from the profile's validFor* globals (declared by every standard
-   * profile; name-independent). Motorized wins over bike for hybrid declarations
-   * because its provisional-quality advisory must not be lost.
+   * Classify from the profile's validFor* globals (name-independent). Motorized
+   * wins over bike for hybrid declarations so its provisional-quality advisory
+   * is not lost.
    */
   public static ProfileClass classifyProfile(boolean validForFoot, boolean validForBikes,
                                       boolean validForCars) {

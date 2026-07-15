@@ -6,19 +6,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * QUALITY-tier candidate provider that blends an {@link IsochroneCandidateProvider}
+ * QUALITY-tier candidate provider blending an {@link IsochroneCandidateProvider}
  * with per-step graph-native candidates.
  *
- * <p>Pure ISO_GREEDY (iso candidates only) regressed in rural/coastal cells where
- * the bounded isochrone's road-native pool happens to be sparse or pulled toward
- * one corridor. Blending fixes that without returning to geometric waypoint
- * placement: start-centered iso candidates win where they are useful, and the
- * graph-native provider adds candidates from a fresh Dijkstra expansion around
- * the current step position.
- *
- * <p>For each step we ask both providers, then concatenate iso results first
- * (so the planner's score-sort favours road-native picks at the same heuristic
- * tier) followed by per-step graph-native picks.
+ * <p>Pure ISO_GREEDY regressed in rural/coastal cells where the bounded
+ * isochrone's road pool is sparse or pulled toward one corridor. Blending fixes
+ * that: start-centered iso candidates win where useful, and the graph-native
+ * provider adds candidates from a fresh Dijkstra around the current step. Iso
+ * results are concatenated first, so the planner's score-sort favours road-native
+ * picks at the same heuristic tier.
  */
 public final class BlendedCandidateProvider implements RoundTripCandidateProvider {
 

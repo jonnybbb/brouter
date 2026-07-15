@@ -13,12 +13,10 @@ import btools.util.CheapRuler;
 
 /**
  * Geometric round-trip via placement from probe envelopes and isochrone
- * frontiers, extracted from RoutingEngine: the isochrone/probe direction
- * merge, frontier-entry decoding, iso-asymmetry bearing selection, and the
- * envelope/isochrone waypoint placement paths. The circle fallback and the
- * isochrone expansion itself remain engine primitives behind
- * {@link RoundTripEngineOps}; this class itself only logs through
- * {@link EngineIO}.
+ * frontiers: isochrone/probe direction merge, frontier-entry decoding,
+ * iso-asymmetry bearing selection, and the envelope/isochrone placement paths.
+ * The circle fallback and the isochrone expansion itself remain engine
+ * primitives; this class logs only through {@link EngineIO}.
  */
 public final class GeometricWaypointPlacer {
 
@@ -33,14 +31,11 @@ public final class GeometricWaypointPlacer {
 
   /**
    * Assumed road/air indirectness for a direction with NO observed isochrone
-   * geometry (probe-only frontier entries, and the no-iso-data fallback).
-   * Deliberately equal to {@link #REFERENCE_GEOM_INDIRECTNESS}: an unknown
-   * direction is assumed to behave like the calibration baseline, so the number
-   * of probe-only directions does not perturb the global indirectness
-   * compensation. (Was an inline {@code 1.3} literal at two sites — 0.05 above
-   * the calibration reference for no documented reason; unified here so the
-   * compensation has a single indirectness baseline.) Validate against the
-   * loop-quality corpus when changing.
+   * geometry (probe-only entries, and the no-iso-data fallback). Deliberately
+   * equal to {@link #REFERENCE_GEOM_INDIRECTNESS}: an unknown direction is
+   * assumed to behave like the calibration baseline, so the count of probe-only
+   * directions doesn't perturb the global indirectness compensation. Validate
+   * against the loop-quality corpus when changing.
    */
   private static final double DEFAULT_PROBE_INDIRECTNESS = REFERENCE_GEOM_INDIRECTNESS;
 
@@ -51,23 +46,23 @@ public final class GeometricWaypointPlacer {
 
   /** ISOCHRONE direction-bulge strength: the per-direction placement radius is
    *  scaled by 1 + alpha*cos(theta - heading), a mean-preserving cardioid toward
-   *  the requested heading (0 = legacy even ring). Package-private and non-final
-   *  only so tests can drive both ends — it is not a runtime knob. */
+   *  the requested heading (0 = legacy even ring). Non-final only so tests can
+   *  drive both ends — not a runtime knob. */
   static double isochroneDirBulgeAlpha = 0.35;
 
   /**
    * Merge isochrone frontier data with probe directions for gap-filling.
-   * Isochrone entries are 6-element {@code [direction, airDist, cost, hits,
-   * ilon, ilat]} (the last two carry the road-native frontier coord);
-   * probe-only entries are 4-element {@code [direction, searchRadius,
-   * searchRadius*1.3, 0]} (estimated cost, no road-native data, hits=0).
-   * Existing isochrone entries dominate overlapping probe directions.
+   * Isochrone entries are 6-element {@code [direction, airDist, cost, hits, ilon,
+   * ilat]} (last two = road-native frontier coord); probe-only entries are
+   * 4-element {@code [direction, searchRadius, searchRadius*1.3, 0]} (estimated
+   * cost, no road-native data, hits=0). Existing isochrone entries dominate
+   * overlapping probe directions.
    *
    * @param frontier        isochrone entries (may be null)
    * @param probeDirections probe viable directions in degrees (may be null)
    * @param searchRadius    fallback distance for probe-only directions
-   * @return merged frontier entries; {@code null} if both inputs empty.
-   *         Entry length varies: 6 for isochrone-sourced, 4 for probe-only.
+   * @return merged entries (6-element isochrone-sourced, 4-element probe-only);
+   *         {@code null} if both inputs empty
    */
   public static double[][] mergeIsochroneWithProbe(double[][] frontier, double[] probeDirections, double searchRadius) {
     Map<Integer, double[]> merged = new HashMap<>();
@@ -114,13 +109,12 @@ public final class GeometricWaypointPlacer {
 
   /**
    * Extract the road-native coordinate ({@code [ilon, ilat]}) from a frontier
-   * entry, or {@code null} if the entry doesn't carry one. The frontier coord
-   * is the cost-budget-envelope node — a fallback for callers that don't pass
-   * the full candidate pool to {@link #placeWaypointsFromIsochrone}; production
-   * placement prefers {@link #nearestCandidateByAirDist} (airDist-aware).
+   * entry, or {@code null} if it carries none. The frontier coord is the
+   * cost-budget-envelope node — a fallback for callers that don't pass the full
+   * candidate pool; production placement prefers {@link #nearestCandidateByAirDist}.
    *
-   * <p>Isochrone-produced entries are 6-element; probe-only entries from
-   * {@link #mergeIsochroneWithProbe} are 4-element and have no road-native data.
+   * <p>Isochrone entries are 6-element; probe-only entries from
+   * {@link #mergeIsochroneWithProbe} are 4-element with no road-native data.
    */
   static int[] frontierRoadNativeCoord(double[] entry) {
     if (entry == null || entry.length < FRONTIER_LENGTH_ROAD_NATIVE) return null;
@@ -327,19 +321,16 @@ public final class GeometricWaypointPlacer {
 
   /**
    * Place waypoints from the reachability envelope at a scaled search radius.
-   * Selects N directions from the viable set that maximize angular spread,
-   * then scales the radius to match v1.7.8's expected loop distance.
+   * Selects N max-spread directions from the viable set, then scales the radius
+   * to match v1.7.8's expected loop distance.
    *
    * <p><b>Known parity gap (P5):</b> unlike {@link #placeWaypointsFromIsochrone},
-   * this fallback applies only the geometric {@code computeRadiusScale} correction
-   * and does NOT apply terrain-indirectness compensation (it has no per-direction
-   * isochrone cost data to derive it from). It is reached precisely when the
-   * merged isochrone+probe frontier has &lt;3 usable directions — i.e. indirect
-   * terrain (mountains/coast), where unadjusted radii tend to overshoot the target
-   * loop distance. Adding a conservative {@link #DEFAULT_PROBE_INDIRECTNESS}-based
-   * shrink here is a candidate improvement but is a tuning change that needs
-   * loop-quality-corpus validation before landing (cf. the analogous out-of-scope
-   * note in docs/features/roundtrip-benchmark-2026-05.md).
+   * this fallback applies only the geometric {@code computeRadiusScale} correction,
+   * not terrain-indirectness compensation (it has no per-direction isochrone cost
+   * data to derive it from). It is reached when the merged frontier has &lt;3
+   * usable directions — indirect terrain (mountains/coast), where unadjusted radii
+   * tend to overshoot. A conservative {@link #DEFAULT_PROBE_INDIRECTNESS}-based
+   * shrink here is a candidate improvement but needs loop-quality-corpus validation.
    */
   public void placeWaypointsFromEnvelope(List<OsmNodeNamed> waypoints, double[] viableDirections,
                                   double searchRadius, double startDirection, int targetPoints) {
@@ -380,17 +371,11 @@ public final class GeometricWaypointPlacer {
   }
 
   /**
-   * Phase 2.0 of the closure-aware planning spec — isochrone-asymmetry
-   * initial bearing. Examines the 36-bucket frontier table produced by
-   * {@link #runIsochroneExpansion} and selects the most-reaching sector
-   * (lowest {@code cost / airDist}) subject to quality thresholds.
-   *
-   * <p>Returns {@link IsoAsymmetryBias#NONE} when no bucket clears the
-   * thresholds. The caller falls back to the legacy direction-selection
-   * behavior in that case.
-   *
-   * <p>Package-private + static for unit testing with synthetic frontier
-   * tables.
+   * Phase 2.0 of the closure-aware planning spec — isochrone-asymmetry initial
+   * bearing. Examines the 36-bucket frontier table and selects the most-reaching
+   * sector (lowest {@code cost / airDist}) subject to quality thresholds. Returns
+   * {@link IsoAsymmetryBias#NONE} when no bucket clears them (caller falls back to
+   * legacy direction selection). Package-private + static for unit testing.
    */
   public static IsoAsymmetryBias computeIsoAsymmetryBearing(double[][] frontier, double searchRadius) {
     if (frontier == null || frontier.length == 0) return IsoAsymmetryBias.NONE;
@@ -420,11 +405,11 @@ public final class GeometricWaypointPlacer {
 
   /**
    * Pick the candidate in {@code bucketCandidates} whose air-distance from start
-   * is closest to {@code targetAirDist}, or {@code null} if the bucket has no
-   * candidates. Used by {@link #placeWaypointsFromIsochrone} to preserve the
-   * indirectness-compensated placement radius while still using a road-native
-   * point (each bucket carries one frontier-max + up to three contour candidates
-   * at distinct cost depths, so a close airDist match is usually available).
+   * is closest to {@code targetAirDist}, or {@code null} if the bucket is empty.
+   * Used by {@link #placeWaypointsFromIsochrone} to keep the
+   * indirectness-compensated radius while landing on a road-native point (each
+   * bucket carries one frontier-max + up to three contour candidates at distinct
+   * cost depths, so a close airDist match is usually available).
    */
   static IsoCandidate nearestCandidateByAirDist(List<IsoCandidate> bucketCandidates, double targetAirDist) {
     if (bucketCandidates == null || bucketCandidates.isEmpty()) return null;
@@ -441,16 +426,14 @@ public final class GeometricWaypointPlacer {
   }
 
   /**
-   * Phase 2.1 of the closure-aware planning spec — frontier-axis detection
-   * for axis-aware retry when the user's explicit direction conflicts with
-   * the terrain's natural orientation.
-   *
-   * <p>Computes the principal axis of the reachable-frontier displacement
-   * vectors (good-quality buckets only, same thresholds as Phase 2.0).
-   * Returns an axis bearing in [0, 180) and the eigenvalue ratio
-   * (primary / secondary). An axis is considered "strong" when the ratio
-   * exceeds {@link #PHASE_2_1_STRONG_AXIS_RATIO}, indicating the reachable
-   * region is markedly elongated (Inn Valley, coast roads, ridge tops).
+   * Phase 2.1 of the closure-aware planning spec — frontier-axis detection for
+   * axis-aware retry when the user's explicit direction conflicts with the
+   * terrain's natural orientation. Computes the principal axis of the
+   * reachable-frontier displacement vectors (good-quality buckets only, same
+   * thresholds as Phase 2.0). Returns an axis bearing in [0, 180) and the
+   * eigenvalue ratio (primary / secondary); the axis is "strong" when the ratio
+   * exceeds {@link #PHASE_2_1_STRONG_AXIS_RATIO} (markedly elongated region: Inn
+   * Valley, coast roads, ridge tops).
    */
   public static FrontierAxis computeFrontierAxis(double[][] frontier, double searchRadius) {
     if (frontier == null || frontier.length < 6) return FrontierAxis.NONE;

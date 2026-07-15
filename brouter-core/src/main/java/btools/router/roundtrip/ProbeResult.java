@@ -6,12 +6,11 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Result of {@code RoutingEngine#probeReachableDirections}.
- *
- * <p>Holds both the bare {@code double[]} of viable bearings (the legacy contract used by
- * downstream placement code) and the per-direction scored records (used by the FAST tier
- * to drop weak one-shot directions when alternatives exist). Returning both as one value
- * keeps callers from reading stale data via a side-channel field.
+ * Result of {@code RoutingEngine#probeReachableDirections}: the bare
+ * {@code double[]} of viable bearings (legacy contract for downstream placement)
+ * and the per-direction scored records (FAST tier, to drop weak one-shot
+ * directions). Returning both as one value keeps callers off a stale
+ * side-channel field.
  */
 public final class ProbeResult {
 

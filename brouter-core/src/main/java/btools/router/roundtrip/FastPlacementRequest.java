@@ -3,11 +3,10 @@ package btools.router.roundtrip;
 import btools.router.OsmNodeNamed;
 
 /**
- * Input to the optimized FAST waypoint placement (see
- * {@code .agents/fast-waypoint-planner-spec.md}). The caller resolves every
- * knob — variety-seed jitter is already applied to radius/direction, and the
- * {@code roundtrip.fast.*} system properties are already read — so placement
- * is a pure function of this request plus the road network.
+ * Input to the optimized FAST waypoint placement. The caller resolves every knob
+ * (variety-seed jitter already applied, {@code roundtrip.fast.*} properties
+ * already read), so placement is a pure function of this request plus the road
+ * network.
  */
 public final class FastPlacementRequest {
 

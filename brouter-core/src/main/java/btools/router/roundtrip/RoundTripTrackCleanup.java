@@ -15,13 +15,12 @@ import btools.router.OsmTrack;
 import btools.util.CheapRuler;
 
 /**
- * Round-trip track post-processing, extracted from RoutingEngine: spur and
- * back-and-forth removal, micro-detour and teardrop trims, artifact spur
- * spans, origin-chain rebuild, waypoint index bookkeeping, and the
- * adopted-track finalization pipeline. Voice-hint consolidation stays
- * engine-side (VoiceHint package internals) behind an ops delegate. Reaches
+ * Round-trip track post-processing: spur and back-and-forth removal,
+ * micro-detour and teardrop trims, artifact spur spans, origin-chain rebuild,
+ * waypoint index bookkeeping, and the adopted-track finalization pipeline.
+ * Voice-hint consolidation stays engine-side behind an ops delegate. Reaches
  * the engine only through the {@link RoundTripRequestState}, {@link EngineIO},
- * and {@link EngineContext} roles of the engine seam.
+ * and {@link EngineContext} roles.
  */
 public final class RoundTripTrackCleanup {
 
@@ -39,15 +38,12 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Guarantee the track carries the standard one-line info message and a
-   * matching {@code messageList}, mirroring the direct-routing output path in
-   * {@link #doRouting} (lines that set {@code track.message} /
-   * {@code track.messageList}). Round-trip result tracks are assembled from
-   * merged segments via {@code new OsmTrack()} and otherwise reach the
-   * formatters with {@code messageList == null}, which made
-   * {@link FormatGpx#formatAsGpx} throw a NullPointerException on export.
-   * Idempotent: re-running it keeps {@code messageList.get(0)} in sync with
-   * any later additions to {@code track.message} (e.g. the AUTO summary).
+   * Guarantee the track carries the standard one-line info message and a matching
+   * {@code messageList}. Round-trip result tracks are assembled from merged
+   * segments via {@code new OsmTrack()} and otherwise reach the formatters with
+   * {@code messageList == null}, which made GPX export throw a NullPointerException.
+   * Idempotent: re-running keeps {@code messageList.get(0)} in sync with later
+   * additions to {@code track.message} (e.g. the AUTO summary).
    */
   public void ensureInfoMessage(OsmTrack track) {
     if (track == null) {
@@ -72,10 +68,9 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Bring a directly adopted round-trip track up to the same metadata
-   * contract that {@link #doRouting(long)} provides before returning:
-   * matched waypoints attached, indices filled, origin chain coherent for
-   * voice hints, speed/profile fields, POIs, and export flags.
+   * Bring a directly adopted round-trip track up to the same metadata contract
+   * {@code doRouting} provides: matched waypoints attached, indices filled,
+   * origin chain coherent for voice hints, speed/profile fields, POIs, and export flags.
    */
   public void finalizeAdoptedRoundTripTrack(OsmTrack track, List<MatchedWaypoint> mwps) {
     if (track == null || track.nodes == null || track.nodes.isEmpty()) return;
@@ -158,12 +153,11 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Remove back-and-forth segments from a round-trip track.
-   * At each waypoint boundary, the route may retrace the same road
-   * it arrived on before diverging. This method detects such overlaps
-   * by walking outward from each waypoint in both directions and
-   * comparing node positions. The full mirrored spur is removed and the
-   * generated waypoint metadata is moved back to the surviving branch node.
+   * Remove back-and-forth segments from a round-trip track: at each waypoint the
+   * route may retrace the road it arrived on before diverging. Detects the
+   * overlap by walking outward from the waypoint in both directions, removes the
+   * mirrored spur, and moves the generated waypoint metadata to the surviving
+   * branch node.
    */
   public void removeBackAndForthSegments(OsmTrack track, List<MatchedWaypoint> waypoints) {
     removeBackAndForthSegments(track, waypoints, false);
@@ -172,10 +166,9 @@ public final class RoundTripTrackCleanup {
   /**
    * As {@link #removeBackAndForthSegments(OsmTrack, List)}, but when
    * {@code onlyGenerated} is true only engine-generated waypoints
-   * ({@link MatchedWaypoint#generated}) are cleaned. Used by densified
-   * explicit-via routes to strip the out-and-back spurs at generated "dvia"
-   * bulge points while leaving user-supplied vias (and their exact
-   * pass-through) untouched.
+   * ({@link MatchedWaypoint#generated}) are cleaned — used by densified
+   * explicit-via routes to strip out-and-back spurs at "dvia" bulges while
+   * leaving user vias (and their exact pass-through) untouched.
    */
   public void removeBackAndForthSegments(OsmTrack track, List<MatchedWaypoint> waypoints, boolean onlyGenerated) {
     List<OsmPathElement> nodes = track.nodes;
@@ -224,18 +217,17 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Remove micro-detours: small loops where the route returns to the same
-   * area within a short distance. Uses proximity matching (not just exact
-   * node identity) to catch detours through parallel roads or dual
-   * carriageways where the route returns to a nearby but distinct node.
+   * Remove micro-detours: small loops where the route returns to the same area
+   * within a short distance. Uses proximity matching (not just node identity) to
+   * catch returns through parallel roads or dual carriageways.
    *
    * <p>Spans pinned at a generated round-trip via get an extended cap
-   * ({@link #WaypointSnapper.VIA_TEARDROP_MAX_ARC_M}, fraction-bounded) but must additionally
-   * be thin ({@link #petalCompactness} ≤ {@link #VIA_TEARDROP_MAX_COMPACTNESS})
-   * so genuine scenic petals survive; below {@code maxLoopDistance} behaviour
-   * is unchanged.
+   * ({@link WaypointSnapper#VIA_TEARDROP_MAX_ARC_M}, fraction-bounded) but must
+   * also be thin ({@link #petalCompactness} ≤ {@link #VIA_TEARDROP_MAX_COMPACTNESS})
+   * so genuine scenic petals survive; below {@code maxLoopDistance} behaviour is
+   * unchanged.
    *
-   * @param maxLoopDistance maximum route distance of a loop to be considered a micro-detour (in meters)
+   * @param maxLoopDistance max route distance (meters) of a loop to count as a micro-detour
    */
   public void removeMicroDetours(OsmTrack track, int maxLoopDistance, List<MatchedWaypoint> waypoints) {
     List<OsmPathElement> nodes = track.nodes;
@@ -334,20 +326,19 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Remove artifact near-revisit spur spans from a round-trip loop — the
-   * residual class every narrower pass misses: start-stem antennas pinned at
-   * no via, pinches between removeMicroDetours' 50m and the detector's 60m,
-   * arcs above the 4km via-band, and overpriced-but-fat excursions. The span
-   * source is the locked near-revisit primitive
-   * ({@link LoopQualityMetrics#nearRevisitSpans}); a span is an ARTIFACT (and
-   * removed) when it is thin ({@link RoutingEngine#petalCompactness} ≤
-   * {@link #SPUR_ARTIFACT_MAX_COMPACTNESS}) or rides roads priced ≥
-   * {@link #SPUR_ARTIFACT_MIN_COST_FACTOR}× the track average — a scenic
-   * petal is neither. Guards: spans containing a USER via are never touched;
-   * removal never takes the loop below {@link #SPUR_REPAIR_MIN_DISTR} of the
-   * requested distance (or 90% of the current length when the request is
-   * unknown); a removal that would create a self-crossing (the ≤60m splice
-   * jump can transversely cut another part of the loop) is reverted.
+   * Remove artifact near-revisit spur spans — the residual class every narrower
+   * pass misses: start-stem antennas pinned at no via, pinches between
+   * removeMicroDetours' 50m and the detector's 60m, arcs above the 4km via-band,
+   * and overpriced-but-fat excursions. Spans come from the near-revisit primitive
+   * ({@link LoopQualityMetrics#nearRevisitSpans}); a span is an artifact (removed)
+   * when it is thin ({@link #petalCompactness} ≤ {@link #SPUR_ARTIFACT_MAX_COMPACTNESS})
+   * or rides roads priced ≥ {@link #SPUR_ARTIFACT_MIN_COST_FACTOR}× the track
+   * average — a scenic petal is neither.
+   *
+   * <p>Guards: spans containing a USER via are never touched; removal never takes
+   * the loop below {@link #SPUR_REPAIR_MIN_DISTR} of the requested distance (or
+   * 90% of current length when unknown); a removal that would create a
+   * self-crossing is reverted.
    */
   public void removeArtifactSpurSpans(OsmTrack track, List<MatchedWaypoint> waypoints) {
     List<OsmPathElement> nodes = track.nodes;
@@ -404,9 +395,8 @@ public final class RoundTripTrackCleanup {
 
   /**
    * Relink each node's origin back-pointer to its predecessor in the (possibly
-   * edited) nodes list, so the origin chain length matches nodes.size(). Required
-   * after round-trip node removal because processVoiceHints() walks the origin
-   * chain rather than the list.
+   * edited) nodes list. Required after round-trip node removal because
+   * processVoiceHints() walks the origin chain, not the list.
    */
   public static void rebuildOriginChain(OsmTrack track) {
     List<OsmPathElement> nodes = track.nodes;
@@ -416,11 +406,10 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Shape thinness of the sub-track {@code nodes[fromIdx..toIdx]} treated as a
-   * closed petal (auto-closed by the {@code toIdx → fromIdx} chord): shoelace
-   * polygon area divided by the area of a circle with the same perimeter.
-   * Self-intersecting (zigzag) spans cancel in the shoelace sum and score near
-   * 0 — correctly classified as thin artifacts. Result clamped to [0, 1].
+   * Shape thinness of {@code nodes[fromIdx..toIdx]} as a closed petal (auto-closed
+   * by the {@code toIdx → fromIdx} chord): shoelace area ÷ area of a same-perimeter
+   * circle. Self-intersecting (zigzag) spans cancel in the shoelace sum and score
+   * near 0 — correctly classified as thin artifacts. Clamped to [0, 1].
    */
   static double petalCompactness(List<OsmPathElement> nodes, int fromIdx, int toIdx,
                                  double loopDistMeters) {
@@ -457,10 +446,9 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Check if a loop (between matchIdx and currentIdx in the track) is near
-   * a generated roundtrip waypoint — either flagged {@link MatchedWaypoint#generated}
-   * (greedy planner vias, densification bulges) or named with the WAYPOINT
-   * algorithm's "rt" prefix. User-supplied waypoints match neither.
+   * Whether a loop (matchIdx..currentIdx) is near a generated roundtrip waypoint
+   * — flagged {@link MatchedWaypoint#generated} (greedy vias, densification
+   * bulges) or named with the WAYPOINT "rt" prefix. User waypoints match neither.
    */
   private boolean isNearGeneratedWaypoint(List<OsmPathElement> nodes, int matchIdx, int currentIdx,
                                           List<MatchedWaypoint> waypoints, int proximityMeters) {
@@ -489,22 +477,20 @@ public final class RoundTripTrackCleanup {
   }
 
   /**
-   * Petal-compactness ceiling for the via-pinned band: spans fatter than this
-   * (shoelace area vs same-perimeter circle) enclose real area — a scenic petal
-   * the rider may want — and are kept. Thin excursions (deep, narrow, returning
-   * to the pinch point) are routing artifacts and removed. A pure out-and-back
-   * scores ~0; a 10:1 deep-narrow teardrop ~0.3; a round petal 0.7+.
+   * Petal-compactness ceiling for the via-pinned band: fatter spans enclose real
+   * area (a scenic petal the rider may want) and are kept; thin excursions (deep,
+   * narrow, returning to the pinch point) are artifacts and removed. Out-and-back
+   * ~0; 10:1 deep-narrow teardrop ~0.3; round petal 0.7+.
    */
   static final double VIA_TEARDROP_MAX_COMPACTNESS = 0.30;
 
   /**
    * Artifact-spur repair: compactness at or below this is an artifact by shape.
-   * Raised 0.30 → 0.65 (2026-06-10, user calibration): the freiburg 80km N
-   * petals (compactness 0.38 and 0.62) are detour loops to the cyclist's eye —
-   * riding a circle back to within 60m of an earlier point is an artifact at
-   * any ordinary fatness. Only a near-circular sub-loop (above 0.65) survives
-   * on shape alone; user vias and the distance floor still protect deliberate
-   * excursions.
+   * Raised 0.30 → 0.65 (2026-06-10, user calibration): the freiburg 80km N petals
+   * (compactness 0.38 and 0.62) are detour loops to the cyclist's eye — riding a
+   * circle back to within 60m of an earlier point is an artifact at any ordinary
+   * fatness. Only a near-circular sub-loop (above 0.65) survives on shape alone;
+   * user vias and the distance floor still protect deliberate excursions.
    */
   private static final double SPUR_ARTIFACT_MAX_COMPACTNESS = 0.65;
 

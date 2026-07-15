@@ -6,43 +6,26 @@ import java.util.Arrays;
 import java.util.Map;
 
 /**
- * Sector-resolved return-distance estimation for round-trip planning (the
- * "return-distance oracle" from the greedy performance investigation, F6).
+ * Sector-resolved return-distance estimation ("how far back to the start from
+ * here?") for round-trip planning. Replaces a single global EMA
+ * {@code airDist × indirectnessEst}, which was blind to terrain anisotropy —
+ * a via behind a ridge has a return factor far above the EMA, one on open
+ * plain below it — surfacing as too-long undo cycles and mis-timed closure.
  *
- * <p>The planner needs "how far is it back to the start from here?" at three
- * decision points (candidate scoring, routed re-scoring, the return-check
- * skip). Historically the answer was {@code airDist × indirectnessEst} with a
- * single global EMA — blind to terrain anisotropy, which is exactly where
- * loops fail: a via behind a ridge or across a valley mouth has a return
- * factor far above the EMA, one on an open plain sits below it. Mis-estimates
- * surface as too-long undo cycles and premature/late closure.
- *
- * <p>This oracle derives a <b>per-cell</b> indirectness factor from a
- * start-anchored isochrone expansion the plan has already paid for: the
- * expansion records the minimum Dijkstra cost per ~150m grid cell
- * ({@link IsochroneExpansionResult#cellMinCost}). BRouter's cost is a
- * modified distance (costfactor ≥ 1 × meters + penalties), so the ratio
- * {@code cost/airDist} measures how hard the graph fights the straight line
- * toward that cell. Normalizing by the plan's baseline ratio κ (a low
- * percentile over far cells — the best corridor this terrain and profile
- * offer) cancels the profile's cost scale entirely:
+ * <p>Derives a <b>per-cell</b> indirectness factor from a start-anchored
+ * isochrone expansion the plan already paid for: {@code cost/airDist} per ~150m
+ * cell ({@link IsochroneExpansionResult#cellMinCost}) measures how hard the
+ * graph fights the straight line toward that cell. Normalizing by the plan's
+ * baseline ratio κ (low percentile over far cells — the best corridor this
+ * terrain/profile offers) cancels the profile's cost scale:
  *
  * <pre>  returnMeters(cell) ≈ airDist × clamp( (cost/air) / κ , 1, MAX_DETOUR )</pre>
  *
- * <p>Semantics and limits, deliberately accepted:
- * <ul>
- *   <li>The expansion is outbound (start → cell); the return leg travels
- *       cell → start. One-ways and elevation make cost asymmetric, but the
- *       DISTANCE asymmetry is small at loop scale, and κ-normalization
- *       absorbs the profile's scale.</li>
- *   <li>The anti-reuse penalty pushes the real return off the outbound
- *       corridor, so the estimate stays optimistic-leaning — same bias
- *       direction as the legacy EMA estimate it replaces, but sector-true
- *       instead of globally smeared.</li>
- *   <li>Cells outside the expansion's reach return {@code -1}; callers fall
- *       back to the legacy EMA estimate. Coverage is partial by design —
- *       the oracle costs zero extra Dijkstras.</li>
- * </ul>
+ * <p>Accepted limits: the expansion is outbound but distance asymmetry is small
+ * at loop scale; the anti-reuse penalty keeps the estimate optimistic-leaning
+ * (same bias as the legacy EMA, but sector-true); cells outside reach return
+ * {@code -1} so callers fall back to the EMA. Coverage is partial by design —
+ * zero extra Dijkstras.
  */
 public final class ReturnDistanceOracle {
 
@@ -73,9 +56,9 @@ public final class ReturnDistanceOracle {
   }
 
   /**
-   * Build from a start-anchored expansion, or return {@code null} when the
-   * expansion is missing, cloud-less, or too small to calibrate κ — callers
-   * treat a null oracle as "always fall back".
+   * Build from a start-anchored expansion, or {@code null} when the expansion is
+   * missing, cloud-less, or too small to calibrate κ (callers treat null as
+   * "always fall back").
    */
   public static ReturnDistanceOracle build(IsochroneExpansionResult iso, int startIlon, int startIlat) {
     if (iso == null || iso.cellMinCost.isEmpty() || iso.cellDivLon <= 0 || iso.cellDivLat <= 0) {
@@ -115,9 +98,8 @@ public final class ReturnDistanceOracle {
 
   /**
    * Sector-resolved return estimate in meters, or {@code -1} when the position
-   * is outside the expansion's coverage (caller falls back to the EMA
-   * estimate). {@code airDistToStart} is passed in because every caller has
-   * already computed it.
+   * is outside coverage (caller falls back to the EMA). {@code airDistToStart}
+   * is passed in because every caller already computed it.
    */
   double estimateReturnMeters(int ilon, int ilat, double airDistToStart) {
     int cost = minCostAround(ilon, ilat);

@@ -3,10 +3,9 @@ package btools.router.roundtrip;
 import btools.router.RoutingEngine;
 
 /**
- * Result of {@link RoutingEngine}'s Phase 2.0 iso-asymmetry bearing draw for
- * round trips: which bucket of the isochrone frontier the bias selected when
- * the request carried no explicit direction, plus the metadata surfaced as
- * telemetry on the round-trip result.
+ * Result of {@link RoutingEngine}'s Phase 2.0 iso-asymmetry bearing draw: which
+ * isochrone-frontier bucket the bias selected when the request carried no
+ * explicit direction, plus the metadata surfaced as round-trip telemetry.
  */
 public final class IsoAsymmetryBias {
   public static final IsoAsymmetryBias NONE =

@@ -5,18 +5,15 @@ import btools.router.OsmTrack;
 import btools.util.CheapRuler;
 
 /**
- * A road-native candidate node extracted from a {@code RoutingEngine#runIsochroneExpansion}
- * Dijkstra. Each candidate represents the node in a particular angular bucket whose
- * path-cost from the start is closest to a specific cost target — either the full cost
- * budget ({@link #sourceContour}=100, "frontier-max") or an intermediate contour
- * (25/50/75% of budget). Selection is by {@code RoutingEngine#costContourScore}, which
- * normalizes cost error and applies a soft air-reach tiebreaker.
+ * A road-native candidate node from a {@code RoutingEngine#runIsochroneExpansion}
+ * Dijkstra: in a given angular bucket, the node whose path-cost from the start is
+ * closest to a cost target — the full budget ({@link #sourceContour}=100,
+ * "frontier-max") or an intermediate contour (25/50/75%). Used by
+ * {@link IsochroneCandidateProvider} as the QUALITY-tier candidate pool, a
+ * road-on-the-ground replacement for the radial provider's geometric ring.
  *
- * <p>Used by {@link IsochroneCandidateProvider} as the QUALITY-tier candidate pool —
- * a road-on-the-ground replacement for the radial provider's geometric ring.
- *
- * <p>Implements {@link OsmPos} so it interoperates with the engine's distance/identity
- * helpers (e.g., {@code mwp.calcDistance(candidate)} and {@code getIdFromPos()}).
+ * <p>Implements {@link OsmPos} to interoperate with the engine's distance/identity
+ * helpers.
  */
 public final class IsoCandidate implements OsmPos {
 
@@ -35,9 +32,8 @@ public final class IsoCandidate implements OsmPos {
   /** Population count of this bucket — confidence signal. {@code <3} ≈ one-shot dead-end. */
   final int bucketHits;
   /**
-   * Source contour the candidate came from (25, 50, 75 = cost-budget percentage;
-   * 100 = frontier-max). Used by the filter pipeline to prefer the frontier-max
-   * over inner contours within each bucket (higher source contour wins).
+   * Source contour (25/50/75 = cost-budget percentage; 100 = frontier-max).
+   * The filter prefers the higher contour within each bucket.
    */
   public final int sourceContour;
   /** Optional exact graph path to this candidate, available for per-step graph-native candidates. */
