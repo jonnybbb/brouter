@@ -51,24 +51,6 @@ public class RoutingEngine extends Thread {
   /** Absolute ceiling for isochrone Dijkstra maxNodes (circuit breaker). */
   private static final int CEILING_ISOCHRONE_MAX_NODES = 1_500_000;
 
-  /** Reference road-geometry indirectness the geometric loop-radius calibration is tuned to. */
-  private static final double REFERENCE_GEOM_INDIRECTNESS = 1.25;
-  /**
-   * Assumed road/air indirectness for a direction with NO observed isochrone
-   * geometry (probe-only frontier entries, and the no-iso-data fallback).
-   * Deliberately equal to {@link #REFERENCE_GEOM_INDIRECTNESS}: an unknown
-   * direction is assumed to behave like the calibration baseline, so the number
-   * of probe-only directions does not perturb the global indirectness
-   * compensation. (Was an inline {@code 1.3} literal at two sites — 0.05 above
-   * the calibration reference for no documented reason; unified here so the
-   * compensation has a single indirectness baseline.) Validate against the
-   * loop-quality corpus when changing.
-   */
-  private static final double DEFAULT_PROBE_INDIRECTNESS = REFERENCE_GEOM_INDIRECTNESS;
-  /** Clamp range on the indirectness compensation factor (±20% of geometric base). */
-  private static final double IND_COMPENSATION_MIN = 0.80;
-  private static final double IND_COMPENSATION_MAX = 1.20;
-
   /**
    * Isochrone Dijkstra cost-budget calibration.
    *
@@ -2031,56 +2013,6 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Merge isochrone frontier data with probe directions for gap-filling.
-   * Isochrone entries are 6-element {@code [direction, airDist, cost, hits,
-   * ilon, ilat]} (the last two carry the road-native frontier coord);
-   * probe-only entries are 4-element {@code [direction, searchRadius,
-   * searchRadius*1.3, 0]} (estimated cost, no road-native data, hits=0).
-   * Existing isochrone entries dominate overlapping probe directions.
-   *
-   * @param frontier        isochrone entries (may be null)
-   * @param probeDirections probe viable directions in degrees (may be null)
-   * @param searchRadius    fallback distance for probe-only directions
-   * @return merged frontier entries; {@code null} if both inputs empty.
-   *         Entry length varies: 6 for isochrone-sourced, 4 for probe-only.
-   */
-  static double[][] mergeIsochroneWithProbe(double[][] frontier, double[] probeDirections, double searchRadius) {
-    Map<Integer, double[]> merged = new HashMap<>();
-
-    if (frontier != null) {
-      for (double[] entry : frontier) {
-        int bucket = (int) Math.round(entry[0]);
-        merged.put(bucket, entry);
-      }
-    }
-
-    // Add probe directions where isochrone has no data
-    if (probeDirections != null) {
-      for (double dir : probeDirections) {
-        int bucket = (int) Math.round(dir);
-        boolean covered = false;
-        for (int key : merged.keySet()) {
-          if (PlacementGeometry.angleDiff(key, bucket) <= 5) {
-            covered = true;
-            break;
-          }
-        }
-        if (!covered) {
-          // Probe-only: use searchRadius as airDist, estimate cost with default indirectness.
-          // hits=0 marks this as "probed but not observed by isochrone" — lower confidence.
-          merged.put(bucket, new double[]{dir, searchRadius, searchRadius * DEFAULT_PROBE_INDIRECTNESS, 0});
-        }
-      }
-    }
-
-    if (merged.isEmpty()) return null;
-
-    List<double[]> result = new ArrayList<>(merged.values());
-    Collections.sort(result, (a, b) -> Double.compare(a[0], b[0]));
-    return result.toArray(new double[0][]);
-  }
-
-  /**
    * One bounded tier slice: the tier budget clamped to the remaining request
    * budget, floored at {@link #MIN_LADDER_RUNG_BUDGET_MS} — mirroring the
    * competition's childCandidateBudgetMs contract, a nearly-spent request
@@ -2289,15 +2221,15 @@ public class RoutingEngine extends Thread {
         double[] probeDirections = (probe != null) ? probe.viableDirections : null;
         IsochroneExpansionResult iso = runIsochroneExpansion(waypoints.get(0), searchRadius);
         double[][] frontier = (iso != null) ? iso.frontier : null;
-        double[][] merged = mergeIsochroneWithProbe(frontier, probeDirections, searchRadius);
+        double[][] merged = GeometricWaypointPlacer.mergeIsochroneWithProbe(frontier, probeDirections, searchRadius);
         if (merged != null && merged.length >= 3) {
           List<IsoCandidate> isoCandidates = (iso != null) ? iso.candidates : null;
           recordPlacementPath(PlacementPath.ISOCHRONE);
-          placeWaypointsFromIsochrone(waypoints, merged, isoCandidates, searchRadius, direction, targetPoints);
+          waypointPlacer().placeWaypointsFromIsochrone(waypoints, merged, isoCandidates, searchRadius, direction, targetPoints);
         } else if (probeDirections != null && probeDirections.length >= 3) {
           logInfo("isochrone merge insufficient, falling back to probe directions");
           recordPlacementPath(PlacementPath.ENVELOPE_ISO_FALLBACK);
-          placeWaypointsFromEnvelope(waypoints, probeDirections, searchRadius, direction, targetPoints);
+          waypointPlacer().placeWaypointsFromEnvelope(waypoints, probeDirections, searchRadius, direction, targetPoints);
         } else {
           logInfo("both isochrone and probe insufficient, falling back to circle");
           recordPlacementPath(PlacementPath.CIRCLE);
@@ -2329,7 +2261,7 @@ public class RoutingEngine extends Thread {
         double[] viableDirections = PlacementGeometry.filterByProbeConfidence(probe, targetPoints);
         if (viableDirections != null && viableDirections.length >= 3) {
           recordPlacementPath(PlacementPath.ENVELOPE_FAST);
-          placeWaypointsFromEnvelope(waypoints, viableDirections, searchRadius, direction, targetPoints);
+          waypointPlacer().placeWaypointsFromEnvelope(waypoints, viableDirections, searchRadius, direction, targetPoints);
         } else {
           logInfo("reachability probe returned < 3 directions, falling back to circle");
           recordPlacementPath(PlacementPath.CIRCLE);
@@ -2521,7 +2453,7 @@ public class RoutingEngine extends Thread {
     double effectiveDirection = direction;
     IsoAsymmetryBias bias = IsoAsymmetryBias.NONE;
     if (algo == RoundTripAlgorithm.ISO_GREEDY && direction < 0 && iso != null) {
-      bias = computeIsoAsymmetryBearing(iso.frontier, searchRadius);
+      bias = GeometricWaypointPlacer.computeIsoAsymmetryBearing(iso.frontier, searchRadius);
       if (bias.applied) {
         effectiveDirection = bias.bearingDegrees;
         logInfo("ISO_GREEDY: iso-asymmetry bias selected bearing="
@@ -3023,6 +2955,16 @@ public class RoutingEngine extends Thread {
    * stay package-private. Delegates qualify with {@code RoutingEngine.this}
    * so an engine subclass override (tests) still receives the call.
    */
+  private GeometricWaypointPlacer waypointPlacer;
+
+  /** Envelope/isochrone via placement, extracted behind the ops seam. */
+  GeometricWaypointPlacer waypointPlacer() {
+    if (waypointPlacer == null) {
+      waypointPlacer = new GeometricWaypointPlacer(roundTripOps());
+    }
+    return waypointPlacer;
+  }
+
   private RoundTripTrackCleanup trackCleanup;
 
   /** Round-trip track post-processing, extracted behind the ops seam. */
@@ -3088,6 +3030,12 @@ public class RoutingEngine extends Thread {
       @Override
       public void recalcTrack(OsmTrack track) {
         RoutingEngine.this.recalcTrack(track);
+      }
+
+      @Override
+      public void buildPointsFromCircle(List<OsmNodeNamed> waypoints, double startAngle,
+                                        double searchRadius, int points) {
+        RoutingEngine.this.buildPointsFromCircle(waypoints, startAngle, searchRadius, points);
       }
 
       @Override
@@ -3181,11 +3129,6 @@ public class RoutingEngine extends Thread {
    */
   static final double AIR_REACH_BONUS_WEIGHT = 0.10;
 
-  /** Frontier-entry layout indices for the 6-element isochrone form. */
-  private static final int FRONTIER_IDX_ILON = 4;
-  private static final int FRONTIER_IDX_ILAT = 5;
-  private static final int FRONTIER_LENGTH_ROAD_NATIVE = 6;
-
   /**
    * Score a Dijkstra-popped node against a target cost level. Lower wins.
    * {@code costError} is the normalized distance from {@code targetCost};
@@ -3251,43 +3194,6 @@ public class RoutingEngine extends Thread {
     if (newCost > bestCost) return true;
     if (newCost < bestCost) return false;
     return newDist > bestDist;
-  }
-
-  /**
-   * Extract the road-native coordinate ({@code [ilon, ilat]}) from a frontier
-   * entry, or {@code null} if the entry doesn't carry one. The frontier coord
-   * is the cost-budget-envelope node — a fallback for callers that don't pass
-   * the full candidate pool to {@link #placeWaypointsFromIsochrone}; production
-   * placement prefers {@link #nearestCandidateByAirDist} (airDist-aware).
-   *
-   * <p>Isochrone-produced entries are 6-element; probe-only entries from
-   * {@link #mergeIsochroneWithProbe} are 4-element and have no road-native data.
-   */
-  static int[] frontierRoadNativeCoord(double[] entry) {
-    if (entry == null || entry.length < FRONTIER_LENGTH_ROAD_NATIVE) return null;
-    return new int[]{(int) entry[FRONTIER_IDX_ILON], (int) entry[FRONTIER_IDX_ILAT]};
-  }
-
-  /**
-   * Pick the candidate in {@code bucketCandidates} whose air-distance from start
-   * is closest to {@code targetAirDist}, or {@code null} if the bucket has no
-   * candidates. Used by {@link #placeWaypointsFromIsochrone} to preserve the
-   * indirectness-compensated placement radius while still using a road-native
-   * point (each bucket carries one frontier-max + up to three contour candidates
-   * at distinct cost depths, so a close airDist match is usually available).
-   */
-  static IsoCandidate nearestCandidateByAirDist(List<IsoCandidate> bucketCandidates, double targetAirDist) {
-    if (bucketCandidates == null || bucketCandidates.isEmpty()) return null;
-    IsoCandidate best = null;
-    double bestDiff = Double.MAX_VALUE;
-    for (IsoCandidate c : bucketCandidates) {
-      double diff = Math.abs(c.airDistanceFromStart - targetAirDist);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = c;
-      }
-    }
-    return best;
   }
 
   /**
@@ -3694,12 +3600,6 @@ public class RoutingEngine extends Thread {
    *
    * This naturally produces elongated loops in valleys and compact loops in open terrain.
    */
-  /** ISOCHRONE direction-bulge strength: the per-direction placement radius is
-   *  scaled by 1 + alpha*cos(theta - heading), a mean-preserving cardioid toward
-   *  the requested heading (0 = legacy even ring). Package-private and non-final
-   *  only so tests can drive both ends — it is not a runtime knob. */
-  static double isochroneDirBulgeAlpha = 0.35;
-
   private FastPlacementOps fastPlacementOps() {
     return new FastPlacementOps() {
       @Override
@@ -3729,258 +3629,6 @@ public class RoutingEngine extends Thread {
         logInfo(msg);
       }
     };
-  }
-
-  void placeWaypointsFromIsochrone(List<OsmNodeNamed> waypoints, double[][] frontierData,
-                                   List<IsoCandidate> isoCandidates,
-                                   double searchRadius, double startDirection, int targetPoints) {
-    OsmNodeNamed start = waypoints.get(0);
-    int needed = targetPoints - 1;
-    if (needed < 2) needed = 2;
-
-    // Group the road-native candidate pool by bucket so per-direction placement
-    // can pick the candidate (frontier-max or 25/50/75 contour) whose
-    // air-distance is closest to the indirectness-compensated target — preserves
-    // the loop-size scaling while keeping the waypoint on a real road.
-    Map<Integer, List<IsoCandidate>> candidatesByBucket;
-    if (isoCandidates != null && !isoCandidates.isEmpty()) {
-      candidatesByBucket = new HashMap<>();
-      for (IsoCandidate c : isoCandidates) {
-        List<IsoCandidate> bucket = candidatesByBucket.get(c.bucket);
-        if (bucket == null) {
-          bucket = new ArrayList<>();
-          candidatesByBucket.put(c.bucket, bucket);
-        }
-        bucket.add(c);
-      }
-    } else {
-      candidatesByBucket = Collections.emptyMap();
-    }
-
-    // Pre-filter the frontier data:
-    //   1. Drop sea-blocked / dead-end directions whose airDist is far below the
-    //      target placement radius. Selecting these would put a waypoint in the
-    //      ocean (coastal_nice 50km failure mode) or at a one-shot dead-end
-    //      (rural_lozere garbage signal).
-    //   2. Drop low-population buckets (hits < 3) — likely one-shot dead-ends.
-    //   3. Keep at least 4 directions even if filtering would leave fewer, so
-    //      the loop can still be constructed.
-    double minFrontierReach = searchRadius * 0.4;
-    int minHits = 3;
-    List<double[]> usable = new ArrayList<>();
-    for (double[] entry : frontierData) {
-      double airDist = entry[1];
-      int hits = entry.length > 3 ? (int) entry[3] : 1;
-      if (airDist >= minFrontierReach && hits >= minHits) {
-        usable.add(entry);
-      }
-    }
-    if (usable.size() < 4) {
-      // Signal too thin — relax filters and take whatever we have.
-      usable.clear();
-      for (double[] entry : frontierData) {
-        if (entry[1] >= searchRadius * 0.2) usable.add(entry);
-      }
-    }
-
-    int n = usable.size();
-    if (needed > n) needed = n;
-    if (needed < 2) needed = 2;
-
-    double[] directions = new double[n];
-    Map<Double, double[]> dirToData = new HashMap<>(); // dir -> entry array
-    for (int i = 0; i < n; i++) {
-      double[] entry = usable.get(i);
-      directions[i] = entry[0];
-      dirToData.put(entry[0], entry);
-    }
-
-    double[] selected;
-    if (needed >= n) {
-      selected = directions;
-    } else {
-      selected = PlacementGeometry.selectSpreadDirections(directions, needed, startDirection);
-    }
-    selected = PlacementGeometry.sortDirectionsForLoop(selected, startDirection);
-
-    // Base radius from polygon geometry (legacy v1.7.8-compatible), then
-    // compensated by observed road-geometry indirectness. The cost/airDist
-    // ratio from the isochrone equals (roadDist/airDist) × profileCostFactor.
-    // To isolate the road geometry part we estimate profileCostFactor from the
-    // minimum observed indirectness across all usable directions (the easiest
-    // road's indirectness ≈ pure profile costfactor on flat direct road).
-    double geomBase = searchRadius * PlacementGeometry.computeRadiusScale(selected, targetPoints);
-
-    // Per-direction observed cost/airDist ratio. Median (not mean) so a single
-    // outlier direction doesn't dominate redistribution.
-    double[] selectedInd = new double[selected.length];
-    for (int i = 0; i < selected.length; i++) {
-      double[] data = dirToData.get(selected[i]);
-      double airDist = data[1];
-      double cost = data[2];
-      selectedInd[i] = (airDist > 50) ? Math.max(1.0, cost / airDist) : 1.5;
-    }
-    double[] sortedInd = selectedInd.clone();
-    Arrays.sort(sortedInd);
-    double medianInd = Math.max(1.0, sortedInd[selectedInd.length / 2]);
-
-    // Estimate profile-only cost factor from the easiest direction across ALL
-    // observed directions (not just selected), so directional pre-filter doesn't
-    // bias it. Min reasonable value: 1.0 (already clamped during data read).
-    double minObservedInd = Double.MAX_VALUE;
-    for (double[] entry : usable) {
-      double aD = entry[1], c = entry[2];
-      if (aD > 50) {
-        double ind = Math.max(1.0, c / aD);
-        if (ind < minObservedInd) minObservedInd = ind;
-      }
-    }
-    if (minObservedInd == Double.MAX_VALUE) minObservedInd = DEFAULT_PROBE_INDIRECTNESS;
-    double profileCostFactor = Math.max(1.0, minObservedInd);
-    // Pure road-geometry indirectness (road meters per air meter), profile-free.
-    double geomInd = medianInd / profileCostFactor;
-    // Compensate the base radius: in indirect terrain (high geomInd) shrink so
-    // the actual routed loop matches target distance. Conservative ±20%.
-    double indCompensation = REFERENCE_GEOM_INDIRECTNESS / Math.max(1.0, geomInd);
-    indCompensation = Math.max(IND_COMPENSATION_MIN, Math.min(IND_COMPENSATION_MAX, indCompensation));
-    double baseRadius = geomBase * indCompensation;
-
-    // Per-direction redistribution factors. Indirect dirs (mountains) → factor <
-    // 1 → closer; direct dirs (valley floor) → factor > 1 → farther. Normalize
-    // so the average factor = 1.0 (mean-preserving).
-    double[] rawFactors = new double[selected.length];
-    double factorSum = 0;
-    for (int i = 0; i < selected.length; i++) {
-      rawFactors[i] = medianInd / selectedInd[i];
-      factorSum += rawFactors[i];
-    }
-    double normalization = selected.length / factorSum;
-
-    // Directional bulge: bias the placement radius toward startDirection so the
-    // loop heads that way (a cardioid) instead of encircling evenly — this is
-    // what lets ISOCHRONE honour the requested direction, which the bare
-    // even-spread frontier sampling cannot. Mean-preserving: the per-direction
-    // factors are renormalised to average 1.0, so the loop's overall size — and
-    // therefore the distance gate — is unchanged; only its shape shifts toward
-    // the heading. isochroneDirBulgeAlpha=0 reproduces the legacy even ring.
-    double dirBulgeAlpha = isochroneDirBulgeAlpha;
-    double[] dirBulge = new double[selected.length];
-    double dirBulgeSum = 0;
-    for (int i = 0; i < selected.length; i++) {
-      dirBulge[i] = 1.0 + dirBulgeAlpha * Math.cos(Math.toRadians(selected[i] - startDirection));
-      dirBulgeSum += dirBulge[i];
-    }
-    double dirBulgeNorm = dirBulgeSum > 0 ? selected.length / dirBulgeSum : 1.0;
-
-    double maxDist = searchRadius * 1.5;
-    double minDist = searchRadius * 0.15;
-    int roadNativeCount = 0;
-    int syntheticCount = 0;
-    double bucketSize = 360.0 / 36; // matches runIsochroneExpansion
-    for (int i = 0; i < selected.length; i++) {
-      double factor = Math.max(0.5, Math.min(2.0,
-        rawFactors[i] * normalization * dirBulge[i] * dirBulgeNorm));
-      double airDist = baseRadius * factor;
-      airDist = Math.max(minDist, Math.min(maxDist, airDist));
-
-      // Pick the road-native candidate in this bucket whose air-distance is
-      // closest to airDist — but only if it's within ±2× of the target,
-      // otherwise the candidate (typically the cost-budget-envelope frontier-max)
-      // would defeat the per-direction indirectness compensation. When out of
-      // tolerance, synthesize at the exact target and let matchWaypointsToNodes
-      // snap to the nearest road. Frontier-entry coord (entry[4..5]) is a
-      // legacy fallback for callers without a candidate pool.
-      int bucketIdx = ((int) (selected[i] / bucketSize)) % 36;
-      if (bucketIdx < 0) bucketIdx += 36;
-      IsoCandidate bestCand = nearestCandidateByAirDist(candidatesByBucket.get(bucketIdx), airDist);
-      boolean candAcceptable = bestCand != null
-        && bestCand.airDistanceFromStart >= airDist * 0.5
-        && bestCand.airDistanceFromStart <= airDist * 2.0;
-      int[] pos;
-      if (candAcceptable) {
-        pos = new int[]{bestCand.ilon, bestCand.ilat};
-        roadNativeCount++;
-      } else if (bestCand == null) {
-        int[] frontierCoord = frontierRoadNativeCoord(dirToData.get(selected[i]));
-        if (frontierCoord != null) {
-          pos = frontierCoord;
-          roadNativeCount++;
-        } else {
-          pos = CheapRuler.destination(start.ilon, start.ilat, airDist, selected[i]);
-          syntheticCount++;
-        }
-      } else {
-        pos = CheapRuler.destination(start.ilon, start.ilat, airDist, selected[i]);
-        syntheticCount++;
-      }
-      OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(pos[0], pos[1]));
-      onn.name = "rt" + (i + 1);
-      waypoints.add(onn);
-    }
-
-    OsmNodeNamed closing = new OsmNodeNamed(start);
-    closing.name = "to_rt";
-    waypoints.add(closing);
-
-    logInfo("placeWaypointsFromIsochrone: " + selected.length + " waypoints"
-      + " (" + roadNativeCount + " road-native, " + syntheticCount + " synthetic)"
-      + ", baseRadius=" + (int) baseRadius + "m"
-      + ", medianInd=" + String.format("%.2f", medianInd)
-      + ", searchRadius=" + (int) searchRadius + "m");
-  }
-
-  /**
-   * Place waypoints from the reachability envelope at a scaled search radius.
-   * Selects N directions from the viable set that maximize angular spread,
-   * then scales the radius to match v1.7.8's expected loop distance.
-   *
-   * <p><b>Known parity gap (P5):</b> unlike {@link #placeWaypointsFromIsochrone},
-   * this fallback applies only the geometric {@code computeRadiusScale} correction
-   * and does NOT apply terrain-indirectness compensation (it has no per-direction
-   * isochrone cost data to derive it from). It is reached precisely when the
-   * merged isochrone+probe frontier has &lt;3 usable directions — i.e. indirect
-   * terrain (mountains/coast), where unadjusted radii tend to overshoot the target
-   * loop distance. Adding a conservative {@link #DEFAULT_PROBE_INDIRECTNESS}-based
-   * shrink here is a candidate improvement but is a tuning change that needs
-   * loop-quality-corpus validation before landing (cf. the analogous out-of-scope
-   * note in docs/features/roundtrip-benchmark-2026-05.md).
-   */
-  void placeWaypointsFromEnvelope(List<OsmNodeNamed> waypoints, double[] viableDirections,
-                                  double searchRadius, double startDirection, int targetPoints) {
-    OsmNodeNamed start = waypoints.get(0);
-    int n = viableDirections.length;
-    int needed = targetPoints - 1;
-    if (needed > n) needed = n;
-    if (needed < 2) needed = 2;
-
-    double[] selected;
-    if (needed >= n) {
-      selected = viableDirections;
-    } else {
-      selected = PlacementGeometry.selectSpreadDirections(viableDirections, needed, startDirection);
-    }
-
-    selected = PlacementGeometry.sortDirectionsForLoop(selected, startDirection);
-
-    // Scale radius so the loop perimeter matches v1.7.8's expected distance.
-    // v1.7.8 uses buildPointsFromCircle which creates a narrow arc (108-152°).
-    // The probe's wider direction spread produces longer loops at the same radius.
-    double adjustedRadius = searchRadius * PlacementGeometry.computeRadiusScale(selected, targetPoints);
-
-    for (int i = 0; i < selected.length; i++) {
-      int[] pos = CheapRuler.destination(start.ilon, start.ilat, adjustedRadius, selected[i]);
-      OsmNodeNamed onn = new OsmNodeNamed(new OsmNode(pos[0], pos[1]));
-      onn.name = "rt" + (i + 1);
-      waypoints.add(onn);
-    }
-
-    OsmNodeNamed closing = new OsmNodeNamed(start);
-    closing.name = "to_rt";
-    waypoints.add(closing);
-
-    logInfo("placeWaypointsFromEnvelope: " + selected.length + " waypoints, radius "
-      + (int) searchRadius + "m -> " + (int) adjustedRadius + "m (scale "
-      + String.format("%.2f", adjustedRadius / searchRadius) + ")");
   }
 
   /**
@@ -4066,45 +3714,6 @@ public class RoutingEngine extends Thread {
     if (a < 67.5) return "NE-SW";
     if (a < 112.5) return "E-W";
     return "NW-SE";
-  }
-
-  /**
-   * Phase 2.0 of the closure-aware planning spec — isochrone-asymmetry
-   * initial bearing. Examines the 36-bucket frontier table produced by
-   * {@link #runIsochroneExpansion} and selects the most-reaching sector
-   * (lowest {@code cost / airDist}) subject to quality thresholds.
-   *
-   * <p>Returns {@link IsoAsymmetryBias#NONE} when no bucket clears the
-   * thresholds. The caller falls back to the legacy direction-selection
-   * behavior in that case.
-   *
-   * <p>Package-private + static for unit testing with synthetic frontier
-   * tables.
-   */
-  static IsoAsymmetryBias computeIsoAsymmetryBearing(double[][] frontier, double searchRadius) {
-    if (frontier == null || frontier.length == 0) return IsoAsymmetryBias.NONE;
-    final double minAirDist = 0.6 * searchRadius;
-    final int minHits = 3;
-    int bestIdx = -1;
-    double bestIndirectness = Double.POSITIVE_INFINITY;
-    for (int i = 0; i < frontier.length; i++) {
-      double[] b = frontier[i];
-      if (b == null || b.length < 4) continue;
-      double airDist = b[1];
-      double cost = b[2];
-      int hits = (int) b[3];
-      if (airDist < minAirDist || hits < minHits || airDist <= 0) continue;
-      double indirectness = cost / airDist;
-      if (indirectness < bestIndirectness) {
-        bestIndirectness = indirectness;
-        bestIdx = i;
-      }
-      // Tie-break: lowest bucket index wins (already enforced by strict <).
-    }
-    if (bestIdx < 0) return IsoAsymmetryBias.NONE;
-    double[] best = frontier[bestIdx];
-    return new IsoAsymmetryBias(true, best[0], bestIndirectness,
-        (int) best[3], (int) best[1]);
   }
 
   /**

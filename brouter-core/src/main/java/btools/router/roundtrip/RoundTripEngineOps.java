@@ -46,6 +46,10 @@ public interface RoundTripEngineOps {
   /** Recalculate a track's totals (engine primitive shared with normal routing). */
   void recalcTrack(OsmTrack track);
 
+  /** v1.7.8 geometric circle placement (upstream engine primitive). */
+  void buildPointsFromCircle(List<OsmNodeNamed> waypoints, double startAngle,
+                             double searchRadius, int points);
+
   /** Merge duplicate round-trip voice hints (needs VoiceHint package internals). */
   void consolidateRoundTripVoiceHints(OsmTrack track);
 

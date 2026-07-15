@@ -117,6 +117,12 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public void buildPointsFromCircle(List<OsmNodeNamed> waypoints, double startAngle,
+                                      double searchRadius, int points) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void consolidateRoundTripVoiceHints(OsmTrack track) {
       throw new UnsupportedOperationException();
     }

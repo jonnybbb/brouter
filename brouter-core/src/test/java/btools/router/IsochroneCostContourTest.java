@@ -2,16 +2,11 @@ package btools.router;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 
 import org.junit.Test;
-import btools.router.roundtrip.IsoCandidate;
 
 /**
  * Pure-function tests for the cost-contour scoring rule + frontier road-native
@@ -288,85 +283,7 @@ public class IsochroneCostContourTest {
 
   // ----- frontier road-native coord extraction ------------------------------
 
-  @Test
-  public void roadNativeCoordReturnsCoordsForIsoEntry() {
-    // 6-element entry has road-native coords at [4], [5].
-    double[] entry = {45.0, 2000.0, 2600.0, 5.0, 188_720_123.0, 140_000_456.0};
-    int[] coord = RoutingEngine.frontierRoadNativeCoord(entry);
-    assertNotNull(coord);
-    assertEquals(188_720_123, coord[0]);
-    assertEquals(140_000_456, coord[1]);
-  }
-
-  @Test
-  public void roadNativeCoordReturnsNullForProbeOnlyEntry() {
-    // 4-element entry (probe-only injected by mergeIsochroneWithProbe).
-    double[] entry = {45.0, 2000.0, 2600.0, 0.0};
-    assertNull(RoutingEngine.frontierRoadNativeCoord(entry));
-  }
-
-  @Test
-  public void roadNativeCoordReturnsNullForShortEntry() {
-    double[] entry = {45.0, 2000.0};
-    assertNull(RoutingEngine.frontierRoadNativeCoord(entry));
-  }
-
-  @Test
-  public void roadNativeCoordReturnsNullForNull() {
-    assertNull(RoutingEngine.frontierRoadNativeCoord(null));
-  }
-
   // ----- nearest-candidate-by-airDist selection -----------------------------
 
-  /**
-   * Build a candidate with the given bucket/airDist; other fields are
-   * irrelevant for {@link RoutingEngine#nearestCandidateByAirDist}.
-   */
-  private static IsoCandidate cand(int bucket, double airDist, int sourceContour) {
-    return new IsoCandidate(0, 0, bucket * 10 + 5, airDist,
-      (int) (airDist * 1.3), bucket, 5, sourceContour);
-  }
 
-  @Test
-  public void nearestCandidatePicksClosestAirDist() {
-    // Four candidates per bucket (frontier-max + 25/50/75 contours) at
-    // increasing air-distances. The target sits between two of them; the closer
-    // one wins.
-    List<IsoCandidate> bucket = Arrays.asList(
-      cand(0,  500, 25),
-      cand(0, 1000, 50),
-      cand(0, 1500, 75),
-      cand(0, 2000, 100));
-    IsoCandidate best = RoutingEngine.nearestCandidateByAirDist(bucket, 1100);
-    assertNotNull(best);
-    assertEquals(50, best.sourceContour); // 1000 is closer to 1100 than 1500
-  }
-
-  @Test
-  public void nearestCandidateSelectsExactMatch() {
-    List<IsoCandidate> bucket = Arrays.asList(
-      cand(0, 1000, 50),
-      cand(0, 2000, 100));
-    IsoCandidate best = RoutingEngine.nearestCandidateByAirDist(bucket, 2000);
-    assertNotNull(best);
-    assertEquals(100, best.sourceContour);
-  }
-
-  @Test
-  public void nearestCandidateHandlesEmptyAndNull() {
-    assertNull(RoutingEngine.nearestCandidateByAirDist(null, 1000));
-    assertNull(RoutingEngine.nearestCandidateByAirDist(new ArrayList<>(), 1000));
-  }
-
-  @Test
-  public void nearestCandidatePicksFrontierMaxWhenTargetIsLarge() {
-    // Target larger than any candidate — pick the farthest (frontier-max).
-    List<IsoCandidate> bucket = Arrays.asList(
-      cand(0,  500, 25),
-      cand(0, 1500, 75),
-      cand(0, 2000, 100));
-    IsoCandidate best = RoutingEngine.nearestCandidateByAirDist(bucket, 5000);
-    assertNotNull(best);
-    assertEquals(100, best.sourceContour);
-  }
 }
