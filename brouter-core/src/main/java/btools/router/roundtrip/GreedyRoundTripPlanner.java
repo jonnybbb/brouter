@@ -344,7 +344,10 @@ public class GreedyRoundTripPlanner {
    * pass-rate against seed 0), not by feel.
    */
   static final double VARIETY_JITTER_AMPLITUDE = 0.10;
-  private final RoundTripEngineOps engine;
+  private final LegRouter router;
+  private final RoundTripRequestState state;
+  private final EngineIO io;
+  private final EngineContext ctx;
   /**
    * Active profile name, set by {@link btools.router.RoutingEngine} before planning.
    * The planner's internal {@link #qualityGateReason fallback gate}
@@ -395,6 +398,13 @@ public class GreedyRoundTripPlanner {
   public GreedyRoundTripPlanner(RoundTripEngineOps engine, RoundTripCandidateProvider provider) {
     this(engine, provider, new CandidateScorer(),
       DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
+  }
+
+  /** Convenience wiring form: fan the composite engine seam out to the four roles. */
+  public GreedyRoundTripPlanner(RoundTripEngineOps engine, RoundTripCandidateProvider provider,
+                                CandidateScorer scorer, int subRouteCount, double tolerance,
+                                int maxAttempts) {
+    this(engine, engine, engine, engine, provider, scorer, subRouteCount, tolerance, maxAttempts);
   }
 
   /**
@@ -484,10 +494,14 @@ public class GreedyRoundTripPlanner {
   private int oracleEstimates;
   private int fallbackEstimates;
 
-  public GreedyRoundTripPlanner(RoundTripEngineOps engine, RoundTripCandidateProvider provider,
+  public GreedyRoundTripPlanner(LegRouter router, RoundTripRequestState state, EngineIO io,
+                                EngineContext ctx, RoundTripCandidateProvider provider,
                                 CandidateScorer scorer, int subRouteCount, double tolerance,
                                 int maxAttempts) {
-    this.engine = engine;
+    this.router = router;
+    this.state = state;
+    this.io = io;
+    this.ctx = ctx;
     this.candidateProvider = provider;
     this.scorer = scorer;
     this.subRouteCount = subRouteCount;
@@ -1106,7 +1120,7 @@ public class GreedyRoundTripPlanner {
         // per-call ceiling): the expansion loop historically ran with no time
         // check at all, so a dense-area expansion could overrun every budget.
         List<RoundTripCandidateProvider.CandidatePoint> candidates;
-        engine.setTransientExpansionDeadline(Math.min(stepDeadline,
+        state.setTransientExpansionDeadline(Math.min(stepDeadline,
           System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS));
         try {
           candidates = candidateProvider.candidatesForStep(
@@ -1116,7 +1130,7 @@ public class GreedyRoundTripPlanner {
             startDirection,
             cachedRefTrack);
         } finally {
-          engine.setTransientExpansionDeadline(0);
+          state.setTransientExpansionDeadline(0);
         }
         candidatesGenerated += candidates.size();
 
@@ -1342,7 +1356,7 @@ public class GreedyRoundTripPlanner {
           // — one extra Dijkstra, paid only when a relocation actually fired.
           OsmTrack subTrack = cp.routedTrack;
           if (subTrack != null && snapDist > VIA_RELOCATION_DROP_CACHED_LEG_M) {
-            engine.logInfo("greedy: candidate via relocated " + (int) snapDist
+            io.logInfo("greedy: candidate via relocated " + (int) snapDist
               + "m to profile-friendly road, re-routing leg");
             subTrack = null;
           }
@@ -1861,7 +1875,7 @@ public class GreedyRoundTripPlanner {
         currentMwp, startMwp, buildRefTrack(segments), forceCloseDeadline);
       returnChecksPerformed++;
       if (returnTrack != null && returnTrack.distance > 0) {
-        returnTrack = engine.retrackForDetail(returnTrack, currentMwp, startMwp, null);
+        returnTrack = router.retrackForDetail(returnTrack, currentMwp, startMwp, null);
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
         reportSeamGaps(segments, null, result);
@@ -1933,7 +1947,7 @@ public class GreedyRoundTripPlanner {
     scores.add(new double[]{1.0, baseCrossings, reuseFraction(base, returnRef),
       closedDistanceError(totalDistance, base.distance, desiredDistance)});
 
-    RoutingContext rc = engine.routingContext();
+    RoutingContext rc = ctx.routingContext();
     for (double factor : RETURN_VARIANT_FACTORS) {
       OsmTrack variant;
       double saved = rc.refTrackCostFactor;
@@ -1969,7 +1983,7 @@ public class GreedyRoundTripPlanner {
         + " -> " + (int) s[1] + ", reuse " + (int) (s[2] * 100) + "%, distErr "
         + Math.round(s[3] * 100) + "%";
       result.addDiagnostic("step " + step + ": " + msg);
-      engine.logInfo("greedy " + msg);
+      io.logInfo("greedy " + msg);
     }
     return variants.get(best);
   }
@@ -1989,7 +2003,7 @@ public class GreedyRoundTripPlanner {
    */
   private OsmTrack detailWithFallback(String name, OsmTrack leg, MatchedWaypoint fromMwp,
                                       MatchedWaypoint toMwp, OsmTrack refTrack, long deadline) {
-    OsmTrack detailed = engine.retrackForDetail(leg, fromMwp, toMwp, refTrack);
+    OsmTrack detailed = router.retrackForDetail(leg, fromMwp, toMwp, refTrack);
     if (!detailFidelityTooLow(detailed)) {
       return detailed;
     }
@@ -1998,7 +2012,7 @@ public class GreedyRoundTripPlanner {
     if (rerouted == null || rerouted.distance == 0) {
       return detailed;
     }
-    return engine.retrackForDetail(rerouted, fromMwp, toMwp, refTrack);
+    return router.retrackForDetail(rerouted, fromMwp, toMwp, refTrack);
   }
 
   public OsmTrack timedFindTrack(String name, MatchedWaypoint from, MatchedWaypoint to,
@@ -2006,7 +2020,7 @@ public class GreedyRoundTripPlanner {
     long now = System.currentTimeMillis();
     long remaining = deadline - now;
     if (remaining < MIN_FIND_TRACK_MS) {
-      engine.logInfo(name + ": deadline exceeded, skipping (remaining " + remaining + "ms)");
+      io.logInfo(name + ": deadline exceeded, skipping (remaining " + remaining + "ms)");
       return null;
     }
     // Distance-scaled per-call cap (see FIND_TRACK_BASE_BUDGET_MS): a short
@@ -2019,12 +2033,12 @@ public class GreedyRoundTripPlanner {
       : Math.min(SUB_ROUTE_TIMEOUT_MS,
           FIND_TRACK_BASE_BUDGET_MS + (long) (FIND_TRACK_BUDGET_MS_PER_AIR_KM * airKm));
     long budget = Math.min(scaledCap, remaining);
-    long savedStartTime = engine.startTime();
-    long savedMaxRunningTime = engine.maxRunningTime();
-    double savedAirDistanceCostFactor = engine.airDistanceCostFactor();
+    long savedStartTime = state.startTime();
+    long savedMaxRunningTime = state.maxRunningTime();
+    double savedAirDistanceCostFactor = state.airDistanceCostFactor();
     try {
-      engine.setStartTime(now);
-      engine.setMaxRunningTime(budget);
+      state.setStartTime(now);
+      state.setMaxRunningTime(budget);
       // Goal-directed search for planner legs. The greedy path historically
       // inherited the field default 0.0 — a full omnidirectional Dijkstra per
       // leg (cost-disk ~quadratic in leg distance), while normal routing runs
@@ -2034,25 +2048,25 @@ public class GreedyRoundTripPlanner {
       // so the profile's own pass-1 heuristic strength is the right tool.
       // Negative/zero coefficients (profiles that disable pass 1) keep the
       // exact search.
-      engine.setAirDistanceCostFactor(Math.max(0.0, engine.routingContext().pass1coefficient));
-      return engine.findTrack(name, from, to, null, refTrack, false);
+      state.setAirDistanceCostFactor(Math.max(0.0, ctx.routingContext().pass1coefficient));
+      return router.findTrack(name, from, to, null, refTrack, false);
     } catch (IllegalArgumentException | RoutingIslandException e) {
       // A watchdog kill surfaces as IllegalArgumentException; propagate it so
       // plan() aborts immediately instead of burning the remaining attempts
       // re-throwing-and-swallowing the same kill on every subsequent leg.
-      if (engine.isTerminated()) {
+      if (router.isTerminated()) {
         throw e;
       }
       // Treat an islanded / unroutable leg as "no track for this leg" (same as
       // retrackForDetail does) so the planner falls back to its best-so-far loop
       // instead of letting the exception abort plan() and discard all telemetry.
-      engine.logInfo(name + ": no track (" + e.getClass().getSimpleName()
+      io.logInfo(name + ": no track (" + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage()) + ")");
       return null;
     } finally {
-      engine.setStartTime(savedStartTime);
-      engine.setMaxRunningTime(savedMaxRunningTime);
-      engine.setAirDistanceCostFactor(savedAirDistanceCostFactor);
+      state.setStartTime(savedStartTime);
+      state.setMaxRunningTime(savedMaxRunningTime);
+      state.setAirDistanceCostFactor(savedAirDistanceCostFactor);
     }
   }
 
@@ -2096,10 +2110,10 @@ public class GreedyRoundTripPlanner {
    */
   private MatchedWaypoint matchCandidatePointProfileAware(int ilon, int ilat) {
     try {
-      MatchedWaypoint mwp = engine.profileAwareMatchPoint(ilon, ilat, "greedy_to", 2000);
+      MatchedWaypoint mwp = router.profileAwareMatchPoint(ilon, ilat, "greedy_to", 2000);
       if (mwp != null) return mwp;
     } catch (Exception e) {
-      engine.logInfo("matchCandidatePointProfileAware failed: " + e.getClass().getSimpleName()
+      io.logInfo("matchCandidatePointProfileAware failed: " + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage()));
     }
     return matchPoint(ilon, ilat, "greedy_to");
@@ -2107,13 +2121,13 @@ public class GreedyRoundTripPlanner {
 
   private MatchedWaypoint matchPoint(int ilon, int ilat, String name) {
     try {
-      engine.resetCache(false);
+      router.resetCache(false);
       MatchedWaypoint mwp = new MatchedWaypoint();
       mwp.waypoint = new OsmNode(ilon, ilat);
       mwp.name = name;
       List<MatchedWaypoint> mwpList = new ArrayList<>();
       mwpList.add(mwp);
-      engine.matchWaypointsToNodes(mwpList, 2000);
+      router.matchWaypointsToNodes(mwpList, 2000);
       if (mwp.crosspoint == null || mwp.node1 == null || mwp.node2 == null) {
         return null;
       }
@@ -2126,7 +2140,7 @@ public class GreedyRoundTripPlanner {
       // single missing-data candidate point must not abort the whole leg. The
       // cause (incl. data-availability IllegalArgumentException from NodesCache)
       // is logged so it is not silently lost when info logging is enabled.
-      engine.logInfo("matchPoint(" + name + ") failed: " + e.getClass().getSimpleName()
+      io.logInfo("matchPoint(" + name + ") failed: " + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage()));
       return null;
     }
@@ -2247,8 +2261,8 @@ public class GreedyRoundTripPlanner {
   private void reportSeamGaps(List<OsmTrack> segments, OsmTrack finalSegment, RoundTripResult result) {
     for (String gap : seamGapsMeters(segments, finalSegment)) {
       result.addDiagnostic("seam-contiguity: " + gap);
-      if (engine != null) {
-        engine.logInfo("greedy seam-contiguity defect: " + gap);
+      if (io != null) {
+        io.logInfo("greedy seam-contiguity defect: " + gap);
       }
     }
   }
