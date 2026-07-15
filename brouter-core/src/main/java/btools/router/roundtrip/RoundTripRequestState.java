@@ -51,12 +51,10 @@ public interface RoundTripRequestState {
 
   void setRoundTripRequestDeadline(long deadlineMillis);
 
-  /** Per-leg routing budget for the round-trip fallthrough. */
+  /** Per-leg routing budget (ms) computed by doRun; request-entry seed. */
   long roundTripRoutingBudgetMs();
 
-  void setRoundTripRoutingBudgetMs(long budgetMs);
-
-  /** Active effort policy preset; null outside bounded dispatch. */
+  /** Effort preset request-entry seed / child-engine handoff. */
   RoundTripEffortPolicy roundTripEffortPolicy();
 
   void setRoundTripEffortPolicy(RoundTripEffortPolicy policy);
@@ -67,24 +65,12 @@ public interface RoundTripRequestState {
   /** Getter lives on {@link EngineContext#explicitViaRoundTrip()}. */
   void setExplicitViaRoundTrip(boolean explicitVia);
 
-  /** Forced-corridor acceptance latch from the greedy adoption. */
-  boolean roundTripForcedCorridorAccepted();
-
-  void setRoundTripForcedCorridorAccepted(boolean accepted);
-
-  /** Bounded tier's gate verdict, published for the shared doRun advisory. */
-  RoundTripQualityResult boundedGateVerdict();
-
-  void setBoundedGateVerdict(RoundTripQualityResult verdict);
-
   /** Per-leg guide tracks from a greedy adoption, consulted by doRouting. */
   OsmTrack[] greedyLegTracks();
 
   void setGreedyLegTracks(OsmTrack[] tracks);
 
-  /** Last gate-rejected track (diagnostics). */
-  OsmTrack lastRejectedTrack();
-
+  /** End-of-request publication for {@code getLastRejectedTrack()}. */
   void setLastRejectedTrack(OsmTrack track);
 
   /** Publish the planner result for telemetry. */

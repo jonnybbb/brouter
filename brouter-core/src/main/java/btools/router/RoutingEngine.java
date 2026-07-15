@@ -77,13 +77,6 @@ public class RoutingEngine extends Thread {
    */
   private OsmTrack lastRejectedTrack;
   private RoundTripResult lastRoundTripResult;
-  /**
-   * Latched by the greedy adoption when the loop is a forced same-way-back
-   * corridor (no clean alternative in constrained terrain); the gate then
-   * evaluates with allowSamewayback=true so the rideable corridor is
-   * disclosed rather than rejected.
-   */
-  private boolean roundTripForcedCorridorAccepted;
   private int alternativeIndex = 0;
 
   protected String outputMessage = null;
@@ -657,13 +650,6 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Bounded-tier verdict handoff: set when the bounded pre-gate accepted the
-   * planner track, consumed once by the shared gate so the same track is not
-   * evaluated twice.
-   */
-  private RoundTripQualityResult boundedGateVerdict;
-
-  /**
    * Single source of truth for lenient/strict acceptance: STRUCTURAL failures
    * (broken / un-routable / not-a-loop) always hard-reject; QUALITY failures
    * (rideable but suboptimal) are advisory unless
@@ -1022,11 +1008,6 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
-      public void setRoundTripRoutingBudgetMs(long budgetMs) {
-        roundTripRoutingBudgetMs = budgetMs;
-      }
-
-      @Override
       public void setRoundTripSearchRadius(double searchRadius) {
         roundTripSearchRadius = searchRadius;
       }
@@ -1077,16 +1058,6 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
-      public RoundTripQualityResult boundedGateVerdict() {
-        return boundedGateVerdict;
-      }
-
-      @Override
-      public void setBoundedGateVerdict(RoundTripQualityResult verdict) {
-        boundedGateVerdict = verdict;
-      }
-
-      @Override
       public OsmTrack[] greedyLegTracks() {
         return greedyLegTracks;
       }
@@ -1094,11 +1065,6 @@ public class RoutingEngine extends Thread {
       @Override
       public void setGreedyLegTracks(OsmTrack[] tracks) {
         greedyLegTracks = tracks;
-      }
-
-      @Override
-      public OsmTrack lastRejectedTrack() {
-        return lastRejectedTrack;
       }
 
       @Override
@@ -1134,16 +1100,6 @@ public class RoutingEngine extends Thread {
       @Override
       public void setExplicitViaRoundTrip(boolean explicitVia) {
         RoutingEngine.this.explicitViaRoundTrip = explicitVia;
-      }
-
-      @Override
-      public boolean roundTripForcedCorridorAccepted() {
-        return roundTripForcedCorridorAccepted;
-      }
-
-      @Override
-      public void setRoundTripForcedCorridorAccepted(boolean accepted) {
-        roundTripForcedCorridorAccepted = accepted;
       }
 
       @Override
