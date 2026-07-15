@@ -141,6 +141,11 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public void setTransientExpansionDeadline(long deadlineMillis) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
       throw new UnsupportedOperationException();
     }

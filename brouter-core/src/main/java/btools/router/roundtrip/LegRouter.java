@@ -41,6 +41,9 @@ public interface LegRouter {
 
   void resetCache(boolean detailed);
 
+  /** Wall-clock bound for the next isochrone expansion; 0 clears it. */
+  void setTransientExpansionDeadline(long deadlineMillis);
+
   /** Start-centered isochrone expansion (placement variant). */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius);
 

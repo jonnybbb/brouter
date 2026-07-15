@@ -89,7 +89,4 @@ public interface RoundTripRequestState {
 
   /** Publish the planner result for telemetry. */
   void setLastRoundTripResult(RoundTripResult result);
-
-  /** Wall-clock bound for the next isochrone expansion; 0 clears it. */
-  void setTransientExpansionDeadline(long deadlineMillis);
 }

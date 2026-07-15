@@ -303,7 +303,6 @@ public class GreedyRoundTripPlanner {
    */
   static final double VARIETY_JITTER_AMPLITUDE = 0.10;
   private final LegRouter router;
-  private final RoundTripRequestState state;
   private final EngineIO io;
   private final EngineContext ctx;
   /**
@@ -352,11 +351,11 @@ public class GreedyRoundTripPlanner {
       DEFAULT_SUB_ROUTE_COUNT, DEFAULT_TOLERANCE, DEFAULT_MAX_ATTEMPTS);
   }
 
-  /** Convenience wiring form: fan the composite engine seam out to the four roles. */
+  /** Convenience wiring form: fan the composite engine seam out to the roles. */
   public GreedyRoundTripPlanner(RoundTripEngineOps engine, RoundTripCandidateProvider provider,
                                 CandidateScorer scorer, int subRouteCount, double tolerance,
                                 int maxAttempts) {
-    this(engine, engine, engine, engine, provider, scorer, subRouteCount, tolerance, maxAttempts);
+    this(engine, engine, engine, provider, scorer, subRouteCount, tolerance, maxAttempts);
   }
 
   /**
@@ -433,12 +432,11 @@ public class GreedyRoundTripPlanner {
   private int oracleEstimates;
   private int fallbackEstimates;
 
-  public GreedyRoundTripPlanner(LegRouter router, RoundTripRequestState state, EngineIO io,
+  public GreedyRoundTripPlanner(LegRouter router, EngineIO io,
                                 EngineContext ctx, RoundTripCandidateProvider provider,
                                 CandidateScorer scorer, int subRouteCount, double tolerance,
                                 int maxAttempts) {
     this.router = router;
-    this.state = state;
     this.io = io;
     this.ctx = ctx;
     this.candidateProvider = provider;
@@ -1006,7 +1004,7 @@ public class GreedyRoundTripPlanner {
         // per-call ceiling): the expansion loop historically ran with no time
         // check at all, so a dense-area expansion could overrun every budget.
         List<RoundTripCandidateProvider.CandidatePoint> candidates;
-        state.setTransientExpansionDeadline(Math.min(stepDeadline,
+        router.setTransientExpansionDeadline(Math.min(stepDeadline,
           System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS));
         try {
           candidates = candidateProvider.candidatesForStep(
@@ -1016,7 +1014,7 @@ public class GreedyRoundTripPlanner {
             startDirection,
             cachedRefTrack);
         } finally {
-          state.setTransientExpansionDeadline(0);
+          router.setTransientExpansionDeadline(0);
         }
         candidatesGenerated += candidates.size();
 
