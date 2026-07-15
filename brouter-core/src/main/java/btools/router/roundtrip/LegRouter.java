@@ -22,6 +22,13 @@ public interface LegRouter {
    */
   OsmTrack findTrackUnguided(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp);
 
+  /**
+   * Leg search under its own time budget: the engine saves/restores its clock
+   * and runs goal-directed at the profile's pass-1 coefficient.
+   */
+  OsmTrack findTrackTimed(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
+                          OsmTrack refTrack, long budgetMs);
+
   /** Re-run a raw track at full detail between its endpoints. */
   OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp,
                             OsmTrack refTrack);

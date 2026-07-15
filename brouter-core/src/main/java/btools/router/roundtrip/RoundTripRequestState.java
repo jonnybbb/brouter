@@ -38,12 +38,10 @@ public interface RoundTripRequestState {
 
   void setMatchedWaypoints(List<MatchedWaypoint> waypoints);
 
-  /** Engine start wall-clock millis. Planners save and restore around a leg. */
+  /** Engine start wall-clock millis. */
   long startTime();
 
-  void setStartTime(long startTimeMillis);
-
-  /** Engine run budget in millis; 0 = untimed. Saved/restored like startTime. */
+  /** Engine run budget in millis; 0 = untimed. */
   long maxRunningTime();
 
   void setMaxRunningTime(long maxRunningTimeMillis);
@@ -94,9 +92,4 @@ public interface RoundTripRequestState {
 
   /** Wall-clock bound for the next isochrone expansion; 0 clears it. */
   void setTransientExpansionDeadline(long deadlineMillis);
-
-  /** Pass-1 air-distance cost factor. Planners save and restore around a leg. */
-  double airDistanceCostFactor();
-
-  void setAirDistanceCostFactor(double factor);
 }

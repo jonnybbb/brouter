@@ -1152,11 +1152,6 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
-      public void setStartTime(long startTimeMillis) {
-        RoutingEngine.this.startTime = startTimeMillis;
-      }
-
-      @Override
       public void setMaxRunningTime(long maxRunningTimeMillis) {
         RoutingEngine.this.maxRunningTime = maxRunningTimeMillis;
       }
@@ -1164,16 +1159,6 @@ public class RoutingEngine extends Thread {
       @Override
       public void setTransientExpansionDeadline(long deadlineMillis) {
         RoutingEngine.this.transientExpansionDeadline = deadlineMillis;
-      }
-
-      @Override
-      public double airDistanceCostFactor() {
-        return RoutingEngine.this.airDistanceCostFactor;
-      }
-
-      @Override
-      public void setAirDistanceCostFactor(double factor) {
-        RoutingEngine.this.airDistanceCostFactor = factor;
       }
 
       @Override
@@ -1197,6 +1182,12 @@ public class RoutingEngine extends Thread {
       @Override
       public void resetCache(boolean detailed) {
         RoutingEngine.this.resetCache(detailed);
+      }
+
+      @Override
+      public OsmTrack findTrackTimed(String operationName, MatchedWaypoint startWp,
+                                     MatchedWaypoint endWp, OsmTrack refTrack, long budgetMs) {
+        return RoutingEngine.this.findTrackTimed(operationName, startWp, endWp, refTrack, budgetMs);
       }
 
       @Override
@@ -3262,6 +3253,30 @@ public class RoutingEngine extends Thread {
     }
   }
 
+  /**
+   * One leg search under its own time budget: saves and restores the engine
+   * clock (startTime/maxRunningTime) and runs goal-directed at the profile's
+   * pass-1 coefficient — planner legs don't need exact optimality (they are
+   * re-scored on the routed result and detail-retracked on commit), and the
+   * historical inherited 0.0 meant a full omnidirectional Dijkstra per leg.
+   * Profiles that disable pass 1 (coefficient &le; 0) keep the exact search.
+   */
+  OsmTrack findTrackTimed(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
+                          OsmTrack refTrack, long budgetMs) {
+    long savedStartTime = startTime;
+    long savedMaxRunningTime = maxRunningTime;
+    double savedAirDistanceCostFactor = airDistanceCostFactor;
+    try {
+      startTime = System.currentTimeMillis();
+      maxRunningTime = budgetMs;
+      airDistanceCostFactor = Math.max(0.0, routingContext.pass1coefficient);
+      return findTrack(operationName, startWp, endWp, null, refTrack, false);
+    } finally {
+      startTime = savedStartTime;
+      maxRunningTime = savedMaxRunningTime;
+      airDistanceCostFactor = savedAirDistanceCostFactor;
+    }
+  }
 
   private OsmTrack _findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp, OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc) {
     boolean verbose = guideTrack != null;

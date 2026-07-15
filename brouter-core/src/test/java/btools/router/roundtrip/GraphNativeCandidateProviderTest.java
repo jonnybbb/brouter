@@ -113,6 +113,12 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public OsmTrack findTrackTimed(String operationName, MatchedWaypoint startWp,
+                                   MatchedWaypoint endWp, OsmTrack refTrack, long budgetMs) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp,
                                      MatchedWaypoint endWp, OsmTrack refTrack) {
       throw new UnsupportedOperationException();

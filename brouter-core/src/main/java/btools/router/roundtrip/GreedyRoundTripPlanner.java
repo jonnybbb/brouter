@@ -1915,23 +1915,8 @@ public class GreedyRoundTripPlanner {
       : Math.min(SUB_ROUTE_TIMEOUT_MS,
           FIND_TRACK_BASE_BUDGET_MS + (long) (FIND_TRACK_BUDGET_MS_PER_AIR_KM * airKm));
     long budget = Math.min(scaledCap, remaining);
-    long savedStartTime = state.startTime();
-    long savedMaxRunningTime = state.maxRunningTime();
-    double savedAirDistanceCostFactor = state.airDistanceCostFactor();
     try {
-      state.setStartTime(now);
-      state.setMaxRunningTime(budget);
-      // Goal-directed search for planner legs. The greedy path historically
-      // inherited the field default 0.0 — a full omnidirectional Dijkstra per
-      // leg (cost-disk ~quadratic in leg distance), while normal routing runs
-      // a directed pass at the profile's pass1coefficient (~linear corridor).
-      // Candidate legs don't need exact optimality: they are re-scored on
-      // their routed result and the accepted leg is detail-retracked anyway,
-      // so the profile's own pass-1 heuristic strength is the right tool.
-      // Negative/zero coefficients (profiles that disable pass 1) keep the
-      // exact search.
-      state.setAirDistanceCostFactor(Math.max(0.0, ctx.routingContext().pass1coefficient));
-      return router.findTrack(name, from, to, null, refTrack, false);
+      return router.findTrackTimed(name, from, to, refTrack, budget);
     } catch (IllegalArgumentException | RoutingIslandException e) {
       // A watchdog kill surfaces as IllegalArgumentException; propagate it so
       // plan() aborts immediately instead of burning the remaining attempts
@@ -1945,10 +1930,6 @@ public class GreedyRoundTripPlanner {
       io.logInfo(name + ": no track (" + e.getClass().getSimpleName()
         + (e.getMessage() == null ? "" : ": " + e.getMessage()) + ")");
       return null;
-    } finally {
-      state.setStartTime(savedStartTime);
-      state.setMaxRunningTime(savedMaxRunningTime);
-      state.setAirDistanceCostFactor(savedAirDistanceCostFactor);
     }
   }
 
