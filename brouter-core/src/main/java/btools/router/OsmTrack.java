@@ -59,6 +59,11 @@ public final class OsmTrack {
     return matchedWaypoints;
   }
 
+  /** Set the matched via points (round-trip finalization seam). */
+  public void setMatchedWaypoints(List<MatchedWaypoint> waypoints) {
+    matchedWaypoints = waypoints;
+  }
+
   public boolean exportWaypoints = false;
   public boolean exportCorrectedWaypoints = false;
 

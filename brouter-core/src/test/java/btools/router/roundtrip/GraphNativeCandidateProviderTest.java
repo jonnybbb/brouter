@@ -102,6 +102,31 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public boolean isRoundTripMode() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean explicitViaRoundTrip() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void recalcTrack(OsmTrack track) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void consolidateRoundTripVoiceHints(OsmTrack track) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setMatchedWaypoints(List<btools.mapaccess.MatchedWaypoint> waypoints) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void setStartTime(long startTimeMillis) {
       throw new UnsupportedOperationException();
     }

@@ -54,6 +54,13 @@ public final class RoundTripFixture {
     track.matchedWaypoints.add(direct);
   }
 
+  /** Dummy round-trip engine with a requested loop length on the context. */
+  public static RoutingEngine dummyRoundTripEngine(String profile, double searchRadius, int roundTripLength) {
+    RoutingEngine re = dummyRoundTripEngine(profile, searchRadius);
+    re.routingContext.roundTripLength = roundTripLength;
+    return re;
+  }
+
   /** Dummy round-trip engine over the test segment dir, with the search radius set. */
   public static RoutingEngine dummyRoundTripEngine(String profile, double searchRadius) {
     List<OsmNodeNamed> wplist = new ArrayList<>();

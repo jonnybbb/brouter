@@ -37,6 +37,21 @@ public interface RoundTripEngineOps {
   /** The active round-trip search radius (0 outside round-trip requests). */
   double roundTripSearchRadius();
 
+  /** True when the engine runs in round-trip mode. */
+  boolean isRoundTripMode();
+
+  /** True while an explicit-via round trip is being generated. */
+  boolean explicitViaRoundTrip();
+
+  /** Recalculate a track's totals (engine primitive shared with normal routing). */
+  void recalcTrack(OsmTrack track);
+
+  /** Merge duplicate round-trip voice hints (needs VoiceHint package internals). */
+  void consolidateRoundTripVoiceHints(OsmTrack track);
+
+  /** Publish the matched waypoints of the final track on the engine. */
+  void setMatchedWaypoints(List<MatchedWaypoint> waypoints);
+
   /** Set the engine start wall-clock (planner saves and restores around a leg). */
   void setStartTime(long startTimeMillis);
 
