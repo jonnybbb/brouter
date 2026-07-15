@@ -51,13 +51,9 @@ public class RoutingEngine extends Thread {
   private int MAXNODES_ISLAND_CHECK = 500;
   // Minimum intermediate vias for a non-degenerate loop (matches the legacy
   // validateAndAdjustWaypoints floor). Below this the optimized FAST placement
-  // falls back to the circle path rather than emitting a start->start loop.
-  private static final int MIN_ROUNDTRIP_VIAS = 3;
-  // Optimized FAST placement: re-probe at the corrected radius when the scale
-  // from the actual viable directions exceeds the nominal full-ring scale by
-  // this factor — the narrow-arc (constrained terrain) case where the
-  // pre-probe shrink would otherwise roughly halve the loop length.
-  private static final double FAST_RESCALE_TRIGGER = 1.15;
+  // (FastWaypointPlanner) falls back to the circle path rather than emitting
+  // a start->start loop.
+  static final int MIN_ROUNDTRIP_VIAS = 3;
   OsmNodePairSet islandNodePairs = new OsmNodePairSet(MAXNODES_ISLAND_CHECK);
   private boolean useNodePoints = false; // use the start/end nodes  instead of crosspoint
 
@@ -2640,7 +2636,6 @@ public class RoutingEngine extends Thread {
       // legacy probe+envelope+validate path. AUTO/QUALITY/ISOCHRONE unaffected.
       boolean fastOptimized = !"false".equals(
         System.getProperty("roundtrip.fast.optimized", "true"));
-      boolean fastPlacedNoValidate = false;
 
       if (algo == RoundTripAlgorithm.ISOCHRONE) {
         ProbeResult probe = probeReachableDirections(waypoints.get(0), searchRadius);
@@ -2662,82 +2657,24 @@ public class RoutingEngine extends Thread {
           buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
         }
       } else if (fastOptimized) {
-        // Distribute the vias: a directional lobe toward the requested bearing (so
-        // the loop heads that way, like the pre-903 routine and AUTO/QUALITY), or a
-        // full ring when no bearing is set. Scale the probe radius from that exact
-        // distribution so the loop hits the target length — the lobe's
-        // perimeter/radius ratio differs from a ring, and using the real bearings
-        // keeps the length stable instead of jumping with a filtered grid.
-        // Cap the lobe's via count: like the pre-903 routine (5 points), a handful
-        // of well-spread vias gives a clean directional loop; many vias just add
-        // road detours between them that inflate the routed length past target.
         // Directional lobe (opt-in): head the loop toward the requested bearing like
         // the pre-903 routine, instead of encircling the start. Off by default while
         // the sparse-terrain robustness (routing between forward-arc vias can fail
         // where an encircling ring would not) is finished via a post-routing retry.
-        boolean directional = direction >= 0
-          && "true".equals(System.getProperty("roundtrip.fast.directional", "false"));
-        int lobeCap = Integer.getInteger("roundtrip.fast.maxvias", 5);
-        int viaCount = directional
-          ? Math.max(3, Math.min(targetPoints - 1, lobeCap))
-          : Math.max(3, targetPoints - 1);
-        double[] bearings;
-        double fastScale;
-        if (directional) {
-          bearings = directionalLobeBearings(direction, viaCount);
-          fastScale = computeRadiusScale(sortDirectionsForLoop(bearings, direction), targetPoints);
-        } else {
-          // Dense ring probe (matching the pre-refactor 12-direction sweep so forming
-          // stays as robust), scaled to the loop's via count; placement caps below.
-          bearings = fullCircleBearings(Math.max(12, viaCount));
-          fastScale = computeRadiusScale(sortDirectionsForLoop(fullCircleBearings(viaCount), 0), targetPoints);
-        }
-        ProbeResult probe =
-          probeReachableDirectionsFast(waypoints.get(0), searchRadius * fastScale, bearings);
-        if (!directional) {
-          probe = refineRingProbe(probe, waypoints.get(0), searchRadius, fastScale,
-            bearings, targetPoints, direction);
-        }
-        int placed = (probe != null && probe.viableDirections.length >= 3)
-          ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
-          : 0;
-        // Fall back to an encircling ring when the directional lobe is too road-poor
-        // to close a loop OR its vias collapse onto a tiny cluster near the start (a
-        // degenerate loop). The ring finds spread-out roads and forms a real loop —
-        // the pre-directional behaviour — so a bearing never costs a result.
-        boolean degenerate = placed >= MIN_ROUNDTRIP_VIAS
-          && maxViaDistFromStart(waypoints) < 0.4 * searchRadius * fastScale;
-        if (directional && (placed < MIN_ROUNDTRIP_VIAS || degenerate)) {
-          if (waypoints.size() > 1) {
-            waypoints.subList(1, waypoints.size()).clear();
-          }
-          int ringCount = Math.max(3, targetPoints - 1);
-          double[] ring = fullCircleBearings(Math.max(12, ringCount));
-          double ringScale =
-            computeRadiusScale(sortDirectionsForLoop(fullCircleBearings(ringCount), 0), targetPoints);
-          probe = probeReachableDirectionsFast(waypoints.get(0), searchRadius * ringScale, ring);
-          probe = refineRingProbe(probe, waypoints.get(0), searchRadius, ringScale,
-            ring, targetPoints, direction);
-          placed = (probe != null && probe.viableDirections.length >= 3)
-            ? placeWaypointsFromProbeMatches(waypoints, probe, direction, targetPoints)
-            : 0;
-        }
-        if (placed >= MIN_ROUNDTRIP_VIAS) {
-          recordPlacementPath(PlacementPath.ENVELOPE_FAST);
-          fastPlacedNoValidate = true; // vias are already road-snapped and deduped
-        } else {
-          // Too few reachable vias survived dedup/island filtering (or the probe
-          // was too thin): drop whatever we appended and fall back to the circle
-          // path, which validateAndAdjustWaypoints then snaps/prunes with its own
-          // min-via floor — so the loop never degenerates to start->start.
-          if (waypoints.size() > 1) {
-            waypoints.subList(1, waypoints.size()).clear();
-          }
-          logInfo("optimized FAST placement yielded " + placed
-            + " reachable vias (<" + MIN_ROUNDTRIP_VIAS + "); falling back to circle");
-          recordPlacementPath(PlacementPath.CIRCLE);
-          buildPointsFromCircle(waypoints, direction, searchRadius, targetPoints);
-        }
+        FastPlacementRequest fastRequest = new FastPlacementRequest(
+          waypoints.get(0), searchRadius, direction, targetPoints,
+          direction >= 0
+            && "true".equals(System.getProperty("roundtrip.fast.directional", "false")),
+          Integer.getInteger("roundtrip.fast.maxvias", 5));
+        // Placement builds its skeleton on a local list and the outcome is
+        // committed in one step — a degraded or failed attempt can never
+        // leave partial vias in the live waypoint list.
+        FastPlacementOutcome fastOutcome =
+          new FastWaypointPlanner(fastPlacementOps()).place(fastRequest);
+        waypoints.clear();
+        waypoints.addAll(fastOutcome.skeleton);
+        recordPlacementPath(fastOutcome.optimizedPlacement()
+          ? PlacementPath.ENVELOPE_FAST : PlacementPath.CIRCLE);
       } else {
         ProbeResult probe = probeReachableDirections(waypoints.get(0), searchRadius);
         // FAST tier: drop single-probe-success directions when enough strong
@@ -2753,9 +2690,11 @@ public class RoutingEngine extends Thread {
         }
       }
 
-      // Idea 4: the optimized FAST path already placed road-snapped vias, so it
-      // skips this second matching pass (and the resetCache inside it).
-      if (!fastPlacedNoValidate) {
+      // Idea 4: the optimized FAST module fully validates its own skeleton —
+      // probe-snapped vias are pre-validated, and its circle fallback runs this
+      // pass behind FastPlacementOps.circleFallbackValidated. Only the ISOCHRONE
+      // and legacy A/B placements need the caller-side matching pass.
+      if (algo == RoundTripAlgorithm.ISOCHRONE || !fastOptimized) {
         validateAndAdjustWaypoints(waypoints, searchRadius);
       }
 
@@ -4573,20 +4512,15 @@ public class RoutingEngine extends Thread {
     double[] viable = new double[bearings.length];
     int viableCount = 0;
     List<ProbeDirection> scored = new ArrayList<>();
+    double snapRejectThreshold = retainMatches
+      ? snapRejectCostFactorForProfile() : Double.POSITIVE_INFINITY;
     for (int d = 0; d < bearings.length; d++) {
-      int successCount = 0;
-      MatchedWaypoint best = null;
-      for (int f = 0; f < probesPerDirection; f++) {
-        MatchedWaypoint mwp = allProbes.get(probeOffset + d * probesPerDirection + f);
-        if (mwp.crosspoint == null || mwp.radius > maxSnapDist) continue;
-        successCount++;
-        if (retainMatches && (best == null || mwp.radius < best.radius)) {
-          best = mwp;
-        }
-      }
-      if (successCount == 0) continue;
+      ProbeDirection pd = selectProbeDirection(bearings[d], allProbes,
+        probeOffset + d * probesPerDirection, probesPerDirection,
+        retainMatches, maxSnapDist, snapRejectThreshold);
+      if (pd == null) continue;
       viable[viableCount++] = bearings[d];
-      scored.add(new ProbeDirection(bearings[d], successCount, best));
+      scored.add(pd);
     }
 
     logInfo(logLabel + ": " + viableCount + "/" + bearings.length + " bearings snapped");
@@ -4595,6 +4529,33 @@ public class RoutingEngine extends Thread {
     // the start is on a road) — used by the islanded-via guard.
     return new ProbeResult(java.util.Arrays.copyOf(viable, viableCount), scored,
       retainMatches ? allProbes.get(0) : null);
+  }
+
+  /**
+   * Summarize one bearing's probe matches. The optimized FAST path counts and
+   * retains only road/profile-compatible matches, so a rejected nearer edge
+   * cannot hide a usable match from the other probe radius. The legacy probe
+   * keeps its historical raw-snap count and does not retain a match.
+   */
+  ProbeDirection selectProbeDirection(double direction, List<MatchedWaypoint> probes,
+                                      int firstIndex, int count, boolean retainMatches,
+                                      double maxSnapDist, double snapRejectThreshold) {
+    int successCount = 0;
+    MatchedWaypoint best = null;
+    for (int i = firstIndex; i < firstIndex + count; i++) {
+      MatchedWaypoint mwp = probes.get(i);
+      if (mwp.crosspoint == null || mwp.radius > maxSnapDist) continue;
+      if (retainMatches && (!isRoadSnap(mwp)
+          || snapCandidateCostFactor(mwp) > snapRejectThreshold)) {
+        continue;
+      }
+      successCount++;
+      if (retainMatches && (best == null || mwp.radius < best.radius)) {
+        best = mwp;
+      }
+    }
+    return successCount == 0 ? null
+      : new ProbeDirection(direction, successCount, best);
   }
 
   ProbeResult probeReachableDirections(OsmNodeNamed start, double searchRadius) {
@@ -4607,9 +4568,10 @@ public class RoutingEngine extends Thread {
   /**
    * FAST-tier reachability probe (optimization ideas 1 + 2). Trims the grid to
    * 12 bearings × 2 radii (vs the legacy 24 × 3) AND retains the best road match
-   * per direction, so {@link #placeWaypointsFromProbeMatches} can reuse those
-   * already-snapped nodes as vias — replacing both the geometric placement and
-   * the ~21-candidate-per-via re-matching in {@link #validateAndAdjustWaypoints}.
+   * per direction, so {@link FastWaypointPlanner#placeWaypointsFromProbeMatches}
+   * can reuse those already-snapped nodes as vias — replacing both the geometric
+   * placement and the ~21-candidate-per-via re-matching in
+   * {@link #validateAndAdjustWaypoints}.
    */
   ProbeResult probeReachableDirectionsFast(OsmNodeNamed start, double searchRadius, double[] bearings) {
     // 2 radii per bearing (vs the legacy 3) + best-match retention so
@@ -4658,21 +4620,47 @@ public class RoutingEngine extends Thread {
   }
 
   /**
-   * Bearings for a directional loop lobe: {@code count} vias fanned across the
-   * forward arc toward {@code direction}, reproducing the pre-903
-   * {@code buildPointsFromCircle} distribution (arc half-width 90-180/points, so
-   * a wider fan for more points). This is what makes FAST head in the requested
-   * direction instead of encircling the start. Deterministic given the inputs, so
-   * the derived radius scale — and thus the loop length — is stable.
+   * Production adapter for the {@link FastWaypointPlanner} seam: coarse
+   * delegates to the engine's shared probe/snap/island/circle primitives, so
+   * the planner never touches the node cache, {@code findTrack}, or mutable
+   * engine fields directly. Package-private so tests can drive the planner
+   * through a real engine.
    */
-  static double[] directionalLobeBearings(double direction, int count) {
-    int points = count + 1;
-    double[] b = new double[count];
-    for (int i = 0; i < count; i++) {
-      double anAngle = 90.0 - 180.0 * (i + 1) / points;
-      b[i] = ((direction - anAngle) % 360 + 360) % 360;
-    }
-    return b;
+  FastPlacementOps fastPlacementOps() {
+    return new FastPlacementOps() {
+      @Override
+      public ProbeResult probe(OsmNodeNamed start, double searchRadius, double[] bearings) {
+        return probeReachableDirectionsFast(start, searchRadius, bearings);
+      }
+
+      @Override
+      public SnapUsability snapUsability(MatchedWaypoint m) {
+        if (!isRoadSnap(m)) {
+          return SnapUsability.FERRY_LIKE;
+        }
+        if (snapCandidateCostFactor(m) > snapRejectCostFactorForProfile()) {
+          return SnapUsability.PROFILE_HOSTILE;
+        }
+        return SnapUsability.OK;
+      }
+
+      @Override
+      public boolean isViaReachable(MatchedWaypoint via, MatchedWaypoint startMatch) {
+        return isViaReachableFromStart(via, startMatch);
+      }
+
+      @Override
+      public void circleFallbackValidated(List<OsmNodeNamed> skeleton, double direction,
+                                          double searchRadius, int targetPoints) {
+        buildPointsFromCircle(skeleton, direction, searchRadius, targetPoints);
+        validateAndAdjustWaypoints(skeleton, searchRadius);
+      }
+
+      @Override
+      public void log(String msg) {
+        logInfo(msg);
+      }
+    };
   }
 
   /** Bearings for an encircling loop: {@code count} directions evenly around the compass. */
@@ -4680,192 +4668,6 @@ public class RoutingEngine extends Thread {
     double[] b = new double[count];
     for (int i = 0; i < count; i++) b[i] = i * 360.0 / count;
     return b;
-  }
-
-  /** Largest distance (m) from the start (index 0) to any placed via — used to
-   *  detect a degenerate loop whose vias collapsed onto a tiny cluster. */
-  static double maxViaDistFromStart(List<OsmNodeNamed> wps) {
-    OsmNodeNamed s = wps.get(0);
-    double max = 0;
-    for (int i = 1; i < wps.size(); i++) {
-      double d = CheapRuler.distance(s.ilon, s.ilat, wps.get(i).ilon, wps.get(i).ilat);
-      if (d > max) max = d;
-    }
-    return max;
-  }
-
-  /**
-   * The spread-selected direction subset placement will use — shared with the
-   * narrow-arc rescale trigger so it scores exactly the set placement
-   * consumes. Returned length doubles as placement's via-count target.
-   */
-  private static double[] selectPreferredDirections(double[] viable, int targetPoints,
-                                                    double startDirection) {
-    int needed = Math.min(Math.max(2, targetPoints - 1), viable.length);
-    double anchor = startDirection >= 0 ? startDirection : 0;
-    return needed >= viable.length ? viable
-      : selectSpreadDirections(viable, needed, anchor);
-  }
-
-  /**
-   * Ring-mode probe refinement, one owner for both ring call sites (initial
-   * ring and the directional lobe's ring fallback) so the pipeline order —
-   * narrow-arc rescale first, confidence filter second — cannot diverge.
-   *
-   * <p>Narrow-arc correction: the pre-probe shrink assumes a near-full ring of
-   * viable bearings; in constrained terrain (coast, valley) they bunch into a
-   * narrow arc whose correct scale — computed like the legacy path from the
-   * ACTUAL selected directions, which never shrinks a narrow arc — is much
-   * larger. One corrective re-probe at that radius keeps the loop near its
-   * target length instead of roughly half of it. Directional lobes skip this
-   * method entirely: their scale derives from the exact lobe distribution.
-   */
-  private ProbeResult refineRingProbe(ProbeResult probe, OsmNodeNamed start,
-                                      double searchRadius, double nominalScale,
-                                      double[] bearings, int targetPoints,
-                                      double direction) {
-    if (probe == null || probe.viableDirections.length < 3) {
-      return probe;
-    }
-    double[] selected = selectPreferredDirections(probe.viableDirections, targetPoints, direction);
-    double actualScale = computeRadiusScale(selected, targetPoints);
-    if (actualScale > nominalScale * FAST_RESCALE_TRIGGER) {
-      logInfo("optimized FAST placement: narrow viable arc, re-probing at scale "
-        + String.format(Locale.US, "%.2f", actualScale)
-        + " (nominal " + String.format(Locale.US, "%.2f", nominalScale) + ")");
-      ProbeResult rescaled =
-        probeReachableDirectionsFast(start, searchRadius * actualScale, bearings);
-      if (rescaled != null && rescaled.viableDirections.length >= 3) {
-        probe = rescaled;
-      }
-    }
-    return withConfidenceFilteredDirections(probe, targetPoints);
-  }
-
-  /**
-   * FAST placement (optimization idea 1) that reuses the probe's already-snapped
-   * road nodes as vias and dedups any that collapse onto the same node or the
-   * start — which both removes the redundant {@link #validateAndAdjustWaypoints}
-   * re-matching pass and fixes the stacked-waypoint bug (multiple bearings
-   * snapping to one node were previously kept as duplicates).
-   *
-   * <p>Safeguards mirror the validation this path skips: ferry-like and
-   * profile-hostile matches are never committed, and a dropped direction is
-   * replaced from the remaining viable pool instead of shrinking the ring —
-   * legacy validation had the same redundancy through its per-waypoint
-   * candidate groups.
-   */
-  int placeWaypointsFromProbeMatches(List<OsmNodeNamed> waypoints, ProbeResult probe,
-                                      double startDirection, int targetPoints) {
-    OsmNodeNamed start = waypoints.get(0);
-    // The caller distributed the bearings (a directional lobe toward the requested
-    // bearing, or a full ring). Cap to the target via count (the encircle fallback
-    // probes a denser ring than we want vias), order for the loop, and reuse the
-    // snapped nodes. The safeguards below drop ferry-like / profile-hostile /
-    // duplicate / islanded picks and REPLACE them from the remaining snapped
-    // bearings, so a drop never shrinks the via count while substitutes exist.
-    double anchor = startDirection >= 0 ? startDirection : 0;
-    double[] viable = probe.viableDirections;
-    double[] preferred = selectPreferredDirections(viable, targetPoints, startDirection);
-    int needed = preferred.length;
-
-    Map<Double, MatchedWaypoint> byDir = new HashMap<>();
-    for (ProbeDirection pd : probe.scored) {
-      if (pd.bestMatch != null && pd.bestMatch.crosspoint != null) {
-        byDir.put(pd.direction, pd.bestMatch);
-      }
-    }
-
-    int deduped = 0;
-    int islanded = 0;
-    int ferryLike = 0;
-    int hostile = 0;
-    double snapRejectThreshold = snapRejectCostFactorForProfile();
-    // Two ordered passes: the spread-selected directions first, then the rest
-    // of the viable ring as substitutes for any direction a safeguard drops.
-    List<Double> chosen = new ArrayList<>();
-    java.util.Set<Double> visited = new java.util.HashSet<>();
-    java.util.Set<Long> usedNodes = new java.util.HashSet<>();
-    usedNodes.add(start.getIdFromPos());
-    double[][] passes = {preferred, viable};
-    for (int p = 0; p < passes.length && chosen.size() < needed; p++) {
-      for (double dir : passes[p]) {
-        if (chosen.size() >= needed) break;
-        if (!visited.add(dir)) continue;
-        MatchedWaypoint m = byDir.get(dir);
-        if (m == null || m.crosspoint == null) continue;
-        // A via committed onto a ferry-like edge routes the loop across the
-        // ferry (same rule as every other snap-validation site); a via on a
-        // profile-hostile road forces the loop through it.
-        if (!isRoadSnap(m)) {
-          ferryLike++;
-          continue;
-        }
-        if (snapCandidateCostFactor(m) > snapRejectThreshold) {
-          hostile++;
-          continue;
-        }
-        // Dedup: drop a via that lands on the start or an already-chosen node.
-        long key = m.crosspoint.getIdFromPos();
-        if (usedNodes.contains(key)) {
-          deduped++;
-          continue;
-        }
-        // Reachability guard: drop a via stranded on a small island disconnected
-        // from the start, rather than letting it fail the whole loop at routing.
-        if (!isViaReachableFromStart(m, probe.startMatch)) {
-          islanded++;
-          continue;
-        }
-        usedNodes.add(key);
-        chosen.add(dir);
-      }
-    }
-
-    double[] loopDirs = new double[chosen.size()];
-    for (int i = 0; i < loopDirs.length; i++) {
-      loopDirs[i] = chosen.get(i);
-    }
-    loopDirs = sortDirectionsForLoop(loopDirs, anchor);
-    int added = 0;
-    for (double dir : loopDirs) {
-      MatchedWaypoint m = byDir.get(dir);
-      OsmNodeNamed onn = new OsmNodeNamed(
-        new OsmNode(m.crosspoint.getILon(), m.crosspoint.getILat()));
-      onn.name = "rt" + (++added);
-      waypoints.add(onn);
-    }
-
-    OsmNodeNamed closing = new OsmNodeNamed(start);
-    closing.name = "to_rt";
-    waypoints.add(closing);
-
-    logInfo("placeWaypointsFromProbeMatches: " + added + " road-snapped vias"
-        + (deduped > 0 ? " (" + deduped + " deduped)" : "")
-        + (islanded > 0 ? " (" + islanded + " islanded dropped)" : "")
-        + (ferryLike > 0 ? " (" + ferryLike + " ferry-like dropped)" : "")
-        + (hostile > 0 ? " (" + hostile + " profile-hostile dropped)" : "")
-        + " from " + viable.length + " snapped bearings");
-    return added;
-  }
-
-  /**
-   * Ring-probe confidence filter for the optimized FAST path: drop fragile
-   * single-snap bearings when enough two-snap-strong ones remain
-   * (see {@link #filterByProbeConfidence}) — the same guard the legacy
-   * probe+envelope path applies. The filtered set also bounds the
-   * replacement-selection substitutes, so a fragile bearing cannot re-enter
-   * as a stand-in for a dropped one.
-   */
-  private static ProbeResult withConfidenceFilteredDirections(ProbeResult probe, int targetPoints) {
-    if (probe == null) {
-      return null;
-    }
-    double[] filtered = filterByProbeConfidence(probe, targetPoints);
-    if (filtered == null || filtered.length == probe.viableDirections.length) {
-      return probe;
-    }
-    return new ProbeResult(filtered, probe.scored, probe.startMatch);
   }
 
   /**
