@@ -998,18 +998,16 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
-      public void setRoundTripRequestDeadline(long deadlineMillis) {
-        roundTripRequestDeadline = deadlineMillis;
+      public void setRoundTripRuntimeHints(RoundTripRuntimeHints hints) {
+        roundTripSearchRadius = hints.searchRadius;
+        roundTripRequestDeadline = hints.requestDeadline;
+        explicitViaRoundTrip = hints.explicitViaRoundTrip;
+        greedyLegTracks = hints.greedyLegTracks;
       }
 
       @Override
       public long roundTripRoutingBudgetMs() {
         return roundTripRoutingBudgetMs;
-      }
-
-      @Override
-      public void setRoundTripSearchRadius(double searchRadius) {
-        roundTripSearchRadius = searchRadius;
       }
 
       @Override
@@ -1058,16 +1056,6 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
-      public OsmTrack[] greedyLegTracks() {
-        return greedyLegTracks;
-      }
-
-      @Override
-      public void setGreedyLegTracks(OsmTrack[] tracks) {
-        greedyLegTracks = tracks;
-      }
-
-      @Override
       public void setLastRejectedTrack(OsmTrack track) {
         lastRejectedTrack = track;
       }
@@ -1095,11 +1083,6 @@ public class RoutingEngine extends Thread {
       @Override
       public void logThrowable(Throwable t) {
         RoutingEngine.this.logThrowable(t);
-      }
-
-      @Override
-      public void setExplicitViaRoundTrip(boolean explicitVia) {
-        RoutingEngine.this.explicitViaRoundTrip = explicitVia;
       }
 
       @Override

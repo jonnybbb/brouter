@@ -46,10 +46,14 @@ public interface RoundTripRequestState {
 
   void setMaxRunningTime(long maxRunningTimeMillis);
 
-  /** Wall-clock deadline for the whole round-trip request; 0 = untimed. */
+  /** Wall-clock deadline set by doRun for the whole request; request-entry seed. */
   long roundTripRequestDeadline();
 
-  void setRoundTripRequestDeadline(long deadlineMillis);
+  /**
+   * The single publication point for the request fields the engine's search
+   * loops read mid-search (radius, deadline, explicit-via, guide tracks).
+   */
+  void setRoundTripRuntimeHints(RoundTripRuntimeHints hints);
 
   /** Per-leg routing budget (ms) computed by doRun; request-entry seed. */
   long roundTripRoutingBudgetMs();
@@ -58,17 +62,6 @@ public interface RoundTripRequestState {
   RoundTripEffortPolicy roundTripEffortPolicy();
 
   void setRoundTripEffortPolicy(RoundTripEffortPolicy policy);
-
-  /** Getter lives on {@link EngineContext#roundTripSearchRadius()}. */
-  void setRoundTripSearchRadius(double searchRadius);
-
-  /** Getter lives on {@link EngineContext#explicitViaRoundTrip()}. */
-  void setExplicitViaRoundTrip(boolean explicitVia);
-
-  /** Per-leg guide tracks from a greedy adoption, consulted by doRouting. */
-  OsmTrack[] greedyLegTracks();
-
-  void setGreedyLegTracks(OsmTrack[] tracks);
 
   /** End-of-request publication for {@code getLastRejectedTrack()}. */
   void setLastRejectedTrack(OsmTrack track);

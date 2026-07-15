@@ -14,6 +14,18 @@ final class RoundTripRequest {
   /** Active effort preset, seeded from the engine's request-entry value. */
   RoundTripEffortPolicy effortPolicy = RoundTripEffortPolicy.STANDARD_PRESET;
 
+  /** Active search radius in meters (published to the engine as a hint). */
+  double searchRadius;
+
+  /** Wall-clock request deadline (epoch ms), seeded from doRun; 0 = unbounded. */
+  long requestDeadline;
+
+  /** True in explicit-via mode (published to the engine as a hint). */
+  boolean explicitVia;
+
+  /** Per-leg guide tracks from a greedy adoption (published as a hint). */
+  OsmTrack[] greedyLegTracks;
+
   /** Per-leg routing budget (ms) for the round-trip fallthrough; 0 = untimed. */
   long routingBudgetMs;
 

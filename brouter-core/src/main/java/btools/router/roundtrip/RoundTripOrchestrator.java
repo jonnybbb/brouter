@@ -26,6 +26,16 @@ public final class RoundTripOrchestrator {
   /** The active request's mutable state; recreated at each doRoundTrip entry. */
   private RoundTripRequest request = new RoundTripRequest();
 
+  /**
+   * Publish the engine-read slice of the request (radius, deadline,
+   * explicit-via, guide tracks) to the engine's search loops. Call after every
+   * mutation of one of those request fields.
+   */
+  private void publishRuntimeHints() {
+    ops.setRoundTripRuntimeHints(new RoundTripRuntimeHints(
+      request.searchRadius, request.requestDeadline, request.explicitVia, request.greedyLegTracks));
+  }
+
   /** Record the gate-rejected track on the active request (post-mortem surface). */
   private void setRejectedTrack(OsmTrack track) {
     request.lastRejectedTrack = track;
@@ -242,6 +252,7 @@ public final class RoundTripOrchestrator {
     request = new RoundTripRequest();
     request.effortPolicy = ops.roundTripEffortPolicy();
     request.routingBudgetMs = ops.roundTripRoutingBudgetMs();
+    request.requestDeadline = ops.roundTripRequestDeadline();
     try {
       long wallStart = System.currentTimeMillis();
 
@@ -711,8 +722,9 @@ public final class RoundTripOrchestrator {
     }
 
     ops.routingContext().waypointCatchingRange = 250;
-    ops.setRoundTripSearchRadius(searchRadius);
-    ops.setExplicitViaRoundTrip(true);
+    request.searchRadius = searchRadius;
+    request.explicitVia = true;
+    publishRuntimeHints();
     ops.logInfo("explicit-via round-trip: " + userVias.size() + " user via(s), "
       + "allowSamewayback=" + ops.routingContext().allowSamewayback
       + ", direction=" + (int) direction + " (advisory only)");
@@ -847,7 +859,8 @@ public final class RoundTripOrchestrator {
     }
 
     ops.routingContext().waypointCatchingRange = 250;
-    ops.setRoundTripSearchRadius(searchRadius);
+    request.searchRadius = searchRadius;
+    publishRuntimeHints();
     ops.doRouting(request.routingBudgetMs);
   }
 
@@ -858,7 +871,8 @@ public final class RoundTripOrchestrator {
     // Loop scale for the via-relocation bound (profileAwareMatchPoint): must be
     // set BEFORE planner via matching — the doRouting fallthrough below used to
     // set it only late, leaving the bound inert during greedy placement.
-    ops.setRoundTripSearchRadius(searchRadius);
+    request.searchRadius = searchRadius;
+    publishRuntimeHints();
 
     OsmNodeNamed start = ops.waypoints().get(0);
     double desiredDistance = 2 * Math.PI * searchRadius;
@@ -1009,8 +1023,8 @@ public final class RoundTripOrchestrator {
         // materially the same graph-native ladder a second time.
         && !request.effortPolicy.runGreedyAlways
         && provider instanceof BlendedCandidateProvider
-        && System.currentTimeMillis() < (ops.roundTripRequestDeadline() == 0
-            ? Long.MAX_VALUE : ops.roundTripRequestDeadline())) {
+        && System.currentTimeMillis() < (request.requestDeadline == 0
+            ? Long.MAX_VALUE : request.requestDeadline)) {
       // Evaluate the blended verdict ONCE; the selection below reuses it.
       blendedInternalVerdict = scoreInternalGreedyResult(result, desiredDistance, effectiveDirection);
       runInternalBranch = internalBranchNeeded(blendedInternalVerdict);
@@ -1132,7 +1146,8 @@ public final class RoundTripOrchestrator {
 
       if (result.getLegTracks() != null) {
         List<OsmTrack> legs = result.getLegTracks();
-        ops.setGreedyLegTracks(legs.toArray(new OsmTrack[0]));
+        request.greedyLegTracks = legs.toArray(new OsmTrack[0]);
+        publishRuntimeHints();
       }
 
       // Phase 2 v3: the planner now retracks each committed leg, so its
@@ -1160,7 +1175,8 @@ public final class RoundTripOrchestrator {
       }
       if (!useDetailedPlannerTrack) {
         ops.routingContext().waypointCatchingRange = 250;
-        ops.setRoundTripSearchRadius(searchRadius);
+        request.searchRadius = searchRadius;
+        publishRuntimeHints();
         // Honor the request deadline: once it has fully passed, do NOT start
         // the fallback re-route at all (doRouting resets ops.startTime(), so any
         // budget handed to it is a real overrun). While budget remains, fund
@@ -1173,7 +1189,8 @@ public final class RoundTripOrchestrator {
             + remaining + "ms remaining)");
           ops.logInfo(ops.errorMessage());
           ops.setFoundTrack(null);
-          ops.setGreedyLegTracks(null);
+          request.greedyLegTracks = null;
+          publishRuntimeHints();
           return;
         }
         try {
@@ -1186,7 +1203,8 @@ public final class RoundTripOrchestrator {
           ops.logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
           throw e;
         } finally {
-          ops.setGreedyLegTracks(null);
+          request.greedyLegTracks = null;
+          publishRuntimeHints();
         }
       }
     } else {
@@ -1278,7 +1296,7 @@ public final class RoundTripOrchestrator {
                                   boolean greedyCapable) {
     long tierBudgetMs = policy.tierBudgetMs;
     long t0 = System.currentTimeMillis();
-    long savedDeadline = ops.roundTripRequestDeadline();
+    long savedDeadline = request.requestDeadline;
     long plannerMs = 0;
     if (!greedyCapable) {
       // Same constraint as the greedy dispatch: the planner generates its own
@@ -1290,7 +1308,8 @@ public final class RoundTripOrchestrator {
     } else {
       RoundTripEffortPolicy savedPolicy = request.effortPolicy;
       long effectiveMs = tierSliceMs(tierBudgetMs, savedDeadline, t0);
-      ops.setRoundTripRequestDeadline(t0 + effectiveMs);
+      request.requestDeadline = t0 + effectiveMs;
+      publishRuntimeHints();
       request.effortPolicy = policy;
       // The engine-level timers (island check, leg searches) run in THIS engine
       // and consult ops.maxRunningTime() — floor it to the slice too, or a nearly-
@@ -1306,7 +1325,8 @@ public final class RoundTripOrchestrator {
         doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.ISO_GREEDY);
       } finally {
         request.effortPolicy = savedPolicy;
-        ops.setRoundTripRequestDeadline(savedDeadline);
+        request.requestDeadline = savedDeadline;
+        publishRuntimeHints();
         ops.setMaxRunningTime(savedMaxRunningTime);
       }
       plannerMs = System.currentTimeMillis() - t0;
@@ -1350,7 +1370,8 @@ public final class RoundTripOrchestrator {
       // cheap geometric attempt.
       long fallbackStart = System.currentTimeMillis();
       long fallbackMs = tierSliceMs(tierBudgetMs, savedDeadline, fallbackStart);
-      ops.setRoundTripRequestDeadline(fallbackStart + fallbackMs);
+      request.requestDeadline = fallbackStart + fallbackMs;
+      publishRuntimeHints();
       long savedRoutingBudget = request.routingBudgetMs;
       long savedMaxRunningTime = ops.maxRunningTime();
       // Scope the engine timers to the fallback slice, UNCONDITIONALLY. The
@@ -1366,7 +1387,8 @@ public final class RoundTripOrchestrator {
       try {
         doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
       } finally {
-        ops.setRoundTripRequestDeadline(savedDeadline);
+        request.requestDeadline = savedDeadline;
+        publishRuntimeHints();
         request.routingBudgetMs = savedRoutingBudget;
         ops.setMaxRunningTime(savedMaxRunningTime);
       }
@@ -1774,8 +1796,8 @@ public final class RoundTripOrchestrator {
       // ladder rungs (a demotion earned at subRouteCount=5 says nothing about
       // the 4-step plan's pool usage).
       planner.setPoolHealth(poolShape == null ? null : new IsoPoolHealth(poolShape));
-      planner.setExternalDeadline(ops.roundTripRequestDeadline() == 0
-        ? Long.MAX_VALUE : ops.roundTripRequestDeadline());
+      planner.setExternalDeadline(request.requestDeadline == 0
+        ? Long.MAX_VALUE : request.requestDeadline);
       result = planner.plan(start, desiredDistance, tryDirection);
       if (result != null) {
         result.setIsoAsymmetryBearingApplied(bias.applied);
