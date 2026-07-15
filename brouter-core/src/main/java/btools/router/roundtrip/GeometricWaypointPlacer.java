@@ -438,4 +438,99 @@ public final class GeometricWaypointPlacer {
     }
     return best;
   }
+
+  /**
+   * Phase 2.1 of the closure-aware planning spec — frontier-axis detection
+   * for axis-aware retry when the user's explicit direction conflicts with
+   * the terrain's natural orientation.
+   *
+   * <p>Computes the principal axis of the reachable-frontier displacement
+   * vectors (good-quality buckets only, same thresholds as Phase 2.0).
+   * Returns an axis bearing in [0, 180) and the eigenvalue ratio
+   * (primary / secondary). An axis is considered "strong" when the ratio
+   * exceeds {@link #PHASE_2_1_STRONG_AXIS_RATIO}, indicating the reachable
+   * region is markedly elongated (Inn Valley, coast roads, ridge tops).
+   */
+  public static FrontierAxis computeFrontierAxis(double[][] frontier, double searchRadius) {
+    if (frontier == null || frontier.length < 6) return FrontierAxis.NONE;
+    final double minAirDist = 0.6 * searchRadius;
+    final int minHits = 3;
+    double sumX2 = 0, sumY2 = 0, sumXY = 0;
+    int n = 0;
+    for (double[] b : frontier) {
+      if (b == null || b.length < 4) continue;
+      double airDist = b[1];
+      int hits = (int) b[3];
+      if (airDist < minAirDist || hits < minHits) continue;
+      // Compass bearing → (east, north) Cartesian.
+      double rad = Math.toRadians(b[0]);
+      double x = airDist * Math.sin(rad); // east
+      double y = airDist * Math.cos(rad); // north
+      sumX2 += x * x;
+      sumY2 += y * y;
+      sumXY += x * y;
+      n++;
+    }
+    if (n < 4) return FrontierAxis.NONE;
+    double a = sumX2 / n;
+    double bb = sumY2 / n;
+    double c = sumXY / n;
+    double trace = a + bb;
+    double det = a * bb - c * c;
+    double disc = Math.sqrt(Math.max(0, trace * trace - 4 * det));
+    double lambda1 = (trace + disc) / 2;
+    double lambda2 = (trace - disc) / 2;
+    if (lambda2 <= 0 || lambda1 <= 0) return FrontierAxis.NONE;
+    double strength = lambda1 / lambda2;
+    // Closed-form principal-axis angle for a 2x2 symmetric covariance:
+    // principalAngle = 0.5 * atan2(2c, a-b), in math convention (CCW from
+    // east). Robust to c ≈ 0 (avoids the fragile eigenvector-from-eigenvalue
+    // path which divides by tiny numbers). Convert to compass bearing
+    // (CW from north): bearing = 90° − math_angle.
+    double principalAngleDeg = 0.5 * Math.toDegrees(Math.atan2(2 * c, a - bb));
+    double bearing = (90 - principalAngleDeg + 360) % 360;
+    if (bearing >= 180) bearing -= 180; // canonical [0, 180), axis is bidirectional
+    return new FrontierAxis(strength >= PHASE_2_1_STRONG_AXIS_RATIO, bearing, strength);
+  }
+
+  /** Phase 2.1: eigenvalue ratio above which we treat the reachable region
+   *  as having a strong terrain axis. 3.0 corresponds to the reachable
+   *  region being ~1.7x as elongated along the principal axis as
+   *  perpendicular (sqrt(3) ≈ 1.73). Tunable; lower values fire more often. */
+  static final double PHASE_2_1_STRONG_AXIS_RATIO = 3.0;
+
+  /** Phase 2.1: half-angle (degrees) of the "near-perpendicular" cone.
+   *  User direction within 30° of perpendicular to the axis triggers retry. */
+  static final double PHASE_2_1_PERPENDICULAR_TOL = 30.0;
+
+  /** Phase 2.1: whether a user-supplied bearing is within
+   *  {@link #PHASE_2_1_PERPENDICULAR_TOL} of perpendicular to the given
+   *  axis. Both arguments are in compass degrees; axis canonical [0, 180). */
+  public static boolean isPerpendicularToAxis(double userBearing, double axisBearing) {
+    double userMod = ((userBearing % 180) + 180) % 180;
+    double axisMod = ((axisBearing % 180) + 180) % 180;
+    double diff = Math.abs(userMod - axisMod);
+    if (diff > 90) diff = 180 - diff;
+    return diff >= (90 - PHASE_2_1_PERPENDICULAR_TOL);
+  }
+
+  /** Phase 2.1: pick the axis-aligned bearing (axis or axis+180) whose
+   *  half-plane is closer to the user's original direction. Used to retry
+   *  with a direction that respects both terrain (axis) and rough user
+   *  intent (the original half-plane). Tie-break: prefer the lower bearing. */
+  public static double chooseAxisBearing(double axisBearing, double userBearing) {
+    double opt1 = ((axisBearing % 180) + 180) % 180;       // canonical axis
+    double opt2 = (opt1 + 180) % 360;                       // opposing direction
+    double user = ((userBearing % 360) + 360) % 360;
+    double d1 = angularDiff(opt1, user);
+    double d2 = angularDiff(opt2, user);
+    if (d1 < d2) return opt1;
+    if (d2 < d1) return opt2;
+    return Math.min(opt1, opt2);
+  }
+
+  static double angularDiff(double a, double b) {
+    double d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
 }
