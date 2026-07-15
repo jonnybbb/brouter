@@ -11,6 +11,16 @@ import btools.router.OsmTrack;
  */
 final class RoundTripRequest {
 
+  /**
+   * The request's working result track; published to the engine once at
+   * request end. Exactly one of track and error is meaningful on a finished
+   * request (track-XOR-error).
+   */
+  OsmTrack track;
+
+  /** The request's working error message; see {@link #track}. */
+  String error;
+
   /** Active effort preset, seeded from the engine's request-entry value. */
   RoundTripEffortPolicy effortPolicy = RoundTripEffortPolicy.STANDARD_PRESET;
 

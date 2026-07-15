@@ -11,8 +11,12 @@ package btools.router.roundtrip;
 public interface RoundTripEngineOps
   extends LegRouter, RoundTripRequestState, EngineIO, EngineContext {
 
-  /** Run the engine's routing pipeline over the current waypoint list. */
-  void doRouting(long budgetMs);
+  /**
+   * Run the engine's routing pipeline over the current waypoint list and
+   * return its outcome (the engine's own result fields are captured after
+   * the run).
+   */
+  RoutingOutcome doRouting(long budgetMs);
 
   /** Release the engine's routing caches. */
   void cleanupRoutingResources();

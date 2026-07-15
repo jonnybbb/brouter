@@ -978,8 +978,9 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
-      public void doRouting(long budgetMs) {
+      public RoutingOutcome doRouting(long budgetMs) {
         RoutingEngine.this.doRouting(budgetMs);
+        return new RoutingOutcome(foundTrack, errorMessage);
       }
 
       @Override

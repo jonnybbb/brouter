@@ -41,6 +41,29 @@ public final class RoundTripOrchestrator {
     request.lastRejectedTrack = track;
   }
 
+  /** Set the request's working result track (published to the engine at request end). */
+  private void setTrack(OsmTrack track) {
+    request.track = track;
+  }
+
+  /** Set the request's working error message (published to the engine at request end). */
+  private void setError(String error) {
+    request.error = error;
+  }
+
+  /**
+   * Run the engine routing pipeline and capture its outcome on the request.
+   * The engine's result fields are seeded from the request first, so the run
+   * sees exactly the state the individual field writes used to leave behind.
+   */
+  private void doRoutingIntoRequest(long budgetMs) {
+    ops.setFoundTrack(request.track);
+    ops.setErrorMessage(request.error);
+    RoutingOutcome outcome = ops.doRouting(budgetMs);
+    request.track = outcome.track;
+    request.error = outcome.error;
+  }
+
   /** Record the planner-result telemetry on the active request. */
   private void setPlannerResult(RoundTripResult result) {
     request.lastResult = result;
@@ -253,6 +276,10 @@ public final class RoundTripOrchestrator {
     request.effortPolicy = ops.roundTripEffortPolicy();
     request.routingBudgetMs = ops.roundTripRoutingBudgetMs();
     request.requestDeadline = ops.roundTripRequestDeadline();
+    // Track/error seeds: the engine starts with an initial empty track and a
+    // null error; early-return paths must publish exactly those back.
+    request.track = ops.foundTrack();
+    request.error = ops.errorMessage();
     try {
       long wallStart = System.currentTimeMillis();
 
@@ -294,8 +321,8 @@ public final class RoundTripOrchestrator {
       // (whose matchPoint now uniformly maps any match failure to null).
       String tileError = ops.startTileMissingError(ops.waypoints().get(0));
       if (tileError != null) {
-        ops.setErrorMessage(tileError);
-        ops.logInfo(ops.errorMessage());
+        setError(tileError);
+        ops.logInfo(request.error);
         return;
       }
 
@@ -336,12 +363,12 @@ public final class RoundTripOrchestrator {
         double requestedLoopMeters = 2 * Math.PI * searchRadius;
         if (requestedLoopMeters > MAX_STANDARD_LOOP_METERS
             && ops.maxRunningTime() > 0 && ops.maxRunningTime() < LONG_LOOP_MIN_BUDGET_MS) {
-          ops.setErrorMessage("round trips above " + (int) (MAX_STANDARD_LOOP_METERS / 1000)
+          setError("round trips above " + (int) (MAX_STANDARD_LOOP_METERS / 1000)
             + "km need an explicitly increased calculation budget: requested "
             + Math.round(requestedLoopMeters / 1000.0) + "km with a "
             + (ops.maxRunningTime() / 1000) + "s timeout; raise maxRunningTime to at least "
             + (LONG_LOOP_MIN_BUDGET_MS / 1000) + "s");
-          ops.logInfo(ops.errorMessage());
+          ops.logInfo(request.error);
           return;
         }
         // Resolve the roundTripIsochrone shortcut into the canonical
@@ -403,7 +430,7 @@ public final class RoundTripOrchestrator {
           if (resolved.preset != RoundTripEffortPolicy.Preset.BOUNDED) {
             request.effortPolicy = resolved;
             runAutoCandidateCompetition(searchRadius, direction);
-            // The competition method writes ops.foundTrack() / ops.errorMessage() directly
+            // The competition method writes request.track / request.error directly
             // (its children are gated inside the competition).
             return;
           }
@@ -443,7 +470,7 @@ public final class RoundTripOrchestrator {
         }
       }
 
-      if (ops.foundTrack() == null && ops.errorMessage() != null) {
+      if (request.track == null && request.error != null) {
         return;
       }
 
@@ -457,11 +484,11 @@ public final class RoundTripOrchestrator {
       int intermediateWaypoints = (ops.matchedWaypoints() == null) ? 0 : ops.matchedWaypoints().size() - 2;
       if (!ops.routingContext().allowSamewayback && !explicitViaMode
           && intermediateWaypoints < MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS) {
-        ops.setErrorMessage("round-trip could not place enough waypoints to form a loop (need "
+        setError("round-trip could not place enough waypoints to form a loop (need "
           + MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS + " intermediate, got " + Math.max(0, intermediateWaypoints)
           + ") for direction " + (int) direction + " at radius " + (int) searchRadius + "m");
-        ops.logInfo(ops.errorMessage());
-        ops.setFoundTrack(null);
+        ops.logInfo(request.error);
+        setTrack(null);
         return;
       }
 
@@ -474,17 +501,17 @@ public final class RoundTripOrchestrator {
       // one-via route may produce fewer than MIN_ROUNDTRIP_LOOP_NODES if the
       // via is right next to the start. We still reject null/no-track outcomes
       // below as a safety net.
-      if (ops.foundTrack() == null || ops.foundTrack().nodes == null
-          || (!explicitViaMode && (ops.foundTrack().nodes.size() < MIN_ROUNDTRIP_LOOP_NODES
-                                || ops.foundTrack().distance < MIN_ROUNDTRIP_LOOP_METERS))) {
-        int n = (ops.foundTrack() == null || ops.foundTrack().nodes == null) ? 0 : ops.foundTrack().nodes.size();
-        int d = ops.foundTrack() == null ? 0 : ops.foundTrack().distance;
-        ops.setErrorMessage("round-trip could not form a loop for direction " + (int) direction
+      if (request.track == null || request.track.nodes == null
+          || (!explicitViaMode && (request.track.nodes.size() < MIN_ROUNDTRIP_LOOP_NODES
+                                || request.track.distance < MIN_ROUNDTRIP_LOOP_METERS))) {
+        int n = (request.track == null || request.track.nodes == null) ? 0 : request.track.nodes.size();
+        int d = request.track == null ? 0 : request.track.distance;
+        setError("round-trip could not form a loop for direction " + (int) direction
           + " at radius " + (int) searchRadius + "m (only " + n + " nodes, " + d
           + "m) — no reachable roads in that direction at this distance");
-        ops.logInfo(ops.errorMessage());
-        setRejectedTrack(ops.foundTrack()); // preserve stub for post-mortem
-        ops.setFoundTrack(null);
+        ops.logInfo(request.error);
+        setRejectedTrack(request.track); // preserve stub for post-mortem
+        setTrack(null);
         return;
       }
 
@@ -502,7 +529,7 @@ public final class RoundTripOrchestrator {
       // path leaves it null). Consumed once.
       RoundTripQualityResult quality = request.boundedGateVerdict != null
         ? request.boundedGateVerdict
-        : evaluateRoundTripGate(ops.foundTrack(), searchRadius, explicitViaMode);
+        : evaluateRoundTripGate(request.track, searchRadius, explicitViaMode);
       request.boundedGateVerdict = null;
       if (!quality.isAccepted()) {
         // STRUCTURAL failures (broken / un-routable / not-a-loop) are always
@@ -513,12 +540,12 @@ public final class RoundTripOrchestrator {
         // roundTripStrictQuality=1 restores the old hard-reject behaviour.
         boolean hardReject = ops.roundTripQualityHardReject(quality);
         if (hardReject) {
-          ops.setErrorMessage("round-trip rejected by quality gate (direction " + (int) direction
+          setError("round-trip rejected by quality gate (direction " + (int) direction
             + ", radius " + (int) searchRadius + "m, shape=" + quality.getShape() + "): "
             + quality.getRejectionReason());
-          ops.logInfo(ops.errorMessage());
-          setRejectedTrack(ops.foundTrack());
-          ops.setFoundTrack(null);
+          ops.logInfo(request.error);
+          setRejectedTrack(request.track);
+          setTrack(null);
           return;
         }
         // Lenient default: surface the quality issue as a warning and keep the
@@ -528,7 +555,7 @@ public final class RoundTripOrchestrator {
           + " (shape=" + quality.getShape() + ") — route returned anyway; ride at your"
           + " discretion, or set roundTripStrictQuality=1 to reject it.";
         ops.logInfo("round-trip quality advisory (lenient): " + advisory);
-        appendRouteMessage(ops.foundTrack(), advisory);
+        appendRouteMessage(request.track, advisory);
         // fall through to disclosure surfacing + success
       }
       // Surface the route shape + disclosures (e.g. "contains retraced
@@ -537,7 +564,7 @@ public final class RoundTripOrchestrator {
       // route message stream so it propagates to GPX/JSON exports.
       ops.logInfo("round-trip quality: " + quality);
       for (String d : quality.getDisclosures()) {
-        appendRouteMessage(ops.foundTrack(), d);
+        appendRouteMessage(request.track, d);
       }
 
       // Transparency for the silent band: 1..MAX crossings and guard-blocked
@@ -546,19 +573,19 @@ public final class RoundTripOrchestrator {
       // ships either way (lenient product policy: odd-but-cycleable > nothing).
       // The whole decoration block runs under its own guard: the loop is
       // complete and gate-accepted at this point, and the outer catch nulls
-      // ops.foundTrack() — an exception in a cosmetic advisory must never destroy
+      // request.track — an exception in a cosmetic advisory must never destroy
       // a rideable result.
       try {
-        int shippedCrossings = RoundTripQualityGate.countSelfIntersections(ops.foundTrack());
+        int shippedCrossings = RoundTripQualityGate.countSelfIntersections(request.track);
         if (shippedCrossings > 0) {
-          appendRouteMessage(ops.foundTrack(), String.format(Locale.US,
+          appendRouteMessage(request.track, String.format(Locale.US,
             "Note: route crosses its own path %d time%s.",
             shippedCrossings, shippedCrossings == 1 ? "" : "s"));
         }
-        if (ops.foundTrack().nodes != null) {
-          int[] spurInfo = LoopQualityMetrics.computeSpurInfo(ops.foundTrack().nodes);
+        if (request.track.nodes != null) {
+          int[] spurInfo = LoopQualityMetrics.computeSpurInfo(request.track.nodes);
           if (spurInfo[0] > 0 && spurInfo[1] > 600) {
-            appendRouteMessage(ops.foundTrack(), String.format(Locale.US,
+            appendRouteMessage(request.track, String.format(Locale.US,
               "Note: route contains %d out-and-back section%s (longest %.1fkm).",
               spurInfo[0], spurInfo[0] == 1 ? "" : "s", spurInfo[1] / 1000.0));
           }
@@ -572,9 +599,9 @@ public final class RoundTripOrchestrator {
         // is rideable — disclose, don't reject. Same threshold as the planner's
         // fidelity check so the two mechanisms never disagree about what a
         // chord is.
-        int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(ops.foundTrack());
+        int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(request.track);
         if (chordMeters > GreedyRoundTripPlanner.MAX_UNDETAILED_EDGE_METERS) {
-          appendRouteMessage(ops.foundTrack(), String.format(Locale.US,
+          appendRouteMessage(request.track, String.format(Locale.US,
             "Note: route contains an undetailed straight-line section of ~%dm "
               + "(way detail missing in the map data; the actual road may curve).",
             chordMeters));
@@ -584,25 +611,25 @@ public final class RoundTripOrchestrator {
         // overshoot is worth flagging so the caller can suggest a shorter
         // distance. This stays informational because the hard gate above
         // already rejects ratios outside the safe range.
-        if (ops.foundTrack().distance > 0) {
-          double ratio = ops.foundTrack().distance / expectedDistance;
+        if (request.track.distance > 0) {
+          double ratio = request.track.distance / expectedDistance;
           if (ratio > 1.5) {
             String warning = String.format(
               "Warning: route distance (%dkm) exceeds requested loop distance (%dkm) by %.0f%%. "
               + "The road network in this area is too constrained for a compact loop at this distance. "
               + "Consider a shorter distance or an out-and-back route.",
-              ops.foundTrack().distance / 1000, (int) (expectedDistance / 1000), (ratio - 1) * 100);
+              request.track.distance / 1000, (int) (expectedDistance / 1000), (ratio - 1) * 100);
             ops.logInfo(warning);
-            appendRouteMessage(ops.foundTrack(), warning);
+            appendRouteMessage(request.track, warning);
           }
         }
 
-        // The advisory/disclosures above were appended to ops.foundTrack().message, but
+        // The advisory/disclosures above were appended to request.track.message, but
         // FormatGpx emits <brouter:info> and its message comments from
         // messageList, not message. Sync messageList[0] so the quality warning
         // actually reaches GPX/JSON consumers. Idempotent; no-op for the AUTO
         // path (which returns earlier and syncs via adoptCandidateWinner).
-        cleanup.ensureInfoMessage(ops.foundTrack());
+        cleanup.ensureInfoMessage(request.track);
       } catch (RuntimeException advisoryFailure) {
         ops.logInfo("round-trip advisory decoration failed ("
           + advisoryFailure.getClass().getSimpleName()
@@ -615,24 +642,31 @@ public final class RoundTripOrchestrator {
     } catch (Exception e) {
       ops.logException(e);
       ops.logThrowable(e);
+      // logException publishes the exception text on the ENGINE's error field;
+      // mirror it into the request, which is the working copy the finally
+      // publishes.
+      setError(ops.errorMessage());
       // Contract: a round trip ends with a usable track XOR a clean error. An
-      // exception can land here before any assignment, leaving ops.foundTrack() as
+      // exception can land here before any assignment, leaving request.track as
       // the constructor's initial empty OsmTrack (or a partial one) — and
       // logException copies e.getMessage(), which is null for message-less
       // exceptions. Guarantee both halves of the contract: a non-empty error
       // and no degenerate "success" track. Non-empty geometry is preserved on
       // request.lastRejectedTrack for post-mortem inspection like other reject paths.
-      if (ops.errorMessage() == null || ops.errorMessage().isEmpty()) {
-        ops.setErrorMessage("round trip failed: " + e.getClass().getSimpleName());
+      if (request.error == null || request.error.isEmpty()) {
+        setError("round trip failed: " + e.getClass().getSimpleName());
       }
-      if (ops.foundTrack() != null && ops.foundTrack().nodes != null && !ops.foundTrack().nodes.isEmpty()) {
-        request.lastRejectedTrack = ops.foundTrack();
+      if (request.track != null && request.track.nodes != null && !request.track.nodes.isEmpty()) {
+        request.lastRejectedTrack = request.track;
       }
-      ops.setFoundTrack(null);
+      setTrack(null);
     } finally {
-      // Final telemetry publication: the engine's public getters
-      // (getLastRejectedTrack/getLastRoundTripResult) serve these after the
-      // request; nothing engine-side reads them mid-request.
+      // Final result + telemetry publication: the engine's public getters
+      // (getFoundTrack/getErrorMessage/getLastRejectedTrack/
+      // getLastRoundTripResult) serve these after the request; nothing
+      // engine-side reads them mid-request.
+      ops.setFoundTrack(request.track);
+      ops.setErrorMessage(request.error);
       ops.setLastRejectedTrack(request.lastRejectedTrack);
       ops.setLastRoundTripResult(request.lastResult);
       ops.cleanupRoutingResources();
@@ -728,7 +762,7 @@ public final class RoundTripOrchestrator {
     ops.logInfo("explicit-via round-trip: " + userVias.size() + " user via(s), "
       + "allowSamewayback=" + ops.routingContext().allowSamewayback
       + ", direction=" + (int) direction + " (advisory only)");
-    ops.doRouting(request.routingBudgetMs);
+    doRoutingIntoRequest(request.routingBudgetMs);
   }
 
   private void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
@@ -861,7 +895,7 @@ public final class RoundTripOrchestrator {
     ops.routingContext().waypointCatchingRange = 250;
     request.searchRadius = searchRadius;
     publishRuntimeHints();
-    ops.doRouting(request.routingBudgetMs);
+    doRoutingIntoRequest(request.routingBudgetMs);
   }
 
   void doGreedyRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
@@ -1080,11 +1114,11 @@ public final class RoundTripOrchestrator {
       result.setPhase21RetryDirectionDegrees(phase21RetryDir);
     }
 
-    // Phase 2.1 used to also set ops.errorMessage() when both attempts degraded
+    // Phase 2.1 used to also set request.error when both attempts degraded
     // (the spec's "refuse with infeasibility error" option). That cut off
     // doRoundTrip's later fallback path (waypoint algorithm), losing 2
     // iso_greedy/gravel scenarios on the broader corpus that the legacy
-    // waypoint fallback had been salvaging. Drop the ops.errorMessage() write;
+    // waypoint fallback had been salvaging. Drop the request.error write;
     // let the result return as degraded so the caller can fall back as
     // before. The axis info is still surfaced via the Phase 2.1 telemetry
     // fields on RoundTripResult for diagnostic purposes.
@@ -1135,7 +1169,7 @@ public final class RoundTripOrchestrator {
 
       // Route through the greedy ops.waypoints() with the standard routing engine.
       // The greedy planner's lookahead ensures ops.waypoints() are in well-connected
-      // areas (not dead-end valleys), so ops.doRouting() produces gap-free tracks
+      // areas (not dead-end valleys), so doRoutingIntoRequest() produces gap-free tracks
       // following roads appropriate for the profile.
       ops.waypoints().clear();
       ops.waypoints().addAll(result.getLoopWaypoints());
@@ -1152,7 +1186,7 @@ public final class RoundTripOrchestrator {
 
       // Phase 2 v3: the planner now retracks each committed leg, so its
       // merged track has full per-edge MessageData. Use that directly
-      // instead of running ops.doRouting() which re-routes via a fragile
+      // instead of running doRoutingIntoRequest() which re-routes via a fragile
       // corridor mechanism that frequently fails or diverges. The
       // re-routing was wiping out the planner's hostility-aware
       // candidate choices, so the quality gate was seeing routes the
@@ -1163,11 +1197,11 @@ public final class RoundTripOrchestrator {
         && result.getTrack().nodes != null && result.getTrack().nodes.size() >= MIN_ROUNDTRIP_LOOP_NODES;
       if (useDetailedPlannerTrack) {
         try {
-          ops.setFoundTrack(result.getTrack());
+          setTrack(result.getTrack());
           if (result.getMatchedWaypoints() != null) {
             ops.setMatchedWaypoints(result.getMatchedWaypoints());
           }
-          cleanup.finalizeAdoptedRoundTripTrack(ops.foundTrack(), ops.matchedWaypoints());
+          cleanup.finalizeAdoptedRoundTripTrack(request.track, ops.matchedWaypoints());
         } catch (Exception e) {
           ops.logInfo("greedy: bypass path failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + "), falling back to doRouting");
           useDetailedPlannerTrack = false;
@@ -1185,10 +1219,10 @@ public final class RoundTripOrchestrator {
         // overrun) salvage slice rather than a guaranteed instant timeout.
         long remaining = ops.remainingRequestBudgetMs();
         if (request.routingBudgetMs > 0 && remaining <= 0) {
-          ops.setErrorMessage("round-trip request budget exhausted before the fallback re-route ("
+          setError("round-trip request budget exhausted before the fallback re-route ("
             + remaining + "ms remaining)");
-          ops.logInfo(ops.errorMessage());
-          ops.setFoundTrack(null);
+          ops.logInfo(request.error);
+          setTrack(null);
           request.greedyLegTracks = null;
           publishRuntimeHints();
           return;
@@ -1198,7 +1232,7 @@ public final class RoundTripOrchestrator {
             ? request.routingBudgetMs
             : Math.min(request.routingBudgetMs,
                 Math.max(MIN_LADDER_RUNG_BUDGET_MS, remaining));
-          ops.doRouting(fallbackBudget);
+          doRoutingIntoRequest(fallbackBudget);
         } catch (Exception e) {
           ops.logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
           throw e;
@@ -1224,10 +1258,10 @@ public final class RoundTripOrchestrator {
         // we have instead of starting another multi-plan GREEDY ladder.
         ops.logInfo("ISO_GREEDY produced no loop and request budget is exhausted ("
           + ops.remainingRequestBudgetMs() + "ms left), skipping GREEDY fallback ladder");
-        ops.setErrorMessage("greedy round trip planner produced no acceptable loop within the request budget"
+        setError("greedy round trip planner produced no acceptable loop within the request budget"
           + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()));
         setRejectedTrack(result == null ? null : result.getTrack());
-        ops.setFoundTrack(null);
+        setTrack(null);
       } else {
         // Adopt the planner's best-effort loop (if any) and hand it up to the
         // uniform quality gate in doRoundTrip, which is the single place that
@@ -1240,35 +1274,35 @@ public final class RoundTripOrchestrator {
         if (bestEffort != null && bestEffort.nodes != null && !bestEffort.nodes.isEmpty()) {
           ops.logInfo("greedy: adopting best-effort loop for the quality gate to grade ("
             + (result.getFallbackReason() == null ? "?" : result.getFallbackReason()) + ")");
-          ops.setFoundTrack(bestEffort);
+          setTrack(bestEffort);
           if (result.getMatchedWaypoints() != null) {
             ops.setMatchedWaypoints(result.getMatchedWaypoints());
           }
           // finalize can throw (voice hints / speed profile / spur removal). Guard
           // it like the bypass path above: an exception here would otherwise
           // unwind past doRoundTrip's floor + quality gate (its catch does not
-          // null ops.foundTrack()), shipping this un-gated best-effort track as a
+          // null request.track), shipping this un-gated best-effort track as a
           // success. On failure, reject instead so nothing skips the gate.
           try {
-            cleanup.finalizeAdoptedRoundTripTrack(ops.foundTrack(), ops.matchedWaypoints());
-            // ops.errorMessage() stays null: the floor check + quality gate in
-            // doRoundTrip reject (and set ops.errorMessage()) if the loop is too small,
+            cleanup.finalizeAdoptedRoundTripTrack(request.track, ops.matchedWaypoints());
+            // request.error stays null: the floor check + quality gate in
+            // doRoundTrip reject (and set request.error) if the loop is too small,
             // structurally broken, or strict mode is on; else it ships with a warning.
           } catch (Exception e) {
-            ops.setErrorMessage("greedy best-effort finalize failed ("
+            setError("greedy best-effort finalize failed ("
               + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
-            ops.logInfo(ops.errorMessage());
+            ops.logInfo(request.error);
             setRejectedTrack(bestEffort);
-            ops.setFoundTrack(null);
+            setTrack(null);
           }
         } else {
           // Reached by plain GREEDY and by BALANCED's bounded ISO_GREEDY run
           // (which skips the GREEDY recursion) — keep the wording source-neutral.
-          ops.setErrorMessage("greedy round trip planner produced no acceptable loop"
+          setError("greedy round trip planner produced no acceptable loop"
             + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()));
-          ops.logInfo(ops.errorMessage());
+          ops.logInfo(request.error);
           setRejectedTrack(result == null ? null : result.getTrack());
-          ops.setFoundTrack(null);
+          setTrack(null);
         }
       }
     }
@@ -1330,7 +1364,7 @@ public final class RoundTripOrchestrator {
         ops.setMaxRunningTime(savedMaxRunningTime);
       }
       plannerMs = System.currentTimeMillis() - t0;
-      if (ops.foundTrack() != null) {
+      if (request.track != null) {
         // The bounded planner adopts degraded best-effort snapshots and defers
         // the verdict to the uniform gate in doRoundTrip. Take that verdict
         // now: a track the gate will hard-reject must not suppress the tier's
@@ -1340,12 +1374,12 @@ public final class RoundTripOrchestrator {
         // explicitViaMode == false by construction: the bounded tier is only
         // dispatched in generated-loop mode (the explicit-via skeleton
         // branches off before the tier dispatch).
-        RoundTripQualityResult verdict = evaluateRoundTripGate(ops.foundTrack(), searchRadius, false);
+        RoundTripQualityResult verdict = evaluateRoundTripGate(request.track, searchRadius, false);
         if (!verdict.isAccepted() && ops.roundTripQualityHardReject(verdict)) {
           ops.logInfo(tierLabel + ": bounded planner track fails the quality gate ("
             + verdict.getRejectionReason() + "); falling back to waypoint placement");
-          setRejectedTrack(ops.foundTrack());
-          ops.setFoundTrack(null);
+          setRejectedTrack(request.track);
+          setTrack(null);
         } else {
           // The surviving track flows unchanged to the shared gate in
           // doRoundTrip — stash the verdict so that gate consumes it instead
@@ -1355,15 +1389,15 @@ public final class RoundTripOrchestrator {
           request.boundedGateVerdict = verdict;
         }
       }
-      if (ops.foundTrack() == null) {
+      if (request.track == null) {
         ops.logInfo(tierLabel + ": bounded planner produced no accepted loop in " + plannerMs
           + "ms (budget " + tierBudgetMs + "ms)"
-          + (ops.errorMessage() == null ? "" : " — " + ops.errorMessage())
+          + (request.error == null ? "" : " — " + request.error)
           + "; falling back to waypoint placement");
       }
     }
-    if (ops.foundTrack() == null) {
-      ops.setErrorMessage(null);
+    if (request.track == null) {
+      setError(null);
       // Fresh tier slice for the fallback (see method javadoc). Worst case is
       // two slices; the request-level watchdog still applies on top. Same
       // minimum-slice floor as above so a spent budget still funds the one
@@ -1392,7 +1426,7 @@ public final class RoundTripOrchestrator {
         request.routingBudgetMs = savedRoutingBudget;
         ops.setMaxRunningTime(savedMaxRunningTime);
       }
-      if (ops.foundTrack() != null) {
+      if (request.track != null) {
         // The shipped track came from the waypoint fallback, not the planner —
         // keeping the FAILED planner result would attribute its counters and
         // pool-health telemetry to a loop the planner never produced.
@@ -1401,7 +1435,7 @@ public final class RoundTripOrchestrator {
     }
     ops.logInfo(tierLabel + ": finished in " + (System.currentTimeMillis() - t0)
       + "ms (planner " + plannerMs + "ms, budget " + tierBudgetMs + "ms/slice, "
-      + (ops.foundTrack() == null ? "no track" : "track " + ops.foundTrack().distance + "m") + ")");
+      + (request.track == null ? "no track" : "track " + request.track.distance + "m") + ")");
   }
 
   /**
@@ -1618,13 +1652,13 @@ public final class RoundTripOrchestrator {
       for (int i = results.size() - 1; i >= 0; i--) {
         if (results.get(i).errorMessage != null) { err = results.get(i).errorMessage; break; }
       }
-      ops.setErrorMessage("AUTO competition produced no acceptable route "
+      setError("AUTO competition produced no acceptable route "
         + "(tried " + results.size() + " candidates in " + totalMs + "ms): "
         + (err == null ? "unknown" : err));
-      ops.logInfo(ops.errorMessage());
+      ops.logInfo(request.error);
       // Surface the best-geometry rejected candidate for post-mortem inspection,
       // mirroring the direct-dispatch path which sets request.lastRejectedTrack before
-      // nulling ops.foundTrack(). Candidates are in algorithm-quality order, so the
+      // nulling request.track. Candidates are in algorithm-quality order, so the
       // first with a track is the best available rejected geometry.
       for (RoundTripCandidateResult r : results) {
         if (r.track != null) {
@@ -1632,7 +1666,7 @@ public final class RoundTripOrchestrator {
           break;
         }
       }
-      ops.setFoundTrack(null);
+      setTrack(null);
       return;
     }
     adoptCandidateWinner(winner, results, totalMs);
@@ -1654,18 +1688,18 @@ public final class RoundTripOrchestrator {
    */
   private void adoptCandidateWinner(RoundTripCandidateResult winner,
                                     List<RoundTripCandidateResult> all, long totalMs) {
-    ops.setFoundTrack(winner.track);
-    ops.setErrorMessage(null);
-    cleanup.finalizeAdoptedRoundTripTrack(ops.foundTrack(), ops.foundTrack() == null ? null : ops.foundTrack().getMatchedWaypoints());
+    setTrack(winner.track);
+    setError(null);
+    cleanup.finalizeAdoptedRoundTripTrack(request.track, request.track == null ? null : request.track.getMatchedWaypoints());
     // Best-effort (quality-failed) winner adopted under lenient mode: make sure
     // the user-facing quality Warning is present. The child engine usually
     // attaches it, but when the parent's gate re-evaluation in runChildCandidate
     // disagrees with the child's own verdict the child may not have — so attach
     // it here if absent, mirroring the direct-dispatch advisory (and skip when a
     // "Warning:" is already present to avoid a duplicate).
-    if (ops.foundTrack() != null && !winner.accepted() && winner.gateVerdict != null
-        && (ops.foundTrack().message == null || !ops.foundTrack().message.contains("Warning:"))) {
-      appendRouteMessage(ops.foundTrack(), "Warning: " + winner.gateVerdict.getRejectionReason()
+    if (request.track != null && !winner.accepted() && winner.gateVerdict != null
+        && (request.track.message == null || !request.track.message.contains("Warning:"))) {
+      appendRouteMessage(request.track, "Warning: " + winner.gateVerdict.getRejectionReason()
         + " (shape=" + winner.gateVerdict.getShape() + ") — route returned anyway; ride at your"
         + " discretion, or set roundTripStrictQuality=1 to reject it.");
     }
@@ -1682,19 +1716,19 @@ public final class RoundTripOrchestrator {
                              : (r.errorMessage == null ? "no track" : "rejected"))
         .append('.');
     }
-    if (ops.foundTrack() != null) {
-      // ops.foundTrack() is nullable here (a best-effort winner can carry no track —
+    if (request.track != null) {
+      // request.track is nullable here (a best-effort winner can carry no track —
       // see the null-guards above at adoption and the warning block); only
       // attach the AUTO summary when there is a track to annotate.
-      if (ops.foundTrack().message == null || ops.foundTrack().message.isEmpty()) {
-        ops.foundTrack().message = summary.toString();
+      if (request.track.message == null || request.track.message.isEmpty()) {
+        request.track.message = summary.toString();
       } else {
-        ops.foundTrack().message += " " + summary.toString();
+        request.track.message += " " + summary.toString();
       }
     }
     // Keep messageList.get(0) in sync with the just-extended message so the
     // GPX <brouter:info> / comment block reflects the AUTO summary too.
-    cleanup.ensureInfoMessage(ops.foundTrack());
+    cleanup.ensureInfoMessage(request.track);
     ops.logInfo(summary.toString());
     if (winner.score != null) {
       ops.logInfo("AUTO winner score breakdown:\n" + winner.score.describe());
@@ -1702,7 +1736,7 @@ public final class RoundTripOrchestrator {
     // Format + persist the adopted track if the caller asked for an
     // output file. The child engines ran with null outfileBase (output
     // suppressed); the parent does the single final write.
-    ops.writeAdoptedTrackOutput(ops.foundTrack());
+    ops.writeAdoptedTrackOutput(request.track);
   }
 
   private RouteChoiceScore.Verdict scoreInternalGreedyResult(RoundTripResult result,
