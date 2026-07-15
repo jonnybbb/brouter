@@ -1,4 +1,4 @@
-package btools.router;
+package btools.router.roundtrip;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -7,13 +7,11 @@ import java.util.List;
 
 import org.junit.Assert;
 import org.junit.Test;
-import btools.router.roundtrip.GreedyRoundTripPlanner;
-import btools.router.roundtrip.RoundTripAlgorithm;
-import btools.router.roundtrip.RoundTripCandidateResult;
-import btools.router.roundtrip.RoundTripQualityResult;
-import btools.router.roundtrip.RoundTripResult;
-import btools.router.roundtrip.RouteChoiceScore;
-import btools.router.roundtrip.RouteShape;
+import btools.router.MessageData;
+import btools.router.RoundTripFixture;
+import btools.router.OsmNodeNamed;
+import btools.router.OsmPathElement;
+import btools.router.OsmTrack;
 
 /**
  * Acceptance tests for the AUTO candidate-competition flow described in
@@ -133,11 +131,11 @@ public class RoutingEngineAutoCompetitionTest {
     // candidate still gets a usable slice (never the full request timeout).
     long now = 1_000_000L;
     Assert.assertEquals("ample time remaining → full remainder",
-      50_000L, RoutingEngine.childCandidateBudgetMs(now + 50_000L, now));
+      50_000L, RoundTripOrchestrator.childCandidateBudgetMs(now + 50_000L, now));
     Assert.assertEquals("remaining below the 5s floor → floored",
-      5_000L, RoutingEngine.childCandidateBudgetMs(now + 3_000L, now));
+      5_000L, RoundTripOrchestrator.childCandidateBudgetMs(now + 3_000L, now));
     Assert.assertEquals("deadline already passed → floored, never negative",
-      5_000L, RoutingEngine.childCandidateBudgetMs(now - 10_000L, now));
+      5_000L, RoundTripOrchestrator.childCandidateBudgetMs(now - 10_000L, now));
   }
 
   @Test
@@ -244,9 +242,9 @@ public class RoutingEngineAutoCompetitionTest {
     absorbed.planner = graphNativeOnly;
 
     Assert.assertFalse("graph-native-only ISO_GREEDY result should not run duplicate GREEDY",
-      RoutingEngine.autoNeedsPlainGreedy(absorbed, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoNeedsPlainGreedy(absorbed, 1_000L, 10_000L));
     Assert.assertEquals("ISO_GREEDY absorbed graph-native truth",
-      RoutingEngine.autoPlainGreedyDiscardReason(absorbed, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoPlainGreedyDiscardReason(absorbed, 1_000L, 10_000L));
   }
 
   @Test
@@ -264,9 +262,9 @@ public class RoutingEngineAutoCompetitionTest {
     weakIso.planner = isoPooled;
 
     Assert.assertTrue("weak iso-sourced result still deserves plain GREEDY comparison",
-      RoutingEngine.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
     Assert.assertNull("weak iso-sourced result has no discard reason",
-      RoutingEngine.autoPlainGreedyDiscardReason(weakIso, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoPlainGreedyDiscardReason(weakIso, 1_000L, 10_000L));
   }
 
   @Test
@@ -287,9 +285,9 @@ public class RoutingEngineAutoCompetitionTest {
     weakIso.planner = demoted;
 
     Assert.assertTrue("graph-native-only after iso-pool demotion still used iso-pool context",
-      RoutingEngine.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
     Assert.assertNull("demoted iso-pool result has no discard reason without matrix proof",
-      RoutingEngine.autoPlainGreedyDiscardReason(weakIso, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoPlainGreedyDiscardReason(weakIso, 1_000L, 10_000L));
   }
 
   @Test
@@ -308,9 +306,9 @@ public class RoutingEngineAutoCompetitionTest {
     weakIso.planner = compared;
 
     Assert.assertFalse("internal graph-native comparison replaces duplicate AUTO GREEDY",
-      RoutingEngine.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoNeedsPlainGreedy(weakIso, 1_000L, 10_000L));
     Assert.assertEquals("ISO_GREEDY already compared graph-native branch",
-      RoutingEngine.autoPlainGreedyDiscardReason(weakIso, 1_000L, 10_000L));
+      RoundTripOrchestrator.autoPlainGreedyDiscardReason(weakIso, 1_000L, 10_000L));
   }
 
   @Test
@@ -318,8 +316,8 @@ public class RoutingEngineAutoCompetitionTest {
     RoundTripResult degraded = result(cleanSquareLoop(5000));
     degraded.setFallbackReason(GreedyRoundTripPlanner.DEGRADED_FALLBACK_PREFIX + "synthetic");
 
-    Assert.assertTrue(RoutingEngine.internalBranchNeeded(
-      RoutingEngine.scoreInternalGreedyResult(
+    Assert.assertTrue(RoundTripOrchestrator.internalBranchNeeded(
+      RoundTripOrchestrator.scoreInternalGreedyResult(
         degraded, degraded.getTrack().distance, "fastbike", 0, false, false)));
   }
 
@@ -327,8 +325,8 @@ public class RoutingEngineAutoCompetitionTest {
   public void internalGraphNativeBranchSkipsStrongIsoResult() {
     RoundTripResult strong = result(cleanSquareLoop(5000));
 
-    Assert.assertFalse(RoutingEngine.internalBranchNeeded(
-      RoutingEngine.scoreInternalGreedyResult(
+    Assert.assertFalse(RoundTripOrchestrator.internalBranchNeeded(
+      RoundTripOrchestrator.scoreInternalGreedyResult(
         strong, strong.getTrack().distance, "fastbike", 0, false, false)));
   }
 
@@ -347,7 +345,7 @@ public class RoutingEngineAutoCompetitionTest {
     List<RoundTripCandidateResult> candidates = Arrays.asList(
       candidate(RoundTripAlgorithm.ISO_GREEDY, tooShort),  // earlier in order…
       candidate(RoundTripAlgorithm.GREEDY, onTarget));     // …but closer to target
-    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+    RoundTripCandidateResult best = RoundTripOrchestrator.selectBestEffortCandidate(
       candidates, onTarget.distance, "fastbike", 0);
     Assert.assertSame("closer-distance best-effort wins despite later order",
       onTarget, best.track);
@@ -362,7 +360,7 @@ public class RoutingEngineAutoCompetitionTest {
     List<RoundTripCandidateResult> candidates = Arrays.asList(
       candidate(RoundTripAlgorithm.ISO_GREEDY, hostile),   // earlier in order…
       candidate(RoundTripAlgorithm.GREEDY, friendly));     // …but rideable surface
-    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+    RoundTripCandidateResult best = RoundTripOrchestrator.selectBestEffortCandidate(
       candidates, friendly.distance, "fastbike", 0);
     Assert.assertSame("profile-friendly surface best-effort wins despite later order",
       friendly, best.track);
@@ -382,7 +380,7 @@ public class RoutingEngineAutoCompetitionTest {
     List<RoundTripCandidateResult> candidates = Arrays.asList(
       candidate(RoundTripAlgorithm.ISO_GREEDY, offDistanceFriendly),
       candidate(RoundTripAlgorithm.GREEDY, onDistanceHostile));
-    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+    RoundTripCandidateResult best = RoundTripOrchestrator.selectBestEffortCandidate(
       candidates, expected, "fastbike", 0);
     Assert.assertSame("selection picks the highest-composite candidate",
       expectedWinner, best.track);
@@ -391,10 +389,10 @@ public class RoutingEngineAutoCompetitionTest {
   @Test
   public void bestEffortSelectionHandlesEmptyAndNullTracks() {
     Assert.assertNull("no candidates → null",
-      RoutingEngine.selectBestEffortCandidate(Collections.emptyList(), 10000, "fastbike", 0));
+      RoundTripOrchestrator.selectBestEffortCandidate(Collections.emptyList(), 10000, "fastbike", 0));
     RoundTripCandidateResult noTrack = new RoundTripCandidateResult(RoundTripAlgorithm.WAYPOINT);
     Assert.assertNull("only null-track candidates → null",
-      RoutingEngine.selectBestEffortCandidate(
+      RoundTripOrchestrator.selectBestEffortCandidate(
         Collections.singletonList(noTrack), 10000, "fastbike", 0));
   }
 
@@ -432,7 +430,7 @@ public class RoutingEngineAutoCompetitionTest {
     strictOffTarget.gateVerdict = RoundTripQualityResult.builder()
       .reject(RoundTripQualityResult.RejectionTier.QUALITY, "distance off target")
       .shape(RouteShape.STRICT_LOOP).build();
-    RoundTripCandidateResult best = RoutingEngine.selectBestEffortCandidate(
+    RoundTripCandidateResult best = RoundTripOrchestrator.selectBestEffortCandidate(
       Arrays.asList(corridor, strictOffTarget), t.distance, "fastbike", 0);
     Assert.assertSame("strict-shaped candidate must outrank the disclosed corridor",
       strictOffTarget, best);
@@ -491,9 +489,7 @@ public class RoutingEngineAutoCompetitionTest {
     int d = 0;
     for (int i = 1; i < t.nodes.size(); i++) {
       d += t.nodes.get(i - 1).calcDistance(t.nodes.get(i));
-      MessageData m = new MessageData();
-      m.wayKeyValues = "highway=residential surface=asphalt";
-      m.costfactor = 1.0f;
+      MessageData m = RoundTripFixture.messageData("highway=residential surface=asphalt", 1.0f);
       t.nodes.get(i).message = m;
     }
     t.distance = d;

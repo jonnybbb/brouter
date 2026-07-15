@@ -1,5 +1,6 @@
 package btools.router.roundtrip;
 
+import java.io.File;
 import java.util.List;
 
 import btools.mapaccess.MatchedWaypoint;
@@ -55,6 +56,120 @@ public interface RoundTripEngineOps {
 
   /** Publish the matched waypoints of the final track on the engine. */
   void setMatchedWaypoints(List<MatchedWaypoint> waypoints);
+
+  /** The engine's published matched waypoints. */
+  List<MatchedWaypoint> matchedWaypoints();
+
+  /** The live request waypoint list (the orchestrator appends generated vias). */
+  List<OsmNodeNamed> waypoints();
+
+  /** The engine's current result track (null while unset / after a reset). */
+  OsmTrack foundTrack();
+
+  /** Set the engine's result track. */
+  void setFoundTrack(OsmTrack track);
+
+  /** The engine's current error message (track-XOR-error contract). */
+  String errorMessage();
+
+  /** Set the engine's error message. */
+  void setErrorMessage(String message);
+
+  /** Run the engine's routing pipeline over the current waypoint list. */
+  void doRouting(long budgetMs);
+
+  /** The active effort policy preset (null outside bounded dispatch). */
+  RoundTripEffortPolicy roundTripEffortPolicy();
+
+  /** Set the active effort policy preset. */
+  void setRoundTripEffortPolicy(RoundTripEffortPolicy policy);
+
+  /** Absolute wall-clock deadline for the whole round-trip request; 0 = untimed. */
+  long roundTripRequestDeadline();
+
+  /** Set the request deadline. */
+  void setRoundTripRequestDeadline(long deadlineMillis);
+
+  /** Per-leg routing budget for the round-trip fallthrough. */
+  long roundTripRoutingBudgetMs();
+
+  /** Set the per-leg routing budget. */
+  void setRoundTripRoutingBudgetMs(long budgetMs);
+
+  /** Set the active search radius (consulted by engine-side matching hooks). */
+  void setRoundTripSearchRadius(double searchRadius);
+
+  /** Publish the planner result for telemetry consumers. */
+  void setLastRoundTripResult(RoundTripResult result);
+
+  /** Start-centered isochrone expansion, placement variant (2-arg overload). */
+  IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius);
+
+  /** Canonical missing-start-tile error, or null when the tile is present. */
+  String startTileMissingError(OsmNodeNamed start);
+
+  /** Write the adopted track to the engine's configured output (engine IO). */
+  void writeAdoptedTrackOutput(OsmTrack track);
+
+  /** Terminate the engine's current search (volatile kill flag). */
+  void terminate();
+
+  /** Release the engine's routing caches. */
+  void cleanupRoutingResources();
+
+  /** Engine exception logging. */
+  void logException(Throwable t);
+
+  /** The optimized-FAST placement seam of this engine. */
+  FastPlacementOps fastPlacementOps();
+
+  /** Area-info based random direction pick (upstream engine primitive). */
+  double getRandomDirectionFromData(OsmNodeNamed wp, double searchRadius);
+
+  /** The bounded tier's gate verdict, published for the shared doRun advisory. */
+  RoundTripQualityResult boundedGateVerdict();
+
+  /** Set the bounded tier's gate verdict. */
+  void setBoundedGateVerdict(RoundTripQualityResult verdict);
+
+  /** Per-leg guide tracks from a greedy adoption, consulted by doRouting. */
+  OsmTrack[] greedyLegTracks();
+
+  /** Set the per-leg guide tracks. */
+  void setGreedyLegTracks(OsmTrack[] tracks);
+
+  /** The last gate-rejected track (diagnostics surface). */
+  OsmTrack lastRejectedTrack();
+
+  /** Set the last gate-rejected track. */
+  void setLastRejectedTrack(OsmTrack track);
+
+  /** True when the active profile allows ferries (gate context). */
+  boolean roundTripFerriesAllowed();
+
+  /** True when the uniform gate would hard-reject this verdict. */
+  boolean roundTripQualityHardReject(RoundTripQualityResult quality);
+
+  /** Milliseconds left of the whole-request budget (Long.MAX_VALUE when untimed). */
+  long remainingRequestBudgetMs();
+
+  /** The engine's segment directory (child engine construction). */
+  File segmentDir();
+
+  /** Engine throwable logging (compact form). */
+  void logThrowable(Throwable t);
+
+  /** Mark/unmark the explicit-via round-trip mode. */
+  void setExplicitViaRoundTrip(boolean explicitVia);
+
+  /** The forced-corridor acceptance latch from the greedy adoption. */
+  boolean roundTripForcedCorridorAccepted();
+
+  /** Set the forced-corridor acceptance latch. */
+  void setRoundTripForcedCorridorAccepted(boolean accepted);
+
+  /** Aggregate a child engine's link expansions into this engine's counter. */
+  void addLinksProcessed(long links);
 
   /** Set the engine start wall-clock (planner saves and restores around a leg). */
   void setStartTime(long startTimeMillis);
