@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import static org.junit.Assert.fail;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Byte-identical route regression harness for the GREEDY and ISO_GREEDY

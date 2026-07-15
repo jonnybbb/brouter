@@ -5,24 +5,13 @@
  */
 package btools.router;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.EOFException;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
 import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmPos;
 import btools.util.CompactLongMap;
 import btools.util.FrozenLongMap;
+
+import java.io.*;
+import java.util.*;
 
 public final class OsmTrack {
   final public static String version = OsmTrack.class.getPackage().getImplementationVersion();
@@ -62,6 +51,14 @@ public final class OsmTrack {
   public String name = "unset";
 
   protected List<MatchedWaypoint> matchedWaypoints;
+
+  /**
+   * The matched via points this track was routed through (read-only round-trip seam).
+   */
+  public List<MatchedWaypoint> getMatchedWaypoints() {
+    return matchedWaypoints;
+  }
+
   public boolean exportWaypoints = false;
   public boolean exportCorrectedWaypoints = false;
 

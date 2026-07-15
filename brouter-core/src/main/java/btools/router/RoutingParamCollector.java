@@ -1,14 +1,11 @@
 package btools.router;
 
+import btools.mapaccess.MatchedWaypoint;
+import btools.router.roundtrip.RoundTripAlgorithm;
+
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.StringTokenizer;
-
-import btools.mapaccess.MatchedWaypoint;
+import java.util.*;
 
 public class RoutingParamCollector {
 

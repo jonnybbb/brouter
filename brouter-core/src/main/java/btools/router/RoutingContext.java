@@ -5,11 +5,6 @@
  */
 package btools.router;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-
 import btools.expressions.BExpressionContext;
 import btools.expressions.BExpressionContextNode;
 import btools.expressions.BExpressionContextWay;
@@ -17,8 +12,15 @@ import btools.mapaccess.GeometryDecoder;
 import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmLink;
 import btools.mapaccess.OsmNode;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripQualityResult;
 import btools.util.CheapAngleMeter;
 import btools.util.CheapRuler;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 public final class RoutingContext {
   public void setAlternativeIdx(int idx) {

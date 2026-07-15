@@ -8,6 +8,11 @@ import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripQualityGate;
+import btools.router.roundtrip.RoundTripQualityResult;
+import btools.router.roundtrip.RoundTripResult;
+import btools.router.roundtrip.RouteChoiceScore;
 
 /**
  * Integration tests for the AUTO candidate-competition flow described in

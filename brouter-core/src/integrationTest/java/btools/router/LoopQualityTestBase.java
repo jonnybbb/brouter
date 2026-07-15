@@ -17,6 +17,10 @@ import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.Assert.assertTrue;
+import btools.router.roundtrip.CandidateScorer;
+import btools.router.roundtrip.LoopQualityMetrics;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RouteChoiceScore;
 
 /**
  * Parameterized loop-quality verification, sharded one concrete subclass per

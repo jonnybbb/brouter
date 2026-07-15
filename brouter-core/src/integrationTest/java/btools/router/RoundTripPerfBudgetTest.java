@@ -17,6 +17,8 @@ import java.util.Locale;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripResult;
 
 /**
  * Round-trip performance budget suite (work units + latency contracts).

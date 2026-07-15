@@ -1,4 +1,5 @@
 package btools.router;
+import btools.router.roundtrip.LoopQualityMetrics;
 
 /**
  * Holds the result of a single loop quality test case for report generation.

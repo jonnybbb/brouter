@@ -19,6 +19,8 @@ import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.Assert.assertTrue;
+import btools.router.roundtrip.LoopQualityMetrics;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Gold standard loop quality test — a focused subset of LoopQualityTest

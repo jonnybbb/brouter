@@ -3,6 +3,7 @@ package btools.router;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import btools.router.roundtrip.RoundTripQualityGate;
 
 /**
  * AUTO-competition lenient/strict best-effort adoption on the Dreieich fixture.

@@ -13,6 +13,8 @@ import java.util.List;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import btools.router.roundtrip.LoopQualityMetrics;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Sentinel for the return-oracle premature-contraction class (2026-07).

@@ -10,6 +10,9 @@ import org.junit.Before;
 import org.junit.Test;
 
 import btools.mapaccess.MatchedWaypoint;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripQualityGate;
+import btools.router.roundtrip.RoundTripQualityResult;
 
 /**
  * Acceptance tests for the explicit-via round-trip semantics described in

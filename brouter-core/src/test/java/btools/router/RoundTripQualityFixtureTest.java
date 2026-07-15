@@ -5,6 +5,8 @@ import java.util.List;
 
 import org.junit.Assert;
 import org.junit.Test;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripResult;
 
 /**
  * Geometric- and algorithm-quality guards for <em>small</em> round-trip loops

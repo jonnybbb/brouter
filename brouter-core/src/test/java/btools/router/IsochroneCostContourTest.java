@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.junit.Test;
+import btools.router.roundtrip.IsoCandidate;
 
 /**
  * Pure-function tests for the cost-contour scoring rule + frontier road-native

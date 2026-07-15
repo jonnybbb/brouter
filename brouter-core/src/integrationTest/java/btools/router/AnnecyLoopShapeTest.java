@@ -6,6 +6,8 @@ import java.util.List;
 
 import org.junit.Assume;
 import org.junit.Test;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripQualityGate;
 
 /**
  * Shape guard for the annecy fastbike round-trip that historically self-crossed

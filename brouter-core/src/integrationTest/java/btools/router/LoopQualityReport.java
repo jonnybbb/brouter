@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import btools.router.roundtrip.LoopQualityMetrics;
 
 /**
  * Persistence + report generation for the loop-quality matrix, decoupled from

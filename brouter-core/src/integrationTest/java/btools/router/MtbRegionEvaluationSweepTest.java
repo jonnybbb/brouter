@@ -9,6 +9,9 @@ import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import btools.router.roundtrip.LoopQualityMetrics;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RouteChoiceScore;
 
 /**
  * Evaluation sweep for adding mtb to the loop-quality matrix — measurement

@@ -7,6 +7,7 @@ import java.util.Map;
 
 import org.junit.Assert;
 import org.junit.Test;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Real-routing integration tests against the bundled Dreieich fixture (the same

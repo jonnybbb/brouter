@@ -6,6 +6,7 @@ import org.junit.Test;
 import btools.mapaccess.MatchedWaypoint;
 
 import java.util.function.Consumer;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Round-trip feature/scenario coverage on the Dreieich fixture: each generation

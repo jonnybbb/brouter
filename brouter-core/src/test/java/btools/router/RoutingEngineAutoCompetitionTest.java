@@ -7,6 +7,13 @@ import java.util.List;
 
 import org.junit.Assert;
 import org.junit.Test;
+import btools.router.roundtrip.GreedyRoundTripPlanner;
+import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripCandidateResult;
+import btools.router.roundtrip.RoundTripQualityResult;
+import btools.router.roundtrip.RoundTripResult;
+import btools.router.roundtrip.RouteChoiceScore;
+import btools.router.roundtrip.RouteShape;
 
 /**
  * Acceptance tests for the AUTO candidate-competition flow described in

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * CI sentinel for the round-trip variety seed (ADR-0001) on the bundled

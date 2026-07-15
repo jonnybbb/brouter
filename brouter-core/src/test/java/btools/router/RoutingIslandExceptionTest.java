@@ -6,6 +6,8 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import btools.mapaccess.MatchedWaypoint;
+import btools.router.roundtrip.GreedyRoundTripPlanner;
+import btools.router.roundtrip.RadialCandidateProvider;
 
 /**
  * Regression test for the greedy planner's handling of an unroutable / islanded
@@ -32,7 +34,7 @@ public class RoutingIslandExceptionTest {
     rc.localFunction = RoundTripFixture.profileFile("gravel").getAbsolutePath();
     return new RoutingEngine(null, null, RoundTripFixture.segmentDir(), new ArrayList<>(), rc) {
       @Override
-      OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
+      public OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
                          OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc) {
         throw toThrow;
       }
@@ -40,7 +42,7 @@ public class RoutingIslandExceptionTest {
   }
 
   private static OsmTrack routeOneLeg(RoutingEngine engine) {
-    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(engine, new RadialCandidateProvider());
+    GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(engine.roundTripOps(), new RadialCandidateProvider());
     return planner.timedFindTrack("test-leg",
       new MatchedWaypoint(), new MatchedWaypoint(), null,
       System.currentTimeMillis() + 60_000L);

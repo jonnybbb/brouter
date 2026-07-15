@@ -9,6 +9,8 @@ import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Before;
 import org.junit.Test;
+import btools.router.roundtrip.LoopQualityMetrics;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Regression guard for {@link LoopQualityTestBase} cells that were historically weak

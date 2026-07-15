@@ -2,6 +2,7 @@ package btools.router;
 
 import java.util.List;
 import java.util.Locale;
+import btools.router.roundtrip.LoopQualityMetrics;
 
 /**
  * Generates a self-contained Leaflet HTML report from loop quality test results.

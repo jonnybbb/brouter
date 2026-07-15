@@ -17,6 +17,7 @@ import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
  * Real Dreieich <em>small-loop</em> tests for the output pipeline — the
