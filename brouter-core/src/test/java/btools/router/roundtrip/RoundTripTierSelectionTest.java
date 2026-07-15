@@ -31,31 +31,31 @@ public class RoundTripTierSelectionTest {
 
   @Test
   public void greedySubRouteCountScalesWithDistanceAndProfile() {
-    Assert.assertEquals(3, RoundTripOrchestrator.selectGreedySubRouteCount(7000, "fastbike"));
-    Assert.assertEquals(4, RoundTripOrchestrator.selectGreedySubRouteCount(20000, "fastbike"));
-    Assert.assertEquals(5, RoundTripOrchestrator.selectGreedySubRouteCount(50000, "fastbike"));
-    Assert.assertEquals(6, RoundTripOrchestrator.selectGreedySubRouteCount(90000, "fastbike"));
-    Assert.assertEquals(6, RoundTripOrchestrator.selectGreedySubRouteCount(50000, "mtb"));
-    Assert.assertEquals(6, RoundTripOrchestrator.selectGreedySubRouteCount(90000, "mtb"));
+    Assert.assertEquals(3, GreedyStrategy.selectGreedySubRouteCount(7000, "fastbike"));
+    Assert.assertEquals(4, GreedyStrategy.selectGreedySubRouteCount(20000, "fastbike"));
+    Assert.assertEquals(5, GreedyStrategy.selectGreedySubRouteCount(50000, "fastbike"));
+    Assert.assertEquals(6, GreedyStrategy.selectGreedySubRouteCount(90000, "fastbike"));
+    Assert.assertEquals(6, GreedyStrategy.selectGreedySubRouteCount(50000, "mtb"));
+    Assert.assertEquals(6, GreedyStrategy.selectGreedySubRouteCount(90000, "mtb"));
   }
 
   @Test
   public void defaultSubRouteCountPlanStillTriesMoreStepsBeforeFewer() {
     Assert.assertArrayEquals(new int[]{5, 6, 4, 3},
-      RoundTripOrchestrator.greedySubRouteCountPlan(5));
+      GreedyStrategy.greedySubRouteCountPlan(5));
   }
 
   @Test
   public void graphNativeOnlySubRouteCountPlanPrefersFewerStepsBeforeMore() {
     Assert.assertArrayEquals(new int[]{4, 5, 3, 6},
-      RoundTripOrchestrator.greedySubRouteCountPlan(5, RoundTripOrchestrator.IsoStartPolicy.GRAPH_NATIVE_ONLY));
+      GreedyStrategy.greedySubRouteCountPlan(5, GreedyStrategy.IsoStartPolicy.GRAPH_NATIVE_ONLY));
   }
 
   @Test
   public void isoStartPolicyKeepsRichPoolBlended() {
     IsoPoolHealth.PoolShape rich = new IsoPoolHealth.PoolShape(24, 12, 360.0, 4, true);
-    Assert.assertEquals(RoundTripOrchestrator.IsoStartPolicy.BLEND,
-      RoundTripOrchestrator.selectIsoStartPolicy(rich));
+    Assert.assertEquals(GreedyStrategy.IsoStartPolicy.BLEND,
+      GreedyStrategy.selectIsoStartPolicy(rich));
   }
 
   @Test
@@ -66,14 +66,14 @@ public class RoundTripTierSelectionTest {
     // graph-native-only start is reserved for UNHEALTHY, which static shape
     // alone cannot reach.
     IsoPoolHealth.PoolShape weak = new IsoPoolHealth.PoolShape(6, 4, 180.0, 1, false);
-    Assert.assertEquals(RoundTripOrchestrator.IsoStartPolicy.BLEND,
-      RoundTripOrchestrator.selectIsoStartPolicy(weak));
+    Assert.assertEquals(GreedyStrategy.IsoStartPolicy.BLEND,
+      GreedyStrategy.selectIsoStartPolicy(weak));
   }
 
   @Test
   public void isoStartPolicyStartsGraphNativeWhenPoolNotAdmitted() {
-    Assert.assertEquals(RoundTripOrchestrator.IsoStartPolicy.GRAPH_NATIVE_ONLY,
-      RoundTripOrchestrator.selectIsoStartPolicy(null));
+    Assert.assertEquals(GreedyStrategy.IsoStartPolicy.GRAPH_NATIVE_ONLY,
+      GreedyStrategy.selectIsoStartPolicy(null));
   }
 
   @Test

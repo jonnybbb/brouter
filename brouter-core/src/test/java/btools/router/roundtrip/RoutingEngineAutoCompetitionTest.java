@@ -316,8 +316,8 @@ public class RoutingEngineAutoCompetitionTest {
     RoundTripResult degraded = result(cleanSquareLoop(5000));
     degraded.setFallbackReason(GreedyRoundTripPlanner.DEGRADED_FALLBACK_PREFIX + "synthetic");
 
-    Assert.assertTrue(RoundTripOrchestrator.internalBranchNeeded(
-      RoundTripOrchestrator.scoreInternalGreedyResult(
+    Assert.assertTrue(GreedyStrategy.internalBranchNeeded(
+      GreedyStrategy.scoreInternalGreedyResult(
         degraded, degraded.getTrack().distance, "fastbike", 0, false, false)));
   }
 
@@ -325,8 +325,8 @@ public class RoutingEngineAutoCompetitionTest {
   public void internalGraphNativeBranchSkipsStrongIsoResult() {
     RoundTripResult strong = result(cleanSquareLoop(5000));
 
-    Assert.assertFalse(RoundTripOrchestrator.internalBranchNeeded(
-      RoundTripOrchestrator.scoreInternalGreedyResult(
+    Assert.assertFalse(GreedyStrategy.internalBranchNeeded(
+      GreedyStrategy.scoreInternalGreedyResult(
         strong, strong.getTrack().distance, "fastbike", 0, false, false)));
   }
 
