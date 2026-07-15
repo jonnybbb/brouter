@@ -318,21 +318,20 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       for (int i = results.size() - 1; i >= 0; i--) {
         if (results.get(i).errorMessage != null) { err = results.get(i).errorMessage; break; }
       }
-      orchestrator.setError("AUTO competition produced no acceptable route "
-        + "(tried " + results.size() + " candidates in " + totalMs + "ms): "
-        + (err == null ? "unknown" : err));
-      ops.logInfo(orchestrator.request.error);
       // Surface the best-geometry rejected candidate for post-mortem inspection,
-      // mirroring the direct-dispatch path which sets orchestrator.request.lastRejectedTrack before
-      // nulling orchestrator.request.track. Candidates are in algorithm-quality order, so the
-      // first with a track is the best available rejected geometry.
+      // mirroring the direct-dispatch reject paths. Candidates are in
+      // algorithm-quality order, so the first with a track is the best
+      // available rejected geometry.
+      OsmTrack rejected = null;
       for (RoundTripCandidateResult r : results) {
         if (r.track != null) {
-          orchestrator.setRejectedTrack(r.track);
+          rejected = r.track;
           break;
         }
       }
-      orchestrator.setTrack(null);
+      orchestrator.rejectWithError("AUTO competition produced no acceptable route "
+        + "(tried " + results.size() + " candidates in " + totalMs + "ms): "
+        + (err == null ? "unknown" : err), rejected);
       return;
     }
     adoptCandidateWinner(winner, results, totalMs);

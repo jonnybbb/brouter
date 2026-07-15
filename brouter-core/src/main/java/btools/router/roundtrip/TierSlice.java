@@ -1,6 +1,12 @@
 package btools.router.roundtrip;
 
-/** Parameters of one tier-ladder attempt, fixed at ladder resolution. */
+/**
+ * Parameters of one tier-ladder attempt, fixed at ladder resolution. The
+ * slice is a superset: each strategy reads only the fields it needs (e.g.
+ * only the bounded tier reads {@link #label} and {@link #greedyCapable}, and
+ * the greedy tier takes its effort knobs from the request state, not from
+ * {@link #effortPolicy}).
+ */
 final class TierSlice {
 
   final RoundTripAlgorithm algo;

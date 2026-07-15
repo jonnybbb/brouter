@@ -5,8 +5,8 @@ import btools.router.OsmTrack;
 /**
  * Internal candidate-comparison record for AUTO mode round-trip routing. Each
  * attempt in AUTO's algorithm sequence produces one of these; the comparison
- * loop in {@code RoutingEngine.runAutoCandidateCompetition} picks the accepted
- * candidate with the highest {@link RouteChoiceScore.Verdict#score()}.
+ * loop in {@link AutoCompetitionStrategy} picks the accepted candidate with
+ * the highest {@link RouteChoiceScore.Verdict#score()}.
  *
  * <p>Notable fields: {@link #gateVerdict} is the {@link RoundTripQualityGate}
  * safety verdict — a candidate with {@code isAccepted() == false} is ineligible

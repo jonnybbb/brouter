@@ -11,7 +11,7 @@ import java.util.*;
 /**
  * Greedy routed-leg planner for cycling round-trips. Builds a loop one leg at a
  * time, walking a chain of vias outward from the start and back;
- * {@code RoutingEngine#doGreedyRoundTrip} constructs it, calls {@link #plan}, and
+ * {@link GreedyStrategy} constructs it, calls {@link #plan}, and
  * adopts the loop (or falls through to WAYPOINT when the fallback reason starts
  * with "rejected"). Follows CEUR-WS Vol-3885.
  * <p>
@@ -341,7 +341,7 @@ public class GreedyRoundTripPlanner {
   /**
    * Iso-pool health tracker (issue #26); null for plain GREEDY / graph-native
    * providers, where every hook is a no-op (behaviour bit-identical to the
-   * pre-health planner). Set by {@code RoutingEngine#doGreedyRoundTrip}, one fresh
+   * pre-health planner). Set by {@link GreedyStrategy}, one fresh
    * instance per plan.
    */
   private IsoPoolHealth poolHealth;

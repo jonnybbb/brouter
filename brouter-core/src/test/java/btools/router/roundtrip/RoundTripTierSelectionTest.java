@@ -42,7 +42,7 @@ public class RoundTripTierSelectionTest {
   @Test
   public void defaultSubRouteCountPlanStillTriesMoreStepsBeforeFewer() {
     Assert.assertArrayEquals(new int[]{5, 6, 4, 3},
-      GreedyStrategy.greedySubRouteCountPlan(5));
+      GreedyStrategy.greedySubRouteCountPlan(5, GreedyStrategy.IsoStartPolicy.BLEND));
   }
 
   @Test

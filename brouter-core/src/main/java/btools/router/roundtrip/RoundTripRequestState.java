@@ -68,4 +68,7 @@ public interface RoundTripRequestState {
 
   /** Publish the planner result for telemetry. */
   void setLastRoundTripResult(RoundTripResult result);
+
+  /** Add a child engine's link expansions to this engine's work counter. */
+  void addLinksProcessed(long links);
 }

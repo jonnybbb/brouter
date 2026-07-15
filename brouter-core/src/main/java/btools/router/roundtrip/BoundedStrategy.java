@@ -21,10 +21,15 @@ final class BoundedStrategy implements RoundTripStrategy {
 
   private final RoundTripOrchestrator orchestrator;
   private final RoundTripEngineOps ops;
+  private final RoundTripStrategy greedyStrategy;
+  private final RoundTripStrategy fastStrategy;
 
-  BoundedStrategy(RoundTripOrchestrator orchestrator) {
+  BoundedStrategy(RoundTripOrchestrator orchestrator,
+                  RoundTripStrategy greedyStrategy, RoundTripStrategy fastStrategy) {
     this.orchestrator = orchestrator;
     this.ops = orchestrator.ops;
+    this.greedyStrategy = greedyStrategy;
+    this.fastStrategy = fastStrategy;
   }
 
   @Override
@@ -36,7 +41,7 @@ final class BoundedStrategy implements RoundTripStrategy {
 
     long tierBudgetMs = policy.tierBudgetMs;
     long t0 = System.currentTimeMillis();
-    long savedDeadline = request.requestDeadline;
+    long savedDeadline = request.requestDeadline();
     long plannerMs = 0;
     if (!slice.greedyCapable) {
       // Same constraint as the greedy dispatch: the planner generates its own
@@ -48,8 +53,7 @@ final class BoundedStrategy implements RoundTripStrategy {
     } else {
       RoundTripEffortPolicy savedPolicy = request.effortPolicy;
       long effectiveMs = RoundTripOrchestrator.tierSliceMs(tierBudgetMs, savedDeadline, t0);
-      request.requestDeadline = t0 + effectiveMs;
-      orchestrator.publishRuntimeHints();
+      request.setRequestDeadline(t0 + effectiveMs);
       request.effortPolicy = policy;
       // The engine-level timers (island check, leg searches) run in THIS engine
       // and consult ops.maxRunningTime() — floor it to the slice too, or a nearly-
@@ -62,11 +66,11 @@ final class BoundedStrategy implements RoundTripStrategy {
         ops.setMaxRunningTime((t0 + effectiveMs) - ops.startTime());
       }
       try {
-        orchestrator.doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.ISO_GREEDY);
+        greedyStrategy.attempt(request, new TierSlice(RoundTripAlgorithm.ISO_GREEDY, null,
+          searchRadius, direction, true, RoundTripAlgorithm.ISO_GREEDY.toString()));
       } finally {
         request.effortPolicy = savedPolicy;
-        request.requestDeadline = savedDeadline;
-        orchestrator.publishRuntimeHints();
+        request.setRequestDeadline(savedDeadline);
         ops.setMaxRunningTime(savedMaxRunningTime);
       }
       plannerMs = System.currentTimeMillis() - t0;
@@ -110,8 +114,7 @@ final class BoundedStrategy implements RoundTripStrategy {
       // cheap geometric attempt.
       long fallbackStart = System.currentTimeMillis();
       long fallbackMs = RoundTripOrchestrator.tierSliceMs(tierBudgetMs, savedDeadline, fallbackStart);
-      request.requestDeadline = fallbackStart + fallbackMs;
-      orchestrator.publishRuntimeHints();
+      request.setRequestDeadline(fallbackStart + fallbackMs);
       long savedRoutingBudget = request.routingBudgetMs;
       long savedMaxRunningTime = ops.maxRunningTime();
       // Scope the engine timers to the fallback slice, UNCONDITIONALLY. The
@@ -125,10 +128,10 @@ final class BoundedStrategy implements RoundTripStrategy {
       request.routingBudgetMs = fallbackMs;
       ops.setMaxRunningTime((fallbackStart + fallbackMs) - ops.startTime());
       try {
-        orchestrator.doWaypointBasedRoundTrip(searchRadius, direction, RoundTripAlgorithm.WAYPOINT);
+        fastStrategy.attempt(request, new TierSlice(RoundTripAlgorithm.WAYPOINT, null,
+          searchRadius, direction, false, RoundTripAlgorithm.WAYPOINT.toString()));
       } finally {
-        request.requestDeadline = savedDeadline;
-        orchestrator.publishRuntimeHints();
+        request.setRequestDeadline(savedDeadline);
         request.routingBudgetMs = savedRoutingBudget;
         ops.setMaxRunningTime(savedMaxRunningTime);
       }

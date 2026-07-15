@@ -16,14 +16,15 @@ import btools.util.CheapRuler;
 final class FastStrategy implements RoundTripStrategy {
 
   private final RoundTripOrchestrator orchestrator;
+  private final RoundTripEngineOps ops;
 
   FastStrategy(RoundTripOrchestrator orchestrator) {
     this.orchestrator = orchestrator;
+    this.ops = orchestrator.ops;
   }
 
   @Override
   public boolean attempt(RoundTripRequest request, TierSlice slice) {
-    RoundTripEngineOps ops = orchestrator.ops;
     WaypointSnapper snapper = orchestrator.snapper;
     GeometricWaypointPlacer placer = orchestrator.placer;
     RoundTripAlgorithm algo = slice.algo;
@@ -67,7 +68,7 @@ final class FastStrategy implements RoundTripStrategy {
       // injection that doExplicitViaRoundTrip was built to replace.
       if (ops.waypoints().size() > 1) {
         throw new IllegalStateException(
-          "doWaypointBasedRoundTrip expects a single start waypoint; user vias must be "
+          "the waypoint tier expects a single start waypoint; user vias must be "
             + "handled by doExplicitViaRoundTrip (got " + ops.waypoints().size() + ")");
       }
 
@@ -157,8 +158,7 @@ final class FastStrategy implements RoundTripStrategy {
     }
 
     ops.routingContext().waypointCatchingRange = 250;
-    request.searchRadius = searchRadius;
-    orchestrator.publishRuntimeHints();
+    request.setSearchRadius(searchRadius);
     orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
     return true;
   }

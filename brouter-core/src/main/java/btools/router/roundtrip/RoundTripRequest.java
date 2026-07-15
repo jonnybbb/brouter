@@ -8,8 +8,19 @@ import btools.router.OsmTrack;
  * Replaces the shared engine fields the orchestrator used to mutate through
  * the seam: the engine only receives what its search loops read (published as
  * runtime hints) plus the final telemetry values at request end.
+ *
+ * <p>The four hint-backed fields (search radius, request deadline,
+ * explicit-via, guide tracks) are private with publishing setters — every
+ * mutation reaches the engine's search loops immediately, so "mutated but
+ * unpublished" is unrepresentable.
  */
 final class RoundTripRequest {
+
+  private final RoundTripRequestState engine;
+
+  RoundTripRequest(RoundTripRequestState engine) {
+    this.engine = engine;
+  }
 
   /**
    * The request's working result track; published to the engine once at
@@ -25,16 +36,46 @@ final class RoundTripRequest {
   RoundTripEffortPolicy effortPolicy = RoundTripEffortPolicy.STANDARD_PRESET;
 
   /** Active search radius in meters (published to the engine as a hint). */
-  double searchRadius;
+  private double searchRadius;
 
   /** Wall-clock request deadline (epoch ms), seeded from doRun; 0 = unbounded. */
-  long requestDeadline;
+  private long requestDeadline;
 
   /** True in explicit-via mode (published to the engine as a hint). */
-  boolean explicitVia;
+  private boolean explicitVia;
 
   /** Per-leg guide tracks from a greedy adoption (published as a hint). */
-  OsmTrack[] greedyLegTracks;
+  private OsmTrack[] greedyLegTracks;
+
+  void setSearchRadius(double searchRadius) {
+    this.searchRadius = searchRadius;
+    publishHints();
+  }
+
+  long requestDeadline() {
+    return requestDeadline;
+  }
+
+  void setRequestDeadline(long requestDeadline) {
+    this.requestDeadline = requestDeadline;
+    publishHints();
+  }
+
+  void setExplicitVia(boolean explicitVia) {
+    this.explicitVia = explicitVia;
+    publishHints();
+  }
+
+  void setGreedyLegTracks(OsmTrack[] greedyLegTracks) {
+    this.greedyLegTracks = greedyLegTracks;
+    publishHints();
+  }
+
+  /** Publish the engine-read slice of this request to the engine's search loops. */
+  private void publishHints() {
+    engine.setRoundTripRuntimeHints(new RoundTripRuntimeHints(
+      searchRadius, requestDeadline, explicitVia, greedyLegTracks));
+  }
 
   /** Per-leg routing budget (ms) for the round-trip fallthrough; 0 = untimed. */
   long routingBudgetMs;

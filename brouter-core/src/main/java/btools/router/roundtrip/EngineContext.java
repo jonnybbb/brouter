@@ -49,9 +49,6 @@ public interface EngineContext {
   /** The optimized-FAST placement seam of this engine. */
   FastPlacementOps fastPlacementOps();
 
-  /** Add a child engine's link expansions to this engine's counter. */
-  void addLinksProcessed(long links);
-
   /** Milliseconds left of the request budget; Long.MAX_VALUE when untimed. */
   long remainingRequestBudgetMs();
 }

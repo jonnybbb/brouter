@@ -38,8 +38,7 @@ final class GreedyStrategy implements RoundTripStrategy {
     // Loop scale for the via-relocation bound (profileAwareMatchPoint): must be
     // set BEFORE planner via matching — the doRouting fallthrough below used to
     // set it only late, leaving the bound inert during greedy placement.
-    orchestrator.request.searchRadius = searchRadius;
-    orchestrator.publishRuntimeHints();
+    orchestrator.request.setSearchRadius(searchRadius);
 
     OsmNodeNamed start = ops.waypoints().get(0);
     double desiredDistance = 2 * Math.PI * searchRadius;
@@ -190,8 +189,8 @@ final class GreedyStrategy implements RoundTripStrategy {
         // materially the same graph-native ladder a second time.
         && !orchestrator.request.effortPolicy.runGreedyAlways
         && provider instanceof BlendedCandidateProvider
-        && System.currentTimeMillis() < (orchestrator.request.requestDeadline == 0
-            ? Long.MAX_VALUE : orchestrator.request.requestDeadline)) {
+        && System.currentTimeMillis() < (orchestrator.request.requestDeadline() == 0
+            ? Long.MAX_VALUE : orchestrator.request.requestDeadline())) {
       // Evaluate the blended verdict ONCE; the selection below reuses it.
       blendedInternalVerdict = scoreInternalGreedyResult(result, desiredDistance, effectiveDirection);
       runInternalBranch = internalBranchNeeded(blendedInternalVerdict);
@@ -313,8 +312,7 @@ final class GreedyStrategy implements RoundTripStrategy {
 
       if (result.getLegTracks() != null) {
         List<OsmTrack> legs = result.getLegTracks();
-        orchestrator.request.greedyLegTracks = legs.toArray(new OsmTrack[0]);
-        orchestrator.publishRuntimeHints();
+        orchestrator.request.setGreedyLegTracks(legs.toArray(new OsmTrack[0]));
       }
 
       // Phase 2 v3: the planner now retracks each committed leg, so its
@@ -342,8 +340,7 @@ final class GreedyStrategy implements RoundTripStrategy {
       }
       if (!useDetailedPlannerTrack) {
         ops.routingContext().waypointCatchingRange = 250;
-        orchestrator.request.searchRadius = searchRadius;
-        orchestrator.publishRuntimeHints();
+        orchestrator.request.setSearchRadius(searchRadius);
         // Honor the request deadline: once it has fully passed, do NOT start
         // the fallback re-route at all (doRouting resets ops.startTime(), so any
         // budget handed to it is a real overrun). While budget remains, fund
@@ -356,8 +353,7 @@ final class GreedyStrategy implements RoundTripStrategy {
             + remaining + "ms remaining)");
           ops.logInfo(orchestrator.request.error);
           orchestrator.setTrack(null);
-          orchestrator.request.greedyLegTracks = null;
-          orchestrator.publishRuntimeHints();
+          orchestrator.request.setGreedyLegTracks(null);
           return;
         }
         try {
@@ -370,8 +366,7 @@ final class GreedyStrategy implements RoundTripStrategy {
           ops.logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
           throw e;
         } finally {
-          orchestrator.request.greedyLegTracks = null;
-          orchestrator.publishRuntimeHints();
+          orchestrator.request.setGreedyLegTracks(null);
         }
       }
     } else {
@@ -391,10 +386,10 @@ final class GreedyStrategy implements RoundTripStrategy {
         // we have instead of starting another multi-plan GREEDY ladder.
         ops.logInfo("ISO_GREEDY produced no loop and request budget is exhausted ("
           + ops.remainingRequestBudgetMs() + "ms left), skipping GREEDY fallback ladder");
-        orchestrator.setError("greedy round trip planner produced no acceptable loop within the request budget"
-          + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()));
-        orchestrator.setRejectedTrack(result == null ? null : result.getTrack());
-        orchestrator.setTrack(null);
+        orchestrator.rejectWithError(
+          "greedy round trip planner produced no acceptable loop within the request budget"
+            + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()),
+          result == null ? null : result.getTrack());
       } else {
         // Adopt the planner's best-effort loop (if any) and hand it up to the
         // uniform quality gate in doRoundTrip, which is the single place that
@@ -422,20 +417,15 @@ final class GreedyStrategy implements RoundTripStrategy {
             // doRoundTrip reject (and set orchestrator.request.error) if the loop is too small,
             // structurally broken, or strict mode is on; else it ships with a warning.
           } catch (Exception e) {
-            orchestrator.setError("greedy best-effort finalize failed ("
-              + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
-            ops.logInfo(orchestrator.request.error);
-            orchestrator.setRejectedTrack(bestEffort);
-            orchestrator.setTrack(null);
+            orchestrator.rejectWithError("greedy best-effort finalize failed ("
+              + e.getClass().getSimpleName() + ": " + e.getMessage() + ")", bestEffort);
           }
         } else {
           // Reached by plain GREEDY and by BALANCED's bounded ISO_GREEDY run
           // (which skips the GREEDY recursion) — keep the wording source-neutral.
-          orchestrator.setError("greedy round trip planner produced no acceptable loop"
-            + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()));
-          ops.logInfo(orchestrator.request.error);
-          orchestrator.setRejectedTrack(result == null ? null : result.getTrack());
-          orchestrator.setTrack(null);
+          orchestrator.rejectWithError("greedy round trip planner produced no acceptable loop"
+            + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()),
+            result == null ? null : result.getTrack());
         }
       }
     }
@@ -488,8 +478,8 @@ final class GreedyStrategy implements RoundTripStrategy {
       // ladder rungs (a demotion earned at subRouteCount=5 says nothing about
       // the 4-step plan's pool usage).
       planner.setPoolHealth(poolShape == null ? null : new IsoPoolHealth(poolShape));
-      planner.setExternalDeadline(orchestrator.request.requestDeadline == 0
-        ? Long.MAX_VALUE : orchestrator.request.requestDeadline);
+      planner.setExternalDeadline(orchestrator.request.requestDeadline() == 0
+        ? Long.MAX_VALUE : orchestrator.request.requestDeadline());
       result = planner.plan(start, desiredDistance, tryDirection);
       if (result != null) {
         result.setIsoAsymmetryBearingApplied(bias.applied);
@@ -643,10 +633,6 @@ final class GreedyStrategy implements RoundTripStrategy {
       n++;
     }
     return Math.max(3, Math.min(6, n));
-  }
-
-  public static int[] greedySubRouteCountPlan(int base) {
-    return greedySubRouteCountPlan(base, IsoStartPolicy.BLEND);
   }
 
   public static int[] greedySubRouteCountPlan(int base, IsoStartPolicy policy) {

@@ -22,7 +22,11 @@ public final class RoundTripOrchestrator {
   final RoundTripEngineOps ops;
 
   /** The active request's mutable state; recreated at each doRoundTrip entry. */
-  RoundTripRequest request = new RoundTripRequest();
+  RoundTripRequest request;
+
+  final WaypointSnapper snapper;
+  final GeometricWaypointPlacer placer;
+  final RoundTripTrackCleanup cleanup;
 
   /** One resolved rung of the tier ladder: which strategy runs, with which slice. */
   private static final class Rung {
@@ -137,19 +141,20 @@ public final class RoundTripOrchestrator {
       new TierSlice(algo, null, searchRadius, direction, greedyCapable, algo.toString())));
   }
 
-  /**
-   * Publish the engine-read slice of the request (radius, deadline,
-   * explicit-via, guide tracks) to the engine's search loops. Call after every
-   * mutation of one of those request fields.
-   */
-  void publishRuntimeHints() {
-    ops.setRoundTripRuntimeHints(new RoundTripRuntimeHints(
-      request.searchRadius, request.requestDeadline, request.explicitVia, request.greedyLegTracks));
-  }
-
   /** Record the gate-rejected track on the active request (post-mortem surface). */
   void setRejectedTrack(OsmTrack track) {
     request.lastRejectedTrack = track;
+  }
+
+  /**
+   * Publish a rejection: set + log the error, keep {@code rejected} for
+   * post-mortem inspection, and null the result track (track-XOR-error).
+   */
+  void rejectWithError(String message, OsmTrack rejected) {
+    setError(message);
+    ops.logInfo(message);
+    setRejectedTrack(rejected);
+    setTrack(null);
   }
 
   /** Set the request's working result track (published to the engine at request end). */
@@ -179,20 +184,18 @@ public final class RoundTripOrchestrator {
   void setPlannerResult(RoundTripResult result) {
     request.lastResult = result;
   }
-  final WaypointSnapper snapper;
-  final GeometricWaypointPlacer placer;
-  final RoundTripTrackCleanup cleanup;
 
   public RoundTripOrchestrator(RoundTripEngineOps ops) {
     this.ops = ops;
     this.snapper = new WaypointSnapper(ops, ops, ops);
     this.placer = new GeometricWaypointPlacer(ops);
     this.cleanup = new RoundTripTrackCleanup(snapper, ops, ops, ops);
+    this.request = new RoundTripRequest(ops);
     // Constructed here, not in field initializers: the strategies capture
     // collaborators off this orchestrator, which must be fully wired first.
     this.fastStrategy = new FastStrategy(this);
     this.greedyStrategy = new GreedyStrategy(this);
-    this.boundedStrategy = new BoundedStrategy(this);
+    this.boundedStrategy = new BoundedStrategy(this, greedyStrategy, fastStrategy);
     this.autoCompetitionStrategy = new AutoCompetitionStrategy(this);
   }
 
@@ -205,13 +208,7 @@ public final class RoundTripOrchestrator {
 
   private static final int MIN_ROUNDTRIP_LOOP_METERS = 200;
 
-  private int ROUNDTRIP_DEFAULT_DIRECTIONADD = 45;
-
-  // AUTO competition runs its candidates sequentially in the calling thread and
-  // cannot interrupt a child mid-run, so it shares one wall-clock budget across
-  // all candidates instead of giving each the full timeout. DEFAULT applies when
-  // the caller passes no timeout (maxRunningTime <= 0); MIN_CHILD guarantees a
-  // spawned candidate still gets a usable slice.
+  private static final int ROUNDTRIP_DEFAULT_DIRECTIONADD = 45;
 
   /**
    * Loops up to this length must work on the standard request budget; longer
@@ -222,12 +219,8 @@ public final class RoundTripOrchestrator {
   /** Minimum request budget accepted for loops above {@link #MAX_STANDARD_LOOP_METERS}. */
   static final long LONG_LOOP_MIN_BUDGET_MS = 120_000;
 
-
-
-
   private static final java.util.concurrent.atomic.AtomicLongArray PLACEMENT_PATH_COUNTS =
     new java.util.concurrent.atomic.AtomicLongArray(PlacementPath.values().length);
-
 
   /**
    * Append a space-separated line to {@code track.message} (advisories and gate
@@ -241,10 +234,6 @@ public final class RoundTripOrchestrator {
       track.message += " " + message;
     }
   }
-
-
-
-
 
   /**
    * Profile family from the profile's own validFor* globals (name-independent):
@@ -275,14 +264,11 @@ public final class RoundTripOrchestrator {
       request.forcedCorridorAccepted);
   }
 
-
-
-
   public void doRoundTrip() {
-    request = new RoundTripRequest();
+    request = new RoundTripRequest(ops);
     request.effortPolicy = ops.roundTripEffortPolicy();
     request.routingBudgetMs = ops.roundTripRoutingBudgetMs();
-    request.requestDeadline = ops.roundTripRequestDeadline();
+    request.setRequestDeadline(ops.roundTripRequestDeadline());
     // Track/error seeds: the engine starts with an initial empty track and a
     // null error; early-return paths must publish exactly those back.
     request.track = ops.foundTrack();
@@ -678,7 +664,7 @@ public final class RoundTripOrchestrator {
 
     // For allowSamewayback=false append the closing start copy so the route
     // forms a closed loop. For allowSamewayback=true the existing doRouting
-    // expansion at the top of {@link #doRouting} mirrors the chain back —
+    // expansion at the top of RoutingEngine#doRouting mirrors the chain back —
     // we must NOT add a closing copy here or we'd double-close.
     if (!ops.routingContext().allowSamewayback) {
       OsmNodeNamed closing = new OsmNodeNamed(new OsmNode(start.ilon, start.ilat));
@@ -687,51 +673,20 @@ public final class RoundTripOrchestrator {
     }
 
     ops.routingContext().waypointCatchingRange = 250;
-    request.searchRadius = searchRadius;
-    request.explicitVia = true;
-    publishRuntimeHints();
+    request.setSearchRadius(searchRadius);
+    request.setExplicitVia(true);
     ops.logInfo("explicit-via round-trip: " + userVias.size() + " user via(s), "
       + "allowSamewayback=" + ops.routingContext().allowSamewayback
       + ", direction=" + (int) direction + " (advisory only)");
     doRoutingIntoRequest(request.routingBudgetMs);
   }
 
-  /**
-   * Bridge for tier-internal fallbacks (bounded tier) into the waypoint tier;
-   * the ladder itself dispatches through {@link FastStrategy}.
-   */
-  void doWaypointBasedRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
-    fastStrategy.attempt(request,
-      new TierSlice(algo, null, searchRadius, direction, false, algo.toString()));
-  }
-
-  /**
-   * Bridge for the bounded tier's planner slice; the ladder dispatches
-   * through {@link GreedyStrategy}.
-   */
-  void doGreedyRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
-    greedyStrategy.attempt(request,
-      new TierSlice(algo, null, searchRadius, direction, true, algo.toString()));
-  }
-
-
-
-
-
-
-
-
-
   public static RoundTripAlgorithm selectRoundTripAlgorithm(double searchRadius) {
     // Cheap fallback selector. The full AUTO policy lives in
-    // {@link #runAutoCandidateCompetition}; this helper remains as a stable
+    // {@link AutoCompetitionStrategy}; this helper remains as a stable
     // entry point for direct callers and unsupported AUTO modes.
     return RoundTripAlgorithm.GREEDY;
   }
-
-
-
-
 
   /**
    * Whether greedy planning applies: it generates its own intermediate waypoints,
@@ -789,7 +744,6 @@ public final class RoundTripOrchestrator {
    */
   static final long MIN_LADDER_RUNG_BUDGET_MS = 3_000;
 
-
   /**
    * Clear-accept threshold: below this, AUTO normally runs the plain GREEDY
    * candidate as a comparison before the legacy WAYPOINT fallback. ISO_GREEDY's
@@ -801,7 +755,6 @@ public final class RoundTripOrchestrator {
    */
   static final double CLEAR_ACCEPT_THRESHOLD = 0.85;
 
-
   /** Overload for verdicts on a CANDIDATE's track, whose forced-corridor
    *  marker lives on the candidate rather than the engine field. */
   RoundTripQualityResult evaluateRoundTripGate(OsmTrack track, double searchRadius,
@@ -812,6 +765,5 @@ public final class RoundTripOrchestrator {
       ops.routingContext().getProfileName(), allowSamewayback, explicitViaMode,
       ops.roundTripFerriesAllowed());
   }
-
 
 }
