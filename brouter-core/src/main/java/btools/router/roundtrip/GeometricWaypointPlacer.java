@@ -17,14 +17,15 @@ import btools.util.CheapRuler;
  * merge, frontier-entry decoding, iso-asymmetry bearing selection, and the
  * envelope/isochrone waypoint placement paths. The circle fallback and the
  * isochrone expansion itself remain engine primitives behind
- * {@link RoundTripEngineOps}.
+ * {@link RoundTripEngineOps}; this class itself only logs through
+ * {@link EngineIO}.
  */
 public final class GeometricWaypointPlacer {
 
-  private final RoundTripEngineOps ops;
+  private final EngineIO io;
 
-  public GeometricWaypointPlacer(RoundTripEngineOps ops) {
-    this.ops = ops;
+  public GeometricWaypointPlacer(EngineIO io) {
+    this.io = io;
   }
 
   /** Reference road-geometry indirectness the geometric loop-radius calibration is tuned to. */
@@ -317,7 +318,7 @@ public final class GeometricWaypointPlacer {
     closing.name = "to_rt";
     waypoints.add(closing);
 
-    ops.logInfo("placeWaypointsFromIsochrone: " + selected.length + " waypoints"
+    io.logInfo("placeWaypointsFromIsochrone: " + selected.length + " waypoints"
       + " (" + roadNativeCount + " road-native, " + syntheticCount + " synthetic)"
       + ", baseRadius=" + (int) baseRadius + "m"
       + ", medianInd=" + String.format("%.2f", medianInd)
@@ -373,7 +374,7 @@ public final class GeometricWaypointPlacer {
     closing.name = "to_rt";
     waypoints.add(closing);
 
-    ops.logInfo("placeWaypointsFromEnvelope: " + selected.length + " waypoints, radius "
+    io.logInfo("placeWaypointsFromEnvelope: " + selected.length + " waypoints, radius "
       + (int) searchRadius + "m -> " + (int) adjustedRadius + "m (scale "
       + String.format("%.2f", adjustedRadius / searchRadius) + ")");
   }
