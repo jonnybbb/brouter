@@ -150,65 +150,34 @@ public final class LoopQualityMetrics {
    *  crossing (outbound leg vs return leg). */
   static final double SMALL_LOOP_MAX_ARC_METERS = 4000.0;
   /**
-   * Bound the O(n²) crossing scan by sampling the shape to at most this many points.
-   * MUST match {@link RoundTripQualityGate}'s MAX_SHAPE_SCAN_NODES — stride decimation
-   * FABRICATES crossings by chord-cutting curvy geometry (a clean 3,787-node Nice track
-   * once read 57 phantom crossings against gate count 0, driving needless mitigation).
-   */
-  private static final int CROSS_SCAN_MAX_NODES = 10000;
-
-  /**
    * Detect transverse self-intersections (X-crossings) and classify each by enclosed arc: a
    * crossing whose smaller enclosed sub-loop is short (≤ {@link #SMALL_LOOP_MAX_ARC_METERS}) is a
    * small detour loop/lasso; one enclosing most of the perimeter is a structural outbound-vs-return
-   * crossing. Same CCW segment-intersection test as
-   * {@link RoundTripQualityGate#countSelfIntersections} (keep in sync), with a sampling cap.
+   * crossing. The segment-pair phase runs through
+   * {@link RoundTripQualityGate#countSegmentPairCrossings} — the gate's grid-accelerated scan —
+   * so the report metric and the gate literally share one implementation, at full resolution
+   * for every track size (the historical sampling cap fabricated crossings by chord-cutting
+   * curves: a clean 3,787-node Nice track once read 57 phantom crossings against gate count 0).
    *
    * @return int[]{totalCrossings, smallLoopCrossings}
    */
   static int[] detectCrossings(List<OsmPathElement> nodes) {
-    int full = nodes.size();
-    if (full < 4) return new int[]{0, 0};
-    List<OsmPathElement> pts;
-    if (full <= CROSS_SCAN_MAX_NODES) {
-      pts = nodes;
-    } else {
-      pts = new ArrayList<>(CROSS_SCAN_MAX_NODES);
-      double step = (double) (full - 1) / (CROSS_SCAN_MAX_NODES - 1);
-      for (int k = 0; k < CROSS_SCAN_MAX_NODES; k++) {
-        int idx = (int) Math.round(k * step);
-        if (idx >= full) idx = full - 1;
-        pts.add(nodes.get(idx));
-      }
-    }
-    int n = pts.size();
+    int n = nodes.size();
+    if (n < 4) return new int[]{0, 0};
+    List<OsmPathElement> pts = nodes;
     double[] cum = new double[n];
     for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + pts.get(k - 1).calcDistance(pts.get(k));
     double perim = cum[n - 1];
-    int total = 0, smallLoop = 0;
     int ceiling = 64; // we only need counts; bound degenerate inputs
-    for (int i = 0; i < n - 1; i++) {
-      // Start/end-zone + bridge/tunnel exemptions, mirroring
-      // RoundTripQualityGate.countSelfIntersections (keep in sync): home-zone
-      // weave and vertically separated passes are not defects.
-      boolean aExempt = cum[i + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-        || cum[i] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-        || RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(i + 1));
-      for (int j = i + 2; j < n - 1; j++) {
-        if (i == 0 && j == n - 2) continue; // start≈end loop closure, not a crossing
-        if (aExempt
-          || cum[j + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-          || cum[j] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
-        if (segmentsCrossLocal(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1))) {
-          if (RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(j + 1))) continue;
-          total++;
-          double arc = cum[j] - cum[i];
-          double enclosed = Math.min(arc, perim - arc);
-          if (enclosed <= SMALL_LOOP_MAX_ARC_METERS) smallLoop++;
-          if (total > ceiling) return new int[]{total, smallLoop};
-        }
-      }
-    }
+    int[] smallLoopBox = new int[1];
+    int total = RoundTripQualityGate.countSegmentPairCrossings(pts, cum, perim, ceiling,
+      (i, j) -> {
+        double arc = cum[j] - cum[i];
+        double enclosed = Math.min(arc, perim - arc);
+        if (enclosed <= SMALL_LOOP_MAX_ARC_METERS) smallLoopBox[0]++;
+      });
+    int smallLoop = smallLoopBox[0];
+    if (total > ceiling) return new int[]{total, smallLoop};
     // Crossings AT a shared junction node — invisible to the CCW scan above
     // (its shared-endpoint exclusion), yet the dominant real-world case on a
     // road network: both passes ride through the same intersection. Same
@@ -249,54 +218,27 @@ public final class LoopQualityMetrics {
 
   /**
    * Like {@link #detectCrossings} but returns crossing LOCATIONS for map highlighting: one
-   * {@code {lon, lat, enclosedArcMeters}} per crossing, in degrees. Keep its two passes, sampling
-   * cap, closure exclusion and ceiling in sync with detectCrossings. Report/visualization only,
-   * and safe on simplified geometry — Douglas-Peucker removes points but does not move them, so
-   * positions survive even where the exact count differs.
+   * {@code {lon, lat, enclosedArcMeters}} per crossing, in degrees. Shares the gate's
+   * segment-pair scan (same exemptions and ceiling; the bridge check needs per-edge messages,
+   * so on simplified render-time geometry markers can over-show relative to the test-time
+   * count — counts stay authoritative). Report/visualization only.
    */
   public static List<double[]> crossingPoints(List<OsmPathElement> nodes) {
     List<double[]> out = new ArrayList<>();
-    int full = nodes == null ? 0 : nodes.size();
-    if (full < 4) return out;
-    List<OsmPathElement> pts;
-    if (full <= CROSS_SCAN_MAX_NODES) {
-      pts = nodes;
-    } else {
-      pts = new ArrayList<>(CROSS_SCAN_MAX_NODES);
-      double step = (double) (full - 1) / (CROSS_SCAN_MAX_NODES - 1);
-      for (int k = 0; k < CROSS_SCAN_MAX_NODES; k++) {
-        int idx = (int) Math.round(k * step);
-        if (idx >= full) idx = full - 1;
-        pts.add(nodes.get(idx));
-      }
-    }
-    int n = pts.size();
+    int n = nodes == null ? 0 : nodes.size();
+    if (n < 4) return out;
+    List<OsmPathElement> pts = nodes;
     double[] cum = new double[n];
     for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + pts.get(k - 1).calcDistance(pts.get(k));
     double perim = cum[n - 1];
     int ceiling = 64;
-    for (int i = 0; i < n - 1; i++) {
-      // Same exemptions as detectCrossings/the gate count: home-zone weave and
-      // bridge/tunnel passes. The bridge check needs per-edge messages, so on
-      // simplified render-time geometry (no messages) markers can over-show
-      // relative to the test-time count — counts stay authoritative.
-      boolean aExempt = cum[i + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-        || cum[i] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-        || RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(i + 1));
-      for (int j = i + 2; j < n - 1; j++) {
-        if (i == 0 && j == n - 2) continue;
-        if (aExempt
-          || cum[j + 1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-          || cum[j] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
-        if (segmentsCrossLocal(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1))) {
-          if (RoundTripQualityGate.bridgeOrTunnelEdge(pts.get(j + 1))) continue;
-          double arc = cum[j] - cum[i];
-          double enclosed = Math.min(arc, perim - arc);
-          out.add(intersectionLonLat(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1), enclosed));
-          if (out.size() > ceiling) return out;
-        }
-      }
-    }
+    RoundTripQualityGate.countSegmentPairCrossings(pts, cum, perim, ceiling,
+      (i, j) -> {
+        double arc = cum[j] - cum[i];
+        double enclosed = Math.min(arc, perim - arc);
+        out.add(intersectionLonLat(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1), enclosed));
+      });
+    if (out.size() > ceiling) return out;
     Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
     for (int k = 1; k < n - 1; k++) {
       long id = pts.get(k).getIdFromPos();
@@ -335,30 +277,6 @@ public final class LoopQualityMetrics {
     double lon = (x1 + t * dx1) / 1e6 - 180.0;
     double lat = (y1 + t * dy1) / 1e6 - 90.0;
     return new double[]{lon, lat, enclosed};
-  }
-
-  private static boolean segmentsCrossLocal(OsmPathElement p1, OsmPathElement p2,
-                                            OsmPathElement p3, OsmPathElement p4) {
-    if (samePointLocal(p1, p3) || samePointLocal(p1, p4)
-        || samePointLocal(p2, p3) || samePointLocal(p2, p4)) return false;
-    return oppLocal(ccwLocal(p1, p3, p4), ccwLocal(p2, p3, p4))
-        && oppLocal(ccwLocal(p1, p2, p3), ccwLocal(p1, p2, p4));
-  }
-
-  private static boolean samePointLocal(OsmPathElement a, OsmPathElement b) {
-    return a.getILon() == b.getILon() && a.getILat() == b.getILat();
-  }
-
-  private static boolean oppLocal(long a, long b) {
-    return (a > 0 && b < 0) || (a < 0 && b > 0);
-  }
-
-  private static long ccwLocal(OsmPathElement a, OsmPathElement b, OsmPathElement c) {
-    long dx1 = (long) b.getILon() - a.getILon();
-    long dy1 = (long) b.getILat() - a.getILat();
-    long dx2 = (long) c.getILon() - a.getILon();
-    long dy2 = (long) c.getILat() - a.getILat();
-    return dx1 * dy2 - dy1 * dx2;
   }
 
   /**

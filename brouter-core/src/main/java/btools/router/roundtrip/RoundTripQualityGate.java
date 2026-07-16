@@ -53,16 +53,6 @@ public final class RoundTripQualityGate {
   static final int MAX_SELF_INTERSECTIONS = 5;
   /** Maximum hairpin-like turns allowed before a route is considered chaotic. */
   static final int MAX_HAIRPIN_TURNS = 20;
-  /**
-   * Node cap above which the self-intersection scan falls back to stride
-   * decimation — a degenerate-input guard only (a 100km loop is ~3300 nodes,
-   * 250km ~8000, and the bounded O(n²) {@link #countSelfIntersections} scan runs
-   * sub-second at this size). Decimation is NOT shape-preserving: stride sampling
-   * replaces curves with chords, fabricating crossings on switchback tracks
-   * (measured gate=21 where the full count is 0). So realistic loops must scan at
-   * full resolution; decimate only as a last-resort cost guard.
-   */
-  private static final int MAX_SHAPE_SCAN_NODES = 10000;
   /** Ignore tiny digitization jitter when counting U-turns. */
   private static final int MIN_HAIRPIN_SEGMENT_METERS = 25;
 
@@ -463,7 +453,11 @@ public final class RoundTripQualityGate {
 
   public static int countSelfIntersections(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 4) return 0;
-    List<OsmPathElement> nodes = sampledShapeNodes(track.nodes);
+    // Full resolution at every size: the grid segment-pair scan and the hashed
+    // node-revisit scan are near-linear, so the historical stride-decimation
+    // guard (which fabricated crossings by chord-cutting curves — measured
+    // gate=21 where the full count is 0) is no longer needed.
+    List<OsmPathElement> nodes = track.nodes;
     int n = nodes.size();
     double[] cum = new double[n];
     for (int k = 1; k < n; k++) {
@@ -514,6 +508,16 @@ public final class RoundTripQualityGate {
   }
 
   /**
+   * Per-crossing callback for the segment-pair scans: {@code i}/{@code j} are the
+   * first-node indices of the two crossing segments. Fired exactly once per
+   * counted crossing (including the one that trips the ceiling); the grid and
+   * brute scans fire the same SET of pairs, though not in the same order.
+   */
+  interface SegmentCrossingVisitor {
+    void crossing(int i, int j);
+  }
+
+  /**
    * Count crossing segment pairs (j >= i+2, both outside the start/end exemption
    * windows and not bridge/tunnel; closure pair (0, n-2) excluded). Dispatches to
    * a spatial-hash grid above {@link #GRID_MIN_SEGMENTS} segments; the grid yields
@@ -523,14 +527,22 @@ public final class RoundTripQualityGate {
    */
   static int countSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
                                        double perim, int absoluteCeiling) {
+    return countSegmentPairCrossings(nodes, cum, perim, absoluteCeiling, null);
+  }
+
+  /** As above, with a per-crossing visitor — the scorer path's arc classification hook. */
+  static int countSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
+                                       double perim, int absoluteCeiling,
+                                       SegmentCrossingVisitor visitor) {
     return nodes.size() - 1 >= GRID_MIN_SEGMENTS
-      ? gridSegmentPairCrossings(nodes, cum, perim, absoluteCeiling)
-      : bruteForceSegmentPairCrossings(nodes, cum, perim, absoluteCeiling);
+      ? gridSegmentPairCrossings(nodes, cum, perim, absoluteCeiling, visitor)
+      : bruteForceSegmentPairCrossings(nodes, cum, perim, absoluteCeiling, visitor);
   }
 
   /** The historical all-pairs scan, kept for small inputs and as the equivalence-test oracle. */
   static int bruteForceSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
-                                            double perim, int absoluteCeiling) {
+                                            double perim, int absoluteCeiling,
+                                            SegmentCrossingVisitor visitor) {
     int n = nodes.size();
     int crossings = 0;
     for (int i = 0; i < n - 1; i++) {
@@ -549,6 +561,7 @@ public final class RoundTripQualityGate {
         if (segmentsCross(a1, a2, nodes.get(j), nodes.get(j + 1))) {
           if (bridgeOrTunnelEdge(nodes.get(j + 1))) continue; // vertically separated
           crossings++;
+          if (visitor != null) visitor.crossing(i, j);
           if (crossings > absoluteCeiling) return crossings;
         }
       }
@@ -557,7 +570,8 @@ public final class RoundTripQualityGate {
   }
 
   private static int gridSegmentPairCrossings(List<OsmPathElement> nodes, double[] cum,
-                                              double perim, int absoluteCeiling) {
+                                              double perim, int absoluteCeiling,
+                                              SegmentCrossingVisitor visitor) {
     int segCount = nodes.size() - 1;
     // A segment flagged here can never be part of a counted pair: the brute
     // scan skips exempt i rows and exempt j columns, and a bridge/tunnel on
@@ -617,6 +631,7 @@ public final class RoundTripQualityGate {
             if (i == 0 && j == segCount - 1) continue;
             if (segmentsCross(a1, a2, nodes.get(j), nodes.get(j + 1))) {
               crossings++;
+              if (visitor != null) visitor.crossing(i, j);
               if (crossings > absoluteCeiling) return crossings;
             }
           }
@@ -851,18 +866,6 @@ public final class RoundTripQualityGate {
       if (crossings >= MAX_SELF_INTERSECTIONS * 4) break;
     }
     return crossings;
-  }
-
-  private static List<OsmPathElement> sampledShapeNodes(List<OsmPathElement> nodes) {
-    if (nodes.size() <= MAX_SHAPE_SCAN_NODES) return nodes;
-    List<OsmPathElement> sampled = new ArrayList<>(MAX_SHAPE_SCAN_NODES);
-    double step = (double) (nodes.size() - 1) / (MAX_SHAPE_SCAN_NODES - 1);
-    for (int i = 0; i < MAX_SHAPE_SCAN_NODES; i++) {
-      int idx = (int) Math.round(i * step);
-      if (idx >= nodes.size()) idx = nodes.size() - 1;
-      sampled.add(nodes.get(idx));
-    }
-    return sampled;
   }
 
   private static boolean segmentsCross(OsmPathElement p1, OsmPathElement p2,
