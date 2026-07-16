@@ -27,6 +27,9 @@ public final class RoundTripRuntimeHints {
     this.searchRadius = searchRadius;
     this.requestDeadline = requestDeadline;
     this.explicitViaRoundTrip = explicitViaRoundTrip;
-    this.greedyLegTracks = greedyLegTracks;
+    // Defensive copy: the snapshot must not change when the caller reuses its
+    // array (the tracks themselves stay shared — the engine reads them only
+    // as per-leg cost-cutting guides).
+    this.greedyLegTracks = greedyLegTracks == null ? null : greedyLegTracks.clone();
   }
 }

@@ -436,7 +436,29 @@ public final class RoundTripQualityGate {
       return false;
     }
     String tags = edgeEnd.message.getWayKeyValues();
-    return tags.contains("bridge=") || tags.contains("tunnel=");
+    return hasAffirmativeTag(tags, "bridge=") || hasAffirmativeTag(tags, "tunnel=");
+  }
+
+  /**
+   * True when the space-separated {@code key=value} tag string carries the key
+   * with an affirmative value — an explicit {@code bridge=no}/{@code tunnel=no}
+   * must not exempt an at-grade crossing.
+   */
+  private static boolean hasAffirmativeTag(String tags, String keyEq) {
+    int from = 0;
+    while (true) {
+      int i = tags.indexOf(keyEq, from);
+      if (i < 0) {
+        return false;
+      }
+      if (i == 0 || tags.charAt(i - 1) == ' ') {
+        int valueStart = i + keyEq.length();
+        int valueEnd = tags.indexOf(' ', valueStart);
+        String value = valueEnd < 0 ? tags.substring(valueStart) : tags.substring(valueStart, valueEnd);
+        return !"no".equals(value) && !"false".equals(value);
+      }
+      from = i + 1;
+    }
   }
 
   public static int countSelfIntersections(OsmTrack track) {

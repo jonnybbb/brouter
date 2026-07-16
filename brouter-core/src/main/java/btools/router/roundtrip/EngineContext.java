@@ -8,9 +8,11 @@ import btools.router.OsmTrack;
 import btools.router.RoutingContext;
 
 /**
- * Engine seam role: read-only view of the request plus stateless engine
- * primitives. Nothing here mutates the request fields behind
- * {@link RoundTripRequestState}.
+ * Engine seam role: read-only view of the ROUND-TRIP REQUEST FIELDS behind
+ * {@link RoundTripRequestState} — nothing here mutates those. The
+ * {@link #routingContext()} it hands out is the request's live configuration
+ * object, deliberately shared: tiers do write general routing knobs through
+ * it (waypoint catching range, dynamic-distance mode).
  */
 public interface EngineContext {
 

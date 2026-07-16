@@ -144,13 +144,15 @@ public class GreedyRoundTripPlannerTest {
 
   @Test
   public void legacyRoundTripIsochroneParamMapsToIsochrone() {
-    // Drive the real parser: roundTripIsochrone=1 promotes AUTO -> ISOCHRONE.
+    // The parser only stores the boolean; the AUTO -> ISOCHRONE promotion is
+    // the orchestrator's, applied once at ladder resolution, so the outcome
+    // cannot depend on the request parameters' (map-)iteration order.
     RoutingContext rctx = new RoutingContext();
     Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
     Map<String, String> params = new LinkedHashMap<>();
     params.put("roundTripIsochrone", "1");
     new RoutingParamCollector().setParams(rctx, null, params);
-    Assert.assertEquals(RoundTripAlgorithm.ISOCHRONE, rctx.roundTripAlgorithm);
+    Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
     Assert.assertTrue(rctx.roundTripIsochrone);
   }
 

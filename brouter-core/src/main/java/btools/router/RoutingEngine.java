@@ -1093,7 +1093,10 @@ public class RoutingEngine extends Thread {
 
       @Override
       public void addLinksProcessed(long links) {
-        linksProcessed += links;
+        // Delegate to the synchronized aggregator: in speculative AUTO mode a
+        // child can aggregate concurrently with the request thread, and an
+        // unsynchronized += loses one side's whole count.
+        RoutingEngine.this.addLinksProcessed((int) links);
       }
 
       @Override

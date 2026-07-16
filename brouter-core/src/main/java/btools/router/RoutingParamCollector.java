@@ -266,10 +266,10 @@ public class RoutingParamCollector {
         } else if (key.equals("roundTripIsochrone")) {
           // roundTripIsochrone=1 is a shortcut for roundTripAlgorithm=ISOCHRONE.
           // An explicit roundTripAlgorithm always wins, regardless of parameter order.
+          // Only the boolean is stored here: the AUTO->ISOCHRONE shortcut is
+          // resolved once in the orchestrator, so the outcome cannot depend on
+          // the (map-)iteration order of the request parameters.
           rctx.roundTripIsochrone = (Integer.parseInt(value) == 1);
-          if (rctx.roundTripIsochrone && rctx.roundTripAlgorithm == RoundTripAlgorithm.AUTO) {
-            rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
-          }
         } else if (key.equals("alternativeidx")) {
           rctx.setAlternativeIdx(Integer.parseInt(value));
         } else if (key.equals("turnInstructionMode")) {

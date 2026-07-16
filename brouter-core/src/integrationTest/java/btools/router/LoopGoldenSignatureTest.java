@@ -34,16 +34,17 @@ import btools.router.roundtrip.RoundTripAlgorithm;
  * <h3>Running</h3>
  * <pre>
  *   # verify (default action): assert signatures match the committed golden
- *   ./gradlew :brouter-core:test --tests '*LoopGoldenSignatureTest' -Dgolden.tests=true
+ *   ./gradlew :brouter-core:integrationTest --tests '*LoopGoldenSignatureTest' -Dgolden.tests=true
  *
  *   # (re)capture the golden baseline — only on KNOWN-GOOD code
- *   ./gradlew :brouter-core:test --tests '*LoopGoldenSignatureTest' \
+ *   ./gradlew :brouter-core:integrationTest --tests '*LoopGoldenSignatureTest' \
  *       -Dgolden.tests=true -Dgolden.write=true
  * </pre>
- * The suite is opt-in ({@code -Dgolden.tests=true}) because it routes real
- * loops and needs the {@code segments4} tiles present on disk; it
- * {@link Assume}-skips when the property is unset or tiles are missing, so the
- * standard build is unaffected.
+ * The class lives in the {@code integrationTest} source set (the plain
+ * {@code test} task cannot discover it); {@code -Dgolden.tests=true} opts in
+ * because it routes real loops, and it {@link Assume}-skips when the property
+ * is unset or tiles cannot be fetched, so the standard matrix run is
+ * unaffected.
  */
 public class LoopGoldenSignatureTest {
 
@@ -94,6 +95,10 @@ public class LoopGoldenSignatureTest {
 
     Map<String, String> actual = new TreeMap<>();
     for (Scenario s : SCENARIOS) {
+      // Fetch through the shared on-demand fetcher (assumption-skips when the
+      // tile cannot be provided) instead of racing other parallel test forks
+      // for whatever partial cache happens to exist.
+      LoopTestSegments.ensureAvailable(segDir, s.region.segmentFile);
       File tile = new File(segDir, s.region.segmentFile);
       File profileFile = new File(projectDir, "misc/profiles2/" + s.profile + ".brf");
       if (!tile.exists() || !profileFile.exists()) {

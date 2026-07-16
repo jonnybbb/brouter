@@ -385,7 +385,9 @@ public class RouteServer extends Thread implements Comparable<RouteServer> {
   }
 
   /**
-   * Resolve the request's CPU-time budget (ms). The {@code maxRunningTime}
+   * Resolve the request's wall-clock budget (ms) — enforcement compares
+   * elapsed time, so a request that waits behind other runnable routing
+   * threads still expires. The {@code maxRunningTime}
    * system property is the operator-configured CEILING (default 60s); a
    * request may ask for LESS, or for MORE up to that ceiling, via the
    * {@code timeout} URL parameter (seconds). This lets a client that got a

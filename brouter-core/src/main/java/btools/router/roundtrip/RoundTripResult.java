@@ -10,7 +10,10 @@ import java.util.List;
 /**
  * Mutable result of a round-trip planning attempt (GREEDY / ISO_GREEDY), read
  * by {@code RoutingEngine}. Carries the chosen {@link OsmTrack}, loop
- * waypoints, summary metrics, and diagnostic telemetry. Telemetry fields are
+ * waypoints, summary metrics, and diagnostic telemetry. NOT a defensive-copy
+ * value object: getters return the live lists and the telemetry setters stay
+ * public for the planner — treat an instance you did not produce as
+ * read-only by convention. Telemetry fields are
  * sentinel-valued (NaN / -1 / false) when their producing path did not run, so
  * a reader can tell "not applied" from a real measurement. Treated as
  * read-only downstream; setters exist only for staged population.

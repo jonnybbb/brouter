@@ -274,7 +274,7 @@ public final class RouteChoiceScore {
     double distScore = distDelta <= 0.15 ? 1.0 : 1.0 - Math.min(1.0, (distDelta - 0.15) / 0.35);
     double distContrib = W_DISTANCE * distScore;
     reasons.add(new Reason("distance ratio " + fmt(m.getDistanceRatio())
-      + " (preferred band [0.5, 1.5])", W_DISTANCE, m.getDistanceRatio(), distContrib));
+      + " (full score within ±15%, zero outside [0.5, 1.5])", W_DISTANCE, m.getDistanceRatio(), distContrib));
     total += distContrib;
 
     // 2. Reuse. 1.0 at 0%, 0.0 at ≥ 50% reuse.

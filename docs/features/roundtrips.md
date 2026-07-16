@@ -26,7 +26,7 @@ You control the loop with a few request parameters:
 | `direction` / `heading` | compass bearing the loop heads out toward (`heading` additionally forces it for the opening leg); without it the start bearing is drawn randomly, so fix it whenever the loop should be reproducible. Same keys as upstream point-to-point routing |
 | `alternativeidx` | deterministic loop variety seed (`0` = default loop, any value ≥ 0 gives a reproducible variant — see [note below](#loop-quality)) |
 | `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing |
-| `roundTripAlgorithm` | the speed/quality ladder `FAST` (quick preview), `BALANCED` (hard ~8 s budget — the recommended interactive/mobile default), `AUTO` (default; effort resolved from request context), `QUALITY` (max effort — both planners always, wider search, doubled budget); the internal engine names `WAYPOINT`, `GREEDY`, `ISO_GREEDY`, `ISOCHRONE` are also accepted for forced selection — see below |
+| `roundTripAlgorithm` | the speed/quality ladder `FAST` (quick preview), `BALANCED` (~8 s per slice, worst case two slices — the recommended interactive/mobile default), `AUTO` (default; effort resolved from request context), `QUALITY` (max effort — both planners always, wider search, doubled budget); the internal engine names `WAYPOINT`, `GREEDY`, `ISO_GREEDY`, `ISOCHRONE` are also accepted for forced selection — see below |
 | `roundTripStrictQuality` | `1` hard-rejects loops that fail the quality checks; default `0` is lenient — a failing loop is still returned, tagged with a `Warning:` advisory (see [Loop quality](#loop-quality)) |
 | `allowSamewayback` | `1` lets the return leg reuse ways from the outward leg; default `0` keeps the way out and the way back distinct |
 
@@ -51,11 +51,12 @@ closed loop. Four modes are recommended, forming a speed/quality ladder:
   draw) — the same arc geometry as the pre-1.7.9 round-trip; it never
   encircles the start as the primary shape. When the lobe cannot be placed or
   routed (sparse terrain), it is automatically retried as an encircling ring.
-- **BALANCED** — one graph-aware planning run under a hard ~8 s wall-clock
-  budget with a reduced per-step search width, no retry ladders beyond the
-  budget, and a geometric fallback when no acceptable loop closes (planner
-  produced nothing, or its best effort fails the quality gate outright).
-  Returns the best loop it found inside the budget — with a `Warning:`
+- **BALANCED** — one graph-aware planning run under a ~8 s wall-clock slice
+  with a reduced per-step search width, no retry ladders beyond the budget,
+  and a geometric fallback under a **fresh ~8 s slice** when no acceptable
+  loop closes (planner produced nothing, or its best effort fails the quality
+  gate outright) — so the worst case is two slices, ~16 s, and the common case
+  one. Returns the best loop it found inside the budget — with a `Warning:`
   advisory when quality is degraded. This is the recommended default for interactive use on phones:
   predictable latency, visibly better loops than FAST. (Measured on the test
   machine: ~40% below AUTO's time on a 180 km request at nearly identical
@@ -144,6 +145,11 @@ The per-plan budget scales with the requested loop length: the standard
 (and an operator ceiling that permits it); otherwise the request is rejected
 with a message pointing at the `timeout` / `maxRunningTime` knob rather than
 shipping a guaranteed-degraded loop.
+
+The budget is enforced with **minimum-slice floors**: a nearly-spent request
+still funds exactly one bounded attempt (a ~3 s planner rung, a ~5 s AUTO
+child) instead of a guaranteed instant timeout, so the effective ceiling can
+overshoot by that floor — a deliberate, bounded overrun, not an unbounded one.
 
 Because a plan that exhausts its budget returns its best gate-graded loop
 (possibly a disclosed distance-miss) rather than an error, a client that gets a
