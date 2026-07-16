@@ -22,7 +22,7 @@ You control the loop with a few request parameters:
 | :----- | :----- |
 | `roundTripLength` | desired total loop length in meters (takes precedence over `roundTripDistance`) |
 | `roundTripDistance` | search radius in meters; the loop length is roughly `2π × radius` |
-| `roundTripPoints` | accepted for backward compatibility but ignored — the planners derive their own waypoint count |
+| `roundTripPoints` | waypoint count for the geometric placements (`FAST`/`WAYPOINT`/`ISOCHRONE`, and the `BALANCED` fallback); accepted range 3–20 (out-of-range values fall back to 5). The greedy planners derive their own count and ignore it |
 | `startDirection` / `heading` | compass bearing to bias the direction the loop heads out; without it the start bearing is drawn randomly, so fix it whenever the loop should be reproducible |
 | `alternativeidx` | deterministic loop variety seed (`0` = default loop, any value ≥ 0 gives a reproducible variant — see [note below](#loop-quality)) |
 | `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing |
@@ -86,12 +86,17 @@ logs the decision (`round trip effort: …`):
   Length-specific tuning lands as evidence accumulates; the >200 km opt-in
   gate (raise the timeout explicitly) is unchanged.
 
-Under the hood the competition runs two iterative strategies — `GREEDY` (radial
+Under the hood the competition has two iterative strategies — `GREEDY` (radial
 candidate placement) and `ISO_GREEDY` (candidates drawn from a bounded isochrone
-expansion) — and adopts whichever scores better. Measured across the test matrix
-they cost the same (median ~3 s) and score almost identically, so they are *not*
-exposed as separate speed/quality tiers; the competition just picks the better
-one per request. You can still force a specific planner by name for testing or
+expansion). AUTO runs `ISO_GREEDY` first and adds a plain-`GREEDY` comparison
+run only when the ISO result does not clearly win (an ISO_GREEDY run that
+already fell back to graph-native candidates internally has used the same
+source truth, so a second run would be duplicate work); under `QUALITY` both
+always run. The legacy `WAYPOINT`/probe generator enters only as a separately
+scored fallback when greedy produces no accepted route. Measured across the
+test matrix the two planners cost the same (median ~3 s) and score almost
+identically, so they are *not* exposed as separate speed/quality tiers.
+You can still force a specific planner by name for testing or
 comparison: the parser accepts `WAYPOINT` (= `FAST`), `GREEDY`, `ISO_GREEDY`, and
 `ISOCHRONE` (direct isochrone-frontier placement, also selectable with
 `roundTripIsochrone=1`). Matching is case-insensitive; any unrecognised value falls back to `AUTO`.
@@ -145,15 +150,17 @@ diagnostic so operators can see how often the budget actually binds.
 ### Behaviour under load
 
 Routing is CPU-bound, and the wall-clock budget only translates into useful
-search if the request actually gets a core. In `AUTO` mode the ISO_GREEDY and
-GREEDY candidates run **in parallel** on an idle box for lower latency, but that
-doubles the CPU-bound threads per request — so the parallelism is gated by a
-global non-blocking permit pool sized to the spare cores
-(`-DroundTripParallelAutoPermits`, default `cores - 1`). When the pool is
-saturated (busy multi-core box, or a single-core box) the child is **not**
-spawned and GREEDY runs sequentially on the request's own core, bounding the
-extra CPU load instead of oversubscribing it. Set the property to `0` to force
-fully-sequential AUTO competition.
+search if the request actually gets a core. `AUTO` runs its candidates
+**sequentially by default** (ISO_GREEDY first, plain GREEDY only when still
+needed — see above), so one request occupies one core. Deployments that prefer
+lower single-request latency over duplicate CPU work can opt into speculative
+parallelism with `-DroundTripSpeculativeAutoGreedy=true`: the GREEDY child then
+starts in parallel, gated by a global non-blocking permit pool sized to the
+spare cores (`-DroundTripParallelAutoPermits`, default `cores - 1`). When the
+pool is saturated (busy multi-core box, or a single-core box) the child is
+**not** spawned and the run stays sequential, bounding the extra CPU load
+instead of oversubscribing it; setting the permit property to `0` keeps even
+the opt-in mode fully sequential.
 
 Note this only bounds the *round-trip parallelism*'s extra threads. The
 server's overall concurrency is governed separately by the `maxthreads` launch
