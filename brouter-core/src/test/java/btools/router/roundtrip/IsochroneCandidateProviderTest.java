@@ -1,6 +1,5 @@
 package btools.router.roundtrip;
 
-import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -341,40 +340,56 @@ public class IsochroneCandidateProviderTest {
     for (int b : order) seen.add(b);
     assertEquals("every bucket visited exactly once", 36, seen.size());
     assertEquals("first visit is startBucket", 0, order[0]);
-    // After visiting startBucket=0, next two should be ±1 (right then left).
-    assertEquals("second visit goes right", 1, order[1]);
-    assertEquals("third visit goes left (wrap)", 35, order[2]);
   }
 
   @Test
   public void startAnchoredStrideOrderRespectsArbitraryStart() {
-    int[] order = IsochroneCandidateProvider.startAnchoredStrideOrder(18, 36);
-    assertEquals(18, order[0]);
-    assertEquals("right of 18 is 19", 19, order[1]);
-    assertEquals("left of 18 is 17", 17, order[2]);
-    assertEquals("furthest is 36 - it should appear last", 0, order[order.length - 1]);
+    // The order is the start-shifted image of the from-zero order — the start
+    // bucket anchors the sequence, the stride pattern is invariant.
+    int[] fromZero = IsochroneCandidateProvider.startAnchoredStrideOrder(0, 36);
+    int[] from18 = IsochroneCandidateProvider.startAnchoredStrideOrder(18, 36);
+    assertEquals(18, from18[0]);
+    for (int i = 0; i < 36; i++) {
+      assertEquals("shift-invariant at index " + i, (fromZero[i] + 18) % 36, from18[i]);
+    }
   }
 
   @Test
-  public void startAnchoredStrideOrderMatchesJavadocExample() {
-    // 4 buckets from 0: right (1), left (3), then the antipode (2) once → [0,1,3,2].
-    assertArrayEquals(new int[]{0, 1, 3, 2},
-      IsochroneCandidateProvider.startAnchoredStrideOrder(0, 4));
+  public void startAnchoredStrideOrderPrefixNeverDropsAContiguousWedge() {
+    // The pre-fix adjacent-alternating order filled a 24-candidate cap with
+    // the contiguous band s-11..s+12 and silently dropped one contiguous 120
+    // degree wedge opposite the start (Codex review C6.1). Every prefix of the
+    // coprime-stride order must spread instead: selecting 24 of 36 buckets may
+    // leave no run of more than 2 consecutive dropped buckets.
+    int[] order = IsochroneCandidateProvider.startAnchoredStrideOrder(0, 36);
+    boolean[] kept = new boolean[36];
+    for (int i = 0; i < 24; i++) {
+      kept[order[i]] = true;
+    }
+    int worstRun = 0;
+    int run = 0;
+    for (int i = 0; i < 72; i++) { // scan twice so a run wrapping 0 is seen whole
+      if (!kept[i % 36]) {
+        run++;
+        worstRun = Math.max(worstRun, run);
+      } else {
+        run = 0;
+      }
+    }
+    assertTrue("24-of-36 prefix must not leave a contiguous wedge (worst dropped run "
+      + worstRun + " buckets)", worstRun <= 2);
   }
 
   @Test
-  public void startAnchoredStrideOrderNonZeroStartEmitsAntipodeOnce() {
-    // From bucket 2 of 4: right (3), left (1), antipode (0) once → [2,3,1,0].
-    assertArrayEquals(new int[]{2, 3, 1, 0},
-      IsochroneCandidateProvider.startAnchoredStrideOrder(2, 4));
-  }
-
-  @Test
-  public void startAnchoredStrideOrderOddTotalHasNoAntipodeBranch() {
-    // Odd bucket count: right and left never coincide, so the order is a pure
-    // right/left interleave with no single-emit antipode step → [0,1,4,2,3].
-    assertArrayEquals(new int[]{0, 1, 4, 2, 3},
-      IsochroneCandidateProvider.startAnchoredStrideOrder(0, 5));
+  public void startAnchoredStrideOrderStrideIsCoprime() {
+    // A stride sharing a factor with the bucket count would visit a subset
+    // forever; the constructor must fall back to a coprime stride.
+    for (int buckets : new int[]{4, 5, 12, 36}) {
+      int[] order = IsochroneCandidateProvider.startAnchoredStrideOrder(0, buckets);
+      Set<Integer> seen = new HashSet<>();
+      for (int b : order) seen.add(b);
+      assertEquals("all " + buckets + " buckets visited", buckets, seen.size());
+    }
   }
 
   // ----- Root cause of the sparse-network (gravel) direction-collapse -----

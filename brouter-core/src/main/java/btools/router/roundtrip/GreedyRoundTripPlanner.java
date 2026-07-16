@@ -140,13 +140,18 @@ public class GreedyRoundTripPlanner {
                                  int curLon, int curLat, int cpLon, int cpLat,
                                  int subRouteCount) {
     if (CheapRuler.distance(sLon, sLat, ppLon, ppLat) < 500) return 0; // prevPrev ≈ start
-    double aPP = CheapAngleMeter.getDirection(sLon, sLat, ppLon, ppLat);
-    double aP = CheapAngleMeter.getDirection(sLon, sLat, curLon, curLat);
+    // cos(lat)-scaled bearings: the increments are judged against the TRUE
+    // angular target 360/subRouteCount, and raw integer angles are non-linear
+    // in true angle (an even true sweep reads uneven raw increments — ±0.3
+    // penalty units at 50°N depending on where the loop sits). Mutually-raw
+    // angles are NOT self-consistent here because the target is true-geometry.
+    double aPP = CheapRuler.getScaledBearing(sLon, sLat, ppLon, ppLat);
+    double aP = CheapRuler.getScaledBearing(sLon, sLat, curLon, curLat);
     double established = signedAngleDelta(aPP, aP);
     if (Math.abs(established) < 5.0) return 0; // rotation not clearly established
     double rot = Math.signum(established);
     double target = rot * (360.0 / Math.max(2, subRouteCount));
-    double aC = CheapAngleMeter.getDirection(sLon, sLat, cpLon, cpLat);
+    double aC = CheapRuler.getScaledBearing(sLon, sLat, cpLon, cpLat);
     double inc = signedAngleDelta(aP, aC);
     double dev = (inc - target) / Math.abs(target);
     return Math.min(4.0, dev * dev);
@@ -1073,8 +1078,8 @@ public class GreedyRoundTripPlanner {
         // cp.bearing (graph-native and isochrone providers both set it
         // via CheapRuler.getScaledBearing). The raw
         // CheapAngleMeter.getDirection would distort the kink angle by ~10-15° off
-        // the equator. (loopSweepPenalty intentionally uses getDirection — it is
-        // self-consistent because it derives all its angles from that one call.)
+        // the equator. (loopSweepPenalty uses the same scaled bearings — its
+        // increments are judged against the true-geometry 360/N target.)
         double prevLegBearing = prevIlon >= 0
           ? CheapRuler.getScaledBearing(prevIlon, prevIlat, currentIlon, currentIlat)
           : Double.NaN;

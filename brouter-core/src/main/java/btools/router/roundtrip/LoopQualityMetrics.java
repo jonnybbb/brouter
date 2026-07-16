@@ -633,7 +633,9 @@ public final class LoopQualityMetrics {
     }
     if (maxDist == 0) return 0.0;
 
-    double actualDirection = CheapAngleMeter.getDirection(
+    // cos(lat)-scaled bearing: the requested direction is a true compass
+    // bearing, and the raw integer-delta angle is off by up to ~12° at 50°N.
+    double actualDirection = CheapRuler.getScaledBearing(
       first.getILon(), first.getILat(),
       farthest.getILon(), farthest.getILat());
 

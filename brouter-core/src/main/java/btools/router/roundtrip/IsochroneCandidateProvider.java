@@ -209,28 +209,37 @@ public final class IsochroneCandidateProvider implements RoundTripCandidateProvi
   }
 
   /**
-   * Visit buckets in an order that starts at {@code startBucket} and spreads
-   * outward, alternating sides — for 4 buckets starting at 0: [0, 1, 3, 2].
-   * This guarantees the first {@code k} entries cover the full circle as evenly
-   * as possible no matter what k is (subject to k ≤ total).
+   * Visit buckets starting at {@code startBucket} in a coprime-stride order,
+   * so EVERY prefix of the sequence is a near-uniform spread over the full
+   * circle. That is what makes the pool cap safe: with 36 occupied buckets
+   * and a 24-candidate cap, the former adjacent-alternating order
+   * ([s, s+1, s-1, s+2, ...]) filled the cap with the contiguous band
+   * s-11..s+12 and silently dropped one contiguous 120° wedge opposite the
+   * start — exactly the far-side directions a loop's apex needs. A stride
+   * coprime to the bucket count visits all buckets and spreads any prefix.
    */
   static int[] startAnchoredStrideOrder(int startBucket, int totalBuckets) {
+    // Near totalBuckets/φ² and coprime to the bucket count (13 for the
+    // production 36) — the golden-ratio choice that keeps every prefix
+    // low-discrepancy. Fall back to 1 only for degenerate bucket counts.
+    int stride = Math.max(1, (int) Math.round(totalBuckets * 0.382));
+    while (stride > 1 && gcd(stride, totalBuckets) != 1) {
+      stride--;
+    }
     int[] order = new int[totalBuckets];
-    order[0] = startBucket;
-    int idx = 1;
-    for (int offset = 1; offset < totalBuckets && idx < totalBuckets; offset++) {
-      int rightBucket = (startBucket + offset) % totalBuckets;
-      int leftBucket = (startBucket - offset + totalBuckets) % totalBuckets;
-      if (rightBucket == leftBucket) {
-        // Diametrically opposite — emit only once.
-        order[idx++] = rightBucket;
-      } else {
-        // Right side first so the user-direction quadrant is favoured slightly.
-        if (idx < totalBuckets) order[idx++] = rightBucket;
-        if (idx < totalBuckets) order[idx++] = leftBucket;
-      }
+    for (int i = 0; i < totalBuckets; i++) {
+      order[i] = (startBucket + i * stride) % totalBuckets;
     }
     return order;
+  }
+
+  private static int gcd(int a, int b) {
+    while (b != 0) {
+      int t = a % b;
+      a = b;
+      b = t;
+    }
+    return a;
   }
 
   /** Size of the filtered candidate pool. Used by callers to decide whether to fall back. */

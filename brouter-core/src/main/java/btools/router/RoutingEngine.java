@@ -3811,7 +3811,7 @@ public class RoutingEngine extends Thread {
    * cannot stop them). Thread-safe; hooks must be idempotent and fast
    * (typically {@code child::terminate}).
    */
-  private final java.util.concurrent.CopyOnWriteArrayList<Runnable> terminationHooks =
+  private final List<Runnable> terminationHooks =
     new java.util.concurrent.CopyOnWriteArrayList<>();
 
   public void terminate() {

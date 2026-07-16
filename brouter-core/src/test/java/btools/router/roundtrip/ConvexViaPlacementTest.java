@@ -5,6 +5,8 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import btools.util.CheapRuler;
+
 /**
  * Lightweight unit test for the convex via-placement terms in
  * {@link GreedyRoundTripPlanner} (the angular-sweep + unimodal-radius fix).
@@ -26,6 +28,9 @@ public class ConvexViaPlacementTest {
 
   /** ~11 km in micro-degrees — comfortably past the 500 m "prevPrev ≈ start" guard. */
   private static final int R = 100_000;
+
+  /** True-geometry radius (m) for the latitude-correctness guard. */
+  private static final double R_METERS = 10_000;
   private static final int LON0 = (int) ((7.59 + 180.0) * 1e6);
   private static final int LAT0 = (int) ((47.56 + 90.0) * 1e6);
 
@@ -47,20 +52,41 @@ public class ConvexViaPlacementTest {
   @Test
   public void loopSweepPenalisesStallAndBacktrackNotAdvance() {
     int sub = 8; // target step = 360/8 = 45°
+    // Equator start: at lat 0 the cos(lat)-scaled bearings equal the raw
+    // integer geometry, so the hand-placed 45° steps stay exactly on target.
+    int lonE = LON0;
+    int latE = 90_000_000;
     // prevPrev due North (bearing 0), current NE (bearing 45) -> established sweep +45
-    int ppLon = LON0,     ppLat = LAT0 + R; // N
-    int curLon = LON0 + R, curLat = LAT0 + R; // NE (45)
+    int ppLon = lonE,     ppLat = latE + R; // N
+    int curLon = lonE + R, curLat = latE + R; // NE (45)
 
-    double advance  = sweep(sub, ppLon, ppLat, curLon, curLat, LON0 + R, LAT0);       // E (90): +45 step
-    double stall    = sweep(sub, ppLon, ppLat, curLon, curLat, LON0 + R, LAT0 + R);   // NE (45): no progress
-    double backtrack= sweep(sub, ppLon, ppLat, curLon, curLat, LON0,     LAT0 + R);   // N (0): reverse
-    double overshoot= sweep(sub, ppLon, ppLat, curLon, curLat, LON0 + R, LAT0 - R);   // SE (135): double step
+    double advance  = sweepAt(lonE, latE, sub, ppLon, ppLat, curLon, curLat, lonE + R, latE);       // E (90): +45 step
+    double stall    = sweepAt(lonE, latE, sub, ppLon, ppLat, curLon, curLat, lonE + R, latE + R);   // NE (45): no progress
+    double backtrack= sweepAt(lonE, latE, sub, ppLon, ppLat, curLon, curLat, lonE,     latE + R);   // N (0): reverse
+    double overshoot= sweepAt(lonE, latE, sub, ppLon, ppLat, curLon, curLat, lonE + R, latE - R);   // SE (135): double step
 
-    assertEquals("on-target advance is free", 0.0, advance, 1e-6);
-    assertEquals("stall (lobe) costs (0-1)^2 = 1", 1.0, stall, 1e-6);
-    assertEquals("backtrack hits the 4.0 cap", 4.0, backtrack, 1e-6);
-    assertEquals("overshoot costs (1)^2 = 1", 1.0, overshoot, 1e-6);
+    // Tolerances: CheapRuler models the WGS84 ellipsoid, so even at the
+    // equator a meter-true 45° differs from the integer-grid 45° by ~0.4°.
+    assertEquals("on-target advance is free", 0.0, advance, 1e-3);
+    assertEquals("stall (lobe) costs (0-1)^2 = 1", 1.0, stall, 0.02);
+    assertEquals("backtrack hits the 4.0 cap", 4.0, backtrack, 1e-3);
+    assertEquals("overshoot costs (1)^2 = 1", 1.0, overshoot, 0.02);
     assertTrue("the lobe must score strictly worse than the convex advance", stall > advance);
+  }
+
+  /**
+   * The latitude-correctness regression guard: an even TRUE-geometry sweep at
+   * 47.5°N must be near-free. With raw integer bearings it read ~±0.3 penalty
+   * units depending on where the sweep sits (the Codex-review C6.2 defect).
+   */
+  @Test
+  public void loopSweepIsLatitudeCorrect() {
+    int sub = 8;
+    int[] pp = CheapRuler.destination(LON0, LAT0, R_METERS, 0);   // true N
+    int[] cur = CheapRuler.destination(LON0, LAT0, R_METERS, 45); // true NE
+    int[] cand = CheapRuler.destination(LON0, LAT0, R_METERS, 90); // true E
+    double advance = sweep(sub, pp[0], pp[1], cur[0], cur[1], cand[0], cand[1]);
+    assertEquals("an even true-geometry 45° step at 47.5N is on target", 0.0, advance, 0.02);
   }
 
   /** No penalty until the rotation sense is established (prevPrev too close to start). */
@@ -99,7 +125,12 @@ public class ConvexViaPlacementTest {
 
   private static double sweep(int sub, int ppLon, int ppLat, int curLon, int curLat,
                               int cpLon, int cpLat) {
+    return sweepAt(LON0, LAT0, sub, ppLon, ppLat, curLon, curLat, cpLon, cpLat);
+  }
+
+  private static double sweepAt(int sLon, int sLat, int sub, int ppLon, int ppLat,
+                                int curLon, int curLat, int cpLon, int cpLat) {
     return GreedyRoundTripPlanner.loopSweepPenalty(
-      LON0, LAT0, ppLon, ppLat, curLon, curLat, cpLon, cpLat, sub);
+      sLon, sLat, ppLon, ppLat, curLon, curLat, cpLon, cpLat, sub);
   }
 }
