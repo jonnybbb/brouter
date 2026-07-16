@@ -22,7 +22,7 @@ public final class FastPlacementRequest {
   /** Target waypoint count for the loop (start included). */
   final int targetPoints;
 
-  /** Directional-lobe mode ({@code roundtrip.fast.directional}, resolved). */
+  /** Directional-lobe mode: on when the caller supplied a start bearing. */
   final boolean directional;
 
   /** Via cap for the directional lobe ({@code roundtrip.fast.maxvias}, resolved). */

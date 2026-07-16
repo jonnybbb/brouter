@@ -30,6 +30,8 @@ final class FastStrategy implements RoundTripStrategy {
     RoundTripAlgorithm algo = slice.algo;
     double searchRadius = slice.searchRadius;
     double direction = slice.direction;
+    FastPlacementOutcome.Path placedPath = null;
+    int targetPoints = 0;
 
     // Variety seed: bounded multi-knob perturbation for the geometric
     // placement paths (see RoutingContext.getRoundTripSeed). The phase shift stays within ±15° so the
@@ -72,7 +74,7 @@ final class FastStrategy implements RoundTripStrategy {
             + "handled by doExplicitViaRoundTrip (got " + ops.waypoints().size() + ")");
       }
 
-      int targetPoints = ops.routingContext().roundTripPoints == null ?
+      targetPoints = ops.routingContext().roundTripPoints == null ?
         Math.max(5, Math.min(15, (int) (searchRadius / 1500) + 3)) :
         ops.routingContext().roundTripPoints;
       // Variety seed knob: ±1 via-point count, only when the count is derived —
@@ -110,24 +112,17 @@ final class FastStrategy implements RoundTripStrategy {
           ops.buildPointsFromCircle(ops.waypoints(), direction, searchRadius, targetPoints);
         }
       } else if (fastOptimized) {
-        // Directional lobe (opt-in): head the loop toward the requested bearing like
-        // the pre-903 routine, instead of encircling the start. Off by default while
-        // the sparse-terrain robustness (routing between forward-arc vias can fail
-        // where an encircling ring would not) is finished via a post-routing retry.
-        FastPlacementRequest fastRequest = new FastPlacementRequest(
-          ops.waypoints().get(0), searchRadius, direction, targetPoints,
-          direction >= 0
-            && "true".equals(System.getProperty("roundtrip.fast.directional", "false")),
-          Integer.getInteger("roundtrip.fast.maxvias", 5));
-        // Placement builds its skeleton on a local list and the outcome is
-        // committed in one step — a degraded or failed attempt can never
-        // leave partial vias in the live waypoint list.
-        FastPlacementOutcome fastOutcome =
-          new FastWaypointPlanner(ops.fastPlacementOps()).place(fastRequest);
-        ops.waypoints().clear();
-        ops.waypoints().addAll(fastOutcome.skeleton);
-        orchestrator.recordPlacementPath(fastOutcome.optimizedPlacement()
-          ? RoundTripOrchestrator.PlacementPath.ENVELOPE_FAST : RoundTripOrchestrator.PlacementPath.CIRCLE);
+        // Directional lobe, always: the loop heads toward the resolved bearing
+        // (caller-supplied startDirection/heading, or the random draw) like the
+        // pre-1.7.9 upstream circle placement — it never encircles the start
+        // as the primary shape. The encircling ring exists only as fallback:
+        // placement-time degeneration falls back inside the planner
+        // (RING_FALLBACK / circle), and the post-routing retry at the end of
+        // attempt() covers sparse terrain where the lobe places but cannot
+        // route.
+        FastPlacementOutcome fastOutcome = placeOptimized(searchRadius, direction,
+          targetPoints, true);
+        placedPath = fastOutcome.path;
       } else {
         ProbeResult probe = snapper.probeReachableDirections(ops.waypoints().get(0), searchRadius);
         // FAST tier: drop single-probe-success directions when enough strong
@@ -159,7 +154,56 @@ final class FastStrategy implements RoundTripStrategy {
 
     ops.routingContext().waypointCatchingRange = 250;
     request.setSearchRadius(searchRadius);
+    // The placement above rebuilt the waypoint list; a doRouting run earlier in
+    // this request (bounded-tier fallback, the ring retry below) leaves the
+    // engine's matched waypoints populated, and tryFindTrack would reuse them
+    // instead of matching the fresh skeleton — routing and cleaning against
+    // stale vias.
+    ops.setMatchedWaypoints(null);
     orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
+
+    // Post-routing ring retry: the directional lobe heads the loop toward the
+    // requested bearing, but in sparse terrain routing between forward-arc
+    // vias can fail where an encircling ring would not. Placement-time
+    // failures already fall back inside the planner; this catches a lobe that
+    // PLACED but did not ROUTE into a real loop.
+    if (placedPath == FastPlacementOutcome.Path.DIRECTIONAL_LOBE && degenerateOutcome(request)) {
+      ops.logInfo("FAST: directional lobe did not route to a loop"
+        + (request.error == null ? "" : " (" + request.error + ")")
+        + "; retrying with the encircling ring");
+      orchestrator.setError(null);
+      OsmNodeNamed start = ops.waypoints().get(0);
+      ops.waypoints().clear();
+      ops.waypoints().add(start);
+      placeOptimized(searchRadius, direction, targetPoints, false);
+      ops.setMatchedWaypoints(null);
+      orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
+    }
     return true;
+  }
+
+  /**
+   * Run the optimized FAST placement and commit its skeleton in one step — a
+   * degraded or failed attempt can never leave partial vias in the live
+   * waypoint list.
+   */
+  private FastPlacementOutcome placeOptimized(double searchRadius, double direction,
+                                              int targetPoints, boolean directional) {
+    FastPlacementRequest fastRequest = new FastPlacementRequest(
+      ops.waypoints().get(0), searchRadius, direction, targetPoints, directional,
+      Integer.getInteger("roundtrip.fast.maxvias", 5));
+    FastPlacementOutcome outcome = new FastWaypointPlanner(ops.fastPlacementOps()).place(fastRequest);
+    ops.waypoints().clear();
+    ops.waypoints().addAll(outcome.skeleton);
+    orchestrator.recordPlacementPath(outcome.optimizedPlacement()
+      ? RoundTripOrchestrator.PlacementPath.ENVELOPE_FAST : RoundTripOrchestrator.PlacementPath.CIRCLE);
+    return outcome;
+  }
+
+  /** No routed loop, or a degenerate stub below the shared floors. */
+  static boolean degenerateOutcome(RoundTripRequest request) {
+    return request.track == null || request.track.nodes == null
+      || request.track.nodes.size() < RoundTripOrchestrator.MIN_ROUNDTRIP_LOOP_NODES
+      || request.track.distance < RoundTripOrchestrator.MIN_ROUNDTRIP_LOOP_METERS;
   }
 }

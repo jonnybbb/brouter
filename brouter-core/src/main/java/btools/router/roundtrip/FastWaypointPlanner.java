@@ -149,8 +149,9 @@ public final class FastWaypointPlanner {
 
   /**
    * Optimized FAST waypoint placement. Distribute the vias as a directional lobe
-   * toward the requested bearing (so the loop heads that way), or a full ring
-   * when no bearing is set. Scale the probe radius from that exact distribution
+   * toward the resolved bearing (so the loop heads that way — never an
+   * encircling ring as the primary shape; the ring is the placement/routing
+   * fallback). Scale the probe radius from that exact distribution
    * so the loop hits target length — the lobe's perimeter/radius ratio differs
    * from a ring. Cap the lobe's via count: a handful of well-spread vias gives a
    * clean directional loop, while many just add road detours that inflate the

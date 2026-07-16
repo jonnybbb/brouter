@@ -206,7 +206,7 @@ public final class RoundTripOrchestrator {
   // A produced round-trip below either bound is a degenerate stub, not a loop.
   static final int MIN_ROUNDTRIP_LOOP_NODES = 6;
 
-  private static final int MIN_ROUNDTRIP_LOOP_METERS = 200;
+  static final int MIN_ROUNDTRIP_LOOP_METERS = 200;
 
   private static final int ROUNDTRIP_DEFAULT_DIRECTIONADD = 45;
 

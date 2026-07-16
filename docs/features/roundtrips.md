@@ -23,7 +23,7 @@ You control the loop with a few request parameters:
 | `roundTripLength` | desired total loop length in meters (takes precedence over `roundTripDistance`) |
 | `roundTripDistance` | search radius in meters; the loop length is roughly `2π × radius` |
 | `roundTripPoints` | waypoint count for the geometric placements (`FAST`/`WAYPOINT`/`ISOCHRONE`, and the `BALANCED` fallback); accepted range 3–20 (out-of-range values fall back to 5). The greedy planners derive their own count and ignore it |
-| `startDirection` / `heading` | compass bearing to bias the direction the loop heads out; without it the start bearing is drawn randomly, so fix it whenever the loop should be reproducible |
+| `direction` / `heading` | compass bearing the loop heads out toward (`heading` additionally forces it for the opening leg); without it the start bearing is drawn randomly, so fix it whenever the loop should be reproducible. Same keys as upstream point-to-point routing |
 | `alternativeidx` | deterministic loop variety seed (`0` = default loop, any value ≥ 0 gives a reproducible variant — see [note below](#loop-quality)) |
 | `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing |
 | `roundTripAlgorithm` | the speed/quality ladder `FAST` (quick preview), `BALANCED` (hard ~8 s budget — the recommended interactive/mobile default), `AUTO` (default; effort resolved from request context), `QUALITY` (max effort — both planners always, wider search, doubled budget); the internal engine names `WAYPOINT`, `GREEDY`, `ISO_GREEDY`, `ISOCHRONE` are also accepted for forced selection — see below |
@@ -43,10 +43,14 @@ waypoints are not given, so the planner has to *invent* a set of intermediate
 targets and then check whether the resulting route is actually a pleasant,
 closed loop. Four modes are recommended, forming a speed/quality ladder:
 
-- **FAST** — places the ring of waypoints geometrically and scores them by
+- **FAST** — places the waypoints geometrically and scores them by
   straight-line distance only, with no routed-leg evaluation. Roughly 10× faster
   (sub-second) at noticeably lower quality — useful as a quick preview on limited
-  mobile hardware.
+  mobile hardware. The loop is placed as a **directional lobe** heading out
+  toward the resolved bearing (`direction`/`heading`, or the automatic
+  draw) — the same arc geometry as the pre-1.7.9 round-trip; it never
+  encircles the start as the primary shape. When the lobe cannot be placed or
+  routed (sparse terrain), it is automatically retried as an encircling ring.
 - **BALANCED** — one graph-aware planning run under a hard ~8 s wall-clock
   budget with a reduced per-step search width, no retry ladders beyond the
   budget, and a geometric fallback when no acceptable loop closes (planner
@@ -183,7 +187,7 @@ A couple of decisions are worth recording for anyone tuning the planner:
   wall-clock budget, so `idx=3` could quadruple the work, whereas a seed is a single
   generation pass. The seed never influences the start-direction draw; variety comes
   from seeded score jitter (greedy family) and bounded geometry knobs
-  (WAYPOINT/ISOCHRONE), so reproducibility needs both `startDirection` and the seed.
+  (WAYPOINT/ISOCHRONE), so reproducibility needs both `direction` and the seed.
 
 - **`ISO_GREEDY` monitors its own candidate pool and falls back internally.**
   The isochrone-fed planner scores the trustworthiness of its start-centered

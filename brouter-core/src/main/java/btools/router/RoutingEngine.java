@@ -3116,6 +3116,14 @@ public class RoutingEngine extends Thread {
     if (hasInfo() && nodesCache != null) {
       logInfo("NodesCache status before reset=" + nodesCache.formatStatus());
     }
+    if (routingContext.expctxWay == null) {
+      // A completed doRouting run in this same round-trip request released the
+      // parsed profile in its finally (ProfileCache.releaseProfile nulls the
+      // expression contexts). Round-trip flows legitimately probe and route
+      // again afterwards — the FAST ring retry, the bounded tier's waypoint
+      // fallback — so re-acquire the profile before building a NodesCache.
+      ProfileCache.parseProfile(routingContext);
+    }
     long maxmem = routingContext.memoryclass * 1024L * 1024L; // in MB
 
     nodesCache = new NodesCache(segmentDir, routingContext.expctxWay, routingContext.forceSecondaryData, maxmem, nodesCache, detailed);
