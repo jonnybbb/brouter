@@ -97,22 +97,36 @@ CPU-bound, this is the first thing that breaks the pool's implicit
 would run up to `2 × cores` CPU-bound threads under `AUTO` load and slow *both*
 searches against their deadlines.
 
-It is therefore **load-aware**: the speculative GREEDY child is gated on a
-non-blocking permit from a global pool sized to the spare cores
-(`-DroundTripParallelAutoPermits`, default `cores - 1`):
+The speculation is **opt-in** (`-DroundTripSpeculativeAutoGreedy=true`; the
+default competition is sequential — ISO_GREEDY first, GREEDY only when still
+needed). When enabled, the child is gated on a non-blocking permit from a
+global pool (`-DroundTripParallelAutoPermits`). The pool counts only
+speculative children — it cannot see actual server load — so its default
+commits **at most half the machine, bounded at 4** (`min(4, cores/2)`):
+even when every admitted request is speculative `AUTO`, incoming requests
+still find free cores. The worst case is `maxthreads + min(4, cores/2)`
+CPU-bound threads, not the `2 × cores` an unbounded version would reach.
 
 - **Idle / lightly-loaded box** — a permit is free, the child runs in parallel,
   single-request latency win preserved.
-- **Saturated multi-core box, or a single-core box** — the acquire fails and
+- **Permits exhausted, or a single-core box** — the acquire fails and
   GREEDY runs **sequentially** on the request's own core, so the parallelism
-  adds zero extra CPU-bound threads and never oversubscribes.
+  adds zero extra CPU-bound threads.
 
 The permit is released in the child's `finally`, so it tracks actual thread
-liveness. Setting `-DroundTripParallelAutoPermits=0` forces a fully-sequential
-`AUTO` competition — behaviourally identical to the pre-parallel model while
-keeping every other performance fix. The speculative child is also a daemon
-thread and its join is always bounded (it is terminated if it overstays), so a
-stuck child can never hang the request thread or block JVM exit.
+liveness; a wedged child keeps its permit, degrading `AUTO` toward sequential
+rather than oversubscribing further. Setting
+`-DroundTripParallelAutoPermits=0` forces a fully-sequential `AUTO`
+competition even in speculative mode. The speculative child is a daemon
+thread, its joins are always time-bounded, it is terminated (and interrupted)
+if it overstays, and a still-wedged thread's stack is logged — a stuck child
+can never hang the request thread or block JVM exit.
+
+**Termination cascades to children.** Server pre-emption calls `terminate()`
+on the *parent* engine; each child engine checks its own kill flag per pop, so
+the parent registers a termination hook per child (`child::terminate`) that
+forwards the pre-emption. A pre-empted `AUTO` request therefore stops within
+~one heap pop instead of running out the child's own budget.
 
 ## Tuning knobs
 
@@ -121,7 +135,7 @@ stuck child can never hang the request thread or block JVM exit.
 | `maxthreads` (launch arg) | Server | Max concurrently-executing requests. Keep ≈ cores for a per-request-core guarantee. |
 | `-DmaxRunningTime` (seconds) | Server | Operator **ceiling** on per-request wall-clock budget (default 60 s). Malformed values fail closed to the default. |
 | `timeout` (URL param, seconds) | Request | Per-request budget, **clamped to the `maxRunningTime` ceiling**. Lets a client resend a degraded round trip with more budget without exceeding the operator cap. |
-| `-DroundTripParallelAutoPermits` | Server (round trips) | Max `AUTO` requests running their GREEDY child in parallel at once (default `cores - 1`; `0` = fully sequential). |
+| `-DroundTripParallelAutoPermits` | Server (round trips) | Max `AUTO` requests running their GREEDY child in parallel at once (default `min(4, cores/2)`; `0` = fully sequential). Only relevant with `-DroundTripSpeculativeAutoGreedy=true`. |
 | `memoryclass` | Request | `NodesCache` memory bound per engine (MB, default 64). |
 
 ## Round-trip budget scaling

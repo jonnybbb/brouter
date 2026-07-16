@@ -55,4 +55,12 @@ public interface LegRouter {
   void terminate();
 
   boolean isTerminated();
+
+  /**
+   * Register a hook run when THIS engine is terminated — the cascade that
+   * forwards a server pre-emption to child engines (typically
+   * {@code child::terminate}). Registering after termination runs the hook
+   * immediately.
+   */
+  void addTerminationHook(Runnable hook);
 }

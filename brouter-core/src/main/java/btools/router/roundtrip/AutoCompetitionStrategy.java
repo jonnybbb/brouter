@@ -55,14 +55,25 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
 
   /**
    * JVM-wide permit pool capping how many AUTO requests run their speculative
-   * GREEDY child in parallel when {@link #SPECULATIVE_AUTO_GREEDY} is on — routing
-   * is CPU-bound, so this bounds the extra threads. Tune via
+   * GREEDY child in parallel when {@link #SPECULATIVE_AUTO_GREEDY} is on —
+   * routing is CPU-bound, so this bounds the extra threads. The pool cannot
+   * see actual server load (it counts only speculative children), so the
+   * default commits at most half the machine, bounded at 4, to speculation:
+   * even with every running request speculating, incoming requests still find
+   * free cores. A permit is held for the child's whole lifetime and released
+   * in its finally; a wedged child keeps its permit, degrading AUTO toward
+   * sequential rather than oversubscribing further. Tune via
    * {@code -DroundTripParallelAutoPermits}; 0 forces fully-sequential AUTO.
    */
   private static final java.util.concurrent.Semaphore PARALLEL_AUTO_SEMAPHORE =
     new java.util.concurrent.Semaphore(Math.max(0,
       Integer.getInteger("roundTripParallelAutoPermits",
-        Runtime.getRuntime().availableProcessors() - 1)));
+        defaultParallelAutoPermits(Runtime.getRuntime().availableProcessors()))));
+
+  /** Default speculative-permit count: half the cores, at most 4, at least 0. */
+  static int defaultParallelAutoPermits(int cores) {
+    return Math.max(0, Math.min(4, cores / 2));
+  }
 
   /**
    * AUTO's plain-GREEDY entitlement check: a below-threshold ISO_GREEDY does not
@@ -203,9 +214,16 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
         greedyThread.join(joinBudgetMs);
         if (greedyThread.isAlive()) {
           ops.logInfo("AUTO: GREEDY child overstayed its budget; terminating");
-          if (greedyChild != null) {
-            greedyChild.terminate();
+          // Re-fetch: the child engine may have been published only after the
+          // pre-join read above (spawn raced the ISO_GREEDY run).
+          RoutingEngine lateChild = greedyEngineOut.get();
+          if (lateChild != null) {
+            lateChild.terminate();
           }
+          // Break interruptible blocking states (sleep/wait/interruptible
+          // channel I/O); harmless for the CPU-bound search loops, which the
+          // kill flag already covers per pop.
+          greedyThread.interrupt();
           greedyThread.join(AUTO_CHILD_JOIN_UNWIND_MS);
         }
       } catch (InterruptedException ie) {
@@ -217,7 +235,16 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       if (greedyThread.isAlive()) {
         greedyNeeded = false;
         greedyResultIgnored = true;
-        ops.logInfo("AUTO: GREEDY child did not stop in time; ignoring its result");
+        // Dump where the wedged daemon sits so operators can identify paths
+        // slow to honor termination. Its permit stays held (correct — the core
+        // IS still burning), so a repeat offender degrades AUTO to sequential
+        // instead of oversubscribing further.
+        StringBuilder wedge = new StringBuilder(
+          "AUTO: GREEDY child did not stop in time; ignoring its result. Wedged at:");
+        for (StackTraceElement el : greedyThread.getStackTrace()) {
+          wedge.append("\n  ").append(el);
+        }
+        ops.logInfo(wedge.toString());
       }
     }
     results.add(isoGreedyR);
@@ -479,6 +506,10 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       // The child plans with the parent's resolved effort (QUALITY's raised
       // top-K / plan budget must reach the planners it spawns).
       child.roundTripOps().setRoundTripEffortPolicy(orchestrator.request.effortPolicy);
+      // Termination cascade: a server pre-emption terminates the PARENT; the
+      // child checks its own kill flag per pop, so without this hook the
+      // pre-empted request keeps burning its core until the child budget ends.
+      ops.addTerminationHook(child::terminate);
       if (engineOut != null) {
         engineOut.set(child);
       }

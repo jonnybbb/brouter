@@ -1037,6 +1037,11 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
+      public void addTerminationHook(Runnable hook) {
+        RoutingEngine.this.addTerminationHook(hook);
+      }
+
+      @Override
       public void cleanupRoutingResources() {
         RoutingEngine.this.cleanupRoutingResources();
       }
@@ -3796,8 +3801,33 @@ public class RoutingEngine extends Thread {
     return errorMessage;
   }
 
+  /**
+   * Hooks run when this engine is terminated — the cascade that lets a server
+   * pre-emption reach the child engines a round-trip request is running
+   * (children check their OWN kill flag per pop, so the parent's flag alone
+   * cannot stop them). Thread-safe; hooks must be idempotent and fast
+   * (typically {@code child::terminate}).
+   */
+  private final java.util.concurrent.CopyOnWriteArrayList<Runnable> terminationHooks =
+    new java.util.concurrent.CopyOnWriteArrayList<>();
+
   public void terminate() {
     terminated = true;
+    for (Runnable hook : terminationHooks) {
+      hook.run();
+    }
+  }
+
+  /**
+   * Register a termination cascade hook. Registering on an already-terminated
+   * engine runs the hook immediately — closes the race between a server
+   * pre-emption and a child engine being constructed.
+   */
+  void addTerminationHook(Runnable hook) {
+    terminationHooks.add(hook);
+    if (terminated) {
+      hook.run();
+    }
   }
 
   public boolean isTerminated() {

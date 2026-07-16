@@ -146,6 +146,11 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public void addTerminationHook(Runnable hook) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
       throw new UnsupportedOperationException();
     }
