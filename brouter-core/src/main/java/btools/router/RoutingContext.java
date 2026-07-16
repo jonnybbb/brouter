@@ -74,6 +74,18 @@ public final class RoutingContext {
   public String rawTrackPath;
   public String rawAreaPath;
 
+  /**
+   * Request-correct profile identity for the paved-profile classification
+   * cache: the display name alone is ambiguous (two concurrent requests can
+   * carry same-named profiles with different content or parameter overrides),
+   * so the key appends {@link #profileTimestamp}, which covers both the file
+   * version and the key-value checksum. Starts with {@link #getProfileName()},
+   * so substring-family matching (mtb/gravel/...) keeps working on the key.
+   */
+  public String getProfilePavedKey() {
+    return getProfileName() + '@' + profileTimestamp;
+  }
+
   public String getProfileName() {
     String name = localFunction == null ? "unknown" : localFunction;
     if (name.endsWith(".brf")) name = name.substring(0, localFunction.length() - 4);

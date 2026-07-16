@@ -468,8 +468,12 @@ final class GreedyStrategy implements RoundTripStrategy {
       ops.logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(ops, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
-      planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(ops.routingContext().getProfileName()));
-      planner.setProfileName(ops.routingContext().getProfileName());
+      planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(ops.routingContext().getProfilePavedKey()));
+      // The planner's "profile name" feeds only paved-classification lookups
+      // and its internal gate calls, so it gets the request-correct paved KEY
+      // (which starts with the display name, keeping substring family checks
+      // valid).
+      planner.setProfileName(ops.routingContext().getProfilePavedKey());
       planner.setVarietySeed(ops.routingContext().getRoundTripSeed());
       planner.setRouteBudgets(orchestrator.request.effortPolicy.topKNormal, orchestrator.request.effortPolicy.topKLate);
       planner.setPlanBudgetScale(orchestrator.request.effortPolicy.planBudgetScale);
@@ -543,7 +547,7 @@ final class GreedyStrategy implements RoundTripStrategy {
                                                             double desiredDistance,
                                                             double direction) {
     return scoreInternalGreedyResult(result, desiredDistance,
-      ops.routingContext().getProfileName(), direction,
+      ops.routingContext().getProfilePavedKey(), direction,
       ops.routingContext().allowSamewayback, ops.roundTripFerriesAllowed());
   }
 

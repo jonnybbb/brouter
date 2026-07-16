@@ -1364,17 +1364,21 @@ public final class RoundTripQualityGate {
   static final double PAVED_PROBE_RATIO = 5.0;
 
   /**
-   * Memoised paved/road-bike classification, keyed by profile name. Written by
+   * Memoised paved/road-bike classification, keyed by the request-correct
+   * profile identity ({@code RoutingContext.getProfilePavedKey()}: display
+   * name + '@' + profile timestamp incl. key-value checksum). Written by
    * {@link #classifyPavedProfile} (has the expression context), read by
-   * {@link #isPavedProfile} (has only the name). One JVM serves a stable set of
-   * profiles, so name is an adequate key.
+   * {@link #isPavedProfile} (has only the key). The identity key — not the
+   * bare name — is what makes the shared map safe under concurrent requests
+   * carrying same-named profiles with different content or parameter
+   * overrides.
    */
   private static final Map<String, Boolean> PAVED_CLASSIFICATION = new ConcurrentHashMap<>();
 
   /**
    * Classify a profile as paved/road-bike by what its cost model charges for an
-   * unpaved way, independent of name. Memoised by {@code profileName} and later
-   * returned by {@link #isPavedProfile}; call once per request at round-trip
+   * unpaved way, independent of name. Memoised by the classification key and later
+   * returned by {@link #isPavedProfile} for the same key; call once per request at round-trip
    * setup, while the way-expression context is available.
    *
    * <p>Resolution order: (1) explicit author override {@code roadbikeSurfaceGate}
