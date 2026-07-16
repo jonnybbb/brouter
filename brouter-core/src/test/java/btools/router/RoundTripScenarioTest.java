@@ -16,18 +16,23 @@ import btools.router.roundtrip.RoundTripAlgorithm;
  */
 public class RoundTripScenarioTest {
 
-  private OsmTrack routeOk(String profile, int direction, int radius, Consumer<RoutingContext> tweak) {
+  /** Route and validate through the engine-aware fixture assertions: a crash
+   *  FAILS; only a proven gate rejection skips. Returns the engine for
+   *  scenario-specific follow-up assertions. */
+  private RoutingEngine routeOk(String profile, int direction, int radius, String label,
+                                double maxReusePct, Consumer<RoutingContext> tweak) {
     RoutingEngine re = RoundTripFixture.engine(profile, direction, radius, tweak);
-    RoundTripFixture.assertNoEngineErrorOrSkip(re, "routing");
-    return re.getFoundTrack();
+    RoundTripFixture.assertNoEngineErrorOrSkip(re, label);
+    RoundTripFixture.assertValidLoop(re, label, maxReusePct);
+    return re;
   }
 
   /** The explicit WAYPOINT strategy must produce valid loops for every cycling profile. */
   @Test
   public void waypointAlgorithmValidLoop() {
     for (String profile : new String[]{"trekking", "fastbike", "gravel", "mtb"}) {
-      OsmTrack t = routeOk(profile, 90, 1500, rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.WAYPOINT);
-      RoundTripFixture.assertValidLoop(t, "waypoint_" + profile, 30.0);
+      routeOk(profile, 90, 1500, "waypoint_" + profile, 30.0,
+        rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.WAYPOINT);
     }
   }
 
@@ -35,8 +40,8 @@ public class RoundTripScenarioTest {
   @Test
   public void isochroneAlgorithmValidLoop() {
     for (String profile : new String[]{"trekking", "fastbike", "gravel", "mtb"}) {
-      OsmTrack t = routeOk(profile, 90, 1500, rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE);
-      RoundTripFixture.assertValidLoop(t, "isochrone_" + profile, 30.0);
+      routeOk(profile, 90, 1500, "isochrone_" + profile, 30.0,
+        rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE);
     }
   }
 
@@ -46,8 +51,7 @@ public class RoundTripScenarioTest {
    */
   @Test
   public void allowSamewaybackProducesClosedLoop() {
-    OsmTrack t = routeOk("trekking", 270, 1000, rc -> rc.allowSamewayback = true);
-    RoundTripFixture.assertValidLoop(t, "samewayback", 100.0);
+    routeOk("trekking", 270, 1000, "samewayback", 100.0, rc -> rc.allowSamewayback = true);
   }
 
   /**
@@ -57,16 +61,14 @@ public class RoundTripScenarioTest {
    */
   @Test
   public void allowSamewaybackClosesAtConstrainedDirection() {
-    OsmTrack t = routeOk("trekking", 90, 1000, rc -> rc.allowSamewayback = true);
-    RoundTripFixture.assertValidLoop(t, "samewayback_dir90", 100.0);
+    routeOk("trekking", 90, 1000, "samewayback_dir90", 100.0, rc -> rc.allowSamewayback = true);
   }
 
   /** roundTripLength sets the total loop distance directly and must yield a valid loop. */
   @Test
   public void roundTripLengthParameterValidLoop() {
     // 6 km total loop ~= 955 m radius.
-    OsmTrack t = routeOk("trekking", 90, 1000, rc -> rc.roundTripLength = 6000);
-    RoundTripFixture.assertValidLoop(t, "length6km", 30.0);
+    routeOk("trekking", 90, 1000, "length6km", 30.0, rc -> rc.roundTripLength = 6000);
   }
 
   /**
@@ -77,8 +79,8 @@ public class RoundTripScenarioTest {
    */
   @Test
   public void roundTripLengthTakesPrecedenceOverRoundTripDistance() {
-    OsmTrack t = routeOk("trekking", 90, 3000, rc -> rc.roundTripLength = 6000);
-    RoundTripFixture.assertValidLoop(t, "length6km_precedence", 30.0);
+    OsmTrack t = routeOk("trekking", 90, 3000, "length6km_precedence", 30.0,
+      rc -> rc.roundTripLength = 6000).getFoundTrack();
     // ~6 km (from roundTripLength), not ~18.8 km (2*PI*3000 from roundTripDistance).
     Assert.assertTrue("roundTripLength must take precedence over roundTripDistance: expected "
       + "~6km loop but got " + t.distance + "m", t.distance < 12000);
@@ -87,8 +89,7 @@ public class RoundTripScenarioTest {
   /** An explicit roundTripPoints waypoint count must still yield a valid loop. */
   @Test
   public void roundTripPointsParameterValidLoop() {
-    OsmTrack t = routeOk("trekking", 90, 1500, rc -> rc.roundTripPoints = 8);
-    RoundTripFixture.assertValidLoop(t, "points8", 30.0);
+    routeOk("trekking", 90, 1500, "points8", 30.0, rc -> rc.roundTripPoints = 8);
   }
 
   /** A round-trip through a user via point must keep the via and still be a valid loop. */
@@ -98,8 +99,8 @@ public class RoundTripScenarioTest {
     RoutingEngine re = RoundTripFixture.engine("trekking", 0, 1000, rc -> { }, via);
     RoundTripFixture.assertNoEngineErrorOrSkip(re, "user-via round-trip");
 
+    RoundTripFixture.assertValidLoop(re, "userVia", 30.0);
     OsmTrack track = re.getFoundTrack();
-    RoundTripFixture.assertValidLoop(track, "userVia", 30.0);
 
     boolean foundVia = false;
     Assert.assertNotNull("no matched waypoints", track.matchedWaypoints);

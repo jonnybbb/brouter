@@ -163,6 +163,29 @@ public final class RoundTripFixture {
     org.junit.Assert.fail(label + ": " + err);
   }
 
+  /**
+   * Engine-aware variant of {@link #assertValidLoop(OsmTrack, String, double)}:
+   * a null track is Assume-skipped ONLY when the engine's error proves a clean
+   * gate rejection or no-acceptable-route outcome. A planner crash (exception
+   * text) or a silent null track FAILS — the track-only overload cannot tell
+   * those apart, which let crashes hide behind fixture-limitation skips.
+   */
+  static void assertValidLoop(RoutingEngine re, String label, double maxReusePct) {
+    OsmTrack track = re.getFoundTrack();
+    if (track == null) {
+      String err = re.getErrorMessage();
+      boolean provenRejection = err != null
+        && (err.contains("rejected by quality gate")
+            || err.contains("no acceptable route")
+            || err.contains("no acceptable loop"));
+      org.junit.Assert.assertTrue(
+        label + ": no track without a proven gate rejection — engine error: " + err,
+        provenRejection);
+      org.junit.Assume.assumeTrue(label + ": fixture limitation — " + err, false);
+    }
+    assertValidLoop(track, label, maxReusePct);
+  }
+
   static void assertValidLoop(OsmTrack track, String label, double maxReusePct) {
     // The engine's production-safety gate ({@link RoundTripQualityGate}) can
     // reject loops that the contrived test fixture can produce but are unsafe

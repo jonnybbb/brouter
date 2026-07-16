@@ -57,8 +57,8 @@ public class RoundTripInvariantTest {
 
   @Test
   public void loopInvariants() {
-    OsmTrack track = RoundTripFixture.route(profile, direction, radius);
-    RoundTripFixture.assertValidLoop(track, profile + "_dir" + direction + "_r" + radius, MAX_REUSE_PCT);
+    RoutingEngine re = RoundTripFixture.engine(profile, direction, radius);
+    RoundTripFixture.assertValidLoop(re, profile + "_dir" + direction + "_r" + radius, MAX_REUSE_PCT);
     ASSERTED.incrementAndGet(); // only reached when the case was not Assume-skipped
   }
 

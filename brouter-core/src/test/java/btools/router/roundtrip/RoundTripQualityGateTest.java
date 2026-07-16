@@ -595,6 +595,38 @@ public class RoundTripQualityGateTest {
   }
 
   @Test
+  public void contiguousHostileCapBoundary() {
+    // The 1500m sub-cap, straddled at the tightest chunk resolution: the
+    // synthetic east side's lon chunks measure ~119.7m each (the fixture's
+    // integer-grid latitude), so 1200 nominal = 12 chunks ≈ 1436m (under) and
+    // 1300 nominal = 13 chunks ≈ 1556m (over) — pinning the calibrated
+    // MAX_CONTIGUOUS_HOSTILE_METERS value, not just the far-off 800/1800 cases.
+    assertNull("~1436m contiguous hostile is under the 1500m sub-cap",
+      validate(trackWithContiguousHostile(20000, 1200, 0), 20000, "fastbike"));
+    String reason = validate(trackWithContiguousHostile(20000, 1300, 0), 20000, "fastbike");
+    assertNotNull("~1556m contiguous hostile must reject", reason);
+    assertTrue("rejection names the contiguous run: " + reason,
+      reason.startsWith("contiguous "));
+  }
+
+  @Test
+  public void hostileFractionCeilingBoundary() {
+    // The 10% distance-fraction ceiling, straddled tightly. The scattered
+    // hostile chunks all land on the east side (~119.7m lon chunks; lat
+    // chunks are ~99.9m), so measured fractions are 36×119.7/43.9km ≈ 9.8%
+    // (under) and 40×119.7/43.9km ≈ 10.9% (over). Deterministic geometry —
+    // no jitter.
+    OsmTrack under = loopWithScatteredKinds(40000, 36, 0, null);
+    assertNull("~9.8% hostile stays under the 10% ceiling",
+      validate(under, under.distance, "fastbike"));
+    OsmTrack over = loopWithScatteredKinds(40000, 40, 0, null);
+    String reason = validate(over, over.distance, "fastbike");
+    assertNotNull("~10.9% hostile must reject", reason);
+    assertTrue("rejection names the hostile fraction: " + reason,
+      reason.contains("profile-hostile ways"));
+  }
+
+  @Test
   public void worstHostileStretchReportsCoordinatesAndTags() {
     OsmTrack t = trackWithContiguousHostile(20000, 1800, 0);
 

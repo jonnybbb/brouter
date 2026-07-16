@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import btools.router.roundtrip.CandidateScorer;
 import btools.router.roundtrip.LoopQualityMetrics;
@@ -202,6 +203,16 @@ public abstract class LoopQualityTestBase {
       checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
     }
     if (!anyTrack) {
+      // A cell may legitimately have no loop (constrained terrain, gate
+      // rejection) — but a planner CRASH must fail the cell, not hide behind
+      // the skip. An exception surfaces as "threw:"/"Exception" in the
+      // variant's error; a clean rejection names the gate or the competition.
+      for (LoopQualityResult r : new LoopQualityResult[]{greedyResult, isoGreedyResult}) {
+        if (r != null && r.error != null) {
+          assertFalse("planner crashed (must fail, not skip) for " + testLabel + ": " + r.error,
+            r.error.contains("threw:") || r.error.contains("Exception"));
+        }
+      }
       Assume.assumeTrue("neither greedy nor iso_greedy produced a track for " + testLabel, false);
       return;
     }

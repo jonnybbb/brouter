@@ -29,7 +29,7 @@ public final class RoundTripOrchestrator {
   final RoundTripTrackCleanup cleanup;
 
   /** One resolved rung of the tier ladder: which strategy runs, with which slice. */
-  private static final class Rung {
+  static final class Rung {
     final RoundTripStrategy strategy;
     final TierSlice slice;
 
@@ -65,7 +65,7 @@ public final class RoundTripOrchestrator {
    * runs the waypoint tier. Returns the rungs to attempt in order — currently
    * always exactly one; multi-rung fallback is the extension point.
    */
-  private List<Rung> resolveLadder(RoundTripAlgorithm algo, double searchRadius, double direction) {
+  List<Rung> resolveLadder(RoundTripAlgorithm algo, double searchRadius, double direction) {
     // Request context for the effort policy: profile class from the profile's
     // own validFor* globals (name-independent), coarse length class, and
     // resources. Logged once so future policy rules land on recorded evidence.
@@ -578,6 +578,18 @@ public final class RoundTripOrchestrator {
       }
       setTrack(null);
     } finally {
+      // Track XOR error, enforced for EVERY path: the catch above covers
+      // exceptions, but early-return rejects (missing start tile, oversized
+      // loop without budget) set only the error and would otherwise publish
+      // the request's seeded initial empty track alongside it. Non-empty
+      // geometry moves to lastRejectedTrack like the other reject paths.
+      if (request.error != null && request.track != null) {
+        if (request.track.nodes != null && !request.track.nodes.isEmpty()
+            && request.lastRejectedTrack == null) {
+          request.lastRejectedTrack = request.track;
+        }
+        request.track = null;
+      }
       // Final result + telemetry publication: the engine's public getters
       // (getFoundTrack/getErrorMessage/getLastRejectedTrack/
       // getLastRoundTripResult) serve these after the request; nothing

@@ -48,10 +48,13 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
    * When false (default), do not start plain GREEDY speculatively before
    * ISO_GREEDY proves it is needed — avoids duplicate runs on strong or
    * graph-native-absorbed ISO_GREEDY results. Opt back into the old lower-latency
-   * tradeoff with {@code -DroundTripSpeculativeAutoGreedy=true}.
+   * tradeoff with {@code -DroundTripSpeculativeAutoGreedy=true}. Read per
+   * competition (not cached at class load) so tests can exercise the
+   * speculative path.
    */
-  private static final boolean SPECULATIVE_AUTO_GREEDY =
-    Boolean.getBoolean("roundTripSpeculativeAutoGreedy");
+  private static boolean speculativeAutoGreedy() {
+    return Boolean.getBoolean("roundTripSpeculativeAutoGreedy");
+  }
 
   /**
    * JVM-wide permit pool capping how many AUTO requests run their speculative
@@ -73,6 +76,11 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   /** Default speculative-permit count: half the cores, at most 4, at least 0. */
   static int defaultParallelAutoPermits(int cores) {
     return Math.max(0, Math.min(4, cores / 2));
+  }
+
+  /** Free permits in the speculative pool — leak detector for tests. */
+  static int availableParallelAutoPermits() {
+    return PARALLEL_AUTO_SEMAPHORE.availablePermits();
   }
 
   /**
@@ -155,7 +163,7 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
     // GREEDY is opt-in and also gated on a NON-BLOCKING permit. If the permit
     // is unavailable, or speculation is disabled, GREEDY runs sequentially only
     // if the ISO result needs it.
-    boolean parallelPermit = SPECULATIVE_AUTO_GREEDY
+    boolean parallelPermit = speculativeAutoGreedy()
       && System.currentTimeMillis() < deadline
       && PARALLEL_AUTO_SEMAPHORE.tryAcquire();
     if (parallelPermit) {
@@ -558,7 +566,14 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
     return r;
   }
 
-  private static final long MIN_CHILD_BUDGET_MS = 5_000;
+  /**
+   * Floor (ms) under a spawned candidate's budget slice: a candidate the
+   * competition DECIDED to run gets a usable slice even when the shared
+   * deadline is (nearly) spent — a deliberate, bounded floor overrun of the
+   * request budget, never a way to skip the candidate. Tests assert this
+   * contract by name.
+   */
+  static final long MIN_CHILD_BUDGET_MS = 5_000;
 
   private static boolean isoGreedyAbsorbedGraphNativeTruth(RoundTripCandidateResult isoGreedyR) {
     // The child's explicit start-policy decision: a graph-native-only plan

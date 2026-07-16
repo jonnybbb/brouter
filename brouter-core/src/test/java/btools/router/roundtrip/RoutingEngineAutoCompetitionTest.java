@@ -127,15 +127,25 @@ public class RoutingEngineAutoCompetitionTest {
   @Test
   public void childCandidateBudgetSharesTheDeadline() {
     // The AUTO competition runs candidates sequentially against one shared
-    // deadline; each child gets the REMAINING time, floored so a spawned
-    // candidate still gets a usable slice (never the full request timeout).
+    // deadline; each child gets the REMAINING time, floored at
+    // MIN_CHILD_BUDGET_MS. The floor is a CONTRACT, not an accident: a
+    // candidate the competition decided to run gets a usable slice even past
+    // the deadline — a deliberate, bounded budget overrun (the alternative, a
+    // ~0ms slice, would burn a child spawn for a guaranteed failure). Whether
+    // a candidate is spawned at all is the deadline checks' job, not this
+    // floor's. Assert against the named constant so retuning the floor keeps
+    // the contract pinned without editing raw values here.
     long now = 1_000_000L;
     Assert.assertEquals("ample time remaining → full remainder",
       50_000L, AutoCompetitionStrategy.childCandidateBudgetMs(now + 50_000L, now));
-    Assert.assertEquals("remaining below the 5s floor → floored",
-      5_000L, AutoCompetitionStrategy.childCandidateBudgetMs(now + 3_000L, now));
-    Assert.assertEquals("deadline already passed → floored, never negative",
-      5_000L, AutoCompetitionStrategy.childCandidateBudgetMs(now - 10_000L, now));
+    Assert.assertEquals("remaining below the floor → floored to MIN_CHILD_BUDGET_MS",
+      AutoCompetitionStrategy.MIN_CHILD_BUDGET_MS,
+      AutoCompetitionStrategy.childCandidateBudgetMs(now + 3_000L, now));
+    Assert.assertEquals("deadline already passed → the floor still funds the decided child",
+      AutoCompetitionStrategy.MIN_CHILD_BUDGET_MS,
+      AutoCompetitionStrategy.childCandidateBudgetMs(now - 10_000L, now));
+    Assert.assertTrue("the floor must stay well under any realistic request timeout",
+      AutoCompetitionStrategy.MIN_CHILD_BUDGET_MS <= 10_000L);
   }
 
   @Test
