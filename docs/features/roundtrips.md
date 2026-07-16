@@ -162,19 +162,6 @@ guarantee, keep `maxthreads` at or below the core count (the server's default
 admission policy favours new-request latency and will pre-empt the oldest
 in-flight request when the pool is full).
 
-## Experimental parameters
-
-A few opt-in flags expose work-in-progress planning experiments. They all
-default to off, are honoured only by the iterative `GREEDY` / `ISO_GREEDY`
-planners, and may change or disappear without notice — they are **not** part of
-the stable round-trip interface:
-
-| parameter | meaning |
-| :----- | :----- |
-| `roundTripSteerVias` | keep generated waypoints out of dense town/city cores (costs one extra isochrone pass) |
-| `roundTripDesirability` | bias waypoint placement toward profile-preferred terrain via a desirability heatmap ([issue #15](https://github.com/abrensch/brouter/issues/15)) |
-| `roundTripCapsule` | urban "capsule" loop-planning prototype |
-
 ## Design notes
 
 A couple of decisions are worth recording for anyone tuning the planner:
