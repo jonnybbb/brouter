@@ -447,6 +447,7 @@ final class GreedyStrategy implements RoundTripStrategy {
                                            IsoPoolHealth.PoolShape poolShape,
                                            IsoStartPolicy subRoutePolicy) {
     RoundTripResult result = null;
+    RoundTripResult heldForcedCorridor = null;
     boolean firstRung = true;
     for (int subRouteCount : greedySubRouteCountPlan(baseSubRouteCount, subRoutePolicy)) {
       // Request-budget gate on the retry ladder: each plan() used to get a
@@ -496,12 +497,35 @@ final class GreedyStrategy implements RoundTripStrategy {
       if (!isDegradedGreedyResult(result)
           && result != null && result.getLoopWaypoints() != null
           && result.getLoopWaypoints().size() >= 4) {
-        return result;
+        if (!result.isForcedCorridorAccepted()) {
+          return result;
+        }
+        // Forced-corridor is per-rung evidence: THIS sub-route count found no
+        // clean alternative, but another rung may (annecy 30km S: 5 sub-legs
+        // force the corridor, 6 ride a clean full-length loop). Hold the
+        // closest-to-target forced result and keep climbing the ladder; ship
+        // it only when no rung produces a clean loop.
+        if (heldForcedCorridor == null
+            || distanceError(result, desiredDistance) < distanceError(heldForcedCorridor, desiredDistance)) {
+          heldForcedCorridor = result;
+        }
+        ops.logInfo("greedy: attempt with " + subRouteCount
+          + " sub-routes forced a same-way-back corridor — held as fallback, retrying for a clean loop");
+        continue;
       }
       ops.logInfo("greedy: attempt with " + subRouteCount + " sub-routes did not produce an acceptable loop"
         + (result == null || result.getFallbackReason() == null ? "" : " (" + result.getFallbackReason() + ")"));
     }
+    if (heldForcedCorridor != null) {
+      orchestrator.setPlannerResult(heldForcedCorridor);
+      return heldForcedCorridor;
+    }
     return result;
+  }
+
+  /** Relative distance miss of a rung result — the tie-breaker between held forced-corridor rungs. */
+  private static double distanceError(RoundTripResult result, double desiredDistance) {
+    return Math.abs(result.getTotalDistanceMeters() - desiredDistance) / Math.max(1.0, desiredDistance);
   }
 
   /**
