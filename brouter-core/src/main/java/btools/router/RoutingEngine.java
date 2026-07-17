@@ -1093,9 +1093,6 @@ public class RoutingEngine extends Thread {
 
       @Override
       public void addLinksProcessed(long links) {
-        // Delegate to the synchronized aggregator: in speculative AUTO mode a
-        // child can aggregate concurrently with the request thread, and an
-        // unsynchronized += loses one side's whole count.
         RoutingEngine.this.addLinksProcessed((int) links);
       }
 
@@ -3743,9 +3740,9 @@ public class RoutingEngine extends Thread {
 
   /**
    * Aggregate a child engine's work count into this (parent) engine.
-   * Synchronized: in speculative AUTO mode a child aggregates concurrently
-   * with the request thread, and an unsynchronized += would lose a child's
-   * whole count. The engine's own hot-loop {@code linksProcessed++} stays
+   * Synchronized to match {@link #getLinksProcessed()}, which progress
+   * monitors may call from another thread while the request thread
+   * aggregates. The engine's own hot-loop {@code linksProcessed++} stays
    * unsynchronized (single-threaded per engine).
    */
   private synchronized void addLinksProcessed(int childLinks) {

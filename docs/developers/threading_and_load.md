@@ -82,45 +82,14 @@ The request's wall-clock budget is `maxRunningTime` (server default 60 s),
 checked once per Dijkstra pop and enforced as an absolute request deadline for
 round trips (`roundTripRequestDeadline`).
 
-## 3. Intra-request parallelism (round trips)
+## 3. Child engines (round trips)
 
 `AUTO` round-trip mode compares candidate algorithms (ISO_GREEDY, GREEDY, and
 the WAYPOINT / ISOCHRONE fallbacks), each built in a **fully isolated child
-`RoutingEngine`** from a request-fields-only copy of the context. The child
-engines predate the performance work and ran **sequentially**.
-
-The greedy performance work added the one genuinely new element in BRouter's
-threading: the ISO_GREEDY and GREEDY children may run **concurrently** on
-separate threads, for lower single-request latency. Because routing is
-CPU-bound, this is the first thing that breaks the pool's implicit
-"≈ 1 CPU-bound thread per admitted request" assumption — an unbounded version
-would run up to `2 × cores` CPU-bound threads under `AUTO` load and slow *both*
-searches against their deadlines.
-
-The speculation is **opt-in** (`-DroundTripSpeculativeAutoGreedy=true`; the
-default competition is sequential — ISO_GREEDY first, GREEDY only when still
-needed). When enabled, the child is gated on a non-blocking permit from a
-global pool (`-DroundTripParallelAutoPermits`). The pool counts only
-speculative children — it cannot see actual server load — so its default
-commits **at most half the machine, bounded at 4** (`min(4, cores/2)`):
-even when every admitted request is speculative `AUTO`, incoming requests
-still find free cores. The worst case is `maxthreads + min(4, cores/2)`
-CPU-bound threads, not the `2 × cores` an unbounded version would reach.
-
-- **Idle / lightly-loaded box** — a permit is free, the child runs in parallel,
-  single-request latency win preserved.
-- **Permits exhausted, or a single-core box** — the acquire fails and
-  GREEDY runs **sequentially** on the request's own core, so the parallelism
-  adds zero extra CPU-bound threads.
-
-The permit is released in the child's `finally`, so it tracks actual thread
-liveness; a wedged child keeps its permit, degrading `AUTO` toward sequential
-rather than oversubscribing further. Setting
-`-DroundTripParallelAutoPermits=0` forces a fully-sequential `AUTO`
-competition even in speculative mode. The speculative child is a daemon
-thread, its joins are always time-bounded, it is terminated (and interrupted)
-if it overstays, and a still-wedged thread's stack is logged — a stuck child
-can never hang the request thread or block JVM exit.
+`RoutingEngine`** from a request-fields-only copy of the context. The children
+run **sequentially** on the request's own thread (ISO_GREEDY first, GREEDY
+only when still needed), so an `AUTO` request occupies one core and the pool's
+implicit "≈ 1 CPU-bound thread per admitted request" assumption holds.
 
 **Termination cascades to children.** Server pre-emption calls `terminate()`
 on the *parent* engine; each child engine checks its own kill flag per pop, so
@@ -135,7 +104,6 @@ forwards the pre-emption. A pre-empted `AUTO` request therefore stops within
 | `maxthreads` (launch arg) | Server | Max concurrently-executing requests. Keep ≈ cores for a per-request-core guarantee. |
 | `-DmaxRunningTime` (seconds) | Server | Operator **ceiling** on per-request wall-clock budget (default 60 s). Malformed values fail closed to the default. |
 | `timeout` (URL param, seconds) | Request | Per-request budget, **clamped to the `maxRunningTime` ceiling**. Lets a client resend a degraded round trip with more budget without exceeding the operator cap. |
-| `-DroundTripParallelAutoPermits` | Server (round trips) | Max `AUTO` requests running their GREEDY child in parallel at once (default `min(4, cores/2)`; `0` = fully sequential). Only relevant with `-DroundTripSpeculativeAutoGreedy=true`. |
 | `memoryclass` | Request | `NodesCache` memory bound per engine (MB, default 64). |
 
 ## Round-trip budget scaling

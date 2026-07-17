@@ -161,22 +161,12 @@ diagnostic so operators can see how often the budget actually binds.
 
 Routing is CPU-bound, and the wall-clock budget only translates into useful
 search if the request actually gets a core. `AUTO` runs its candidates
-**sequentially by default** (ISO_GREEDY first, plain GREEDY only when still
-needed — see above), so one request occupies one core. Deployments that prefer
-lower single-request latency over duplicate CPU work can opt into speculative
-parallelism with `-DroundTripSpeculativeAutoGreedy=true`: the GREEDY child then
-starts in parallel, gated by a global non-blocking permit pool
-(`-DroundTripParallelAutoPermits`, default `min(4, cores/2)` — at most half
-the machine goes to speculation, so incoming requests always find free cores).
-When the pool is exhausted (busy box, or a single-core box) the child is
-**not** spawned and the run stays sequential, bounding the extra CPU load
-instead of oversubscribing it; setting the permit property to `0` keeps even
-the opt-in mode fully sequential. Terminating a request (server pre-emption,
-client cancel) cascades to its child engines, so a cancelled round trip frees
-its cores within ~one search step.
+**sequentially** (ISO_GREEDY first, plain GREEDY only when still needed — see
+above), so one request occupies one core. Terminating a request (server
+pre-emption, client cancel) cascades to its child engines, so a cancelled
+round trip frees its core within ~one search step.
 
-Note this only bounds the *round-trip parallelism*'s extra threads. The
-server's overall concurrency is governed separately by the `maxthreads` launch
+The server's overall concurrency is governed by the `maxthreads` launch
 argument; for a hard "an admitted request gets a core for its whole timeout"
 guarantee, keep `maxthreads` at or below the core count (the server's default
 admission policy favours new-request latency and will pre-empt the oldest

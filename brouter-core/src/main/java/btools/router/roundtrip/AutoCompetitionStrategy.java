@@ -38,52 +38,6 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
 
   /**
-   * Grace (ms) the request thread waits past a parallel AUTO GREEDY child's own
-   * budget before terminating it — bounds the join so a wedged or overshooting
-   * child can never hang the request thread.
-   */
-  private static final long AUTO_CHILD_JOIN_UNWIND_MS = 3_000;
-
-  /**
-   * When false (default), do not start plain GREEDY speculatively before
-   * ISO_GREEDY proves it is needed — avoids duplicate runs on strong or
-   * graph-native-absorbed ISO_GREEDY results. Opt back into the old lower-latency
-   * tradeoff with {@code -DroundTripSpeculativeAutoGreedy=true}. Read per
-   * competition (not cached at class load) so tests can exercise the
-   * speculative path.
-   */
-  private static boolean speculativeAutoGreedy() {
-    return Boolean.getBoolean("roundTripSpeculativeAutoGreedy");
-  }
-
-  /**
-   * JVM-wide permit pool capping how many AUTO requests run their speculative
-   * GREEDY child in parallel when {@link #SPECULATIVE_AUTO_GREEDY} is on —
-   * routing is CPU-bound, so this bounds the extra threads. The pool cannot
-   * see actual server load (it counts only speculative children), so the
-   * default commits at most half the machine, bounded at 4, to speculation:
-   * even with every running request speculating, incoming requests still find
-   * free cores. A permit is held for the child's whole lifetime and released
-   * in its finally; a wedged child keeps its permit, degrading AUTO toward
-   * sequential rather than oversubscribing further. Tune via
-   * {@code -DroundTripParallelAutoPermits}; 0 forces fully-sequential AUTO.
-   */
-  private static final java.util.concurrent.Semaphore PARALLEL_AUTO_SEMAPHORE =
-    new java.util.concurrent.Semaphore(Math.max(0,
-      Integer.getInteger("roundTripParallelAutoPermits",
-        defaultParallelAutoPermits(Runtime.getRuntime().availableProcessors()))));
-
-  /** Default speculative-permit count: half the cores, at most 4, at least 0. */
-  static int defaultParallelAutoPermits(int cores) {
-    return Math.max(0, Math.min(4, cores / 2));
-  }
-
-  /** Free permits in the speculative pool — leak detector for tests. */
-  static int availableParallelAutoPermits() {
-    return PARALLEL_AUTO_SEMAPHORE.availablePermits();
-  }
-
-  /**
    * AUTO's plain-GREEDY entitlement check: a below-threshold ISO_GREEDY does not
    * imply a useful second GREEDY run — if ISO_GREEDY already used graph-native
    * candidates (provider fallback or internal graph-native compare), GREEDY would
@@ -152,45 +106,9 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
     // 1+2. Run ISO_GREEDY first, then plain GREEDY only when the ISO result
     // proves the comparison is still useful. This is the issue-#26 default:
     // avoid duplicate production algorithm runs when ISO_GREEDY is strong or
-    // has already absorbed the graph-native provider fallback. An opt-in
-    // speculative mode can still start GREEDY in parallel for deployments that
-    // prefer lower single-request latency over duplicate CPU work.
-    RoundTripCandidateResult[] parallel = new RoundTripCandidateResult[2];
-    java.util.concurrent.atomic.AtomicReference<RoutingEngine> greedyEngineOut =
-      new java.util.concurrent.atomic.AtomicReference<>();
-    Thread greedyThread = null;
-    // Optional load-aware parallelism: routing is CPU-bound, so speculative
-    // GREEDY is opt-in and also gated on a NON-BLOCKING permit. If the permit
-    // is unavailable, or speculation is disabled, GREEDY runs sequentially only
-    // if the ISO result needs it.
-    boolean parallelPermit = speculativeAutoGreedy()
-      && System.currentTimeMillis() < deadline
-      && PARALLEL_AUTO_SEMAPHORE.tryAcquire();
-    if (parallelPermit) {
-      greedyThread = new Thread(() -> {
-        try {
-          parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction,
-            deadline, greedyEngineOut);
-        } finally {
-          PARALLEL_AUTO_SEMAPHORE.release();
-        }
-      }, "roundtrip-auto-greedy");
-      // Daemon: a discarded speculative child must never delay JVM exit (CLI).
-      greedyThread.setDaemon(true);
-      greedyThread.start();
-    }
-    parallel[0] = runChildCandidate(RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
-    RoundTripCandidateResult isoGreedyR = parallel[0] != null
-      ? parallel[0] : new RoundTripCandidateResult(RoundTripAlgorithm.ISO_GREEDY);
-    // Whether GREEDY will be consulted is fully decidable BEFORE the join:
-    // the spec calls for GREEDY when iso pool is not viable OR ISO_GREEDY is
-    // weak (same single threshold for both signals), and the sequential
-    // competition decided whether to START GREEDY right after ISO_GREEDY
-    // completed — recording the entitlement instant here keeps the budget
-    // accounting identical (a tiny budget still runs/counts exactly one
-    // candidate). Deciding now means a STRONG ISO_GREEDY never waits out the
-    // speculative child: it is terminated instead, so AUTO latency on the
-    // good path stays that of ISO_GREEDY alone.
+    // has already absorbed the graph-native provider fallback.
+    RoundTripCandidateResult isoGreedyR =
+      runChildCandidate(RoundTripAlgorithm.ISO_GREEDY, searchRadius, direction, deadline);
     long greedyDecisionTime = System.currentTimeMillis();
     // MAX effort (QUALITY tier): the plain-GREEDY competitor always runs — the
     // caller asked for the best loop and accepts the cost; the health-gated
@@ -199,81 +117,14 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
     boolean greedyNeeded = orchestrator.request.effortPolicy.runGreedyAlways
       && System.currentTimeMillis() < deadline
       || autoNeedsPlainGreedy(isoGreedyR, greedyDecisionTime, deadline);
-    String greedyDiscardReason = autoPlainGreedyDiscardReason(isoGreedyR, greedyDecisionTime, deadline);
-    boolean greedyResultIgnored = false;
-    if (greedyThread != null) {
-      RoutingEngine greedyChild = greedyEngineOut.get();
-      if (!greedyNeeded && greedyChild != null) {
-        // The speculative child's result will not be consulted — kill it so
-        // the bounded join below returns promptly (the volatile flag aborts
-        // its searches/expansions within ~one heap pop).
-        greedyChild.terminate();
-      }
-      // ALWAYS bound the join. Even a needed child must not hang the request
-      // thread: its own budget ends at the shared deadline, so wait only up to
-      // the remaining budget plus an unwind margin. If it overstays that
-      // (overshot its budget, or wedged in a path slow to honor termination),
-      // terminate it and give it a final short window — never block forever.
-      // A discarded child gets only the unwind margin.
-      long joinBudgetMs = greedyNeeded
-        ? Math.max(0L, deadline - System.currentTimeMillis()) + AUTO_CHILD_JOIN_UNWIND_MS
-        : AUTO_CHILD_JOIN_UNWIND_MS;
-      try {
-        greedyThread.join(joinBudgetMs);
-        if (greedyThread.isAlive()) {
-          ops.logInfo("AUTO: GREEDY child overstayed its budget; terminating");
-          // Re-fetch: the child engine may have been published only after the
-          // pre-join read above (spawn raced the ISO_GREEDY run).
-          RoutingEngine lateChild = greedyEngineOut.get();
-          if (lateChild != null) {
-            lateChild.terminate();
-          }
-          // Break interruptible blocking states (sleep/wait/interruptible
-          // channel I/O); harmless for the CPU-bound search loops, which the
-          // kill flag already covers per pop.
-          greedyThread.interrupt();
-          greedyThread.join(AUTO_CHILD_JOIN_UNWIND_MS);
-        }
-      } catch (InterruptedException ie) {
-        Thread.currentThread().interrupt();
-      }
-      // If the (needed) child is STILL alive its result slot is not safely
-      // published — treat it as no candidate rather than reading a
-      // half-written result. The daemon thread cannot block JVM exit.
-      if (greedyThread.isAlive()) {
-        greedyNeeded = false;
-        greedyResultIgnored = true;
-        // Dump where the wedged daemon sits so operators can identify paths
-        // slow to honor termination. Its permit stays held (correct — the core
-        // IS still burning), so a repeat offender degrades AUTO to sequential
-        // instead of oversubscribing further.
-        StringBuilder wedge = new StringBuilder(
-          "AUTO: GREEDY child did not stop in time; ignoring its result. Wedged at:");
-        for (StackTraceElement el : greedyThread.getStackTrace()) {
-          wedge.append("\n  ").append(el);
-        }
-        ops.logInfo(wedge.toString());
-      }
-    }
     results.add(isoGreedyR);
     ops.logInfo("AUTO candidate: " + isoGreedyR);
 
-    // Sequential fallback: no spare-CPU permit was available (busy box) or the
-    // budget was already spent at spawn time, so GREEDY was not started in
-    // parallel. Run it now on this thread iff it is actually needed — exactly
-    // the pre-parallel competition's behaviour (GREEDY only when ISO_GREEDY is
-    // weak). No oversubscription: this reuses the request's own core.
-    if (greedyThread == null && greedyNeeded) {
-      parallel[1] = runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
-    }
-
-    if (greedyNeeded && parallel[1] != null) {
-      results.add(parallel[1]);
-      ops.logInfo("AUTO candidate: " + parallel[1]);
-    } else if (greedyThread != null && !greedyResultIgnored) {
-      ops.logInfo("AUTO: speculative GREEDY child discarded ("
-        + (greedyDiscardReason == null ? "not needed" : greedyDiscardReason)
-        + ") — policy parity with the sequential competition");
+    if (greedyNeeded) {
+      RoundTripCandidateResult greedyR =
+        runChildCandidate(RoundTripAlgorithm.GREEDY, searchRadius, direction, deadline);
+      results.add(greedyR);
+      ops.logInfo("AUTO candidate: " + greedyR);
     }
 
     // 3. Compare accepted greedy candidates; pick highest score.
@@ -373,16 +224,6 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   }
 
   /**
-   * Run one AUTO candidate in an isolated child engine, score it, return the
-   * wrapper. Never throws — failures land in the result's {@code errorMessage}.
-   */
-  private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
-                                                     double searchRadius, double direction,
-                                                     long deadline) {
-    return runChildCandidate(algo, searchRadius, direction, deadline, null);
-  }
-
-  /**
    * Adopt the winning candidate's track as this engine's result and attach a
    * summary diagnostic of what was tried and which won.
    */
@@ -476,15 +317,12 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   }
 
   /**
-   * As above, but publishes the child engine into {@code engineOut} as soon as it
-   * is constructed, so a concurrent coordinator can {@code terminate()} a
-   * speculative child no longer needed (the kill flag is honoured per search pop
-   * and per expansion pop).
+   * Run one AUTO candidate in an isolated child engine, score it, return the
+   * wrapper. Never throws — failures land in the result's {@code errorMessage}.
    */
   private RoundTripCandidateResult runChildCandidate(RoundTripAlgorithm algo,
                                                      double searchRadius, double direction,
-                                                     long deadline,
-                                                     java.util.concurrent.atomic.AtomicReference<RoutingEngine> engineOut) {
+                                                     long deadline) {
     long t0 = System.currentTimeMillis();
     RoundTripCandidateResult r = new RoundTripCandidateResult(algo);
     try {
@@ -518,9 +356,6 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       // child checks its own kill flag per pop, so without this hook the
       // pre-empted request keeps burning its core until the child budget ends.
       ops.addTerminationHook(child::terminate);
-      if (engineOut != null) {
-        engineOut.set(child);
-      }
       // Give the child only the remaining shared budget (floored so a spawned
       // candidate still gets a usable slice), not the full request timeout.
       long budget = childCandidateBudgetMs(deadline, System.currentTimeMillis());
@@ -530,8 +365,7 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       r.runtimeMillis = System.currentTimeMillis() - t0;
       // Aggregate the child's expansion work into the parent so
       // getLinksProcessed() reports request-level totals (the perf budget
-      // suite's work metric). Same-thread for sequential children; the
-      // speculative parallel child is joined before its result is read.
+      // suite's work metric).
       ops.addLinksProcessed(child.getLinksProcessed());
       // All winner-attribution telemetry (incl. the keep-when-forced marker
       // the re-gate below honors) reads through this reference — no
