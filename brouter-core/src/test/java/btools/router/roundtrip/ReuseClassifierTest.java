@@ -2,7 +2,6 @@ package btools.router.roundtrip;
 
 import java.util.ArrayList;
 
-import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -37,16 +36,6 @@ import btools.router.OsmTrack;
  * otherwise loop-like route.
  */
 public class ReuseClassifierTest {
-
-  /**
-   * Mark "fastbike" as paved: classification now comes from the cost-model probe
-   * ({@link PavedProfileProbeTest}), not the profile name, so the hostile-spur
-   * cases must seed it explicitly.
-   */
-  @Before
-  public void seedPavedClassification() {
-    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
-  }
 
   // ============ Helpers ====================================================
 
@@ -543,7 +532,7 @@ public class ReuseClassifierTest {
       t.nodes.get(i).message = copy;
     }
     RoundTripQualityResult r = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", /*allowSamewayback*/ true);
+      t, t.distance, /*pavedProfile*/ true, /*allowSamewayback*/ true);
     assertFalse("profile-hostile spur rejected for fastbike even when "
       + "allowSamewayback=true: " + r, r.isAccepted());
     assertTrue("rejection mentions profile-hostile/path: " + r.getRejectionReason(),
@@ -557,7 +546,7 @@ public class ReuseClassifierTest {
     // non-paved profiles, so the lollipop is accepted.
     OsmTrack t = lollipop(2500, 5000);
     RoundTripQualityResult r = RoundTripQualityGate.evaluate(
-      t, t.distance, "gravel", /*allowSamewayback*/ false);
+      t, t.distance, /*pavedProfile*/ false, /*allowSamewayback*/ false);
     assertTrue("lollipop on gravel accepted: " + r, r.isAccepted());
     assertEquals(RouteShape.LOLLIPOP, r.getShape());
   }
@@ -760,9 +749,12 @@ public class ReuseClassifierTest {
     return track(pts.toArray(new int[0][]));
   }
 
-  /** Local shim for the removed legacy String API: null when accepted, else the rejection reason. */
+  /** Local shim for the removed legacy String API: null when accepted, else the
+   *  rejection reason. Maps the test profile name to the request-owned paved
+   *  verdict ("fastbike" = paved). */
   private static String validate(OsmTrack track, double desiredDistance, String profileName) {
-    RoundTripQualityResult r = RoundTripQualityGate.evaluate(track, desiredDistance, profileName, false, false);
+    boolean paved = "fastbike".equals(profileName);
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(track, desiredDistance, paved, false, false);
     return r.isAccepted() ? null : r.getRejectionReason();
   }
 }

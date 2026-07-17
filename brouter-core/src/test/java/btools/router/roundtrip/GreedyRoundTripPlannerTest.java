@@ -1,7 +1,6 @@
 package btools.router.roundtrip;
 
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -24,13 +23,6 @@ import btools.router.RoutingParamCollector;
  * The slow, segment-gated end-to-end tests live in {@code GreedyRoundTripPlannerIT}.
  */
 public class GreedyRoundTripPlannerTest {
-
-  @Before
-  public void setup() {
-    // Classification now comes from the cost-model probe (PavedProfileProbeTest),
-    // not the profile name; seed "fastbike" as paved for the gate-delegation case.
-    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
-  }
 
   @Test
   public void roundTripAlgorithmParsing() {
@@ -592,7 +584,7 @@ public class GreedyRoundTripPlannerTest {
     // accepted this track (it has zero reuse and clean ratio).
     OsmTrack heavy = squarePathTrack(/*sideMeters*/ 5000);
     GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RadialCandidateProvider());
-    planner.setProfileName("fastbike");
+    planner.setPavedProfile(true);
     String reason = planner.qualityGateReason(heavy, heavy.distance);
     Assert.assertNotNull("planner rejects hostile-fraction routes", reason);
     Assert.assertTrue(
@@ -605,7 +597,7 @@ public class GreedyRoundTripPlannerTest {
     // The same delegation accepts a clean paved loop.
     OsmTrack clean = squareResidentialTrack(/*sideMeters*/ 5000);
     GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(null, new RadialCandidateProvider());
-    planner.setProfileName("fastbike");
+    planner.setPavedProfile(true);
     Assert.assertNull("planner accepts clean residential loop",
       planner.qualityGateReason(clean, clean.distance));
   }

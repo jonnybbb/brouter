@@ -1,6 +1,5 @@
 package btools.router.roundtrip;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -86,7 +85,7 @@ public class PavedProfileProbeTest {
     for (String p : new String[]{"fastbike", "fastbike-verylowtraffic",
         "skating", "vm-forum-velomobil-schnell"}) {
       assertTrue("expected paved-only classification for " + p,
-        RoundTripQualityGate.classifyPavedProfile(parse(p), "probe-" + p));
+        RoundTripQualityGate.classifyPavedProfile(parse(p)));
     }
   }
 
@@ -94,7 +93,7 @@ public class PavedProfileProbeTest {
   public void unpavedTolerantProfilesClassifiedNotPaved() {
     for (String p : new String[]{"trekking", "gravel", "mtb", "hiking-mountain", "shortest"}) {
       assertFalse("expected non-paved classification for " + p,
-        RoundTripQualityGate.classifyPavedProfile(parse(p), "probe-" + p));
+        RoundTripQualityGate.classifyPavedProfile(parse(p)));
     }
   }
 
@@ -122,7 +121,7 @@ public class PavedProfileProbeTest {
         + "---context:way\nassign costfactor = switch surface=gravel 10 1.0\n"
         + "---context:node\nassign initialcost = 0\n");
     assertTrue("road-shaped cost model should classify paved-only",
-      RoundTripQualityGate.classifyPavedProfile(roadShaped, "rennrad-no-token"));
+      RoundTripQualityGate.classifyPavedProfile(roadShaped));
   }
 
   /**
@@ -163,7 +162,7 @@ public class PavedProfileProbeTest {
     assertFalse("control: this cost model probes as not-paved",
       RoundTripQualityGate.probePavedFromCostModel(on));
     assertTrue("override=1 should force paved-only",
-      RoundTripQualityGate.classifyPavedProfile(on, "override-on"));
+      RoundTripQualityGate.classifyPavedProfile(on));
 
     // Gravel-hostile cost model (probe would say paved), but override=0 forces not-paved.
     BExpressionContextWay off = parseInline(
@@ -173,48 +172,14 @@ public class PavedProfileProbeTest {
     assertTrue("control: this cost model probes as paved",
       RoundTripQualityGate.probePavedFromCostModel(off));
     assertFalse("override=0 should force not-paved",
-      RoundTripQualityGate.classifyPavedProfile(off, "override-off"));
+      RoundTripQualityGate.classifyPavedProfile(off));
   }
 
   /** With no expression context to probe, the profile is treated as not-paved (no name guess). */
   @Test
   public void noContextClassifiesNotPaved() {
-    // Even a "fastbike"/"road" name is not paved without a probe — the name
-    // heuristic was removed; classification is cost-model-only. (Distinct cache
-    // keys so this does not perturb the shared "fastbike" entry other tests use.)
-    assertFalse(RoundTripQualityGate.classifyPavedProfile(null, "noctx-fastbike"));
-    assertFalse(RoundTripQualityGate.classifyPavedProfile(null, "noctx-road-bike"));
-    assertFalse(RoundTripQualityGate.classifyPavedProfile(null, "noctx-trekking"));
-  }
-
-  /** Once classified, the name-only entry point returns the memoised probe result. */
-  @Test
-  public void isPavedProfileReturnsMemoisedProbeResult() {
-    String name = "memo-roadshape";
-    BExpressionContextWay roadShaped = parseInline(
-      "---context:global\n"
-        + "---context:way\nassign costfactor = switch surface=gravel 10 1.0\n"
-        + "---context:node\nassign initialcost = 0\n");
-    // Unclassified -> not paved (no name guess); the probe makes it true and caches it.
-    assertFalse(RoundTripQualityGate.isPavedProfile(name));
-    RoundTripQualityGate.classifyPavedProfile(roadShaped, name);
-    assertEquals(Boolean.TRUE, RoundTripQualityGate.isPavedProfile(name));
-  }
-
-  /**
-   * A null-context classification (an AUTO-competition child engine built via
-   * copyRequestFields, which omits expctxWay) must NOT overwrite a real probed
-   * verdict in the shared static cache — otherwise every later isPavedProfile()
-   * lookup would wrongly bypass the hostile-surface gate for the whole competition.
-   */
-  @Test
-  public void nullContextDoesNotPoisonCachedClassification() {
-    String name = "poison-test";
-    RoundTripQualityGate.classifyPavedProfile(parse("fastbike"), name); // parent probes -> paved
-    assertTrue(RoundTripQualityGate.isPavedProfile(name));
-    // child with no context: returns the safe `false` for its own use, but must not cache it
-    assertFalse(RoundTripQualityGate.classifyPavedProfile(null, name));
-    assertTrue("null-context classify must not poison the cached verdict",
-      RoundTripQualityGate.isPavedProfile(name));
+    // Even a "fastbike"/"road"-named profile is not paved without a probe — the
+    // name heuristic was removed; classification is cost-model-only.
+    assertFalse(RoundTripQualityGate.classifyPavedProfile(null));
   }
 }

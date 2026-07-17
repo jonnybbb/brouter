@@ -2,7 +2,6 @@ package btools.router.roundtrip;
 
 import java.util.ArrayList;
 
-import org.junit.Before;
 import org.junit.Test;
 
 
@@ -21,33 +20,14 @@ import btools.router.OsmTrack;
  * and rejects every hard-fail case named in the production-safety spec. */
 public class RoundTripQualityGateTest {
 
-  /**
-   * Mark the profiles these gate tests use, since classification now comes from
-   * the cost-model probe (see {@link PavedProfileProbeTest}) rather than the
-   * profile name. The hostile-surface checks read this via
-   * {@link RoundTripQualityGate#isPavedProfile}.
-   */
-  @Before
-  public void seedPavedClassification() {
-    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
-    RoundTripQualityGate.putPavedClassificationForTest("gravel", false);
-    RoundTripQualityGate.putPavedClassificationForTest("mtb", false);
-  }
-
-  // ---- Classification is memoised, name-independent --------------------------
+  // ---- Classification --------------------------------------------------------
 
   @Test
-  public void pavedClassificationIsMemoisedAndNameIndependent() {
-    RoundTripQualityGate.putPavedClassificationForTest("seed-paved", true);
-    RoundTripQualityGate.putPavedClassificationForTest("seed-unpaved", false);
-    assertTrue(RoundTripQualityGate.isPavedProfile("seed-paved"));
-    assertFalse(RoundTripQualityGate.isPavedProfile("seed-unpaved"));
-
-    // No name-based guessing any more: an unclassified profile is treated as
-    // not-paved even when its name contains "fastbike" / "road" tokens. Real
-    // classification comes from the cost-model probe (PavedProfileProbeTest).
-    assertFalse(RoundTripQualityGate.isPavedProfile("unclassified-fastbike-road"));
-    assertFalse(RoundTripQualityGate.isPavedProfile(null));
+  public void classifyWithoutContextIsNotPaved() {
+    // No way-expression context to probe → not paved (no name-based guess);
+    // the hostile-surface gate is simply not imposed. Real classification
+    // comes from the cost-model probe (PavedProfileProbeTest).
+    assertFalse(RoundTripQualityGate.classifyPavedProfile(null));
   }
 
   // ---- Happy path ---------------------------------------------------------
@@ -166,11 +146,11 @@ public class RoundTripQualityGateTest {
     // QUALITY — rideable but suboptimal (engine warns by default):
     // distance ratio below band (8km loop vs 20km target → 0.4)
     assertEquals("ratio rejection is QUALITY", Q,
-      RoundTripQualityGate.evaluate(squareLoop(2000), 20000, "fastbike", false).getRejectionTier());
+      RoundTripQualityGate.evaluate(squareLoop(2000), 20000, /*pavedProfile*/ true, false).getRejectionTier());
     // profile-hostile surface (whole loop is highway=path on a paved profile)
     assertEquals("hostile-surface rejection is QUALITY", Q,
       RoundTripQualityGate.evaluate(squareLoopWithMessage(5000, msgWayTags("highway=path")),
-        20000, "fastbike", false).getRejectionTier());
+        20000, /*pavedProfile*/ true, false).getRejectionTier());
 
     // STRUCTURAL — broken / not a rideable loop (engine always hard-rejects):
     // too few nodes
@@ -180,18 +160,18 @@ public class RoundTripQualityGateTest {
     tiny.nodes.add(makeNode(1000, 0));
     tiny.distance = 1000;
     assertEquals("too-few-nodes is STRUCTURAL", S,
-      RoundTripQualityGate.evaluate(tiny, 20000, "fastbike", false).getRejectionTier());
+      RoundTripQualityGate.evaluate(tiny, 20000, /*pavedProfile*/ true, false).getRejectionTier());
     // closure gap (last node 5km from start)
     OsmTrack open = squareLoop(5000);
     OsmPathElement last = open.nodes.get(open.nodes.size() - 1);
     open.nodes.set(open.nodes.size() - 1, makeNodeRaw(last.getILon() + 5000, last.getILat()));
     assertEquals("closure-gap is STRUCTURAL", S,
-      RoundTripQualityGate.evaluate(open, 20000, "fastbike", false).getRejectionTier());
+      RoundTripQualityGate.evaluate(open, 20000, /*pavedProfile*/ true, false).getRejectionTier());
     // beeline (DIRECT-marked waypoint)
     OsmTrack bl = squareLoop(5000);
     RoundTripFixture.markDirectWaypoint(bl);
     assertEquals("beeline is STRUCTURAL", S,
-      RoundTripQualityGate.evaluate(bl, 20000, "fastbike", false).getRejectionTier());
+      RoundTripQualityGate.evaluate(bl, 20000, /*pavedProfile*/ true, false).getRejectionTier());
   }
 
   @Test
@@ -218,7 +198,7 @@ public class RoundTripQualityGateTest {
     OsmTrack t = squareLoopWithMessage(5000,
       msgWayTags("highway=service surface=asphalt route=ferry"));
     RoundTripQualityResult result = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", false, false);
+      t, t.distance, /*pavedProfile*/ true, false, false);
     assertFalse("ferry must reject by default", result.isAccepted());
     assertTrue("expected ferry rejection, got: " + result.getRejectionReason(),
       result.getRejectionReason().contains("ferry"));
@@ -229,7 +209,7 @@ public class RoundTripQualityGateTest {
     OsmTrack t = squareLoopWithMessage(5000,
       msgWayTags("highway=service surface=asphalt route=ferry"));
     RoundTripQualityResult result = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", false, false, true);
+      t, t.distance, /*pavedProfile*/ true, false, false, true);
     assertTrue("explicit ferry opt-in should leave clean geometry acceptable: "
       + result.getRejectionReason(), result.isAccepted());
   }
@@ -1127,13 +1107,13 @@ public class RoundTripQualityGateTest {
     // chaos (cap < x <= 2x cap) stays QUALITY (lenient ships with Warning).
     OsmTrack moderate = closedBowties(6);
     RoundTripQualityResult qm = RoundTripQualityGate.evaluate(
-      moderate, moderate.distance, "gravel", false, false, false);
+      moderate, moderate.distance, /*pavedProfile*/ false, false, false, false);
     assertFalse(qm.isAccepted());
     assertEquals(RoundTripQualityResult.RejectionTier.QUALITY, qm.getRejectionTier());
 
     OsmTrack explosion = closedBowties(11); // 11 > 2 x 5
     RoundTripQualityResult qe = RoundTripQualityGate.evaluate(
-      explosion, explosion.distance, "gravel", false, false, false);
+      explosion, explosion.distance, /*pavedProfile*/ false, false, false, false);
     assertFalse(qe.isAccepted());
     assertEquals(RoundTripQualityResult.RejectionTier.STRUCTURAL, qe.getRejectionTier());
   }
@@ -1593,9 +1573,12 @@ public class RoundTripQualityGateTest {
     return t;
   }
 
-  /** Local shim for the removed legacy String API: null when accepted, else the rejection reason. */
+  /** Local shim for the removed legacy String API: null when accepted, else the
+   *  rejection reason. Maps the test profile name to the request-owned paved
+   *  verdict ("fastbike" = paved; "gravel"/"mtb" = not paved). */
   private static String validate(OsmTrack track, double desiredDistance, String profileName) {
-    RoundTripQualityResult r = RoundTripQualityGate.evaluate(track, desiredDistance, profileName, false, false);
+    boolean paved = "fastbike".equals(profileName);
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(track, desiredDistance, paved, false, false);
     return r.isAccepted() ? null : r.getRejectionReason();
   }
 }

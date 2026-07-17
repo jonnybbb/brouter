@@ -77,6 +77,9 @@ final class RoundTripRequest {
       searchRadius, requestDeadline, explicitVia, greedyLegTracks));
   }
 
+  /** Request-owned paved/road-bike classification, probed once at request entry. */
+  boolean pavedProfile;
+
   /** Per-leg routing budget (ms) for the round-trip fallthrough; 0 = untimed. */
   long routingBudgetMs;
 

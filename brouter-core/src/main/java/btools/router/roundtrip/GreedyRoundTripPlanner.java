@@ -311,12 +311,13 @@ public class GreedyRoundTripPlanner {
   private final EngineIO io;
   private final EngineContext ctx;
   /**
-   * Active profile name, set by {@link btools.router.RoutingEngine} before
-   * planning. The internal {@link #qualityGateReason fallback gate} forwards it to
-   * {@link RoundTripQualityGate#evaluate} for the paved-vs-other branch; null
+   * Request-owned paved/road-bike verdict, set by {@link GreedyStrategy} before
+   * planning (probed once at request entry). The internal
+   * {@link #qualityGateReason fallback gate} forwards it to
+   * {@link RoundTripQualityGate#evaluate} for the paved-vs-other branch; false
    * (older direct callers) uses profile-agnostic defaults.
    */
-  private String profileName;
+  private boolean pavedProfile;
 
   /**
    * Pocket-avoidance weight on {@link #pocketPenalty}'s [0,1] output. At 2.0 a
@@ -534,11 +535,12 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Set the active profile name. Call during planner construction so the internal
-   * fallback gate matches the production gate downstream.
+   * Set the request-owned paved/road-bike verdict. Call during planner
+   * construction so the internal fallback gate matches the production gate
+   * downstream.
    */
-  public void setProfileName(String profileName) {
-    this.profileName = profileName;
+  public void setPavedProfile(boolean pavedProfile) {
+    this.pavedProfile = pavedProfile;
   }
 
   public void setReturnOracle(ReturnDistanceOracle oracle) {
@@ -564,7 +566,7 @@ public class GreedyRoundTripPlanner {
   RoundTripQualityResult qualityGateVerdict(OsmTrack track, double desiredDistance) {
     if (track == null || track.nodes == null || track.nodes.size() < 4) return null;
     return RoundTripQualityGate.evaluate(
-      track, desiredDistance, profileName, /*allowSamewayback*/ false);
+      track, desiredDistance, pavedProfile, /*allowSamewayback*/ false);
   }
 
   /**
@@ -1287,7 +1289,6 @@ public class GreedyRoundTripPlanner {
           // the cached value widened to double is bit-identical to recomputing
           // it. Non-paved profiles run only the first pass, so they keep the
           // inline computation (no buffer to share).
-          boolean pavedProfile = RoundTripQualityGate.isPavedProfile(profileName);
           int[] segLens = pavedProfile ? segmentDistances(subTrack) : null;
           double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
             visitedEdges, totalDistance, desiredDistance, segLens);
@@ -1518,7 +1519,7 @@ public class GreedyRoundTripPlanner {
           } else if (detailFidelityTooLow(detailedAccepted)) {
             detailReject = "accepted leg still lacks metadata after retrack ("
               + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + ")";
-          } else if (RoundTripQualityGate.isPavedProfile(profileName)) {
+          } else if (pavedProfile) {
             // Phase 2 v3 hostility post-check. The scorer cannot see hostility
             // while choosing candidates (single-pass tracks lack metadata),
             // but the FINAL gate will reject any leg with a contiguous hostile
@@ -1953,7 +1954,7 @@ public class GreedyRoundTripPlanner {
     if (LoopQualityMetrics.maxSingleNullEdgeMeters(track) > MAX_UNDETAILED_EDGE_METERS) {
       return true;
     }
-    return RoundTripQualityGate.isPavedProfile(profileName)
+    return pavedProfile
       && RoundTripQualityGate.missingMetadataFraction(track) > RoundTripQualityGate.MAX_HOSTILE_FRACTION;
   }
 

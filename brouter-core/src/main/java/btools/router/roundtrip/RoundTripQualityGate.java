@@ -8,7 +8,6 @@ import btools.router.OsmTrack;
 import btools.util.CheapAngleMeter;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Uniform hard acceptance gate for round-trip routes, applied to every
@@ -181,25 +180,27 @@ public final class RoundTripQualityGate {
    * length, scenic-spur length, max contiguous retrace). Evaluation order:
    * structural (null/nodes/closure/distance) → beeline/ferry → shape chaos →
    * profile-hostility → {@link ReuseClassifier#classify semantic reuse}; the
-   * first failure wins. Auto-generated mode; see the {@code explicitViaMode}
-   * overload for explicit-via semantics.
+   * first failure wins. {@code pavedProfile} is the request-owned verdict from
+   * {@link #classifyPavedProfile}; when true the hostile-surface checks apply.
+   * Auto-generated mode; see the {@code explicitViaMode} overload for
+   * explicit-via semantics.
    */
   public static RoundTripQualityResult evaluate(OsmTrack track, double desiredDistance,
-                                                String profileName, boolean allowSamewayback) {
-    return evaluate(track, desiredDistance, profileName, allowSamewayback, false);
+                                                boolean pavedProfile, boolean allowSamewayback) {
+    return evaluate(track, desiredDistance, pavedProfile, allowSamewayback, false);
   }
 
   /**
-   * As {@link #evaluate(OsmTrack, double, String, boolean)} but with explicit-via
+   * As {@link #evaluate(OsmTrack, double, boolean, boolean)} but with explicit-via
    * mode. When {@code explicitViaMode} is true the user's via skeleton defines
    * the route, so a distance-ratio mismatch and an INVALID_RETRACE verdict
    * downgrade from rejection to a disclosure. Hard safety checks (closure,
    * beeline, profile-hostility) stay active.
    */
   public static RoundTripQualityResult evaluate(OsmTrack track, double desiredDistance,
-                                                String profileName, boolean allowSamewayback,
+                                                boolean pavedProfile, boolean allowSamewayback,
                                                 boolean explicitViaMode) {
-    return evaluate(track, desiredDistance, profileName, allowSamewayback, explicitViaMode, false);
+    return evaluate(track, desiredDistance, pavedProfile, allowSamewayback, explicitViaMode, false);
   }
 
   /**
@@ -207,7 +208,7 @@ public final class RoundTripQualityGate {
    * {@code ferry=*} tags are hard failures unless {@code allowFerries} is set.
    */
   public static RoundTripQualityResult evaluate(OsmTrack track, double desiredDistance,
-                                                String profileName, boolean allowSamewayback,
+                                                boolean pavedProfile, boolean allowSamewayback,
                                                 boolean explicitViaMode, boolean allowFerries) {
     if (track == null || track.nodes == null) {
       return RoundTripQualityResult.builder()
@@ -314,7 +315,7 @@ public final class RoundTripQualityGate {
     //    on scenic spurs. A LOLLIPOP through singletrack on a road bike
     //    is still bad — the scenic-spur exception is for the shape of the
     //    retracing, not for the surface compatibility.
-    if (isPavedProfile(profileName)) {
+    if (pavedProfile) {
       String hostile = checkHostileSegmentsPaved(track);
       if (hostile != null) {
         return RoundTripQualityResult.builder()
@@ -1389,22 +1390,11 @@ public final class RoundTripQualityGate {
   static final double PAVED_PROBE_RATIO = 5.0;
 
   /**
-   * Memoised paved/road-bike classification, keyed by the request-correct
-   * profile identity ({@code RoutingContext.getProfilePavedKey()}: display
-   * name + '@' + profile timestamp incl. key-value checksum). Written by
-   * {@link #classifyPavedProfile} (has the expression context), read by
-   * {@link #isPavedProfile} (has only the key). The identity key — not the
-   * bare name — is what makes the shared map safe under concurrent requests
-   * carrying same-named profiles with different content or parameter
-   * overrides.
-   */
-  private static final Map<String, Boolean> PAVED_CLASSIFICATION = new ConcurrentHashMap<>();
-
-  /**
    * Classify a profile as paved/road-bike by what its cost model charges for an
-   * unpaved way, independent of name. Memoised by the classification key and later
-   * returned by {@link #isPavedProfile} for the same key; call once per request at round-trip
-   * setup, while the way-expression context is available.
+   * unpaved way, independent of name. Pure probe with no shared state — callers
+   * run it once at request entry, while the way-expression context is available,
+   * and store the verdict on their request state (e.g.
+   * {@code RoundTripRequest.pavedProfile}).
    *
    * <p>Resolution order: (1) explicit author override {@code roadbikeSurfaceGate}
    * ({@code 1}=paved-only, {@code 0}=not); (2) cost-model probe
@@ -1413,31 +1403,15 @@ public final class RoundTripQualityGate {
    * profile) the profile is treated as not-paved, so the hostile-surface gate is
    * simply not imposed.
    */
-  public static boolean classifyPavedProfile(BExpressionContextWay expctxWay, String profileName) {
-    boolean paved;
+  public static boolean classifyPavedProfile(BExpressionContextWay expctxWay) {
     if (expctxWay == null) {
-      paved = false;
-    } else {
-      float override = expctxWay.getVariableValue("roadbikeSurfaceGate", -1f);
-      if (override >= 0f) {
-        paved = override >= 0.5f;
-      } else {
-        paved = probePavedFromCostModel(expctxWay);
-      }
+      return false;
     }
-    // Only cache a verdict computed from a real probe context. A null expctxWay
-    // means we could not probe, so `paved` is just the safe `false` default for
-    // this call's own immediate use; writing it would poison the shared static
-    // cache and make later isPavedProfile() lookups wrongly bypass the
-    // hostile-surface gate. Note: AUTO-competition child engines do NOT have a
-    // null context here — each child re-parses its own profile (non-null
-    // expctxWay) and re-runs this probe, so it writes the same verdict
-    // idempotently rather than being skipped. The guard defends against any
-    // genuinely context-less caller, not against the AUTO children.
-    if (profileName != null && expctxWay != null) {
-      PAVED_CLASSIFICATION.put(profileName, paved);
+    float override = expctxWay.getVariableValue("roadbikeSurfaceGate", -1f);
+    if (override >= 0f) {
+      return override >= 0.5f;
     }
-    return paved;
+    return probePavedFromCostModel(expctxWay);
   }
 
   /**
@@ -1477,26 +1451,5 @@ public final class RoundTripQualityGate {
     byte[] description = expctxWay.encode(lookupData);
     expctxWay.evaluate(false, description); // forward direction
     return expctxWay.getCostfactor();
-  }
-
-  /**
-   * Paved/road-bike classification for a profile by name — the probe result
-   * recorded by {@link #classifyPavedProfile} (warmed once at round-trip setup).
-   * An unclassified profile is treated as not-paved; there is no name-based guess.
-   */
-  public static boolean isPavedProfile(String profileName) {
-    if (profileName == null) {
-      return false;
-    }
-    Boolean classified = PAVED_CLASSIFICATION.get(profileName);
-    return classified != null && classified;
-  }
-
-  /**
-   * Test-only seam: seed the classification cache directly so gate tests can mark
-   * a profile paved/not-paved without parsing a real profile to run the probe.
-   */
-  public static void putPavedClassificationForTest(String profileName, boolean paved) {
-    PAVED_CLASSIFICATION.put(profileName, paved);
   }
 }

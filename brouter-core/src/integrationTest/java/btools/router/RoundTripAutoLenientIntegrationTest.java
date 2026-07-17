@@ -1,9 +1,7 @@
 package btools.router;
 
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Test;
-import btools.router.roundtrip.RoundTripQualityGate;
 
 /**
  * AUTO-competition lenient/strict best-effort adoption on the Dreieich fixture.
@@ -20,13 +18,6 @@ import btools.router.roundtrip.RoundTripQualityGate;
  * </ul>
  */
 public class RoundTripAutoLenientIntegrationTest {
-
-  @Before
-  public void seedPavedClassification() {
-    // The hostile-surface QUALITY check only fires for a paved profile; the
-    // real engine probes this during setup, seed it for determinism.
-    RoundTripQualityGate.putPavedClassificationForTest("fastbike", true);
-  }
 
   /** Run a generated fastbike AUTO round-trip (no algorithm, no vias) that the
    *  fixture forces onto profile-hostile surface — a QUALITY-tier failure. */

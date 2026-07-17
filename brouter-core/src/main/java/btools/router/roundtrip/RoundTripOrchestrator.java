@@ -277,10 +277,11 @@ public final class RoundTripOrchestrator {
       long wallStart = System.currentTimeMillis();
 
       ops.routingContext().useDynamicDistance = true;
-      // Classify the profile's surface policy once, from its cost model (not its
-      // name), so the quality gate and planner hostility checks use a consistent,
-      // name-independent verdict for the rest of this request.
-      RoundTripQualityGate.classifyPavedProfile(ops.routingContext().expctxWay, ops.routingContext().getProfilePavedKey());
+      // Classify the profile's surface policy once per request, from its cost
+      // model (not its name), and store it on the request so the quality gate
+      // and planner hostility checks use a consistent, name-independent verdict
+      // for the rest of this request.
+      request.pavedProfile = RoundTripQualityGate.classifyPavedProfile(ops.routingContext().expctxWay);
       double searchRadius;
       if (ops.routingContext().roundTripLength != null) {
         // roundTripLength is the desired total loop distance — convert to internal search radius.
@@ -658,7 +659,7 @@ public final class RoundTripOrchestrator {
     // plain route.
     ops.routingContext().explicitViaDensify =
       Boolean.TRUE.equals(ops.routingContext().explicitViaDensifyOverride)
-        && !RoundTripQualityGate.isPavedProfile(ops.routingContext().getProfilePavedKey());
+        && !request.pavedProfile;
 
     // Anchor cycle [start, via1, ..., viaN]. With densification on, insert generated
     // arc-following "bulge" points between consecutive anchors so legs follow the loop
@@ -774,7 +775,7 @@ public final class RoundTripOrchestrator {
                                                 boolean forcedCorridorAccepted) {
     boolean allowSamewayback = ops.routingContext().allowSamewayback || forcedCorridorAccepted;
     return RoundTripQualityGate.evaluate(track, 2 * Math.PI * searchRadius,
-      ops.routingContext().getProfilePavedKey(), allowSamewayback, explicitViaMode,
+      request.pavedProfile, allowSamewayback, explicitViaMode,
       ops.roundTripFerriesAllowed());
   }
 

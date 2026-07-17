@@ -328,7 +328,7 @@ public class RoutingEngineAutoCompetitionTest {
 
     Assert.assertTrue(GreedyStrategy.internalBranchNeeded(
       GreedyStrategy.scoreInternalGreedyResult(
-        degraded, degraded.getTrack().distance, "fastbike", 0, false, false)));
+        degraded, degraded.getTrack().distance, "fastbike", /*pavedProfile*/ true, 0, false, false)));
   }
 
   @Test
@@ -337,7 +337,7 @@ public class RoutingEngineAutoCompetitionTest {
 
     Assert.assertFalse(GreedyStrategy.internalBranchNeeded(
       GreedyStrategy.scoreInternalGreedyResult(
-        strong, strong.getTrack().distance, "fastbike", 0, false, false)));
+        strong, strong.getTrack().distance, "fastbike", /*pavedProfile*/ true, 0, false, false)));
   }
 
   // ---- best-effort (lenient) candidate selection — Option C ----------------

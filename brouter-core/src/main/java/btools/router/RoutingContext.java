@@ -74,18 +74,6 @@ public final class RoutingContext {
   public String rawTrackPath;
   public String rawAreaPath;
 
-  /**
-   * Request-correct profile identity for the paved-profile classification
-   * cache: the display name alone is ambiguous (two concurrent requests can
-   * carry same-named profiles with different content or parameter overrides),
-   * so the key appends {@link #profileTimestamp}, which covers both the file
-   * version and the key-value checksum. Starts with {@link #getProfileName()},
-   * so substring-family matching (mtb/gravel/...) keeps working on the key.
-   */
-  public String getProfilePavedKey() {
-    return getProfileName() + '@' + profileTimestamp;
-  }
-
   public String getProfileName() {
     String name = localFunction == null ? "unknown" : localFunction;
     if (name.endsWith(".brf")) name = name.substring(0, localFunction.length() - 4);
@@ -310,7 +298,9 @@ public final class RoutingContext {
   public boolean explicitViaDensify;
   /**
    * Request densification of explicit-via legs. The engine computes the effective
-   * {@link #explicitViaDensify} as {@code Boolean.TRUE.equals(override) && !isPavedProfile}:
+   * {@link #explicitViaDensify} as {@code Boolean.TRUE.equals(override)} AND the
+   * request-owned paved classification (probed once at request entry from the
+   * cost model) being non-paved:
    * <ul>
    *   <li>{@code TRUE} → opt in, but still gated to non-paved profiles. Paved profiles
    *       (road bike) keep the plain explicit-via route, because in sparse terrain a

@@ -469,12 +469,11 @@ final class GreedyStrategy implements RoundTripStrategy {
       ops.logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(ops, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
-      planner.setHostilityActive(RoundTripQualityGate.isPavedProfile(ops.routingContext().getProfilePavedKey()));
-      // The planner's "profile name" feeds only paved-classification lookups
-      // and its internal gate calls, so it gets the request-correct paved KEY
-      // (which starts with the display name, keeping substring family checks
-      // valid).
-      planner.setProfileName(ops.routingContext().getProfilePavedKey());
+      planner.setHostilityActive(orchestrator.request.pavedProfile);
+      // The planner's paved verdict feeds only its hostility checks and its
+      // internal gate calls; it comes from the request-owned classification
+      // probed once at request entry.
+      planner.setPavedProfile(orchestrator.request.pavedProfile);
       planner.setVarietySeed(ops.routingContext().getRoundTripSeed());
       planner.setRouteBudgets(orchestrator.request.effortPolicy.topKNormal, orchestrator.request.effortPolicy.topKLate);
       planner.setPlanBudgetScale(orchestrator.request.effortPolicy.planBudgetScale);
@@ -571,13 +570,14 @@ final class GreedyStrategy implements RoundTripStrategy {
                                                             double desiredDistance,
                                                             double direction) {
     return scoreInternalGreedyResult(result, desiredDistance,
-      ops.routingContext().getProfilePavedKey(), direction,
+      ops.routingContext().getProfileName(), orchestrator.request.pavedProfile, direction,
       ops.routingContext().allowSamewayback, ops.roundTripFerriesAllowed());
   }
 
   static RouteChoiceScore.Verdict scoreInternalGreedyResult(RoundTripResult result,
                                                             double desiredDistance,
                                                             String profileName,
+                                                            boolean pavedProfile,
                                                             double direction,
                                                             boolean allowSamewayback,
                                                             boolean allowFerries) {
@@ -588,7 +588,7 @@ final class GreedyStrategy implements RoundTripStrategy {
       return null;
     }
     RoundTripQualityResult gate = RoundTripQualityGate.evaluate(result.getTrack(),
-      desiredDistance, profileName,
+      desiredDistance, pavedProfile,
       allowSamewayback || result.isForcedCorridorAccepted(),
       false, allowFerries);
     if (gate == null || !gate.isAccepted()) {

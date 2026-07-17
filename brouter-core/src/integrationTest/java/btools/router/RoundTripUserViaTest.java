@@ -97,12 +97,12 @@ public class RoundTripUserViaTest {
     double mismatchedDesired = 60000;
 
     RoundTripQualityResult autoMode = RoundTripQualityGate.evaluate(
-      t, mismatchedDesired, "fastbike", /*allowSamewayback*/ false,
+      t, mismatchedDesired, /*pavedProfile*/ true, /*allowSamewayback*/ false,
       /*explicitViaMode*/ false);
     Assert.assertFalse("auto mode rejects ratio mismatch", autoMode.isAccepted());
 
     RoundTripQualityResult viaMode = RoundTripQualityGate.evaluate(
-      t, mismatchedDesired, "fastbike", /*allowSamewayback*/ false,
+      t, mismatchedDesired, /*pavedProfile*/ true, /*allowSamewayback*/ false,
       /*explicitViaMode*/ true);
     Assert.assertTrue("explicit-via mode accepts ratio mismatch: " + viaMode,
       viaMode.isAccepted());
@@ -121,7 +121,7 @@ public class RoundTripUserViaTest {
     t.matchedWaypoints.add(mwp);
 
     RoundTripQualityResult r = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", false, /*explicitViaMode*/ true);
+      t, t.distance, /*pavedProfile*/ true, false, /*explicitViaMode*/ true);
     Assert.assertFalse("beeline rejection still active in explicit-via mode",
       r.isAccepted());
     Assert.assertTrue(r.getRejectionReason().contains("beeline"));
@@ -136,7 +136,7 @@ public class RoundTripUserViaTest {
       last.getILon() + 6000, last.getILat(), (short) 0, null));
 
     RoundTripQualityResult r = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", false, /*explicitViaMode*/ true);
+      t, t.distance, /*pavedProfile*/ true, false, /*explicitViaMode*/ true);
     Assert.assertFalse("closure check still active in explicit-via mode",
       r.isAccepted());
     Assert.assertTrue(r.getRejectionReason().contains("closure"));
@@ -150,11 +150,11 @@ public class RoundTripUserViaTest {
     OsmTrack t = zigzagTrack();
 
     RoundTripQualityResult autoMode = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", false, /*explicitViaMode*/ false);
+      t, t.distance, /*pavedProfile*/ true, false, /*explicitViaMode*/ false);
     Assert.assertFalse("auto mode rejects zigzag", autoMode.isAccepted());
 
     RoundTripQualityResult viaMode = RoundTripQualityGate.evaluate(
-      t, t.distance, "fastbike", false, /*explicitViaMode*/ true);
+      t, t.distance, /*pavedProfile*/ true, false, /*explicitViaMode*/ true);
     Assert.assertTrue("explicit-via mode accepts; user picked the vias: " + viaMode,
       viaMode.isAccepted());
     Assert.assertTrue("attaches via-route note disclosure",

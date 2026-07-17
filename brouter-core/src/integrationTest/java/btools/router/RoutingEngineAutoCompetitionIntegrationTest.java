@@ -506,8 +506,11 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
 
   private static RouteChoiceScore.Verdict routeChoiceScore(OsmTrack track,
       double expectedDistance, String profileName, int direction) {
+    // Request-owned paved verdict: map the scenario profile name locally
+    // ("fastbike" = paved; "gravel" = not).
+    boolean pavedProfile = "fastbike".equals(profileName);
     RoundTripQualityResult gate = RoundTripQualityGate.evaluate(track,
-      expectedDistance, profileName, false, false, false);
+      expectedDistance, pavedProfile, false, false, false);
     Assert.assertTrue("track accepted by quality gate: " + gate, gate.isAccepted());
     return RouteChoiceScore.score(track, expectedDistance, profileName, gate, direction);
   }
