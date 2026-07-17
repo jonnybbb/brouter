@@ -294,44 +294,6 @@ public final class RoutingContext {
   public boolean roundTripInternalCompare = true;
 
   /**
-   * Via-arc densification: when on, the explicit-via round-trip inserts generated
-   * "bulge" waypoints between consecutive user anchors, offset outward from the
-   * anchor centroid, so each leg follows the loop perimeter instead of cutting the
-   * chord. Opt-in; off by default.
-   * {@link #explicitViaDensifyAlpha} is the bulge offset as a fraction of the leg chord length.
-   *
-   * <p>This is the effective per-request flag, computed by {@code doExplicitViaRoundTrip}
-   * from {@link #explicitViaDensifyOverride}; callers normally set the override, not this.
-   */
-  public boolean explicitViaDensify;
-  /**
-   * Request densification of explicit-via legs. The engine computes the effective
-   * {@link #explicitViaDensify} as {@code Boolean.TRUE.equals(override)} AND the
-   * request-owned paved classification (probed once at request entry from the
-   * cost model) being non-paved:
-   * <ul>
-   *   <li>{@code TRUE} → opt in, but still gated to non-paved profiles. Paved profiles
-   *       (road bike) keep the plain explicit-via route, because in sparse terrain a
-   *       retracing paved lollipop beats a one-way track loop the gate would reject.
-   *       {@code TRUE} does <b>not</b> bypass the paved-profile gate.</li>
-   *   <li>{@code FALSE} or {@code null} (default) → no densification.</li>
-   * </ul>
-   * Used by tests/measurement to compare both modes deterministically. Tests that need
-   * densification on a paved profile must set {@link #explicitViaDensify} directly.
-   */
-  public Boolean explicitViaDensifyOverride;
-  public double explicitViaDensifyAlpha = 0.5;
-  /**
-   * Max profile cost-factor a densification "bulge" point may snap to. A bulge is an
-   * optional nicety, so it is placed ONLY on a road the profile genuinely likes (near-ideal),
-   * not merely an accessible one — keeping it well below the lenient user-snap reject
-   * threshold. Where the only road outward is profile-hostile (e.g. a road bike facing a
-   * track), the bulge is dropped and that leg reverts to its baseline form. Profile-relative
-   * (cost-factor is per-profile), so gravel still accepts tracks it likes while fastbike does not.
-   */
-  public double explicitViaDensifyMaxCostFactor = 1.8;
-
-  /**
    * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
    * settable via the URL parameter {@code roundTripIsochrone=1}. Honoured only when
    * {@link #roundTripAlgorithm} is left at AUTO — an explicit algorithm always wins.
@@ -749,13 +711,6 @@ public final class RoutingContext {
     // but can only surface "unknown" instead of the child's real reason.
     c.roundTripStrictQuality = this.roundTripStrictQuality;
     c.roundTripInternalCompare = this.roundTripInternalCompare;
-    // Densification request inputs (the effective explicitViaDensify flag is
-    // recomputed per request in doExplicitViaRoundTrip, so it is not copied).
-    // AUTO children currently route a single waypoint and never densify, but
-    // copying these keeps a child consistent with the parent if that changes.
-    c.explicitViaDensifyOverride = this.explicitViaDensifyOverride;
-    c.explicitViaDensifyAlpha = this.explicitViaDensifyAlpha;
-    c.explicitViaDensifyMaxCostFactor = this.explicitViaDensifyMaxCostFactor;
     // roundTripIsochrone is intentionally NOT copied: doRoundTrip() resolves it
     // into roundTripAlgorithm before any child is spawned, so the algorithm
     // (copied above) is the single source of truth in child contexts.
