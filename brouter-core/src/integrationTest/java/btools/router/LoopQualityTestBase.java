@@ -158,32 +158,39 @@ public abstract class LoopQualityTestBase {
         + " (small-radius geometry walls this start in; see LoopTestRegion)",
       targetDistanceMeters >= region.minLoopMetersForProfile(profileName));
 
-    // Run all four strategies. greedy and iso_greedy — the primary algorithms
-    // the AUTO competition ships — are quality-gated below; probe (legacy
-    // WAYPOINT) and isochrone are run for the comparison report only.
-    LoopQualityResult probeResult = runVariant("probe", RoundTripAlgorithm.WAYPOINT, segDir, profileFile);
-    LoopQualityResult isoResult = runVariant("isochrone", RoundTripAlgorithm.ISOCHRONE, segDir, profileFile);
+    // Tiered variant execution (cost profile: every variant is a full loop
+    // generation, AUTO the most expensive — the competition runs children).
+    //  - greedy + iso_greedy: ALWAYS — the gated planners.
+    //  - auto: full matrix only (skipped in smoke, -Dloop.smoke=true) — the
+    //    production path, minimally gated below (crash / lost-winnable-cell).
+    //  - probe + isochrone: comparison-report data only, run when
+    //    -Dloop.reportVariants=true (generateLoopReport wants them; the gate
+    //    never reads them).
+    boolean smoke = Boolean.getBoolean("loop.smoke");
+    boolean reportVariants = Boolean.getBoolean("loop.reportVariants");
+    LoopQualityResult probeResult = null;
+    LoopQualityResult isoResult = null;
+    if (reportVariants) {
+      probeResult = runVariant("probe", RoundTripAlgorithm.WAYPOINT, segDir, profileFile);
+      isoResult = runVariant("isochrone", RoundTripAlgorithm.ISOCHRONE, segDir, profileFile);
+    }
     LoopQualityResult greedyResult = runVariant("greedy", RoundTripAlgorithm.GREEDY, segDir, profileFile);
     LoopQualityResult isoGreedyResult = runVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY, segDir, profileFile);
     // The route production actually ships: full AUTO competition, routed LENIENT
     // (production default) so the report draws the shipped loop even when it is a
-    // best-effort warn. Rendered for visual comparison only — NOT quality-gated
-    // (the gate stays on the forced greedy/iso_greedy variants below).
-    LoopQualityResult autoResult = runVariant("auto", RoundTripAlgorithm.AUTO, segDir, profileFile, false);
+    // best-effort warn.
+    LoopQualityResult autoResult = smoke ? null
+      : runVariant("auto", RoundTripAlgorithm.AUTO, segDir, profileFile, false);
 
     // Persist each result to disk. Write-only producer; the report is rendered
     // later by the generateLoopReport Gradle task (LoopQualityReport.main).
-    LoopQualityReport.persist(probeResult);
-    LoopQualityReport.persist(isoResult);
-    LoopQualityReport.persist(greedyResult);
-    LoopQualityReport.persist(isoGreedyResult);
-    LoopQualityReport.persist(autoResult);
-
-    logVariantMetrics(probeResult);
-    logVariantMetrics(isoResult);
-    logVariantMetrics(greedyResult);
-    logVariantMetrics(isoGreedyResult);
-    logVariantMetrics(autoResult);
+    for (LoopQualityResult r : new LoopQualityResult[]{
+        probeResult, isoResult, greedyResult, isoGreedyResult, autoResult}) {
+      if (r != null) {
+        LoopQualityReport.persist(r);
+        logVariantMetrics(r);
+      }
+    }
 
     // Gate the production round-trip strategies. greedy and iso_greedy are the
     // primary algorithms AUTO ships; assert the quality bars on each that
@@ -197,7 +204,7 @@ public abstract class LoopQualityTestBase {
     // region-wide must not stay green behind its sibling). An exception
     // surfaces as "threw:"/"Exception"/"Error" in the variant's error; a
     // clean rejection names the gate or the competition.
-    for (LoopQualityResult r : new LoopQualityResult[]{greedyResult, isoGreedyResult}) {
+    for (LoopQualityResult r : new LoopQualityResult[]{greedyResult, isoGreedyResult, autoResult}) {
       if (r != null && r.error != null) {
         assertFalse("planner crashed for " + testLabel + ": " + r.error,
           r.error.contains("threw:") || r.error.contains("Exception") || r.error.contains("Error"));
@@ -216,6 +223,15 @@ public abstract class LoopQualityTestBase {
     if (!anyTrack) {
       Assume.assumeTrue("neither greedy nor iso_greedy produced a track for " + testLabel, false);
       return;
+    }
+    // Minimal AUTO gate (full matrix only): the production entry point must
+    // not lose a winnable cell. No quality floors here — AUTO may ship a
+    // disclosed lenient best-effort the planner bands would flag — but when a
+    // forced planner formed a loop, the competition over the same algorithms
+    // producing NOTHING is a competition-plumbing regression, not terrain.
+    if (autoResult != null && autoResult.metrics == null) {
+      failures.add("auto: competition produced no track while a forced planner formed a loop ("
+        + (autoResult.error == null ? "no error" : autoResult.error) + ")");
     }
     assertTrue("quality-gate failures for " + testLabel + ":\n  " + String.join("\n  ", failures),
       failures.isEmpty());

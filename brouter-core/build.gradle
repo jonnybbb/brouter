@@ -80,6 +80,10 @@ tasks.register('integrationTest', Test) {
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName('routingProfiles')
 
+    // Comparison-report variants (probe/isochrone): report data only, never
+    // gated — off by default (each is a full loop generation per cell). Turn
+    // on when the generateLoopReport output should include them.
+    systemProperty 'loop.reportVariants', System.getProperty('loop.reportVariants', 'false')
     // Segment handling: fetch missing neighbour tiles, reuse already-present ones
     // without a freshness re-fetch. Override per-run with -Dloop.segments.*.
     systemProperty 'loop.segments.noupdate', System.getProperty('loop.segments.noupdate', 'true')
@@ -104,6 +108,53 @@ tasks.register('integrationTest', Test) {
         events 'started', 'passed', 'skipped', 'failed'
         exceptionFormat 'short'
         showStandardStreams = true
+    }
+}
+
+// Tier-1 smoke gate: every sentinel + the golden signatures + three
+// representative regions (all-profile gravel, alpine, urban) running the
+// GATED planners only (-Dloop.smoke=true skips the AUTO competition;
+// probe/isochrone report variants are off by default anyway). Target: the
+// iteration feedback loop in minutes instead of the ~40-minute full matrix,
+// while still tripping on every historically-observed failure class. The
+// full `integrationTest` stays the pre-push/nightly gate.
+tasks.register('integrationSmoke', Test) {
+    description = 'Fast round-trip smoke gate: sentinels + goldens + 3 representative loop regions (gated planners only).'
+    group = 'verification'
+    useJUnit()
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter test
+    dependsOn ':brouter-map-creator:test'
+
+    filter {
+        includeTestsMatching 'btools.router.RoundTripUndershootSentinelTest'
+        includeTestsMatching 'btools.router.RoundTripWeakCellRegressionTest'
+        includeTestsMatching 'btools.router.RoundTripPerfBudgetTest'
+        includeTestsMatching 'btools.router.AlternativeRefTrackMembershipTest'
+        includeTestsMatching 'btools.router.LoopGoldenSignatureTest'
+        includeTestsMatching 'btools.router.LoopQualityFreiburgTest'
+        includeTestsMatching 'btools.router.LoopQualityAnnecyTest'
+        includeTestsMatching 'btools.router.LoopQualityUrbanBerlinTest'
+    }
+
+    maxParallelForks = Integer.getInteger('loop.forks',
+        Math.min(6, Math.max(1, Runtime.runtime.availableProcessors().intdiv(2))))
+    maxHeapSize = System.getProperty('loop.heap', '3g')
+
+    // Smoke results feed no report; keep the shared cache untouched.
+    systemProperty 'loop.smoke', 'true'
+    systemProperty 'loop.segments.noupdate', System.getProperty('loop.segments.noupdate', 'true')
+    systemProperty 'loop.segments.nodownload', System.getProperty('loop.segments.nodownload', 'false')
+
+    inputs.dir(rootProject.file('misc/profiles2'))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName('routingProfiles')
+
+    testLogging {
+        events 'started', 'passed', 'skipped', 'failed'
+        exceptionFormat 'short'
+        showStandardStreams = false
     }
 }
 
