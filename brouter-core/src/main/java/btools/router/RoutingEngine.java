@@ -638,17 +638,6 @@ public class RoutingEngine extends Thread {
     roundTripOrchestrator().doRoundTrip();
   }
 
-  /** Canonical "datafile ... not found" for a missing start tile, or null. */
-  String startTileMissingError(OsmNodeNamed start) {
-    if (nodesCache == null) {
-      resetCache(false);
-    }
-    if (!nodesCache.hasSegmentFor(start.ilon, start.ilat)) {
-      return "datafile " + nodesCache.getSegmentFileName(start.ilon, start.ilat) + " not found";
-    }
-    return null;
-  }
-
   /**
    * Single source of truth for lenient/strict acceptance: STRUCTURAL failures
    * (broken / un-routable / not-a-loop) always hard-reject; QUALITY failures
@@ -1019,11 +1008,6 @@ public class RoutingEngine extends Thread {
       @Override
       public IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
         return RoutingEngine.this.runIsochroneExpansion(start, searchRadius);
-      }
-
-      @Override
-      public String startTileMissingError(OsmNodeNamed start) {
-        return RoutingEngine.this.startTileMissingError(start);
       }
 
       @Override
