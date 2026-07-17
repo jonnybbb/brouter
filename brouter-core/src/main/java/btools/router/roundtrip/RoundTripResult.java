@@ -44,7 +44,7 @@ public class RoundTripResult {
   private int routedNonIsoCandidates;
   private int acceptedIsoLegs;
   private int acceptedNonIsoLegs;
-  // Issue #26 source-attribution telemetry: sentinel-valued when the plan ran
+  // Source-attribution telemetry: sentinel-valued when the plan ran
   // without an iso pool (plain GREEDY / graph-native-only provider).
   private int acceptedQuotaInjectedLegs;
   private int poolDemotedAtStep = -1;

@@ -417,7 +417,7 @@ public final class RouteChoiceScore {
 
   /**
    * Sum of teardrop severities (Σ min(1, arc / {@link #NEAR_REVISIT_NORM_M})) over the track's
-   * near-revisit spans, excluding the loop's own start≈end closure. Drives the #10 shape penalty.
+   * near-revisit spans, excluding the loop's own start≈end closure. Drives the shape penalty.
    * See {@link LoopQualityMetrics#nearRevisitSpans}.
    */
   private static double teardropSeverity(OsmTrack track) {
