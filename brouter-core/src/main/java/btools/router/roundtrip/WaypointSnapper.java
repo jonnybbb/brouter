@@ -52,11 +52,6 @@ public final class WaypointSnapper {
   // spanning km over water), not a road edge — skip it when snapping waypoints.
   private static final int FERRY_LIKE_EDGE_METERS = 1500;
 
-  // Display/log label stamped on generated arc-densification "bulge" waypoints.
-  // It is NOT load-bearing: post-route spur cleanup targets generated points via
-  // the typed MatchedWaypoint.generated flag, not this name.
-  private static final String DENSIFIED_VIA_WAYPOINT_NAME = "dvia";
-
   /**
    * Hard ceiling for the active profile's costfactor at a waypoint snap: a
    * candidate whose BEST road exceeds this is REJECTED entirely — better to drop
@@ -71,73 +66,6 @@ public final class WaypointSnapper {
   private static final double SNAP_REJECT_COSTFACTOR_GRAVEL = 8.0;
 
   private static final double SNAP_REJECT_COSTFACTOR_DEFAULT = 10.0;
-
-  /**
-   * Via-arc densification: insert one generated "bulge" waypoint per perimeter
-   * leg of the anchor cycle, offset outward from the centroid so each leg
-   * follows the loop perimeter instead of cutting the chord. User anchors stay
-   * hard constraints.
-   *
-   * <p>A bulge is kept ONLY if it snaps to a profile-compatible way (cost-factor
-   * at or below the snap-reject threshold, not ferry-like); otherwise the leg
-   * reverts to its baseline shortest-path form, so densification never forces
-   * the route onto a hostile road (the lost-route failure mode of the unguarded
-   * version). Returns the densified, ordered chain (without the closing start copy).
-   */
-  public List<OsmNodeNamed> densifyViaArcs(List<OsmNodeNamed> anchors, double searchRadius, double snapDist) {
-    long sumLon = 0;
-    long sumLat = 0;
-    for (OsmNodeNamed a : anchors) {
-      sumLon += a.ilon;
-      sumLat += a.ilat;
-    }
-    int cLon = (int) (sumLon / anchors.size());
-    int cLat = (int) (sumLat / anchors.size());
-
-    double alpha = ctx.routingContext().explicitViaDensifyAlpha;
-    int n = anchors.size();
-
-    // 1. Build one candidate bulge per leg (null when degenerate, e.g. a 1-via
-    //    out-and-back where the leg midpoint coincides with the centroid).
-    //    candIndexForLeg maps each leg to its slot in the compacted candidates
-    //    list (or -1), so acceptance can be tracked by index rather than by
-    //    node identity/coordinate.
-    OsmNodeNamed[] bulges = new OsmNodeNamed[n];
-    int[] candIndexForLeg = new int[n];
-    List<OsmNodeNamed> candidates = new ArrayList<>();
-    for (int i = 0; i < n; i++) {
-      OsmNodeNamed bulge = makeArcBulge(anchors.get(i), anchors.get((i + 1) % n), cLon, cLat, alpha, searchRadius);
-      bulges[i] = bulge;
-      if (bulge != null) {
-        candIndexForLeg[i] = candidates.size();
-        candidates.add(bulge);
-      } else {
-        candIndexForLeg[i] = -1;
-      }
-    }
-
-    // 2. Profile-aware snap (batched): accepted[c] flags candidate c BY INDEX, so
-    //    two bulges that snap to the same road node are never conflated (which a
-    //    coordinate-keyed set would, since OsmNode equals/hashCode key on lon/lat).
-    boolean[] accepted = snapBulgesProfileAware(candidates, snapDist);
-
-    // 3. Assemble the densified chain, keeping only accepted bulges.
-    List<OsmNodeNamed> out = new ArrayList<>();
-    int added = 0;
-    int dropped = 0;
-    for (int i = 0; i < n; i++) {
-      out.add(anchors.get(i));
-      if (candIndexForLeg[i] >= 0 && accepted[candIndexForLeg[i]]) {
-        out.add(bulges[i]);
-        added++;
-      } else {
-        dropped++;
-      }
-    }
-    io.logInfo("explicit-via arc densification: +" + added + " arc point(s), " + dropped
-      + " dropped (degenerate/hostile/off-network), alpha=" + alpha);
-    return out;
-  }
 
   /**
    * A snap is usable only if it resolved to a real road edge: both endpoints
@@ -260,32 +188,6 @@ public final class WaypointSnapper {
       best.radius = orig.calcDistance(best.crosspoint);
     }
     return best;
-  }
-
-  /**
-   * Build a single arc-following waypoint for the leg {@code a -> b}: the chord
-   * midpoint pushed outward (away from the loop centroid) by {@code alpha} of the
-   * chord length. Returns null for legs too short to bulge or a degenerate centroid.
-   */
-  private OsmNodeNamed makeArcBulge(OsmNodeNamed a, OsmNodeNamed b, int cLon, int cLat,
-                                    double alpha, double searchRadius) {
-    int midLon = (int) (((long) a.ilon + b.ilon) / 2);
-    int midLat = (int) (((long) a.ilat + b.ilat) / 2);
-    double chord = CheapRuler.distance(a.ilon, a.ilat, b.ilon, b.ilat);
-    if (chord < 50) {
-      return null;
-    }
-    if (midLon == cLon && midLat == cLat) {
-      return null; // midpoint coincides with the loop centroid — no outward direction
-    }
-    // Outward bearing = centroid -> midpoint (latitude-scaled compass degrees, [0,360)).
-    double bearing = CheapRuler.getScaledBearing(cLon, cLat, midLon, midLat);
-    double offset = Math.min(alpha * chord, searchRadius);
-    int[] p = CheapRuler.destination(midLon, midLat, offset, bearing);
-    OsmNodeNamed bulge = new OsmNodeNamed(new OsmNode(p[0], p[1]));
-    bulge.name = DENSIFIED_VIA_WAYPOINT_NAME; // display/log label only
-    bulge.generated = true; // the load-bearing "this is a generated bulge" signal
-    return bulge;
   }
 
   /**
@@ -901,47 +803,6 @@ public final class WaypointSnapper {
    * {@code maxSnapDist} and behaviour is unchanged.
    */
   private static final double VIA_RELOCATION_LOOP_FRACTION = 0.25;
-
-  /**
-   * Batch-snap candidate bulges, accepting one ONLY if it matches a
-   * profile-compatible, non-ferry-like road; accepted bulges move to their
-   * crosspoint. Returns a boolean[] parallel to {@code bulges} (indexed, not
-   * coordinate-keyed, so two bulges on the same node stay distinct).
-   *
-   * <p>The ceiling is {@code RoutingContext#explicitViaDensifyMaxCostFactor},
-   * intentionally stricter than the lenient user-snap threshold in
-   * {@link #validateAndAdjustWaypoints}: a bulge is optional, so a fastbike
-   * facing only tracks drops it rather than take a hostile detour.
-   */
-  private boolean[] snapBulgesProfileAware(List<OsmNodeNamed> bulges, double maxSnapDist) {
-    boolean[] accepted = new boolean[bulges.size()];
-    if (bulges.isEmpty()) {
-      return accepted;
-    }
-    List<OsmNode> points = new ArrayList<>(bulges.size());
-    for (OsmNodeNamed bulge : bulges) {
-      points.add(new OsmNode(bulge.ilon, bulge.ilat));
-    }
-    List<MatchedWaypoint> mwps = batchMatchToRoads(points, maxSnapDist, "dvia_snap");
-    if (mwps == null) {
-      return accepted; // match failure — all legs revert to baseline
-    }
-    double rejectThreshold = ctx.routingContext().explicitViaDensifyMaxCostFactor;
-    for (int i = 0; i < bulges.size(); i++) {
-      MatchedWaypoint mwp = mwps.get(i);
-      if (!isRoadSnap(mwp)) {
-        continue;
-      }
-      if (snapCandidateCostFactor(mwp) > rejectThreshold) {
-        continue; // not a near-ideal road for this profile — drop, leg reverts to baseline
-      }
-      OsmNodeNamed bulge = bulges.get(i);
-      bulge.ilon = mwp.crosspoint.getILon();
-      bulge.ilat = mwp.crosspoint.getILat();
-      accepted[i] = true;
-    }
-    return accepted;
-  }
 
   /**
    * Weight on the profile costfactor in waypoint-snap scoring, combined with the
