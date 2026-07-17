@@ -235,6 +235,21 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
           greedyThread.join(AUTO_CHILD_JOIN_UNWIND_MS);
         }
       } catch (InterruptedException ie) {
+        // The COORDINATOR was interrupted (embedder shutdown, request abort)
+        // while waiting — that is not the wedged-child case, so the child must
+        // be told to stop before we leave, or it keeps burning a core and its
+        // permit until its own deadline. Bounded cleanup join, then restore
+        // the interrupt flag.
+        RoutingEngine interruptedChild = greedyEngineOut.get();
+        if (interruptedChild != null) {
+          interruptedChild.terminate();
+        }
+        greedyThread.interrupt();
+        try {
+          greedyThread.join(AUTO_CHILD_JOIN_UNWIND_MS);
+        } catch (InterruptedException second) {
+          // fall through — the flag below covers both interrupts
+        }
         Thread.currentThread().interrupt();
       }
       // If the (needed) child is STILL alive its result slot is not safely
