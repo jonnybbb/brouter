@@ -190,8 +190,7 @@ final class FastStrategy implements RoundTripStrategy {
   private FastPlacementOutcome placeOptimized(double searchRadius, double direction,
                                               int targetPoints, boolean directional) {
     FastPlacementRequest fastRequest = new FastPlacementRequest(
-      ops.waypoints().get(0), searchRadius, direction, targetPoints, directional,
-      Integer.getInteger("roundtrip.fast.maxvias", 5));
+      ops.waypoints().get(0), searchRadius, direction, targetPoints, directional);
     FastPlacementOutcome outcome = new FastWaypointPlanner(ops.fastPlacementOps()).place(fastRequest);
     ops.waypoints().clear();
     ops.waypoints().addAll(outcome.skeleton);

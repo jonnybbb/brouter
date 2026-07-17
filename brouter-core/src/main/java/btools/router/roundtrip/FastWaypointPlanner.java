@@ -175,7 +175,7 @@ public final class FastWaypointPlanner {
     List<OsmNodeNamed> skeleton = new ArrayList<>();
     skeleton.add(req.start);
     int viaCount = req.directional
-      ? Math.max(3, Math.min(req.targetPoints - 1, req.lobeViaCap))
+      ? Math.max(3, Math.min(req.targetPoints - 1, LOBE_VIA_CAP))
       : Math.max(3, req.targetPoints - 1);
     double[] bearings;
     double fastScale;

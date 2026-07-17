@@ -4,9 +4,9 @@ import btools.router.OsmNodeNamed;
 
 /**
  * Input to the optimized FAST waypoint placement. The caller resolves every knob
- * (variety-seed jitter already applied, {@code roundtrip.fast.*} properties
- * already read), so placement is a pure function of this request plus the road
- * network.
+ * (variety-seed jitter already applied), so placement is a pure function of this
+ * request plus the road network. The directional-lobe via cap is a compile-time
+ * geometry constant ({@link FastWaypointPlanner#LOBE_VIA_CAP}), not carried here.
  */
 public final class FastPlacementRequest {
 
@@ -25,16 +25,12 @@ public final class FastPlacementRequest {
   /** Directional-lobe mode: on when the caller supplied a start bearing. */
   final boolean directional;
 
-  /** Via cap for the directional lobe ({@code roundtrip.fast.maxvias}, resolved). */
-  final int lobeViaCap;
-
   public FastPlacementRequest(OsmNodeNamed start, double searchRadius, double direction,
-                       int targetPoints, boolean directional, int lobeViaCap) {
+                       int targetPoints, boolean directional) {
     this.start = start;
     this.searchRadius = searchRadius;
     this.direction = direction;
     this.targetPoints = targetPoints;
     this.directional = directional;
-    this.lobeViaCap = lobeViaCap;
   }
 }

@@ -243,7 +243,7 @@ public class FastWaypointPlannerTest {
     OsmNodeNamed start = createNode("from", START_ILON, START_ILAT);
 
     FastPlacementOutcome outcome = new FastWaypointPlanner(ops)
-      .place(new FastPlacementRequest(start, 5000, -1, 6, false, 5));
+      .place(new FastPlacementRequest(start, 5000, -1, 6, false));
 
     Assert.assertTrue(outcome.optimizedPlacement());
     Assert.assertEquals(FastPlacementOutcome.Path.RING, outcome.path);
@@ -259,7 +259,7 @@ public class FastWaypointPlannerTest {
     OsmNodeNamed start = createNode("from", START_ILON, START_ILAT);
 
     FastPlacementOutcome outcome = new FastWaypointPlanner(ops)
-      .place(new FastPlacementRequest(start, 5000, -1, 6, false, 5));
+      .place(new FastPlacementRequest(start, 5000, -1, 6, false));
 
     Assert.assertFalse(outcome.optimizedPlacement());
     Assert.assertEquals(FastPlacementOutcome.Path.CIRCLE_FALLBACK, outcome.path);
@@ -282,7 +282,7 @@ public class FastWaypointPlannerTest {
     OsmNodeNamed start = createNode("from", START_ILON, START_ILAT);
 
     FastPlacementOutcome outcome = new FastWaypointPlanner(ops)
-      .place(new FastPlacementRequest(start, 5000, 90, 6, true, 5));
+      .place(new FastPlacementRequest(start, 5000, 90, 6, true));
 
     Assert.assertEquals(FastPlacementOutcome.Path.RING_FALLBACK, outcome.path);
     Assert.assertTrue(outcome.optimizedPlacement());
