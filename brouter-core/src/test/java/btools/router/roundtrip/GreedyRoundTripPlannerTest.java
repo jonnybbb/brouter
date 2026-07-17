@@ -11,6 +11,7 @@ import java.util.Map;
 import btools.mapaccess.MatchedWaypoint;
 import btools.mapaccess.OsmNode;
 import btools.router.RoundTripFixture;
+import btools.router.OsmNodeNamed;
 import btools.router.OsmPathElement;
 import btools.router.OsmTrack;
 import btools.router.RoutingContext;
@@ -166,6 +167,90 @@ public class GreedyRoundTripPlannerTest {
       Assert.assertEquals("explicit algorithm must win (algoFirst=" + algoFirst + ")",
         RoundTripAlgorithm.GREEDY, rctx.roundTripAlgorithm);
     }
+  }
+
+  // ---- Ladder hold-and-restore selection (forced-corridor retry) -----------
+
+  private static RoundTripResult rungResult(boolean forced, int distanceMeters, String fallbackReason) {
+    RoundTripResult r = new RoundTripResult();
+    List<OsmNodeNamed> wps = new ArrayList<>();
+    for (int i = 0; i < 4; i++) wps.add(new OsmNodeNamed());
+    r.setLoopWaypoints(wps);
+    r.setTotalDistanceMeters(distanceMeters);
+    r.setForcedCorridorAccepted(forced);
+    r.setFallbackReason(fallbackReason);
+    return r;
+  }
+
+  @Test
+  public void ladderAcceptanceDistinguishesCleanForcedAndDegraded() {
+    // Clean acceptable rung: accepted (and would return immediately — the
+    // forced flag is a separate axis, checked by the caller).
+    RoundTripResult clean = rungResult(false, 30000, null);
+    Assert.assertTrue(GreedyStrategy.isAcceptableRungResult(clean));
+    Assert.assertFalse(clean.isForcedCorridorAccepted());
+
+    // Acceptable but forced: held, not returned.
+    RoundTripResult forced = rungResult(true, 21000, "forced corridor (no clean alternative): x");
+    Assert.assertTrue(GreedyStrategy.isAcceptableRungResult(forced));
+    Assert.assertTrue(forced.isForcedCorridorAccepted());
+
+    // Degraded fallback prefix: never acceptable.
+    RoundTripResult degraded = rungResult(false, 30000,
+      GreedyRoundTripPlanner.DEGRADED_FALLBACK_PREFIX + "rejected: x");
+    Assert.assertFalse(GreedyStrategy.isAcceptableRungResult(degraded));
+
+    // No loop skeleton (< 4 waypoints): never acceptable.
+    RoundTripResult stub = rungResult(false, 30000, null);
+    stub.setLoopWaypoints(new ArrayList<>());
+    Assert.assertFalse(GreedyStrategy.isAcceptableRungResult(stub));
+    Assert.assertFalse(GreedyStrategy.isAcceptableRungResult(null));
+  }
+
+  @Test
+  public void heldForcedFallbackKeepsTheClosestToTarget() {
+    double desired = 30000;
+    RoundTripResult far = rungResult(true, 18000, "forced");
+    RoundTripResult near = rungResult(true, 27000, "forced");
+    // First forced result is held unconditionally.
+    Assert.assertSame(far, GreedyStrategy.betterForcedFallback(null, far, desired));
+    // A closer later rung replaces it; a worse one does not.
+    Assert.assertSame(near, GreedyStrategy.betterForcedFallback(far, near, desired));
+    Assert.assertSame(near, GreedyStrategy.betterForcedFallback(near, far, desired));
+    // Overshoot is judged by the same relative-error metric.
+    RoundTripResult overshoot = rungResult(true, 32000, "forced");
+    Assert.assertSame(overshoot, GreedyStrategy.betterForcedFallback(near, overshoot, desired));
+  }
+
+  @Test
+  public void explicitAutoWinsOverIsochroneShortcut() {
+    // An EXPLICIT roundTripAlgorithm=AUTO must also beat the shortcut — the
+    // algorithm value alone cannot distinguish it from the default, so the
+    // parser records the explicit flag and the orchestrator's promotion
+    // honors it, in either parameter order.
+    for (boolean algoFirst : new boolean[]{true, false}) {
+      RoutingContext rctx = new RoutingContext();
+      Map<String, String> params = new LinkedHashMap<>();
+      if (algoFirst) {
+        params.put("roundTripAlgorithm", "AUTO");
+        params.put("roundTripIsochrone", "1");
+      } else {
+        params.put("roundTripIsochrone", "1");
+        params.put("roundTripAlgorithm", "AUTO");
+      }
+      new RoutingParamCollector().setParams(rctx, null, params);
+      Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
+      Assert.assertTrue("explicit AUTO must be recorded (algoFirst=" + algoFirst + ")",
+        rctx.roundTripAlgorithmExplicit);
+      Assert.assertTrue(rctx.roundTripIsochrone);
+    }
+    // The default (no roundTripAlgorithm parameter) stays non-explicit, so the
+    // shortcut still applies there.
+    RoutingContext dflt = new RoutingContext();
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("roundTripIsochrone", "1");
+    new RoutingParamCollector().setParams(dflt, null, params);
+    Assert.assertFalse(dflt.roundTripAlgorithmExplicit);
   }
 
   @Test

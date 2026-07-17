@@ -263,6 +263,9 @@ public class RoutingParamCollector {
           rctx.explicitViaDensifyOverride = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
+          // Explicit choice — including an explicit AUTO, which must win over
+          // the roundTripIsochrone shortcut like any other explicit algorithm.
+          rctx.roundTripAlgorithmExplicit = true;
         } else if (key.equals("roundTripIsochrone")) {
           // roundTripIsochrone=1 is a shortcut for roundTripAlgorithm=ISOCHRONE.
           // An explicit roundTripAlgorithm always wins, regardless of parameter order.

@@ -61,8 +61,12 @@ public class RoundTripSeamContractTest {
     OsmTrack[] legs = {leg};
     RoundTripRuntimeHints hints = new RoundTripRuntimeHints(0, 0, false, legs);
     legs[0] = null; // caller reuses its array after publishing
-    assertNotSame("hints must have cloned the array", legs, hints.greedyLegTracks);
-    assertSame("snapshot keeps the published leg", leg, hints.greedyLegTracks[0]);
+    assertNotSame("hints must have cloned the array", legs, hints.greedyLegTracks());
+    assertSame("snapshot keeps the published leg", leg, hints.greedyLegTracks()[0]);
+    // The accessor also copies on the way OUT: mutating a returned array must
+    // not reach the snapshot (the class calls itself immutable).
+    hints.greedyLegTracks()[0] = null;
+    assertSame("snapshot survives mutation of a returned array", leg, hints.greedyLegTracks()[0]);
   }
 
   @Test
@@ -92,11 +96,14 @@ public class RoundTripSeamContractTest {
     // restored in the finally regardless.
     MatchedWaypoint a = new MatchedWaypoint();
     MatchedWaypoint b = new MatchedWaypoint();
+    boolean threw = false;
     try {
       re.roundTripOps().findTrackTimed("seam-contract", a, b, null, 1_000L);
     } catch (RuntimeException expected) {
-      // any failure shape is fine — the restore below is the contract
+      threw = true; // any failure shape is fine — the restore below is the contract
     }
+    assertTrue("fixture must exercise the EXCEPTION path — a normal return only"
+      + " proves the happy-path restore", threw);
 
     assertEquals("startTime restored", 777L, re.startTime);
     assertEquals("maxRunningTime restored", 42_000L, re.maxRunningTime);

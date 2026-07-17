@@ -264,6 +264,14 @@ public final class RoutingContext {
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
   /**
+   * Whether {@link #roundTripAlgorithm} was EXPLICITLY supplied by the request
+   * (vs left at its AUTO default). Distinguishes an explicit
+   * {@code roundTripAlgorithm=AUTO} — which must win over the
+   * {@link #roundTripIsochrone} shortcut like any other explicit choice — from
+   * the default, where the shortcut applies.
+   */
+  public boolean roundTripAlgorithmExplicit;
+  /**
    * Quality-gate strictness for generated round-trips. When {@code false}
    * (the default), a route that fails only a QUALITY check
    * ({@link RoundTripQualityResult.RejectionTier#QUALITY}: distance off-target,

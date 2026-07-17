@@ -174,7 +174,12 @@ public final class RoundTripFixture {
     OsmTrack track = re.getFoundTrack();
     if (track == null) {
       String err = re.getErrorMessage();
-      boolean provenRejection = err != null
+      // Crash markers FIRST: AUTO wraps child exceptions inside its
+      // "produced no acceptable route" summary ("candidate X threw: NPE"),
+      // so the rejection phrases alone would skip a crash.
+      boolean crashed = err != null
+        && (err.contains("threw:") || err.contains("Exception") || err.contains("Error"));
+      boolean provenRejection = !crashed && err != null
         && (err.contains("rejected by quality gate")
             || err.contains("no acceptable route")
             || err.contains("no acceptable loop"));

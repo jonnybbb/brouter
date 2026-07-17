@@ -493,9 +493,7 @@ final class GreedyStrategy implements RoundTripStrategy {
         result.setIsoAsymmetryBestBucketAirDistMeters(bias.airDistMeters);
       }
       orchestrator.setPlannerResult(result);
-      if (!isDegradedGreedyResult(result)
-          && result != null && result.getLoopWaypoints() != null
-          && result.getLoopWaypoints().size() >= 4) {
+      if (isAcceptableRungResult(result)) {
         if (!result.isForcedCorridorAccepted()) {
           return result;
         }
@@ -504,10 +502,7 @@ final class GreedyStrategy implements RoundTripStrategy {
         // force the corridor, 6 ride a clean full-length loop). Hold the
         // closest-to-target forced result and keep climbing the ladder; ship
         // it only when no rung produces a clean loop.
-        if (heldForcedCorridor == null
-            || distanceError(result, desiredDistance) < distanceError(heldForcedCorridor, desiredDistance)) {
-          heldForcedCorridor = result;
-        }
+        heldForcedCorridor = betterForcedFallback(heldForcedCorridor, result, desiredDistance);
         ops.logInfo("greedy: attempt with " + subRouteCount
           + " sub-routes forced a same-way-back corridor — held as fallback, retrying for a clean loop");
         continue;
@@ -520,6 +515,27 @@ final class GreedyStrategy implements RoundTripStrategy {
       return heldForcedCorridor;
     }
     return result;
+  }
+
+  /**
+   * A rung result the ladder may accept or hold: not degraded, and carrying a
+   * real loop skeleton (start + 2 vias + close). Forced-corridor status is a
+   * SEPARATE axis — an acceptable forced result is held, not returned.
+   */
+  static boolean isAcceptableRungResult(RoundTripResult result) {
+    return !isDegradedGreedyResult(result)
+      && result != null && result.getLoopWaypoints() != null
+      && result.getLoopWaypoints().size() >= 4;
+  }
+
+  /** The forced-corridor fallback to keep: whichever rung result lands closest to the target distance. */
+  static RoundTripResult betterForcedFallback(RoundTripResult held, RoundTripResult candidate,
+                                              double desiredDistance) {
+    if (held == null) {
+      return candidate;
+    }
+    return distanceError(candidate, desiredDistance) < distanceError(held, desiredDistance)
+      ? candidate : held;
   }
 
   /** Relative distance miss of a rung result — the tie-breaker between held forced-corridor rungs. */

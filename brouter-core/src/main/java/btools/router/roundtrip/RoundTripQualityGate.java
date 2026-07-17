@@ -432,8 +432,8 @@ public final class RoundTripQualityGate {
 
   /**
    * True when the space-separated {@code key=value} tag string carries the key
-   * with an affirmative value — an explicit {@code bridge=no}/{@code tunnel=no}
-   * must not exempt an at-grade crossing.
+   * with an affirmative value — an explicit {@code bridge=no}/{@code bridge=0}/
+   * {@code tunnel=false} must not exempt an at-grade crossing.
    */
   private static boolean hasAffirmativeTag(String tags, String keyEq) {
     int from = 0;
@@ -446,7 +446,7 @@ public final class RoundTripQualityGate {
         int valueStart = i + keyEq.length();
         int valueEnd = tags.indexOf(' ', valueStart);
         String value = valueEnd < 0 ? tags.substring(valueStart) : tags.substring(valueStart, valueEnd);
-        return !"no".equals(value) && !"false".equals(value);
+        return !"no".equals(value) && !"false".equals(value) && !"0".equals(value);
       }
       from = i + 1;
     }
@@ -511,8 +511,13 @@ public final class RoundTripQualityGate {
   /**
    * Per-crossing callback for the segment-pair scans: {@code i}/{@code j} are the
    * first-node indices of the two crossing segments. Fired exactly once per
-   * counted crossing (including the one that trips the ceiling); the grid and
-   * brute scans fire the same SET of pairs, though not in the same order.
+   * counted crossing (including the one that trips the ceiling). For a COMPLETED
+   * scan (total &le; ceiling) the grid and brute scans fire the same SET of
+   * pairs, though not in the same order. A ceiling-truncated scan stops after
+   * ceiling+1 crossings, and because enumeration order differs the two scans may
+   * fire DIFFERENT subsets — counts still agree (both ceiling+1), but per-pair
+   * classifications (smallLoop split, crossing markers) are only meaningful
+   * below the ceiling.
    */
   interface SegmentCrossingVisitor {
     void crossing(int i, int j);

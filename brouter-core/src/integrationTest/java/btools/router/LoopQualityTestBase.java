@@ -192,6 +192,17 @@ public abstract class LoopQualityTestBase {
     // cost/m miss and an iso_greedy overshoot. The case is skipped only when
     // neither could form a loop at all; probe (legacy WAYPOINT) and isochrone
     // were run above for the comparison report but are no longer gated.
+    // A production planner CRASH must fail the cell unconditionally — even
+    // when the OTHER planner produced a valid track (one broken planner
+    // region-wide must not stay green behind its sibling). An exception
+    // surfaces as "threw:"/"Exception"/"Error" in the variant's error; a
+    // clean rejection names the gate or the competition.
+    for (LoopQualityResult r : new LoopQualityResult[]{greedyResult, isoGreedyResult}) {
+      if (r != null && r.error != null) {
+        assertFalse("planner crashed for " + testLabel + ": " + r.error,
+          r.error.contains("threw:") || r.error.contains("Exception") || r.error.contains("Error"));
+      }
+    }
     List<String> failures = new ArrayList<>();
     boolean anyTrack = false;
     if (greedyResult != null && greedyResult.metrics != null) {
@@ -203,16 +214,6 @@ public abstract class LoopQualityTestBase {
       checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
     }
     if (!anyTrack) {
-      // A cell may legitimately have no loop (constrained terrain, gate
-      // rejection) — but a planner CRASH must fail the cell, not hide behind
-      // the skip. An exception surfaces as "threw:"/"Exception" in the
-      // variant's error; a clean rejection names the gate or the competition.
-      for (LoopQualityResult r : new LoopQualityResult[]{greedyResult, isoGreedyResult}) {
-        if (r != null && r.error != null) {
-          assertFalse("planner crashed (must fail, not skip) for " + testLabel + ": " + r.error,
-            r.error.contains("threw:") || r.error.contains("Exception"));
-        }
-      }
       Assume.assumeTrue("neither greedy nor iso_greedy produced a track for " + testLabel, false);
       return;
     }

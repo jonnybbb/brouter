@@ -1003,7 +1003,7 @@ public class RoutingEngine extends Thread {
         roundTripSearchRadius = hints.searchRadius;
         roundTripRequestDeadline = hints.requestDeadline;
         explicitViaRoundTrip = hints.explicitViaRoundTrip;
-        greedyLegTracks = hints.greedyLegTracks;
+        greedyLegTracks = hints.greedyLegTracks();
       }
 
       @Override

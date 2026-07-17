@@ -20,16 +20,22 @@ public final class RoundTripRuntimeHints {
   public final boolean explicitViaRoundTrip;
 
   /** Per-leg guide tracks from a greedy adoption; consulted by doRouting. */
-  public final OsmTrack[] greedyLegTracks;
+  private final OsmTrack[] greedyLegTracks;
 
   public RoundTripRuntimeHints(double searchRadius, long requestDeadline,
                                boolean explicitViaRoundTrip, OsmTrack[] greedyLegTracks) {
     this.searchRadius = searchRadius;
     this.requestDeadline = requestDeadline;
     this.explicitViaRoundTrip = explicitViaRoundTrip;
-    // Defensive copy: the snapshot must not change when the caller reuses its
-    // array (the tracks themselves stay shared — the engine reads them only
-    // as per-leg cost-cutting guides).
     this.greedyLegTracks = greedyLegTracks == null ? null : greedyLegTracks.clone();
+  }
+
+  /**
+   * Per-leg guide tracks, copied on the way in AND out so no caller can mutate
+   * the snapshot through a retained array reference. The tracks themselves
+   * stay shared — the engine reads them only as per-leg cost-cutting guides.
+   */
+  public OsmTrack[] greedyLegTracks() {
+    return greedyLegTracks == null ? null : greedyLegTracks.clone();
   }
 }

@@ -92,6 +92,32 @@ final class LoopTestSegments {
   }
 
   /**
+   * Golden-test provisioning: download tiles only when MISSING, never refresh
+   * an existing one. Golden signatures compare against a committed baseline,
+   * so a silent upstream data update must not swap the input under the test
+   * (unchanged code would read as a diverged signature). A locally stale tile
+   * is CORRECT here — recapturing the goldens is the moment the input may
+   * move. Provisions the whole boundary neighbourhood (Dreieich sits exactly
+   * on the lat-50 tile edge), so all machines route with the same tile set;
+   * the home tile is a hard requirement, neighbours are best-effort. Full
+   * hermeticity against OTHER suites refreshing the shared segment dir in the
+   * same run still needs {@code -Dloop.segments.noupdate=true}.
+   */
+  static void ensureRegionPinned(File segDir, LoopTestRegion region) {
+    for (String tile : tilesFor(region.lon, region.lat, MARGIN_DEG)) {
+      File f = new File(segDir, tile);
+      if (f.isFile() && f.length() > 0) {
+        continue; // pinned: never refresh an existing tile
+      }
+      if (tile.equals(region.segmentFile)) {
+        ensureAvailable(segDir, tile);
+      } else {
+        fetch(segDir, tile); // best-effort neighbour
+      }
+    }
+  }
+
+  /**
    * Ensure {@code tile} is present in {@code segDir}, downloading it if needed.
    * {@link Assume}-skips the calling test when the tile is absent and cannot be
    * fetched (offline, fetch disabled, or download error).

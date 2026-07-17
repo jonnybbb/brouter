@@ -152,6 +152,38 @@ public class SelfIntersectionGridEquivalenceTest {
     }
   }
 
+  /**
+   * Ceiling-truncated scans: pair SETS may differ between grid and brute (the
+   * enumeration order differs, so each stops on a different 65-crossing
+   * subset), but the COUNTS must agree — both report ceiling+1. This is the
+   * documented limit of the visitor contract; classification consumers only
+   * read per-pair data below the ceiling.
+   */
+  @Test
+  public void ceilingTruncatedScansAgreeOnCountNotNecessarilyPairs() {
+    // The comb fixture crosses far more than the ceiling used here.
+    List<OsmPathElement> nodes = new ArrayList<>();
+    int baseLon = 180000000;
+    int baseLat = 50000000;
+    for (int i = 0; i <= 600; i++) nodes.add(node(baseLon + i * 100, baseLat));
+    for (int i = 600; i >= 0; i -= 3) {
+      nodes.add(node(baseLon + i * 100, baseLat + ((i / 3) % 2 == 0 ? 5000 : -5000)));
+    }
+    double[] cum = cumDistances(nodes);
+    double perim = cum[nodes.size() - 1];
+    int ceiling = 10;
+    int[] bruteFired = new int[1];
+    int[] gridFired = new int[1];
+    int brute = RoundTripQualityGate.bruteForceSegmentPairCrossings(
+      nodes, cum, perim, ceiling, (i, j) -> bruteFired[0]++);
+    int dispatched = RoundTripQualityGate.countSegmentPairCrossings(
+      nodes, cum, perim, ceiling, (i, j) -> gridFired[0]++);
+    assertEquals("both scans must stop at ceiling+1", ceiling + 1, brute);
+    assertEquals("count parity holds under truncation", brute, dispatched);
+    assertEquals("visitor fires once per counted crossing (brute)", brute, bruteFired[0]);
+    assertEquals("visitor fires once per counted crossing (grid)", dispatched, gridFired[0]);
+  }
+
   /** Deliberate many-crossing comb shape spanning multiple grid cells. */
   @Test
   public void crossingCombMatchesBruteForce() {

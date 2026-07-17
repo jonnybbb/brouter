@@ -16,7 +16,12 @@ import btools.router.RoutingContext;
  */
 public interface EngineContext {
 
-  /** The request context. Do not mutate. */
+  /**
+   * The request's live configuration object, deliberately shared (see class
+   * doc). Boundary: do not mutate ROUND-TRIP REQUEST-STATE fields through it
+   * (those are orchestrator-owned); the documented general routing knobs
+   * (waypoint catching range, dynamic-distance mode) are live and mutable.
+   */
   RoutingContext routingContext();
 
   /** Segment directory (used to construct child engines). */

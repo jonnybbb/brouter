@@ -95,10 +95,11 @@ public class LoopGoldenSignatureTest {
 
     Map<String, String> actual = new TreeMap<>();
     for (Scenario s : SCENARIOS) {
-      // Fetch through the shared on-demand fetcher (assumption-skips when the
-      // tile cannot be provided) instead of racing other parallel test forks
-      // for whatever partial cache happens to exist.
-      LoopTestSegments.ensureAvailable(segDir, s.region.segmentFile);
+      // Pinned provisioning: download only when missing, never refresh, and
+      // include the boundary neighbours — golden signatures must not move
+      // because upstream published a newer tile or because one machine happens
+      // to hold a neighbour tile another lacks.
+      LoopTestSegments.ensureRegionPinned(segDir, s.region);
       File tile = new File(segDir, s.region.segmentFile);
       File profileFile = new File(projectDir, "misc/profiles2/" + s.profile + ".brf");
       if (!tile.exists() || !profileFile.exists()) {
