@@ -313,26 +313,6 @@ public class GreedyRoundTripPlannerTest {
   }
 
   @Test
-  public void roundTripDensifyOverrideIsTriState() {
-    // The override is a Boolean: 1 → TRUE (force on), 0 → FALSE (force off),
-    // absent → null (engine default decides).
-    Assert.assertEquals(Boolean.TRUE, densifyFor("1"));
-    Assert.assertEquals("0 forces off (FALSE, distinct from unset)",
-      Boolean.FALSE, densifyFor("0"));
-    RoutingContext rctx = new RoutingContext();
-    new RoutingParamCollector().setParams(rctx, null, new LinkedHashMap<>());
-    Assert.assertNull("absent → unset", rctx.explicitViaDensifyOverride);
-  }
-
-  private static Boolean densifyFor(String v) {
-    RoutingContext rctx = new RoutingContext();
-    Map<String, String> p = new LinkedHashMap<>();
-    p.put("roundTripDensify", v);
-    new RoutingParamCollector().setParams(rctx, null, p);
-    return rctx.explicitViaDensifyOverride;
-  }
-
-  @Test
   public void nonPositiveRoundTripDistanceIsNulled() {
     // Symmetric with roundTripLength: a non-positive roundTripDistance would
     // become a zero/negative searchRadius (which silently disables the distance

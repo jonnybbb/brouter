@@ -257,10 +257,6 @@ public class RoutingParamCollector {
           // hostile-surface/retrace). Default lenient: such routes are returned
           // with a Warning: advisory so the user decides whether to ride them.
           rctx.roundTripStrictQuality = (Integer.parseInt(value) == 1);
-        } else if (key.equals("roundTripDensify")) {
-          // Opt into "length-honoring" explicit-via densification (arc bulges between user
-          // vias). Off by default; engine still gates it to non-paved profiles. 0 forces off.
-          rctx.explicitViaDensifyOverride = (Integer.parseInt(value) == 1);
         } else if (key.equals("roundTripAlgorithm")) {
           rctx.roundTripAlgorithm = RoundTripAlgorithm.fromString(value);
           // Explicit choice — including an explicit AUTO, which must win over

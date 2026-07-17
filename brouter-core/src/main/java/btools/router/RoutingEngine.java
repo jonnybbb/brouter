@@ -2250,13 +2250,6 @@ public class RoutingEngine extends Thread {
         // set (user-via protection, distance floor, crossing guard).
         waypointSnapper().repairViaPinnedBulges(totaltrack, matchedWaypoints);
         trackCleanup().removeArtifactSpurSpans(totaltrack, matchedWaypoints);
-      } else if (!routingContext.allowSamewayback && explicitViaRoundTrip && routingContext.explicitViaDensify) {
-        // Densified explicit-via: strip the out-and-back spurs at GENERATED bulge points
-        // only — never user vias. removeMicroDetours is still skipped (it would
-        // delete the whole route, since the closing waypoint coincides with the start).
-        // (Cleaning ALL waypoint spurs was tested and rejected: it did not fix the
-        // leg-hostile cases and shortened load-bearing retraces on 1-via loops.)
-        trackCleanup().removeBackAndForthSegments(totaltrack, matchedWaypoints, true);
       }
       // removeBackAndForthSegments/removeMicroDetours edit the nodes list in place but
       // leave each node's origin back-pointer dangling through the removed nodes.

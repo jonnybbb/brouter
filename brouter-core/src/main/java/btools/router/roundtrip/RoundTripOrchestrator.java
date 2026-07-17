@@ -636,30 +636,13 @@ public final class RoundTripOrchestrator {
           + " has no road within " + (int) userSnapDist + "m");
       }
     }
-    // Densification gate (ship A gated). OFF by default: inserting generated bulge points
-    // would violate the user-via skeleton contract (no generated ops.waypoints(), order preserved),
-    // so it must be explicitly opted into ({@code roundTripDensify=1} →
-    // {@code explicitViaDensifyOverride=TRUE}) — a "length-honoring loop" mode. Even when opted
-    // in it is gated to NON-PAVED profiles: for a road bike in sparse terrain a retracing paved
-    // lollipop beats a one-way track loop the quality gate would reject, so paved keeps the
-    // plain route.
-    ops.routingContext().explicitViaDensify =
-      Boolean.TRUE.equals(ops.routingContext().explicitViaDensifyOverride)
-        && !request.pavedProfile;
-
-    // Anchor cycle [start, via1, ..., viaN]. With densification on, insert generated
-    // arc-following "bulge" points between consecutive anchors so legs follow the loop
-    // perimeter instead of cutting the chord (corner-cut undershoot fix).
+    // Anchor cycle [start, via1, ..., viaN]: the user-via skeleton, order preserved.
     List<OsmNodeNamed> anchors = new ArrayList<>();
     anchors.add(start);
     anchors.addAll(userVias);
 
     ops.waypoints().clear();
-    if (ops.routingContext().explicitViaDensify && !ops.routingContext().allowSamewayback && anchors.size() >= 2) {
-      ops.waypoints().addAll(snapper.densifyViaArcs(anchors, searchRadius, userSnapDist));
-    } else {
-      ops.waypoints().addAll(anchors);
-    }
+    ops.waypoints().addAll(anchors);
 
     // For allowSamewayback=false append the closing start copy so the route
     // forms a closed loop. For allowSamewayback=true the existing doRouting
