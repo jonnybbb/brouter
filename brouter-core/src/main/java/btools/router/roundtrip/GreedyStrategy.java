@@ -102,7 +102,7 @@ final class GreedyStrategy implements RoundTripStrategy {
         + String.format(Locale.ROOT, "%.2f", returnOracle.kappa()) + ")");
     }
 
-    // Iso-pool shape for the planner's health tracker (issue #26): measured
+    // Iso-pool shape for the planner's health tracker: measured
     // once per pool, shared across the ladder rungs (each rung wraps it in a
     // fresh per-plan IsoPoolHealth). Null when the provider is graph-native
     // only — the planner then skips every health hook (plain GREEDY parity).
@@ -285,7 +285,7 @@ final class GreedyStrategy implements RoundTripStrategy {
         + ", returnChecks=" + result.getReturnChecksPerformed()
         + ", runtimeMs=" + result.getRuntimeMillis()
         + ", fallbackReason=" + (result.getFallbackReason() == null ? "none" : result.getFallbackReason()));
-      // Issue #26 source attribution — the aggregate view of the per-leg
+      // Source attribution — the aggregate view of the per-leg
       // "leg N source:" diagnostics logged above.
       ops.logInfo("greedy source attribution: acceptedIso=" + result.getAcceptedIsoLegs()
         + ", acceptedGraphNative=" + result.getAcceptedNonIsoLegs()

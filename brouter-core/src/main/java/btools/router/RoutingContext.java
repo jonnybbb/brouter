@@ -286,7 +286,7 @@ public final class RoutingContext {
   public boolean roundTripStrictQuality;
 
   /**
-   * ISO_GREEDY's internal graph-native comparison branch (issue #26). On by
+   * ISO_GREEDY's internal graph-native comparison branch. On by
    * default; embedders/tests switch it off to observe the BLENDED planner's
    * raw output — the golden suite pins a blend-only cell so a blended-planner
    * regression cannot hide behind a winning comparison branch.
