@@ -33,16 +33,19 @@ variants are skipped.
 ./gradlew :brouter-core:integrationTest
 ```
 
-All 16 regions × profiles × radii × directions (~930 cells). Per cell:
-greedy and iso_greedy are quality-gated (regional floor bands), AUTO runs
-lenient and is minimally gated (no crash; must not lose a cell a forced
-planner won). Required green before pushing to a PR branch.
+All 16 regions × profiles × radii × directions (~930 cells). Per cell the
+SHIPPED route is gated: the AUTO competition runs lenient (production
+default) and its result is held to the regional quality bands — except a
+disclosed best-effort (a "Warning:" the production gate itself attached),
+which is logged, not failed. Forced per-planner runs live in the smoke
+tier (attribution) and in report mode. Required green before pushing to a
+PR branch.
 
 Options:
 
-- `-Dloop.reportVariants=true` — also run the probe (WAYPOINT) and
-  ISOCHRONE comparison variants; they only feed the `generateLoopReport`
-  artifact and are never gated.
+- `-Dloop.reportVariants=true` — the full five-variant shape: probe
+  (WAYPOINT) and ISOCHRONE comparison variants (report-only, ungated) plus
+  the forced greedy/iso_greedy planners (gated, full attribution).
 - `-Dgolden.write=true` — recapture the golden signatures (only on
   known-good code).
 - `-Dloop.forks=N` / `-Dloop.heap=Ng` — parallelism tuning.

@@ -80,9 +80,10 @@ tasks.register('integrationTest', Test) {
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName('routingProfiles')
 
-    // Comparison-report variants (probe/isochrone): report data only, never
-    // gated — off by default (each is a full loop generation per cell). Turn
-    // on when the generateLoopReport output should include them.
+    // Comparison-report mode: additionally run probe/isochrone (report data,
+    // never gated) AND the forced greedy/iso_greedy planners (gated, full
+    // attribution) — five loop generations per cell, the pre-tiering shape.
+    // Off by default: the plain matrix gates the shipped AUTO route only.
     systemProperty 'loop.reportVariants', System.getProperty('loop.reportVariants', 'false')
     // Segment handling: fetch missing neighbour tiles, reuse already-present ones
     // without a freshness re-fetch. Override per-run with -Dloop.segments.*.

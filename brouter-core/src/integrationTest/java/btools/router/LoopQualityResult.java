@@ -20,7 +20,11 @@ class LoopQualityResult {
   final LoopQualityMetrics metrics; // null if routing failed
   final String error; // null if routing succeeded
   final double[][] coordinates; // [lon, lat] pairs; null if routing failed
-  final String variant; // "probe", "isochrone", "greedy", "iso_greedy"
+  final String variant; // "probe", "isochrone", "greedy", "iso_greedy", "auto"
+  /** Shipped as a DISCLOSED lenient best-effort (track carries a "Warning:"):
+   *  the production gate already named the quality miss, so the band gate
+   *  logs instead of failing. Set by runVariant. */
+  boolean disclosed;
 
   LoopQualityResult(String label, LoopTestRegion region, int distanceMeters,
                     String profileName, double direction,

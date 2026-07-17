@@ -168,14 +168,24 @@ public abstract class LoopQualityTestBase {
     //    never reads them).
     boolean smoke = Boolean.getBoolean("loop.smoke");
     boolean reportVariants = Boolean.getBoolean("loop.reportVariants");
+    // Forced planners run for ATTRIBUTION (which planner regressed): the smoke
+    // tier's whole purpose, and part of the full comparison report. The full
+    // matrix default gates the PRODUCTION surface instead — AUTO ships one of
+    // these planners anyway, so routing them forced per cell doubled the work
+    // for attribution few cells needed.
+    boolean forcedPlanners = smoke || reportVariants;
     LoopQualityResult probeResult = null;
     LoopQualityResult isoResult = null;
+    LoopQualityResult greedyResult = null;
+    LoopQualityResult isoGreedyResult = null;
     if (reportVariants) {
       probeResult = runVariant("probe", RoundTripAlgorithm.WAYPOINT, segDir, profileFile);
       isoResult = runVariant("isochrone", RoundTripAlgorithm.ISOCHRONE, segDir, profileFile);
     }
-    LoopQualityResult greedyResult = runVariant("greedy", RoundTripAlgorithm.GREEDY, segDir, profileFile);
-    LoopQualityResult isoGreedyResult = runVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY, segDir, profileFile);
+    if (forcedPlanners) {
+      greedyResult = runVariant("greedy", RoundTripAlgorithm.GREEDY, segDir, profileFile);
+      isoGreedyResult = runVariant("iso_greedy", RoundTripAlgorithm.ISO_GREEDY, segDir, profileFile);
+    }
     // The route production actually ships: full AUTO competition, routed LENIENT
     // (production default) so the report draws the shipped loop even when it is a
     // best-effort warn.
@@ -192,13 +202,10 @@ public abstract class LoopQualityTestBase {
       }
     }
 
-    // Gate the production round-trip strategies. greedy and iso_greedy are the
-    // primary algorithms AUTO ships; assert the quality bars on each that
-    // produced a track. A soft-assert collector reports every miss across both
-    // variants (not just the first), so one case can surface e.g. both a greedy
-    // cost/m miss and an iso_greedy overshoot. The case is skipped only when
-    // neither could form a loop at all; probe (legacy WAYPOINT) and isochrone
-    // were run above for the comparison report but are no longer gated.
+    // Gating by tier: smoke gates the forced planners (attribution — which
+    // planner regressed); the full matrix gates the shipped AUTO route (the
+    // production surface); report mode gates both. A soft-assert collector
+    // reports every miss across all gated variants, not just the first.
     // A production planner CRASH must fail the cell unconditionally — even
     // when the OTHER planner produced a valid track (one broken planner
     // region-wide must not stay green behind its sibling). An exception
@@ -220,18 +227,31 @@ public abstract class LoopQualityTestBase {
       anyTrack = true;
       checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
     }
-    if (!anyTrack) {
-      Assume.assumeTrue("neither greedy nor iso_greedy produced a track for " + testLabel, false);
-      return;
+    // Gate the PRODUCTION surface (full matrix): the shipped AUTO route is
+    // held to the same regional quality bands as a forced planner — unless the
+    // production gate itself already DISCLOSED the miss (lenient best-effort
+    // with a "Warning:", terrain-limited by definition), which is logged, not
+    // failed. When forced planners also ran (report mode), AUTO producing
+    // NOTHING in a cell a forced planner won is a competition-plumbing
+    // regression on top.
+    if (autoResult != null) {
+      if (autoResult.metrics != null) {
+        anyTrack = true;
+        if (autoResult.disclosed) {
+          System.out.println(testLabel + ": auto shipped a disclosed best-effort — bands waived: "
+            + autoResult.metrics);
+        } else {
+          checkVariantQuality("auto", autoResult.metrics, failures);
+        }
+      } else if (forcedPlanners && (greedyResult != null && greedyResult.metrics != null
+          || isoGreedyResult != null && isoGreedyResult.metrics != null)) {
+        failures.add("auto: competition produced no track while a forced planner formed a loop ("
+          + (autoResult.error == null ? "no error" : autoResult.error) + ")");
+      }
     }
-    // Minimal AUTO gate (full matrix only): the production entry point must
-    // not lose a winnable cell. No quality floors here — AUTO may ship a
-    // disclosed lenient best-effort the planner bands would flag — but when a
-    // forced planner formed a loop, the competition over the same algorithms
-    // producing NOTHING is a competition-plumbing regression, not terrain.
-    if (autoResult != null && autoResult.metrics == null) {
-      failures.add("auto: competition produced no track while a forced planner formed a loop ("
-        + (autoResult.error == null ? "no error" : autoResult.error) + ")");
+    if (!anyTrack) {
+      Assume.assumeTrue("no gated variant produced a track for " + testLabel, false);
+      return;
     }
     assertTrue("quality-gate failures for " + testLabel + ":\n  " + String.join("\n  ", failures),
       failures.isEmpty());
@@ -517,8 +537,10 @@ public abstract class LoopQualityTestBase {
         RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).qualityScore());
       variantGateCostPerM.put(variant, surfaceCostPerMeter(track, profileName));
       double[][] coords = extractCoordinates(track);
-      return new LoopQualityResult(testLabel, region, targetDistanceMeters,
+      LoopQualityResult ok = new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);
+      ok.disclosed = track.message != null && track.message.contains("Warning:");
+      return ok;
     } catch (Exception e) {
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, null, e.getMessage(), null, variant);
