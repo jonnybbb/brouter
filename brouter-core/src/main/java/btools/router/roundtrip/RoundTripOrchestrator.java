@@ -303,23 +303,6 @@ public final class RoundTripOrchestrator {
           || ops.routingContext().roundTripDistance <= 0) ? 1500 : ops.routingContext().roundTripDistance;
       }
 
-      // Fail fast on a missing start tile. Start-tile availability is invariant
-      // across every attempt below (direction × subRouteCount × AUTO candidate),
-      // yet the greedy/iso paths discover it only lazily — and every earlier touch
-      // point (the reachability probe, isochrone expansion) swallows the
-      // IllegalArgumentException — so without this it is either re-discovered per
-      // attempt or, in AUTO, wrapped as a generic "candidate threw" failure.
-      // Checking once here surfaces the canonical "datafile … not found" before any
-      // provider/isochrone/competition work, and keeps a missing-data start from
-      // being mislabeled "start point not on road network" by the greedy planner
-      // (whose matchPoint now uniformly maps any match failure to null).
-      String tileError = ops.startTileMissingError(ops.waypoints().get(0));
-      if (tileError != null) {
-        setError(tileError);
-        ops.logInfo(request.error);
-        return;
-      }
-
       double direction = (ops.routingContext().startDirection == null ? -1 :ops.routingContext().startDirection);
       double directionAdd = (ops.routingContext().roundTripDirectionAdd == null ? ROUNDTRIP_DEFAULT_DIRECTIONADD :ops.routingContext().roundTripDirectionAdd);
       if (direction == -1) {

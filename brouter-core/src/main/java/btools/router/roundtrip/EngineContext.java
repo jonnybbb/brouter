@@ -40,9 +40,6 @@ public interface EngineContext {
   /** True when the uniform quality gate would hard-reject this verdict. */
   boolean roundTripQualityHardReject(RoundTripQualityResult quality);
 
-  /** Missing-start-tile error, or null when the tile is present. */
-  String startTileMissingError(OsmNodeNamed start);
-
   /** Area-info based random direction pick. */
   double getRandomDirectionFromData(OsmNodeNamed wp, double searchRadius);
 
