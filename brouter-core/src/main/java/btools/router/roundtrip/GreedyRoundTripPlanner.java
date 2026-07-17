@@ -33,7 +33,7 @@ import java.util.*;
  * cannot sweep a full circle stay feasible.
  * <p>
  * In ISO_GREEDY mode the planner also tracks the start-pool's trustworthiness via
- * {@link IsoPoolHealth} (issue #26). A DEGRADED pool loses its prior-based scoring
+ * {@link IsoPoolHealth}. A DEGRADED pool loses its prior-based scoring
  * terms and cedes an extra routed slot to graph-native candidates; an UNHEALTHY
  * pool switches to graph-native-only steps (the internal plain-GREEDY fallback).
  * Every accepted leg records a source-attribution diagnostic ("leg N source: …").
@@ -345,7 +345,7 @@ public class GreedyRoundTripPlanner {
     return (POCKET_SAFE_CELLS - reachableCells) / (double) (POCKET_SAFE_CELLS - POCKET_MIN_CELLS);
   }
   /**
-   * Iso-pool health tracker (issue #26); null for plain GREEDY / graph-native
+   * Iso-pool health tracker; null for plain GREEDY / graph-native
    * providers, where every hook is a no-op (behaviour bit-identical to the
    * pre-health planner). Set by {@link GreedyStrategy}, one fresh
    * instance per plan.
@@ -475,7 +475,7 @@ public class GreedyRoundTripPlanner {
   private int graphNativeOnlyAtStep = -1;
   /** Accepted legs whose candidate held its routed slot only via quota injection. */
   private int acceptedQuotaInjectedLegs;
-  // Leg-attribution counters (issue #26 telemetry). Per-plan state like the
+  // Leg-attribution counters (telemetry). Per-plan state like the
   // quota counter above: a planner instance runs exactly one plan(). Fields
   // rather than plan() locals so undoTentativeLeg and snapshotFallback can
   // keep them consistent with the committed geometry.
@@ -780,7 +780,7 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Source attribution for a COMMITTED leg (issue #26): one grep-able diagnostic
+   * Source attribution for a COMMITTED leg: one grep-able diagnostic
    * per accepted leg (source, quota injection, return regime, how routed truth and
    * closure trials moved it from its heuristic rank, pool health). Also feeds the
    * health tracker: a mixed-source routed top-K won by graph-native is the
@@ -1025,7 +1025,7 @@ public class GreedyRoundTripPlanner {
         }
         candidatesGenerated += candidates.size();
 
-        // Iso-pool health demotions (issue #26). Evaluated per attempt so
+        // Iso-pool health demotions. Evaluated per attempt so
         // evidence recorded mid-step applies to the retry's candidate set.
         // DEGRADED strips the pool's prior-based scoring terms below and adds
         // a routed-quota seat; UNHEALTHY drops iso-pool candidates entirely —

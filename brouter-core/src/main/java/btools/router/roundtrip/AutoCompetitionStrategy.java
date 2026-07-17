@@ -104,7 +104,7 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
     List<RoundTripCandidateResult> results = new ArrayList<>(3);
 
     // 1+2. Run ISO_GREEDY first, then plain GREEDY only when the ISO result
-    // proves the comparison is still useful. This is the issue-#26 default:
+    // proves the comparison is still useful. This is the default:
     // avoid duplicate production algorithm runs when ISO_GREEDY is strong or
     // has already absorbed the graph-native provider fallback.
     RoundTripCandidateResult isoGreedyR =

@@ -70,7 +70,7 @@ public final class RoundTripCandidateResult {
     return planner != null && planner.isInternalGraphNativeCompared();
   }
 
-  /** The child's explicit graph-native-only start decision (issue #26). */
+  /** The child's explicit graph-native-only start decision. */
   public boolean graphNativeOnlyStart() {
     return planner != null && planner.isGraphNativeOnlyStart();
   }
