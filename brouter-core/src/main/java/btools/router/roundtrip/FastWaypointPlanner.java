@@ -44,6 +44,20 @@ public final class FastWaypointPlanner {
    * direction instead of encircling the start. Deterministic, so the derived
    * radius scale — and thus the loop length — is stable.
    */
+  /**
+   * Via cap for the directional lobe. A handful of well-spread vias makes a
+   * clean directional loop; beyond this the vias crowd the forward arc and the
+   * router weaves detours that inflate the routed length past target. It also
+   * bounds the lobe's arc width: the fan half-span is {@code 90 - 180/points}
+   * and {@code points = viaCount + 1}, so the cap holds the forward fan at
+   * ~120° (five vias) rather than letting it widen toward a half-circle.
+   *
+   * <p>A compile-time geometry constant, not a runtime knob: nothing tunes it
+   * per deployment, and changing it reshapes every medium/long FAST loop (a
+   * calibration change that needs golden-signature recapture, not a restart).
+   */
+  static final int LOBE_VIA_CAP = 5;
+
   static double[] directionalLobeBearings(double direction, int count) {
     int points = count + 1;
     double[] b = new double[count];
