@@ -8,12 +8,16 @@ import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
 
 /**
- * Greedy plan-and-route tier (GREEDY / ISO_GREEDY): candidate-provider
- * selection (graph-native or blended isochrone pool), the subRouteCount
- * retry ladder, the Phase-2.1 axis retry, the internal graph-native
- * comparison branch, and adoption of the planned loop (bypass or re-route).
- * Outcome lands on the request and continues to the orchestrator's shared
- * floors and gate.
+ * Greedy plan-and-route tier (GREEDY / ISO_GREEDY). {@code doGreedyRoundTrip}
+ * is a driver over named dispatch phases, mirroring the planner's own split:
+ * {@link #prepareCandidateSources} (providers, oracle, pool shape, policies),
+ * {@link #runAttemptLadder} (first attempt + Phase 2.1 axis retry),
+ * {@link #maybeRunInternalComparison} (the graph-native comparison branch),
+ * {@link #stampDispatchTelemetry}, and the outcome pair
+ * {@link #adoptPlannedLoop} / {@link #handleNoAcceptableLoop} (bypass or
+ * re-route adoption vs. recursion / budget reject / best-effort). Outcome
+ * lands on the request and continues to the orchestrator's shared floors and
+ * gate; all request state is threaded as the {@code request} parameter.
  */
 final class GreedyStrategy implements RoundTripStrategy {
 
@@ -27,17 +31,18 @@ final class GreedyStrategy implements RoundTripStrategy {
 
   @Override
   public void attempt(RoundTripRequest request, TierSlice slice) {
-    doGreedyRoundTrip(slice.searchRadius, slice.direction, slice.algo);
+    doGreedyRoundTrip(request, slice.searchRadius, slice.direction, slice.algo);
   }
 
-  private void doGreedyRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {
+  private void doGreedyRoundTrip(RoundTripRequest request, double searchRadius,
+                                 double direction, RoundTripAlgorithm algo) {
     // Initialize nodesCache — needed before the planner can match ops.waypoints() to the graph.
     ops.resetCache(false);
-    orchestrator.request.forcedCorridorAccepted = false;
+    request.forcedCorridorAccepted = false;
     // Loop scale for the via-relocation bound (profileAwareMatchPoint): must be
     // set BEFORE planner via matching — the doRouting fallthrough below used to
     // set it only late, leaving the bound inert during greedy placement.
-    orchestrator.request.setSearchRadius(searchRadius);
+    request.setSearchRadius(searchRadius);
 
     OsmNodeNamed start = ops.waypoints().get(0);
     double desiredDistance = 2 * Math.PI * searchRadius;
@@ -45,6 +50,77 @@ final class GreedyStrategy implements RoundTripStrategy {
       + "m, searchRadius=" + (int) searchRadius + "m, direction=" + (int) direction
       + ", mode=" + algo);
 
+    CandidateSources src = prepareCandidateSources(start, searchRadius, direction, algo,
+      desiredDistance);
+    LadderOutcome ladder = runAttemptLadder(request, start, searchRadius, desiredDistance,
+      direction, src);
+    RoundTripResult result = maybeRunInternalComparison(request, algo, src, start,
+      searchRadius, desiredDistance, ladder.result);
+    stampDispatchTelemetry(result, src, ladder);
+
+    // A real loop needs at least a triangle: start + 2 intermediate ops.waypoints() + closing
+    // start (>= 4 entries). A single intermediate is just an out-and-back, so reject it
+    // rather than attributing a legacy waypoint/probe fallback route to GREEDY.
+    // Reject loops the planner explicitly flagged as failing its quality gates
+    // (DEGRADED_FALLBACK_PREFIX) — shipping a 180% overshoot or 60%-reused
+    // forced-closure loop as success would silently fool downstream consumers.
+    request.forcedCorridorAccepted = result != null && result.isForcedCorridorAccepted();
+    boolean degradedFallback = isDegradedGreedyResult(result);
+    if (degradedFallback) {
+      ops.logInfo("greedy: rejecting degraded fallback (" + result.getFallbackReason()
+        + ")");
+    }
+    if (!degradedFallback
+        && result != null && result.getLoopWaypoints() != null
+        && result.getLoopWaypoints().size() >= 4) {
+      adoptPlannedLoop(request, result, searchRadius);
+    } else {
+      handleNoAcceptableLoop(request, result, algo, searchRadius, direction);
+    }
+  }
+
+  /**
+   * Candidate sources and per-dispatch policies, resolved once: the isochrone
+   * expansion (ISO_GREEDY), the Phase 2.0 asymmetry bias, both candidate
+   * providers, the return oracle, the pool shape/health seed, the frontier
+   * axis, and the start policy. Read-only for the rest of the dispatch.
+   */
+  private static final class CandidateSources {
+    final IsochroneExpansionResult iso;
+    final IsoAsymmetryBias bias;
+    /** User direction, or the Phase 2.0 bias bearing when it fired. */
+    final double effectiveDirection;
+    final GraphNativeCandidateProvider graphNativeProvider;
+    final RoundTripCandidateProvider provider;
+    final int baseSubRouteCount;
+    final ReturnDistanceOracle returnOracle;
+    final IsoPoolHealth.PoolShape poolShape;
+    final FrontierAxis frontierAxis;
+    final IsoStartPolicy isoStartPolicy;
+    final boolean startGraphNativeOnly;
+
+    CandidateSources(IsochroneExpansionResult iso, IsoAsymmetryBias bias,
+                     double effectiveDirection, GraphNativeCandidateProvider graphNativeProvider,
+                     RoundTripCandidateProvider provider, int baseSubRouteCount,
+                     ReturnDistanceOracle returnOracle, IsoPoolHealth.PoolShape poolShape,
+                     FrontierAxis frontierAxis, IsoStartPolicy isoStartPolicy) {
+      this.iso = iso;
+      this.bias = bias;
+      this.effectiveDirection = effectiveDirection;
+      this.graphNativeProvider = graphNativeProvider;
+      this.provider = provider;
+      this.baseSubRouteCount = baseSubRouteCount;
+      this.returnOracle = returnOracle;
+      this.poolShape = poolShape;
+      this.frontierAxis = frontierAxis;
+      this.isoStartPolicy = isoStartPolicy;
+      this.startGraphNativeOnly = isoStartPolicy == IsoStartPolicy.GRAPH_NATIVE_ONLY;
+    }
+  }
+
+  /** Dispatch phase 1: resolve every candidate source and policy for this run. */
+  private CandidateSources prepareCandidateSources(OsmNodeNamed start, double searchRadius,
+      double direction, RoundTripAlgorithm algo, double desiredDistance) {
     // Phase 2.0: when ISO_GREEDY runs without an explicit user direction,
     // use the isochrone's reachability asymmetry to bias the initial bearing
     // toward the most-reaching sector. The legacy default of "direction=-1"
@@ -122,19 +198,44 @@ final class GreedyStrategy implements RoundTripStrategy {
     if (algo == RoundTripAlgorithm.ISO_GREEDY) {
       ops.logInfo("ISO_GREEDY: start policy " + isoStartPolicy);
     }
+    return new CandidateSources(iso, bias, effectiveDirection, graphNativeProvider,
+      provider, baseSubRouteCount, returnOracle, poolShape, frontierAxis, isoStartPolicy);
+  }
 
-    boolean startGraphNativeOnly = isoStartPolicy == IsoStartPolicy.GRAPH_NATIVE_ONLY;
-    RoundTripCandidateProvider primaryProvider = startGraphNativeOnly ? graphNativeProvider : provider;
+  /** Attempt-ladder outcome: the (possibly degraded) planner result plus the
+   *  Phase 2.1 axis-retry telemetry the dispatch stamps afterwards. */
+  private static final class LadderOutcome {
+    final RoundTripResult result;
+    final boolean phase21Triggered;
+    final boolean phase21Succeeded;
+    final double phase21RetryDir;
+
+    LadderOutcome(RoundTripResult result, boolean phase21Triggered,
+                  boolean phase21Succeeded, double phase21RetryDir) {
+      this.result = result;
+      this.phase21Triggered = phase21Triggered;
+      this.phase21Succeeded = phase21Succeeded;
+      this.phase21RetryDir = phase21RetryDir;
+    }
+  }
+
+  /**
+   * Dispatch phase 2: the first attempt (start policy applied) and, when the
+   * terrain evidence warrants it, the Phase 2.1 axis retry.
+   */
+  private LadderOutcome runAttemptLadder(RoundTripRequest request, OsmNodeNamed start,
+      double searchRadius, double desiredDistance, double direction, CandidateSources src) {
+    RoundTripCandidateProvider primaryProvider = src.startGraphNativeOnly ? src.graphNativeProvider : src.provider;
     // The return oracle survives a graph-native-only start: it calibrates from
     // the raw expansion cell cloud, not the filtered pool, so it stays valid in
     // exactly the constrained terrain that demotes the pool.
-    ReturnDistanceOracle primaryReturnOracle = returnOracle;
-    IsoPoolHealth.PoolShape primaryPoolShape = startGraphNativeOnly ? null : poolShape;
+    ReturnDistanceOracle primaryReturnOracle = src.returnOracle;
+    IsoPoolHealth.PoolShape primaryPoolShape = src.startGraphNativeOnly ? null : src.poolShape;
 
     // First attempt — user direction (or Phase 2.0 biased bearing).
-    RoundTripResult result = runGreedyAttempt(start, searchRadius, desiredDistance,
-      effectiveDirection, baseSubRouteCount, primaryProvider, bias,
-      primaryReturnOracle, primaryPoolShape, isoStartPolicy);
+    RoundTripResult result = runGreedyAttempt(request, start, searchRadius, desiredDistance,
+      src.effectiveDirection, src.baseSubRouteCount, primaryProvider, src.bias,
+      primaryReturnOracle, primaryPoolShape, src.isoStartPolicy);
 
     // Phase 2.1: if the first attempt degraded AND the user supplied an
     // explicit direction AND the frontier has a strong terrain axis AND
@@ -148,22 +249,22 @@ final class GreedyStrategy implements RoundTripStrategy {
     // the terrain is hard — the opposite of a bounded tier's contract.
     // (Deliberately NOT gated on the start policy: corridor terrain is both
     // what demotes the pool and what the axis retry exists to recover.)
-    if (!orchestrator.request.effortPolicy.skipRetryLayers
+    if (!request.effortPolicy.skipRetryLayers
         && isDegradedGreedyResult(result)
         && direction >= 0
-        && frontierAxis.hasStrongAxis
-        && GeometricWaypointPlacer.isPerpendicularToAxis(direction, frontierAxis.axisBearingDegrees)
+        && src.frontierAxis.hasStrongAxis
+        && GeometricWaypointPlacer.isPerpendicularToAxis(direction, src.frontierAxis.axisBearingDegrees)
         // Request-budget gate: the axis retry re-runs the whole subRouteCount
         // ladder — only worth starting when the request can still fund it.
         && ops.remainingRequestBudgetMs() >= RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS) {
       phase21Triggered = true;
-      phase21RetryDir = GeometricWaypointPlacer.chooseAxisBearing(frontierAxis.axisBearingDegrees, direction);
+      phase21RetryDir = GeometricWaypointPlacer.chooseAxisBearing(src.frontierAxis.axisBearingDegrees, direction);
       ops.logInfo("ISO_GREEDY: Phase 2.1 axis retry — user direction " + (int) direction
-        + "° is perpendicular to terrain axis " + String.format("%.0f", frontierAxis.axisBearingDegrees)
-        + "° (strength=" + String.format("%.1fx", frontierAxis.strength)
+        + "° is perpendicular to terrain axis " + String.format("%.0f", src.frontierAxis.axisBearingDegrees)
+        + "° (strength=" + String.format("%.1fx", src.frontierAxis.strength)
         + "); retrying with axis-aligned direction " + (int) phase21RetryDir + "°");
-      RoundTripResult retry = runGreedyAttempt(start, searchRadius, desiredDistance,
-        phase21RetryDir, baseSubRouteCount, provider, bias, returnOracle, poolShape,
+      RoundTripResult retry = runGreedyAttempt(request, start, searchRadius, desiredDistance,
+        phase21RetryDir, src.baseSubRouteCount, src.provider, src.bias, src.returnOracle, src.poolShape,
         IsoStartPolicy.BLEND);
       if (!isDegradedGreedyResult(retry)
           && retry != null && retry.getLoopWaypoints() != null
@@ -177,21 +278,31 @@ final class GreedyStrategy implements RoundTripStrategy {
         ops.logInfo("ISO_GREEDY: Phase 2.1 axis retry ALSO degraded — geographic infeasibility detected");
       }
     }
+    return new LadderOutcome(result, phase21Triggered, phase21Succeeded, phase21RetryDir);
+  }
 
+  /**
+   * Dispatch phase 3: the internal graph-native-only comparison branch — runs
+   * a second ladder on graph-native candidates when the blended result is
+   * below the clear-accept bar, and returns the better of the two.
+   */
+  private RoundTripResult maybeRunInternalComparison(RoundTripRequest request,
+      RoundTripAlgorithm algo, CandidateSources src, OsmNodeNamed start,
+      double searchRadius, double desiredDistance, RoundTripResult result) {
     RouteChoiceScore.Verdict blendedInternalVerdict = null;
     boolean runInternalBranch = false;
     if (algo == RoundTripAlgorithm.ISO_GREEDY
         && ops.routingContext().roundTripInternalCompare
-        && !startGraphNativeOnly
+        && !src.startGraphNativeOnly
         // QUALITY (runGreedyAlways) already fields a dedicated plain-GREEDY
         // child in the parent competition — this internal comparison would run
         // materially the same graph-native ladder a second time.
-        && !orchestrator.request.effortPolicy.runGreedyAlways
-        && provider instanceof BlendedCandidateProvider
-        && System.currentTimeMillis() < (orchestrator.request.requestDeadline() == 0
-            ? Long.MAX_VALUE : orchestrator.request.requestDeadline())) {
+        && !request.effortPolicy.runGreedyAlways
+        && src.provider instanceof BlendedCandidateProvider
+        && System.currentTimeMillis() < (request.requestDeadline() == 0
+            ? Long.MAX_VALUE : request.requestDeadline())) {
       // Evaluate the blended verdict ONCE; the selection below reuses it.
-      blendedInternalVerdict = scoreInternalGreedyResult(result, desiredDistance, effectiveDirection);
+      blendedInternalVerdict = scoreInternalGreedyResult(request, result, desiredDistance, src.effectiveDirection);
       runInternalBranch = internalBranchNeeded(blendedInternalVerdict);
     }
     if (runInternalBranch) {
@@ -205,11 +316,11 @@ final class GreedyStrategy implements RoundTripStrategy {
       // class), while the base rung produces the healthy loop the old
       // recursion shipped. Fewer-first remains correct for the START policy
       // (pool unhealthy from step 0), which keeps GRAPH_NATIVE_ONLY.
-      RoundTripResult graphNativeResult = runGreedyAttempt(start, searchRadius, desiredDistance,
-        effectiveDirection, baseSubRouteCount, graphNativeProvider, bias, null, null,
+      RoundTripResult graphNativeResult = runGreedyAttempt(request, start, searchRadius, desiredDistance,
+        src.effectiveDirection, src.baseSubRouteCount, src.graphNativeProvider, src.bias, null, null,
         IsoStartPolicy.BLEND);
       RouteChoiceScore.Verdict graphNativeVerdict = scoreInternalGreedyResult(
-        graphNativeResult, desiredDistance, effectiveDirection);
+        request, graphNativeResult, desiredDistance, src.effectiveDirection);
       boolean comparable = graphNativeVerdict != null;
       RoundTripResult selected = selectBetterInternalIsoGreedyResult(
         result, blendedInternalVerdict, graphNativeResult, graphNativeVerdict);
@@ -226,209 +337,216 @@ final class GreedyStrategy implements RoundTripStrategy {
       }
       orchestrator.setPlannerResult(result);
     }
+    return result;
+  }
 
+  /** Dispatch phase 4: stamp the source-attribution and Phase 2.1 telemetry. */
+  private void stampDispatchTelemetry(RoundTripResult result, CandidateSources src,
+                                      LadderOutcome ladder) {
     if (result != null) {
       // The explicit record of the shipped result's candidate source. When no
-      // blend exists at all (pool not admitted → `provider` IS the graph-native
-      // provider), every attempt — including a successful Phase 2.1 axis retry —
+      // blend exists at all (pool not admitted → `src.provider` IS the graph-native
+      // src.provider), every attempt — including a successful Phase 2.1 axis retry —
       // planned on graph-native candidates. With an admitted blend, a
       // successful retry ran the blend, so only the primary attempt's start
       // policy counts.
-      boolean blendAvailable = provider instanceof BlendedCandidateProvider;
+      boolean blendAvailable = src.provider instanceof BlendedCandidateProvider;
       result.setGraphNativeOnlyStart(!blendAvailable
-        || (startGraphNativeOnly && !phase21Succeeded));
-      result.setPhase21AxisRetryTriggered(phase21Triggered);
-      result.setPhase21AxisRetrySucceeded(phase21Succeeded);
-      result.setPhase21AxisBearingDegrees(frontierAxis.hasStrongAxis
-        ? frontierAxis.axisBearingDegrees : Double.NaN);
-      result.setPhase21AxisStrength(frontierAxis.hasStrongAxis ? frontierAxis.strength : 0.0);
-      result.setPhase21RetryDirectionDegrees(phase21RetryDir);
+        || (src.startGraphNativeOnly && !ladder.phase21Succeeded));
+      result.setPhase21AxisRetryTriggered(ladder.phase21Triggered);
+      result.setPhase21AxisRetrySucceeded(ladder.phase21Succeeded);
+      result.setPhase21AxisBearingDegrees(src.frontierAxis.hasStrongAxis
+        ? src.frontierAxis.axisBearingDegrees : Double.NaN);
+      result.setPhase21AxisStrength(src.frontierAxis.hasStrongAxis ? src.frontierAxis.strength : 0.0);
+      result.setPhase21RetryDirectionDegrees(ladder.phase21RetryDir);
     }
 
-    // Phase 2.1 used to also set orchestrator.request.error when both attempts degraded
+    // Phase 2.1 used to also set request.error when both attempts degraded
     // (the spec's "refuse with infeasibility error" option). That cut off
     // doRoundTrip's later fallback path (waypoint algorithm), losing 2
     // iso_greedy/gravel scenarios on the broader corpus that the legacy
-    // waypoint fallback had been salvaging. Drop the orchestrator.request.error write;
+    // waypoint fallback had been salvaging. Drop the request.error write;
     // let the result return as degraded so the caller can fall back as
     // before. The axis info is still surfaced via the Phase 2.1 telemetry
     // fields on RoundTripResult for diagnostic purposes.
-    if (phase21Triggered && !phase21Succeeded) {
+    if (ladder.phase21Triggered && !ladder.phase21Succeeded) {
       ops.logInfo("ISO_GREEDY: Phase 2.1 axis retry also degraded — geographic"
-        + " infeasibility (axis " + axisName(frontierAxis.axisBearingDegrees)
-        + ", strength " + String.format("%.1fx", frontierAxis.strength)
+        + " infeasibility (axis " + axisName(src.frontierAxis.axisBearingDegrees)
+        + ", strength " + String.format("%.1fx", src.frontierAxis.strength)
         + "); falling through to legacy fallback chain");
     }
+  }
 
-    // A real loop needs at least a triangle: start + 2 intermediate ops.waypoints() + closing
-    // start (>= 4 entries). A single intermediate is just an out-and-back, so reject it
-    // rather than attributing a legacy waypoint/probe fallback route to GREEDY.
-    // Reject loops the planner explicitly flagged as failing its quality gates
-    // (DEGRADED_FALLBACK_PREFIX) — shipping a 180% overshoot or 60%-reused
-    // forced-closure loop as success would silently fool downstream consumers.
-    orchestrator.request.forcedCorridorAccepted = result != null && result.isForcedCorridorAccepted();
-    boolean degradedFallback = isDegradedGreedyResult(result);
-    if (degradedFallback) {
-      ops.logInfo("greedy: rejecting degraded fallback (" + result.getFallbackReason()
-        + ")");
+  /**
+   * Dispatch outcome, success side: swap the planned waypoints in and adopt
+   * the planner's detailed track directly (bypass), falling back to a budgeted
+   * doRouting re-route when the bypass fails.
+   */
+  private void adoptPlannedLoop(RoundTripRequest request, RoundTripResult result,
+                                double searchRadius) {
+    for (String diag : result.getDiagnostics()) {
+      ops.logInfo("greedy: " + diag);
     }
-    if (!degradedFallback
-        && result != null && result.getLoopWaypoints() != null
-        && result.getLoopWaypoints().size() >= 4) {
-      for (String diag : result.getDiagnostics()) {
-        ops.logInfo("greedy: " + diag);
-      }
-      // Spec §10 telemetry — compute-budget audit.
-      ops.logInfo("greedy telemetry: candidatesGenerated=" + result.getCandidatesGenerated()
-        + ", candidatesRouted=" + result.getCandidatesRouted()
-        + ", returnChecks=" + result.getReturnChecksPerformed()
-        + ", runtimeMs=" + result.getRuntimeMillis()
-        + ", fallbackReason=" + (result.getFallbackReason() == null ? "none" : result.getFallbackReason()));
-      // Source attribution — the aggregate view of the per-leg
-      // "leg N source:" diagnostics logged above.
-      ops.logInfo("greedy source attribution: acceptedIso=" + result.getAcceptedIsoLegs()
-        + ", acceptedGraphNative=" + result.getAcceptedNonIsoLegs()
-        + ", quotaInjectedAccepted=" + result.getAcceptedQuotaInjectedLegs()
-        + ", poolHealth=" + (Double.isNaN(result.getIsoPoolHealthScore())
-            ? "n/a" : String.format(Locale.US, "%.2f", result.getIsoPoolHealthScore()))
-        + ", poolDemotedAtStep=" + result.getPoolDemotedAtStep());
-      if (!result.isWithinTolerance()) {
-        ops.logInfo("greedy: fallback — " + result.getFallbackReason());
-      }
-      ops.logInfo("greedy: planned " + result.getLoopWaypoints().size() + " waypoints"
-        + ", estimated distance=" + result.getTotalDistanceMeters() + "m");
+    // Spec §10 telemetry — compute-budget audit.
+    ops.logInfo("greedy telemetry: candidatesGenerated=" + result.getCandidatesGenerated()
+      + ", candidatesRouted=" + result.getCandidatesRouted()
+      + ", returnChecks=" + result.getReturnChecksPerformed()
+      + ", runtimeMs=" + result.getRuntimeMillis()
+      + ", fallbackReason=" + (result.getFallbackReason() == null ? "none" : result.getFallbackReason()));
+    // Source attribution — the aggregate view of the per-leg
+    // "leg N source:" diagnostics logged above.
+    ops.logInfo("greedy source attribution: acceptedIso=" + result.getAcceptedIsoLegs()
+      + ", acceptedGraphNative=" + result.getAcceptedNonIsoLegs()
+      + ", quotaInjectedAccepted=" + result.getAcceptedQuotaInjectedLegs()
+      + ", poolHealth=" + (Double.isNaN(result.getIsoPoolHealthScore())
+          ? "n/a" : String.format(Locale.US, "%.2f", result.getIsoPoolHealthScore()))
+      + ", poolDemotedAtStep=" + result.getPoolDemotedAtStep());
+    if (!result.isWithinTolerance()) {
+      ops.logInfo("greedy: fallback — " + result.getFallbackReason());
+    }
+    ops.logInfo("greedy: planned " + result.getLoopWaypoints().size() + " waypoints"
+      + ", estimated distance=" + result.getTotalDistanceMeters() + "m");
 
-      // Route through the greedy ops.waypoints() with the standard routing engine.
-      // The greedy planner's lookahead ensures ops.waypoints() are in well-connected
-      // areas (not dead-end valleys), so orchestrator.doRoutingIntoRequest() produces gap-free tracks
-      // following roads appropriate for the profile.
-      ops.waypoints().clear();
-      ops.waypoints().addAll(result.getLoopWaypoints());
+    // Route through the greedy ops.waypoints() with the standard routing engine.
+    // The greedy planner's lookahead ensures ops.waypoints() are in well-connected
+    // areas (not dead-end valleys), so orchestrator.doRoutingIntoRequest() produces gap-free tracks
+    // following roads appropriate for the profile.
+    ops.waypoints().clear();
+    ops.waypoints().addAll(result.getLoopWaypoints());
 
-      if (result.getMatchedWaypoints() != null) {
-        ops.setMatchedWaypoints(result.getMatchedWaypoints());
-      }
+    if (result.getMatchedWaypoints() != null) {
+      ops.setMatchedWaypoints(result.getMatchedWaypoints());
+    }
 
-      if (result.getLegTracks() != null) {
-        List<OsmTrack> legs = result.getLegTracks();
-        orchestrator.request.setGreedyLegTracks(legs.toArray(new OsmTrack[0]));
-      }
+    if (result.getLegTracks() != null) {
+      List<OsmTrack> legs = result.getLegTracks();
+      request.setGreedyLegTracks(legs.toArray(new OsmTrack[0]));
+    }
 
-      // Phase 2 v3: the planner now retracks each committed leg, so its
-      // merged track has full per-edge MessageData. Use that directly
-      // instead of running orchestrator.doRoutingIntoRequest() which re-routes via a fragile
-      // corridor mechanism that frequently fails or diverges. The
-      // re-routing was wiping out the planner's hostility-aware
-      // candidate choices, so the quality gate was seeing routes the
-      // planner itself would have rejected. Diagnostic data: roughly
-      // 80% of greedy legs in failing fastbike scenarios had the
-      // corridor fail or diverge.
-      boolean useDetailedPlannerTrack = result != null && result.getTrack() != null
-        && result.getTrack().nodes != null && result.getTrack().nodes.size() >= RoundTripOrchestrator.MIN_ROUNDTRIP_LOOP_NODES;
-      if (useDetailedPlannerTrack) {
-        try {
-          orchestrator.setTrack(result.getTrack());
-          if (result.getMatchedWaypoints() != null) {
-            ops.setMatchedWaypoints(result.getMatchedWaypoints());
-          }
-          orchestrator.cleanup.finalizeAdoptedRoundTripTrack(orchestrator.request.track, ops.matchedWaypoints());
-        } catch (Exception e) {
-          ops.logInfo("greedy: bypass path failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + "), falling back to doRouting");
-          useDetailedPlannerTrack = false;
+    // Phase 2 v3: the planner now retracks each committed leg, so its
+    // merged track has full per-edge MessageData. Use that directly
+    // instead of running orchestrator.doRoutingIntoRequest() which re-routes via a fragile
+    // corridor mechanism that frequently fails or diverges. The
+    // re-routing was wiping out the planner's hostility-aware
+    // candidate choices, so the quality gate was seeing routes the
+    // planner itself would have rejected. Diagnostic data: roughly
+    // 80% of greedy legs in failing fastbike scenarios had the
+    // corridor fail or diverge.
+    boolean useDetailedPlannerTrack = result != null && result.getTrack() != null
+      && result.getTrack().nodes != null && result.getTrack().nodes.size() >= RoundTripOrchestrator.MIN_ROUNDTRIP_LOOP_NODES;
+    if (useDetailedPlannerTrack) {
+      try {
+        orchestrator.setTrack(result.getTrack());
+        if (result.getMatchedWaypoints() != null) {
+          ops.setMatchedWaypoints(result.getMatchedWaypoints());
         }
+        orchestrator.cleanup.finalizeAdoptedRoundTripTrack(request.track, ops.matchedWaypoints());
+      } catch (Exception e) {
+        ops.logInfo("greedy: bypass path failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + "), falling back to doRouting");
+        useDetailedPlannerTrack = false;
       }
-      if (!useDetailedPlannerTrack) {
-        ops.routingContext().waypointCatchingRange = 250;
-        orchestrator.request.setSearchRadius(searchRadius);
-        // Honor the request deadline: once it has fully passed, do NOT start
-        // the fallback re-route at all (doRouting resets ops.startTime(), so any
-        // budget handed to it is a real overrun). While budget remains, fund
-        // the fallback with the REMAINING budget, floored so a nearly-spent
-        // request still gets a usable (bounded, < RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS
-        // overrun) salvage slice rather than a guaranteed instant timeout.
-        long remaining = ops.remainingRequestBudgetMs();
-        if (orchestrator.request.routingBudgetMs > 0 && remaining <= 0) {
-          orchestrator.setError("round-trip request budget exhausted before the fallback re-route ("
-            + remaining + "ms remaining)");
-          ops.logInfo(orchestrator.request.error);
-          orchestrator.setTrack(null);
-          orchestrator.request.setGreedyLegTracks(null);
-          return;
-        }
-        try {
-          long fallbackBudget = orchestrator.request.routingBudgetMs <= 0
-            ? orchestrator.request.routingBudgetMs
-            : Math.min(orchestrator.request.routingBudgetMs,
-                Math.max(RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS, remaining));
-          orchestrator.doRoutingIntoRequest(fallbackBudget);
-        } catch (Exception e) {
-          ops.logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
-          throw e;
-        } finally {
-          orchestrator.request.setGreedyLegTracks(null);
-        }
+    }
+    if (!useDetailedPlannerTrack) {
+      ops.routingContext().waypointCatchingRange = 250;
+      request.setSearchRadius(searchRadius);
+      // Honor the request deadline: once it has fully passed, do NOT start
+      // the fallback re-route at all (doRouting resets ops.startTime(), so any
+      // budget handed to it is a real overrun). While budget remains, fund
+      // the fallback with the REMAINING budget, floored so a nearly-spent
+      // request still gets a usable (bounded, < RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS
+      // overrun) salvage slice rather than a guaranteed instant timeout.
+      long remaining = ops.remainingRequestBudgetMs();
+      if (request.routingBudgetMs > 0 && remaining <= 0) {
+        orchestrator.setError("round-trip request budget exhausted before the fallback re-route ("
+          + remaining + "ms remaining)");
+        ops.logInfo(request.error);
+        orchestrator.setTrack(null);
+        request.setGreedyLegTracks(null);
+        return;
       }
-    } else {
-      // ISO_GREEDY only fails over to plain GREEDY if it also failed; otherwise
-      // ISO_GREEDY's planner already added graph-native per-step candidates
-      // when the start-centered iso pool was insufficient (see buildCandidateProvider).
-      // BALANCED skips this recursion (another full ladder): it adopts the
-      // best-effort track below instead, and its caller falls back to the
-      // cheap WAYPOINT placement when no track exists at all.
-      if (algo == RoundTripAlgorithm.ISO_GREEDY
-          && !orchestrator.request.effortPolicy.skipRetryLayers
-          && ops.remainingRequestBudgetMs() >= RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS) {
-        ops.logInfo("ISO_GREEDY produced no loop, falling back to GREEDY with graph-native candidates");
-        doGreedyRoundTrip(searchRadius, direction, RoundTripAlgorithm.GREEDY);
-      } else if (algo == RoundTripAlgorithm.ISO_GREEDY && !orchestrator.request.effortPolicy.skipRetryLayers) {
-        // Same recursion, but the request budget is spent — adopt/report what
-        // we have instead of starting another multi-plan GREEDY ladder.
-        ops.logInfo("ISO_GREEDY produced no loop and request budget is exhausted ("
-          + ops.remainingRequestBudgetMs() + "ms left), skipping GREEDY fallback ladder");
-        orchestrator.rejectWithError(
-          "greedy round trip planner produced no acceptable loop within the request budget"
-            + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()),
-          result == null ? null : result.getTrack());
-      } else {
-        // Adopt the planner's best-effort loop (if any) and hand it up to the
-        // uniform quality gate in doRoundTrip, which is the single place that
-        // decides hard-reject (STRUCTURAL, or any failure under strict mode) vs.
-        // a lenient advisory. This keeps greedy consistent with the other
-        // algorithms and removes a duplicate, tier-blind leniency decision: the
-        // gate (plus the node/distance floor just above it) inspects the verdict
-        // rather than re-deriving "usable" from node counts here.
-        OsmTrack bestEffort = result == null ? null : result.getTrack();
-        if (bestEffort != null && bestEffort.nodes != null && !bestEffort.nodes.isEmpty()) {
-          ops.logInfo("greedy: adopting best-effort loop for the quality gate to grade ("
-            + (result.getFallbackReason() == null ? "?" : result.getFallbackReason()) + ")");
-          orchestrator.setTrack(bestEffort);
-          if (result.getMatchedWaypoints() != null) {
-            ops.setMatchedWaypoints(result.getMatchedWaypoints());
-          }
-          // finalize can throw (voice hints / speed profile / spur removal). Guard
-          // it like the bypass path above: an exception here would otherwise
-          // unwind past doRoundTrip's floor + quality gate (its catch does not
-          // null orchestrator.request.track), shipping this un-gated best-effort track as a
-          // success. On failure, reject instead so nothing skips the gate.
-          try {
-            orchestrator.cleanup.finalizeAdoptedRoundTripTrack(orchestrator.request.track, ops.matchedWaypoints());
-            // orchestrator.request.error stays null: the floor check + quality gate in
-            // doRoundTrip reject (and set orchestrator.request.error) if the loop is too small,
-            // structurally broken, or strict mode is on; else it ships with a warning.
-          } catch (Exception e) {
-            orchestrator.rejectWithError("greedy best-effort finalize failed ("
-              + e.getClass().getSimpleName() + ": " + e.getMessage() + ")", bestEffort);
-          }
-        } else {
-          // Reached by plain GREEDY and by BALANCED's bounded ISO_GREEDY run
-          // (which skips the GREEDY recursion) — keep the wording source-neutral.
-          orchestrator.rejectWithError("greedy round trip planner produced no acceptable loop"
-            + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()),
-            result == null ? null : result.getTrack());
-        }
+      try {
+        long fallbackBudget = request.routingBudgetMs <= 0
+          ? request.routingBudgetMs
+          : Math.min(request.routingBudgetMs,
+              Math.max(RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS, remaining));
+        orchestrator.doRoutingIntoRequest(fallbackBudget);
+      } catch (Exception e) {
+        ops.logInfo("greedy: doRouting failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
+        throw e;
+      } finally {
+        request.setGreedyLegTracks(null);
       }
     }
   }
+
+/**
+ * Dispatch outcome, failure side: the ISO_GREEDY→GREEDY recursion, the
+   * budget-exhausted rejection, or best-effort adoption for the shared gate
+   * to grade.
+   */
+  private void handleNoAcceptableLoop(RoundTripRequest request, RoundTripResult result,
+                                      RoundTripAlgorithm algo, double searchRadius,
+                                      double direction) {
+    // ISO_GREEDY only fails over to plain GREEDY if it also failed; otherwise
+    // ISO_GREEDY's planner already added graph-native per-step candidates
+    // when the start-centered iso pool was insufficient (see buildCandidateProvider).
+    // BALANCED skips this recursion (another full ladder): it adopts the
+    // best-effort track below instead, and its caller falls back to the
+    // cheap WAYPOINT placement when no track exists at all.
+    if (algo == RoundTripAlgorithm.ISO_GREEDY
+        && !request.effortPolicy.skipRetryLayers
+        && ops.remainingRequestBudgetMs() >= RoundTripOrchestrator.MIN_LADDER_RUNG_BUDGET_MS) {
+      ops.logInfo("ISO_GREEDY produced no loop, falling back to GREEDY with graph-native candidates");
+      doGreedyRoundTrip(request, searchRadius, direction, RoundTripAlgorithm.GREEDY);
+    } else if (algo == RoundTripAlgorithm.ISO_GREEDY && !request.effortPolicy.skipRetryLayers) {
+      // Same recursion, but the request budget is spent — adopt/report what
+      // we have instead of starting another multi-plan GREEDY ladder.
+      ops.logInfo("ISO_GREEDY produced no loop and request budget is exhausted ("
+        + ops.remainingRequestBudgetMs() + "ms left), skipping GREEDY fallback ladder");
+      orchestrator.rejectWithError(
+        "greedy round trip planner produced no acceptable loop within the request budget"
+          + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()),
+        result == null ? null : result.getTrack());
+    } else {
+      // Adopt the planner's best-effort loop (if any) and hand it up to the
+      // uniform quality gate in doRoundTrip, which is the single place that
+      // decides hard-reject (STRUCTURAL, or any failure under strict mode) vs.
+      // a lenient advisory. This keeps greedy consistent with the other
+      // algorithms and removes a duplicate, tier-blind leniency decision: the
+      // gate (plus the node/distance floor just above it) inspects the verdict
+      // rather than re-deriving "usable" from node counts here.
+      OsmTrack bestEffort = result == null ? null : result.getTrack();
+      if (bestEffort != null && bestEffort.nodes != null && !bestEffort.nodes.isEmpty()) {
+        ops.logInfo("greedy: adopting best-effort loop for the quality gate to grade ("
+          + (result.getFallbackReason() == null ? "?" : result.getFallbackReason()) + ")");
+        orchestrator.setTrack(bestEffort);
+        if (result.getMatchedWaypoints() != null) {
+          ops.setMatchedWaypoints(result.getMatchedWaypoints());
+        }
+        // finalize can throw (voice hints / speed profile / spur removal). Guard
+        // it like the bypass path above: an exception here would otherwise
+        // unwind past doRoundTrip's floor + quality gate (its catch does not
+        // null request.track), shipping this un-gated best-effort track as a
+        // success. On failure, reject instead so nothing skips the gate.
+        try {
+          orchestrator.cleanup.finalizeAdoptedRoundTripTrack(request.track, ops.matchedWaypoints());
+          // request.error stays null: the floor check + quality gate in
+          // doRoundTrip reject (and set request.error) if the loop is too small,
+          // structurally broken, or strict mode is on; else it ships with a warning.
+        } catch (Exception e) {
+          orchestrator.rejectWithError("greedy best-effort finalize failed ("
+            + e.getClass().getSimpleName() + ": " + e.getMessage() + ")", bestEffort);
+        }
+      } else {
+        // Reached by plain GREEDY and by BALANCED's bounded ISO_GREEDY run
+        // (which skips the GREEDY recursion) — keep the wording source-neutral.
+        orchestrator.rejectWithError("greedy round trip planner produced no acceptable loop"
+          + (result == null || result.getFallbackReason() == null ? "" : ": " + result.getFallbackReason()),
+          result == null ? null : result.getTrack());
+      }
+    }
+  }
+
 
   /**
    * Run one greedy planning attempt — the inner sub-route-count loop for a single
@@ -437,7 +555,7 @@ final class GreedyStrategy implements RoundTripStrategy {
    * consistent metadata. The returned {@link RoundTripResult} may be degraded —
    * the caller decides whether to accept or retry.
    */
-  private RoundTripResult runGreedyAttempt(OsmNodeNamed start, double searchRadius,
+  private RoundTripResult runGreedyAttempt(RoundTripRequest request, OsmNodeNamed start, double searchRadius,
                                            double desiredDistance, double tryDirection,
                                            int baseSubRouteCount,
                                            RoundTripCandidateProvider provider,
@@ -468,21 +586,21 @@ final class GreedyStrategy implements RoundTripStrategy {
       ops.logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(ops, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
-      planner.setHostilityActive(orchestrator.request.pavedProfile);
+      planner.setHostilityActive(request.pavedProfile);
       // The planner's paved verdict feeds only its hostility checks and its
       // internal gate calls; it comes from the request-owned classification
       // probed once at request entry.
-      planner.setPavedProfile(orchestrator.request.pavedProfile);
+      planner.setPavedProfile(request.pavedProfile);
       planner.setVarietySeed(ops.routingContext().getRoundTripSeed());
-      planner.setRouteBudgets(orchestrator.request.effortPolicy.topKNormal, orchestrator.request.effortPolicy.topKLate);
-      planner.setPlanBudgetScale(orchestrator.request.effortPolicy.planBudgetScale);
+      planner.setRouteBudgets(request.effortPolicy.topKNormal, request.effortPolicy.topKLate);
+      planner.setPlanBudgetScale(request.effortPolicy.planBudgetScale);
       planner.setReturnOracle(returnOracle);
       // Fresh per-plan health tracker: dynamic evidence must not leak across
       // ladder rungs (a demotion earned at subRouteCount=5 says nothing about
       // the 4-step plan's pool usage).
       planner.setPoolHealth(poolShape == null ? null : new IsoPoolHealth(poolShape));
-      planner.setExternalDeadline(orchestrator.request.requestDeadline() == 0
-        ? Long.MAX_VALUE : orchestrator.request.requestDeadline());
+      planner.setExternalDeadline(request.requestDeadline() == 0
+        ? Long.MAX_VALUE : request.requestDeadline());
       result = planner.plan(start, desiredDistance, tryDirection);
       if (result != null) {
         result.setIsoAsymmetryBearingApplied(bias.applied);
@@ -581,11 +699,11 @@ final class GreedyStrategy implements RoundTripStrategy {
     return new BlendedCandidateProvider(isoProvider, graphNative);
   }
 
-  private RouteChoiceScore.Verdict scoreInternalGreedyResult(RoundTripResult result,
+  private RouteChoiceScore.Verdict scoreInternalGreedyResult(RoundTripRequest request, RoundTripResult result,
                                                             double desiredDistance,
                                                             double direction) {
     return scoreInternalGreedyResult(result, desiredDistance,
-      ops.routingContext().getProfileName(), orchestrator.request.pavedProfile, direction,
+      ops.routingContext().getProfileName(), request.pavedProfile, direction,
       ops.routingContext().allowSamewayback, ops.roundTripFerriesAllowed());
   }
 
