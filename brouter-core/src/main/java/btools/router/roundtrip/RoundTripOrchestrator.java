@@ -437,6 +437,10 @@ public final class RoundTripOrchestrator {
         ? request.boundedGateVerdict
         : evaluateRoundTripGate(request.track, searchRadius, explicitViaMode);
       request.boundedGateVerdict = null;
+      // Record the request's final verdict for the end-of-request publication
+      // (getLastRoundTripQuality) — set for accept, lenient-keep, AND the
+      // hard-reject below (where it describes the lastRejectedTrack).
+      request.qualityVerdict = quality;
       // Child engines of the AUTO competition skip ALL user-facing track
       // decoration below (advisories, lenient Warning, info-message sync):
       // the parent decorates the adopted winner exactly once. Gate policy
@@ -613,6 +617,7 @@ public final class RoundTripOrchestrator {
       ops.setErrorMessage(request.error);
       ops.setLastRejectedTrack(request.lastRejectedTrack);
       ops.setLastRoundTripResult(request.lastResult);
+      ops.setLastRoundTripQuality(request.qualityVerdict);
       ops.cleanupRoutingResources();
     }
 

@@ -69,6 +69,15 @@ public interface RoundTripRequestState {
   /** Publish the planner result for telemetry. */
   void setLastRoundTripResult(RoundTripResult result);
 
+  /**
+   * Publish the request's final quality-gate verdict (with its stamped
+   * {@code LoopAnalysis}). Null when the request never reached the gate
+   * (early rejects: floors, budget, no loop). The AUTO competition reads a
+   * child's published verdict instead of re-gating the same track in the
+   * parent — the child's gate run is the single evaluation per candidate.
+   */
+  void setLastRoundTripQuality(RoundTripQualityResult quality);
+
   /** Add a child engine's link expansions to this engine's work counter. */
   void addLinksProcessed(long links);
 }
