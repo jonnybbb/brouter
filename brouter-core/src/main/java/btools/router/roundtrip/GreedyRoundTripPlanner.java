@@ -434,9 +434,6 @@ public class GreedyRoundTripPlanner {
    * truth with no correction.
    */
   private ReturnDistanceOracle returnOracle;
-  /** Telemetry: return estimates answered by the oracle vs the EMA fallback. */
-  private int oracleEstimates;
-  private int fallbackEstimates;
 
   public GreedyRoundTripPlanner(LegRouter router, EngineIO io,
                                 EngineContext ctx, RoundTripCandidateProvider provider,
@@ -469,19 +466,6 @@ public class GreedyRoundTripPlanner {
     h ^= h >>> 31;
     return ((h >>> 11) / (double) (1L << 53)) * 2.0 - 1.0;
   }
-  /** First step at which iso influence was reduced; -1 = never demoted. */
-  private int poolDemotedAtStep = -1;
-  /** First step of graph-native-only (internal GREEDY fallback) mode; -1 = never. */
-  private int graphNativeOnlyAtStep = -1;
-  /** Accepted legs whose candidate held its routed slot only via quota injection. */
-  private int acceptedQuotaInjectedLegs;
-  // Leg-attribution counters (telemetry). Per-plan state like the
-  // quota counter above: a planner instance runs exactly one plan(). Fields
-  // rather than plan() locals so undoTentativeLeg and snapshotFallback can
-  // keep them consistent with the committed geometry.
-  private int acceptedIsoLegs;
-  private int acceptedNonIsoLegs;
-
   /**
    * Length fraction of {@code leg} whose segments run between nodes the reference
    * track visited. Uses node membership, not traveled-edge membership, by design:
@@ -517,11 +501,11 @@ public class GreedyRoundTripPlanner {
    * oracle covers the position, else {@code air × indirectnessEst}. {@code air} is
    * passed in because every caller already has it.
    */
-  private double estimateReturnMeters(int ilon, int ilat, double air, double indirectnessEst) {
+  private double estimateReturnMeters(GreedyPlanSession s, int ilon, int ilat, double air) {
     if (returnOracle != null) {
       double v = returnOracle.estimateReturnMeters(ilon, ilat, air);
       if (v >= 0) {
-        oracleEstimates++;
+        s.oracleEstimates++;
         if (poolHealth != null) poolHealth.recordReturnEstimate(true);
         return v;
       }
@@ -530,8 +514,8 @@ public class GreedyRoundTripPlanner {
       // null oracle is priced once by the static no-oracle deduction).
       if (poolHealth != null) poolHealth.recordReturnEstimate(false);
     }
-    fallbackEstimates++;
-    return air * indirectnessEst;
+    s.fallbackEstimates++;
+    return air * s.indirectnessEst;
   }
 
   /**
@@ -618,36 +602,36 @@ public class GreedyRoundTripPlanner {
    * Also stamps the instance-held plan-exit telemetry {@link #stampTelemetry}
    * (static) can't reach: return-oracle usage and iso-pool health + source counters.
    */
-  private void stampBudgetDiagnostic(RoundTripResult result, long planStart,
-                                     long planBudgetMs, long deadline) {
+  private void stampBudgetDiagnostic(GreedyPlanSession s) {
+    RoundTripResult result = s.result;
     long now = System.currentTimeMillis();
-    long usedMs = now - planStart;
-    long headroomMs = deadline - now;
+    long usedMs = now - s.planStart;
+    long headroomMs = s.deadline - now;
     // Report the EFFECTIVE budget the plan actually ran under (deadline -
     // planStart), not the nominal distance-scaled planBudgetMs: the external
     // request deadline can clamp it smaller (e.g. a small request `timeout`),
     // and printing "used Xms of 30000ms" when the plan was only allowed 5000ms
     // would mislead operators reading the headroom distribution. Annotate when
     // the request budget was the binding constraint.
-    long effectiveBudgetMs = deadline - planStart;
-    boolean cappedByRequest = effectiveBudgetMs < planBudgetMs;
+    long effectiveBudgetMs = s.deadline - s.planStart;
+    boolean cappedByRequest = effectiveBudgetMs < s.planBudgetMs;
     result.addDiagnostic("budget: used " + usedMs + "ms of " + effectiveBudgetMs
       + "ms plan budget, headroom " + headroomMs + "ms"
-      + (cappedByRequest ? " (capped from " + planBudgetMs + "ms by request budget)" : "")
+      + (cappedByRequest ? " (capped from " + s.planBudgetMs + "ms by request budget)" : "")
       + (headroomMs <= 0 ? " (EXHAUSTED)" : ""));
-    if (oracleEstimates + fallbackEstimates > 0) {
-      result.addDiagnostic("return oracle: " + oracleEstimates + " sector-resolved / "
-        + fallbackEstimates + " EMA-fallback estimates"
+    if (s.oracleEstimates + s.fallbackEstimates > 0) {
+      result.addDiagnostic("return oracle: " + s.oracleEstimates + " sector-resolved / "
+        + s.fallbackEstimates + " EMA-fallback estimates"
         + (returnOracle == null ? " (no oracle)" : ""));
     }
     if (poolHealth != null) {
       result.addDiagnostic("iso-pool health: " + poolHealth.describe()
-        + (poolDemotedAtStep >= 0 ? ", influence reduced at step " + poolDemotedAtStep : "")
-        + (graphNativeOnlyAtStep >= 0 ? ", graph-native-only from step " + graphNativeOnlyAtStep : ""));
+        + (s.poolDemotedAtStep >= 0 ? ", influence reduced at step " + s.poolDemotedAtStep : "")
+        + (s.graphNativeOnlyAtStep >= 0 ? ", graph-native-only from step " + s.graphNativeOnlyAtStep : ""));
       result.setIsoPoolHealthScore(poolHealth.score());
     }
-    result.setPoolDemotedAtStep(poolDemotedAtStep);
-    result.setAcceptedQuotaInjectedLegs(acceptedQuotaInjectedLegs);
+    result.setPoolDemotedAtStep(s.poolDemotedAtStep);
+    result.setAcceptedQuotaInjectedLegs(s.acceptedQuotaInjectedLegs);
   }
 
   private static void stampTelemetry(RoundTripResult result, long planStart,
@@ -755,21 +739,19 @@ public class GreedyRoundTripPlanner {
    * {@code removeVisitedEdges} first (order-independent). Returns the restored
    * total distance; the caller re-reads the anchor and restores prev coordinates.
    */
-  private double undoTentativeLeg(ScoredRoute accepted, List<OsmTrack> segments,
-                                  List<MatchedWaypoint> waypointStack,
-                                  double totalDistance) {
-    segments.remove(segments.size() - 1);
+  private void undoTentativeLeg(GreedyPlanSession s, ScoredRoute accepted) {
+    s.segments.remove(s.segments.size() - 1);
     if (accepted.fromIsoCandidate) {
-      acceptedIsoLegs--;
+      s.acceptedIsoLegs--;
     } else {
-      acceptedNonIsoLegs--;
+      s.acceptedNonIsoLegs--;
     }
     if (accepted.fromQuotaInjection) {
-      acceptedQuotaInjectedLegs--;
+      s.acceptedQuotaInjectedLegs--;
     }
     recordIsoTrialRejection(accepted);
-    waypointStack.remove(waypointStack.size() - 1);
-    return totalDistance - accepted.routeDistance;
+    s.waypointStack.remove(s.waypointStack.size() - 1);
+    s.totalDistance -= accepted.routeDistance;
   }
 
   /** Health hook for an undone trial: an iso-sourced rejection is pool-loss evidence. */
@@ -905,7 +887,10 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Plan a greedy round-trip loop.
+   * Plan a greedy round-trip loop. Driver over the internal plan split (one
+   * {@link GreedyPlanSession} per call): step loop, then the outcome tails
+   * ({@link #finishPlan}). All plan-scoped mutable state lives on the
+   * session; this class carries only configuration.
    */
   public RoundTripResult plan(OsmNodeNamed start, double desiredDistance, double startDirection) {
     long planStart = System.currentTimeMillis();
@@ -927,826 +912,937 @@ public class GreedyRoundTripPlanner {
     // Late steps, the fallback finalization and the force-close all run
     // against the FULL deadline.
     long earlyDeadline = deadline - (long) (CLOSURE_RESERVE_FRACTION * (deadline - planStart));
-    RoundTripResult result = new RoundTripResult();
-    double subTarget = desiredDistance / subRouteCount;
-    // SAFE-3: primitive open-addressing store replacing the former
-    // HashMap<Long,Integer> reuse counts + HashMap<Long,Double> first-visit
-    // positions. The two were always maintained in lock-step, so they fold
-    // into one boxing-free table. It is only ever point-queried (never
-    // iterated), so slot layout cannot affect any routing decision.
-    VisitedEdgeStore visitedEdges = new VisitedEdgeStore();
-    List<OsmTrack> segments = new ArrayList<>();
-    double totalDistance = 0;
-    int candidatesGenerated = 0;
-    int candidatesRouted = 0;
-    int returnChecksPerformed = 0;
-    // Auto-quality-redesign §132: track start-iso vs non-start-iso candidates
-    // separately. The "nonIso" counters represent per-step graph-native (and
-    // legacy radial) candidates in production GREEDY.
-    // Candidate source is identified via the existing
-    // {@link RoundTripCandidateProvider.CandidatePoint#costFromStart} sentinel:
-    // a start-iso candidate has costFromStart != NO_ISO_COST; per-step
-    // graph-native and legacy radial candidates use the sentinel.
-    int routedIso = 0;
-    int routedNonIso = 0;
+    GreedyPlanSession s = new GreedyPlanSession(start, desiredDistance, startDirection,
+      planStart, planBudgetMs, deadline, earlyDeadline, subRouteCount, ROAD_INDIRECTNESS);
 
     MatchedWaypoint startMwp = matchPoint(start.ilon, start.ilat, "greedy_start");
     if (startMwp == null) {
-      result.setFallbackReason("start point not on road network");
-      stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
-      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
-      return result;
+      return failNoStart(s);
     }
-
-    MatchedWaypoint currentMwp = startMwp;
-    List<MatchedWaypoint> waypointStack = new ArrayList<>();
-    waypointStack.add(startMwp);
-
-    Snapshot bestFallback = null;
-
-    DirectionPreference dirPref = DirectionPreference.ANY;
+    s.startMwp = startMwp;
+    s.currentMwp = startMwp;
+    s.waypointStack.add(startMwp);
     if (startDirection >= 0) {
-      dirPref = nearestDirectionPreference(startDirection);
+      s.dirPref = nearestDirectionPreference(startDirection);
     }
-
-    double searchRadius = desiredDistance / 4.0;
-    int prevIlon = -1;
-    int prevIlat = -1;
-    // Air-to-road factor, adaptive per plan (see MAX_INDIRECTNESS_EST):
-    // starts at the calibrated baseline, learns from each routed leg.
-    double indirectnessEst = ROAD_INDIRECTNESS;
-    // Distress brake for the heading-persistence term: in half-plane-blocked
-    // geographies (sea/lake) the way home IS the way out, and rewarding
-    // "keep heading" steers vias into the dead-end corridor — observed on
-    // coastal_nice_100km_gravel as a grind of same-way-back closure
-    // rejections ending in a 43-crossing weave. Closure rejections are the
-    // planner's own distress signal: after HEADING_BRAKE_REJECTIONS of them,
-    // the term is disabled for the rest of the plan. No terrain modeling —
-    // the indirectness gate provably missed this class (coastal legs are
-    // direct; estimate stayed 1.4-1.6).
-    int closureRejections = 0;
 
     for (int step = 1; step <= subRouteCount; step++) {
-      // Closure reserve (see earlyDeadline): non-late steps run against the
-      // reduced deadline so the endgame always has budget left.
-      long stepDeadline = (step >= subRouteCount - 1) ? deadline : earlyDeadline;
-      if (System.currentTimeMillis() >= stepDeadline) {
-        result.addDiagnostic("step " + step + ": planner stepDeadline reached, stopping");
+      StepOutcome outcome = planStep(s, step);
+      if (outcome == StepOutcome.CLOSED) {
+        return s.result;
+      }
+      if (outcome == StepOutcome.STOPPED) {
         break;
       }
-      boolean candidateFound = false;
-      double localRadius = subTarget;
-      int currentIlon = currentMwp.crosspoint.getILon();
-      int currentIlat = currentMwp.crosspoint.getILat();
-      // Segments only change across steps — any tentative append is undone on retry.
-      OsmTrack cachedRefTrack = segments.isEmpty() ? null : buildRefTrack(segments);
+    }
+    return finishPlan(s);
+  }
 
-      for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (System.currentTimeMillis() >= stepDeadline) break;
+  /** Start not matchable to the road network — fail fast with stamped telemetry. */
+  private RoundTripResult failNoStart(GreedyPlanSession s) {
+    s.result.setFallbackReason("start point not on road network");
+    stampExit(s);
+    return s.result;
+  }
 
-        double airRadius = localRadius / indirectnessEst;
+  /** How one step of the plan ended, for the step-loop driver in {@link #plan}. */
+  private enum StepOutcome {
+    /** The loop closed within tolerance — {@code s.result} is final. */
+    CLOSED,
+    /** A leg was committed; continue with the next step. */
+    COMMITTED,
+    /** Deadline hit or attempts exhausted — stop stepping, run the outcome tails. */
+    STOPPED
+  }
 
-        // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
-        // Bound the provider's graph expansion by the plan stepDeadline (and a
-        // per-call ceiling): the expansion loop historically ran with no time
-        // check at all, so a dense-area expansion could overrun every budget.
-        List<RoundTripCandidateProvider.CandidatePoint> candidates;
-        router.setTransientExpansionDeadline(Math.min(stepDeadline,
-          System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS));
-        try {
-          candidates = candidateProvider.candidatesForStep(
-            currentIlon, currentIlat, airRadius,
-            step, subRouteCount,
-            start.ilon, start.ilat,
-            startDirection,
-            cachedRefTrack);
-        } finally {
-          router.setTransientExpansionDeadline(0);
-        }
-        candidatesGenerated += candidates.size();
+  /**
+   * One step of the plan: the shrinking-radius attempt loop over the
+   * candidate round ({@link #generateAndScoreCandidates} +
+   * {@link #routeTopCandidates}) and the loop assembler
+   * ({@link #tryCommitTrials}).
+   */
+  private StepOutcome planStep(GreedyPlanSession s, int step) {
+    // Closure reserve (see earlyDeadline): non-late steps run against the
+    // reduced deadline so the endgame always has budget left.
+    long stepDeadline = (step >= subRouteCount - 1) ? s.deadline : s.earlyDeadline;
+    if (System.currentTimeMillis() >= stepDeadline) {
+      s.result.addDiagnostic("step " + step + ": planner stepDeadline reached, stopping");
+      return StepOutcome.STOPPED;
+    }
+    boolean candidateFound = false;
+    double localRadius = s.subTarget;
+    int currentIlon = s.currentMwp.crosspoint.getILon();
+    int currentIlat = s.currentMwp.crosspoint.getILat();
+    // Segments only change across steps — any tentative append is undone on retry.
+    OsmTrack cachedRefTrack = s.segments.isEmpty() ? null : buildRefTrack(s.segments);
 
-        // Iso-pool health demotions. Evaluated per attempt so
-        // evidence recorded mid-step applies to the retry's candidate set.
-        // DEGRADED strips the pool's prior-based scoring terms below and adds
-        // a routed-quota seat; UNHEALTHY drops iso-pool candidates entirely —
-        // the internal graph-native (plain GREEDY) fallback. The per-step
-        // graph-native expansion IS the pool refresh: re-expanding from the
-        // start would rebuild the same stale pool, while the blend's per-step
-        // source re-samples the loop's current lobe fresh on every step.
-        boolean stripIsoPriorTerms = isoInfluenceReduced();
-        if (stripIsoPriorTerms && poolDemotedAtStep < 0) {
-          poolDemotedAtStep = step;
-          result.addDiagnostic("step " + step + ": iso-pool influence reduced ("
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (System.currentTimeMillis() >= stepDeadline) break;
+
+      double airRadius = localRadius / s.indirectnessEst;
+      ScoredCandidates scored = generateAndScoreCandidates(s, step, currentIlon, currentIlat,
+        airRadius, stepDeadline, cachedRefTrack);
+      // The via anchor of this attempt: unchanged until a trial commits, so the
+      // routing round and the trial loop share one capture.
+      MatchedWaypoint fromMwp = s.currentMwp;
+      RoutedRound round = routeTopCandidates(s, step, attempt, scored.candidates,
+        scored.stripIsoPriorTerms, currentIlon, currentIlat, airRadius, stepDeadline,
+        cachedRefTrack, fromMwp);
+
+      if (round.candidates.isEmpty()) {
+        // No routable candidate at this radius — gentle shrink so we don't
+        // jump past viable radii. The aggressive halving below applies only
+        // when the route is too long.
+        s.result.addDiagnostic("step " + step + " attempt " + attempt
+          + ": no routable candidate at radius " + (int) localRadius);
+        localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
+        continue;
+      }
+
+      TrialOutcome trial = tryCommitTrials(s, step, round, stepDeadline,
+        currentIlon, currentIlat, cachedRefTrack, fromMwp);
+      if (trial == TrialOutcome.CLOSED) {
+        return StepOutcome.CLOSED;
+      }
+      if (trial == TrialOutcome.COMMITTED) {
+        candidateFound = true;
+        break;
+      }
+
+      // Every routed candidate failed its length/detail/closure checks —
+      // restore step-start state is already done per trial; shrink the
+      // radius (aggressively when length was the dominant failure) and
+      // regenerate candidates.
+      currentIlon = s.currentMwp.crosspoint.getILon();
+      currentIlat = s.currentMwp.crosspoint.getILat();
+      localRadius = Math.max(MIN_LOCAL_RADIUS_M,
+        localRadius * (trial == TrialOutcome.EXHAUSTED_TOO_LONG
+          ? BACKOFF_FACTOR_TOO_LONG : BACKOFF_FACTOR_NO_CANDIDATE));
+    }
+
+    if (!candidateFound) {
+      s.result.addDiagnostic("step " + step + ": exhausted all " + maxAttempts + " attempts");
+      return StepOutcome.STOPPED;
+    }
+    return StepOutcome.COMMITTED;
+  }
+
+  /** Phase-1 output: heuristically scored, sorted candidates plus the pool-health
+   *  demotion flag the routed round must honor (computed once per attempt — the
+   *  routed re-score must not re-apply prior terms phase 1 stripped). */
+  private static final class ScoredCandidates {
+    final List<RoundTripCandidateProvider.CandidatePoint> candidates;
+    final boolean stripIsoPriorTerms;
+
+    ScoredCandidates(List<RoundTripCandidateProvider.CandidatePoint> candidates,
+                     boolean stripIsoPriorTerms) {
+      this.candidates = candidates;
+      this.stripIsoPriorTerms = stripIsoPriorTerms;
+    }
+  }
+
+  /**
+   * Candidate round, phase 1: generate candidates for this attempt, apply
+   * pool-health demotions, and score every candidate by O(1) air-distance
+   * heuristics (sorted best-first on return). Also arms the scorer's
+   * direction-reference offset, which the phase-2 routed re-score reads —
+   * the two phases deliberately share that scorer state per attempt.
+   */
+  private ScoredCandidates generateAndScoreCandidates(GreedyPlanSession s, int step,
+      int currentIlon, int currentIlat, double airRadius, long stepDeadline,
+      OsmTrack cachedRefTrack) {
+    final RoundTripResult result = s.result;
+    final OsmNodeNamed start = s.start;
+    final double desiredDistance = s.desiredDistance;
+    final double startDirection = s.startDirection;
+    final double subTarget = s.subTarget;
+    final double searchRadius = s.searchRadius;
+    // --- Phase 1: Generate candidates and score by heuristics (no routing) ---
+    // Bound the provider's graph expansion by the plan stepDeadline (and a
+    // per-call ceiling): the expansion loop historically ran with no time
+    // check at all, so a dense-area expansion could overrun every budget.
+    List<RoundTripCandidateProvider.CandidatePoint> candidates;
+    router.setTransientExpansionDeadline(Math.min(stepDeadline,
+      System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS));
+    try {
+      candidates = candidateProvider.candidatesForStep(
+        currentIlon, currentIlat, airRadius,
+        step, subRouteCount,
+        start.ilon, start.ilat,
+        startDirection,
+        cachedRefTrack);
+    } finally {
+      router.setTransientExpansionDeadline(0);
+    }
+    s.candidatesGenerated += candidates.size();
+
+    // Iso-pool health demotions. Evaluated per attempt so
+    // evidence recorded mid-step applies to the retry's candidate set.
+    // DEGRADED strips the pool's prior-based scoring terms below and adds
+    // a routed-quota seat; UNHEALTHY drops iso-pool candidates entirely —
+    // the internal graph-native (plain GREEDY) fallback. The per-step
+    // graph-native expansion IS the pool refresh: re-expanding from the
+    // start would rebuild the same stale pool, while the blend's per-step
+    // source re-samples the loop's current lobe fresh on every step.
+    boolean stripIsoPriorTerms = isoInfluenceReduced();
+    if (stripIsoPriorTerms && s.poolDemotedAtStep < 0) {
+      s.poolDemotedAtStep = step;
+      result.addDiagnostic("step " + step + ": iso-pool influence reduced ("
+        + poolHealth.describe() + ")");
+    }
+    if (poolHealth != null && poolHealth.graphNativeOnly()) {
+      List<RoundTripCandidateProvider.CandidatePoint> graphOnly =
+        new ArrayList<>(candidates.size());
+      for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
+        if (!isIsoPoolCandidate(cp)) graphOnly.add(cp);
+      }
+      // Safety valve: when the blend produced no graph-native candidate
+      // this attempt, an unhealthy pool still beats an empty step.
+      if (!graphOnly.isEmpty()) {
+        if (s.graphNativeOnlyAtStep < 0) {
+          s.graphNativeOnlyAtStep = step;
+          result.addDiagnostic("step " + step
+            + ": iso pool UNHEALTHY — graph-native-only from here ("
             + poolHealth.describe() + ")");
         }
-        if (poolHealth != null && poolHealth.graphNativeOnly()) {
-          List<RoundTripCandidateProvider.CandidatePoint> graphOnly =
-            new ArrayList<>(candidates.size());
-          for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
-            if (!isIsoPoolCandidate(cp)) graphOnly.add(cp);
-          }
-          // Safety valve: when the blend produced no graph-native candidate
-          // this attempt, an unhealthy pool still beats an empty step.
-          if (!graphOnly.isEmpty()) {
-            if (graphNativeOnlyAtStep < 0) {
-              graphNativeOnlyAtStep = step;
-              result.addDiagnostic("step " + step
-                + ": iso pool UNHEALTHY — graph-native-only from here ("
-                + poolHealth.describe() + ")");
-            }
-            candidates = graphOnly;
-          }
+        candidates = graphOnly;
+      }
+    }
+
+    // Terrain-feasibility reference for the direction term: the best heading
+    // actually reachable this step. When the requested direction is blocked
+    // (sea/mountain), the best candidate is far off-bearing, and charging only
+    // the offset BEYOND it stops direction from forcing a bad route. No-op
+    // unless CandidateScorer.DIR_FEASIBILITY (which leaves the reference unused otherwise).
+    double dirRef = 0.0;
+    if (s.dirPref != DirectionPreference.ANY && !candidates.isEmpty()) {
+      double best = 180.0;
+      for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
+        double diff = CheapAngleMeter.getDifferenceFromDirection(s.dirPref.bearing, cp.bearing);
+        if (diff < best) best = diff;
+      }
+      dirRef = best;
+    }
+    scorer.setDirectionReferenceOffset(dirRef);
+
+    // Previous leg's bearing for the heading-persistence term: NaN on
+    // step 1 (no previous leg — the start-direction term covers it).
+    // Must use the cos(lat)-scaled bearing so it shares the convention of
+    // cp.bearing (graph-native and isochrone providers both set it
+    // via CheapRuler.getScaledBearing). The raw
+    // CheapAngleMeter.getDirection would distort the kink angle by ~10-15° off
+    // the equator. (loopSweepPenalty uses the same scaled bearings — its
+    // increments are judged against the true-geometry 360/N target.)
+    double prevLegBearing = s.prevIlon >= 0
+      ? CheapRuler.getScaledBearing(s.prevIlon, s.prevIlat, currentIlon, currentIlat)
+      : Double.NaN;
+
+    // Current via's radius from start — fixed per step; the unimodal-radius
+    // term compares each candidate's radius against it.
+    double currentRadius = CheapRuler.distance(currentIlon, currentIlat, start.ilon, start.ilat);
+
+    // Score using air-distance estimates — O(1) per candidate
+    for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
+      double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
+      // Exact-when-known leg distance (F6-lite): graph-native candidates
+      // carry the expansion-compiled leg, whose distance is the routed
+      // truth — strictly better than the air*indirectness guess the
+      // estimate otherwise is. Fewer mis-ranked candidates means fewer
+      // too-long undo cycles downstream.
+      double estimatedRouteDist = (cp.routedTrack != null && cp.routedTrack.distance > 0)
+        ? cp.routedTrack.distance
+        : airDistToCp * s.indirectnessEst;
+      double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
+      // Deliberately the EMA estimate, NOT the return oracle: in candidate
+      // RANKING an oracle over-estimate mis-ranks with no correction, and
+      // consumer attribution (2026-07, 13-cell three-way) showed the
+      // scoring path caused every 30km distR crash the corpus A/B found.
+      // The oracle serves only the return-check skip decision, where an
+      // over-estimate is self-correcting (it merely buys a real Dijkstra).
+      double estimatedReturn = airDistToStart * s.indirectnessEst;
+      double distFromStart = airDistToStart;
+
+      double distFromPrevious = (s.prevIlon >= 0)
+        ? CheapRuler.distance(s.prevIlon, s.prevIlat, cp.ilon, cp.ilat) * s.indirectnessEst
+        : -1;
+
+      // Health demotion: a DEGRADED pool's candidates lose their iso prior
+      // terms (density bonus, contour-depth preference, iso-hostility
+      // estimate) and compete on geometry + routed truth alone. The
+      // CandidatePoint is NOT mutated — source attribution and the routed
+      // quota still classify it as iso-pool via costFromStart.
+      boolean stripIso = stripIsoPriorTerms && isIsoPoolCandidate(cp);
+      cp.score = scorer.score(
+        estimatedRouteDist, subTarget,
+        s.totalDistance, estimatedReturn, desiredDistance,
+        cp.bearing, s.dirPref,
+        step, subRouteCount,
+        0.0, // can't estimate visited ratio without routing
+        distFromStart, searchRadius,
+        distFromPrevious,
+        stripIso ? RoundTripCandidateProvider.NO_ISO_COST : cp.costFromStart,
+        stripIso ? RoundTripCandidateProvider.NO_ISO_DENSITY : cp.bucketHits,
+        stripIso ? RoundTripCandidateProvider.NO_ISO_CONTOUR : cp.sourceContour)
+        + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
+
+      // Heading persistence: prefer candidates that keep turning gently
+      // instead of kinking at the via — terrain-gated so constrained
+      // networks that force sharp macro-turns are exempt (see
+      // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX), and distress-
+      // braked once closures start failing (see s.closureRejections).
+      if (!Double.isNaN(prevLegBearing) && s.closureRejections < HEADING_BRAKE_REJECTIONS) {
+        double terrainFreedom = headingTerrainFreedom(s.indirectnessEst);
+        cp.score += W_HEADING_PERSISTENCE * terrainFreedom
+          * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
+        // Loop-convexity: keep the via sequence sweeping monotonically around
+        // the start and contracting after the apogee — kills radial-dent lobes
+        // (basel_80km via3) and clustered-via tangles. Same terrain/closure
+        // gating as heading persistence.
+        cp.score += W_LOOP_SWEEP * terrainFreedom
+          * loopSweepPenalty(start.ilon, start.ilat, s.prevIlon, s.prevIlat,
+              currentIlon, currentIlat, cp.ilon, cp.ilat, subRouteCount);
+        cp.score += W_UNIMODAL_RADIUS * terrainFreedom
+          * unimodalRadiusPenalty(distFromStart, currentRadius, step, subRouteCount);
+      }
+
+      // Variety seed (= request alternativeidx): jitter the HEURISTIC score
+      // only — it perturbs which candidates get routed, while the routed-
+      // candidate comparison below stays purely quality-driven. The jitter is
+      // ±VARIETY_JITTER_AMPLITUDE of the score MAGNITUDE, added (not multiplied),
+      // so a positive unit always raises the score (= worse rank) regardless of
+      // the score's sign. It flips near-tie
+      // rankings without overriding clear winners; in sparse networks with no
+      // near-ties, variety is best-effort.
+      if (varietySeed > 0) {
+        cp.score += VARIETY_JITTER_AMPLITUDE * Math.abs(cp.score)
+          * seededUnit(varietySeed, cp.ilon, cp.ilat);
+      }
+    }
+
+    // Rank by score (lowest = best)
+    Collections.sort(candidates, BY_HEURISTIC_SCORE);
+
+    return new ScoredCandidates(candidates, stripIsoPriorTerms);
+  }
+
+  /** Phase-2 output: Dijkstra-routed candidates (score-sorted) and whether both
+   *  candidate sources priced a leg this attempt (the pool-health comparison
+   *  signal — see {@code recordAcceptedLegAttribution}). */
+  private static final class RoutedRound {
+    final List<ScoredRoute> candidates;
+    final boolean mixedSourceRouting;
+
+    RoutedRound(List<ScoredRoute> candidates, boolean mixedSourceRouting) {
+      this.candidates = candidates;
+      this.mixedSourceRouting = mixedSourceRouting;
+    }
+  }
+
+  /**
+   * Candidate round, phase 2: pick the diverse routed top-K (with the
+   * graph-native source quota), route each with full Dijkstra, and re-score
+   * on routed distance, edge reuse, and cost.
+   */
+  private RoutedRound routeTopCandidates(GreedyPlanSession s, int step, int attempt,
+      List<RoundTripCandidateProvider.CandidatePoint> candidates, boolean stripIsoPriorTerms,
+      int currentIlon, int currentIlat, double airRadius, long stepDeadline,
+      OsmTrack cachedRefTrack, MatchedWaypoint fromMwp) {
+    final RoundTripResult result = s.result;
+    final List<OsmTrack> segments = s.segments;
+    final VisitedEdgeStore visitedEdges = s.visitedEdges;
+    final OsmNodeNamed start = s.start;
+    final double desiredDistance = s.desiredDistance;
+    final double subTarget = s.subTarget;
+    final double searchRadius = s.searchRadius;
+    // --- Phase 2: Route top candidates, pick best by combined routed score ---
+    // Heuristic score uses visitedEdgeRatio=0 since pre-routing can't know it.
+    // Re-score with actual route distance and visited ratio so reuse-heavy
+    // candidates lose to fresh ones at similar cost-per-meter.
+    //
+    // Pick top-K candidates with angular spread (≥ MIN_ANGULAR_SEPARATION_DEG
+    // between picks) rather than just the top K by score — the top heuristic
+    // picks are often spatially redundant in dense networks. Bump K from
+    // MAX_ROUTE_ATTEMPTS to MAX_ROUTE_ATTEMPTS_LATE on late steps or after
+    // an earlier failed attempt this step, where extra exploration pays off.
+    boolean lateStep = step >= subRouteCount - 1 || attempt > 1;
+    int routeBudget = routeBudgetFor(lateStep);
+    List<RoundTripCandidateProvider.CandidatePoint> toRoute =
+      pickDiverseTopK(candidates, routeBudget);
+    // Source fairness for the routed slots (blended ISO_GREEDY only; no-op
+    // for single-source lists): phase-1 ranks iso-pool picks on optimistic
+    // airDist*indirectness estimates but graph-native picks on compiled
+    // routed truth, so a mixed sort lets iso picks monopolize the routed
+    // top-K and the cost-aware routed comparison never prices the honest
+    // local alternative. Guarantee it a seat; phase-2 stays the judge.
+    int minGraphNative = graphNativeQuota(lateStep, stripIsoPriorTerms, routeBudget);
+    if (enforceSourceQuota(toRoute, candidates, routeBudget, minGraphNative)) {
+      result.addDiagnostic("step " + step + " attempt " + attempt
+        + ": source quota injected graph-native candidate(s) into routed top-" + routeBudget);
+    }
+    // Source-attribution context for this attempt: only a step where BOTH
+    // sources actually produced a routed (priced) candidate constitutes a
+    // real iso-vs-graph-native comparison. Computed from the routed
+    // results below, not the pre-routing selection — an iso pick that
+    // fails to route never priced an alternative, and charging the pool a
+    // routed-truth loss for it would demote pools that lost nothing.
+    boolean isoPriced = false;
+    boolean graphPriced = false;
+
+    // Phase 1 Step 2: keep a ranked list of routed candidates instead of
+    // a single best-pick. Step 2 is structural and behavior-preserving —
+    // we still commit only the top-ranked candidate at the end. Step 3
+    // (closure-aware trial loop) will iterate this list when the locally
+    // best candidate's closed loop is rejected.
+    List<ScoredRoute> routedCandidates = new ArrayList<>();
+    int routeAttempts = toRoute.size();
+
+    // SAFE-4: merge the committed segments into a prefix node list ONCE per
+    // attempt and share it (read-only) across every routed candidate's
+    // tentative self-intersection count, instead of re-merging the whole
+    // prefix per candidate. segments is not mutated inside the r-loop.
+    List<OsmPathElement> committedPrefixNodes =
+      segments.isEmpty() ? null : mergeSegmentsNoMap(segments, null).nodes;
+
+    for (int r = 0; r < routeAttempts; r++) {
+      RoundTripCandidateProvider.CandidatePoint cp = toRoute.get(r);
+
+      // Profile-aware snap for every candidate via: prefer a profile-
+      // compatible road near the candidate over the plain nearest way, so
+      // a via never commits the loop to a junk-road pocket (the via-pinned
+      // bulge source — see RoutingEngine.repairViaPinnedBulges). Graph-
+      // native candidates need this just as much as off-road radial
+      // points: their Dijkstra expansion terminates on whatever node hits
+      // the cost contour, which in a track pocket IS a junk road.
+      MatchedWaypoint toMwp = matchCandidatePointProfileAware(cp.ilon, cp.ilat);
+      if (toMwp == null) continue;
+
+      // Snap distance from the candidate coordinate to its routed-on-road
+      // crosspoint. Reject candidates that snapped too far away.
+      int snappedIlon = toMwp.crosspoint.getILon();
+      int snappedIlat = toMwp.crosspoint.getILat();
+      double snapDist = CheapRuler.distance(cp.ilon, cp.ilat, snappedIlon, snappedIlat);
+      if (snapDist > airRadius * 0.5) continue;
+
+      // A pre-routed graph-native leg ends at the ORIGINAL candidate node;
+      // if the profile-aware snap relocated the via, that cached leg no
+      // longer reaches it. Drop the cache and route to the relocated point
+      // — one extra Dijkstra, paid only when a relocation actually fired.
+      OsmTrack subTrack = cp.routedTrack;
+      if (subTrack != null && snapDist > VIA_RELOCATION_DROP_CACHED_LEG_M) {
+        io.logInfo("greedy: candidate via relocated " + (int) snapDist
+          + "m to profile-friendly road, re-routing leg");
+        subTrack = null;
+      }
+      if (subTrack == null) {
+        subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, stepDeadline);
+      }
+      s.candidatesRouted++;
+      // Phase 2 v3 deliberate compromise: do NOT retrack candidate
+      // sub-tracks here, even though it would give the scorer's
+      // worst-contiguous signal real data. Retracking every
+      // candidate (3 cands × 5 steps = ~15 per loop) inflates total
+      // runtime ~40×. Empirically, Phase 2 v2 measurement showed the
+      // scorer-level signal moves at most 0-1 pp of pass-rate. The
+      // gate-side win comes from detailing ACCEPTED legs (below) so
+      // the gate sees real metadata; candidate-level detail is
+      // future work if it ever becomes the bottleneck.
+      // Source-aware telemetry: start-iso candidates carry a non-sentinel
+      // costFromStart; graph-native/non-start-iso candidates use NO_ISO_COST. We count
+      // BEFORE the null/zero-distance guard so "routed" reflects what
+      // Dijkstra attempted, not what succeeded.
+      boolean isIsoCandidate = isIsoPoolCandidate(cp);
+      if (isIsoCandidate) s.routedIso++; else s.routedNonIso++;
+      if (subTrack == null || subTrack.distance == 0) continue;
+
+      // Recompute scoring inputs from the SNAPPED endpoint (toMwp.crosspoint).
+      // The router actually travels to that snapped location, not the raw
+      // candidate point — so air-distance, bearing, return estimate, and the
+      // overlong-route reject threshold should all reflect what was routed.
+      double snappedAirDistFromCurrent = CheapRuler.distance(
+        currentIlon, currentIlat, snappedIlon, snappedIlat);
+      if (subTrack.distance > snappedAirDistFromCurrent * 3.0) continue;
+
+      // SAFE-5: computeTrackVisitedRatio and the paved-profile
+      // worst-contiguous scan below both iterate subTrack.nodes calling
+      // a.calcDistance(b) over the identical segments in the identical
+      // orientation. On paved profiles (where both run) compute the
+      // per-segment integer distances ONCE and feed both passes, halving
+      // the CheapRuler sqrt+round calls. calcDistance returns an int, so
+      // the cached value widened to double is bit-identical to recomputing
+      // it. Non-paved profiles run only the first pass, so they keep the
+      // inline computation (no buffer to share).
+      int[] segLens = pavedProfile ? segmentDistances(subTrack) : null;
+      double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
+        visitedEdges, s.totalDistance, desiredDistance, segLens);
+      double airDistToStart = CheapRuler.distance(snappedIlon, snappedIlat, start.ilon, start.ilat);
+      // EMA, not the oracle — same ranking-vs-skip rationale as phase-1.
+      double estimatedReturn = airDistToStart * s.indirectnessEst;
+      double distFromPrevious = (s.prevIlon >= 0)
+        ? CheapRuler.distance(s.prevIlon, s.prevIlat, snappedIlon, snappedIlat) * s.indirectnessEst
+        : -1;
+      double snappedBearing = CheapRuler.getScaledBearing(
+        currentIlon, currentIlat, snappedIlon, snappedIlat);
+
+      // Phase 2 v2: feed the routed sub-track's worst contiguous
+      // hostile stretch to the scorer. This mirrors the gate's
+      // physical-experience metric (a single long unbroken off-road
+      // stretch is the cyclist's complaint surface). Phase 2.1's
+      // averaged cost/distance ratio was the wrong signal — diagnostic
+      // data showed 99% of fastbike rejections come from contiguous-
+      // stretch trips, but leg-averages dilute single bad stretches
+      // across surrounding clean kilometres. Worst-contiguous is a
+      // max over edges, the same shape as the gate.
+      //
+      // Computed only for paved profiles (the hostile predicate is
+      // road-bike specific); -1 sentinel for the rest keeps the
+      // scorer on its iso-hostility fall-back.
+      //
+      // Scorer-side approximation: the gate's worstContiguousHostileMetersPaved
+      // returns 0 on single-pass subTracks because it skips edges with
+      // null wayKeyValues (the tag check is the dominant hostility signal,
+      // costfactor>4.0 only catches extreme cases). Use the costfactor-
+      // only variant with the lower SCORER_HOSTILE_COSTFACTOR_THRESHOLD
+      // to get a usable signal on single-pass tracks. The gate's precise
+      // tag-aware check still runs post-detail before commit.
+      int worstHostile = pavedProfile
+        ? RoundTripQualityGate.worstContiguousCostlyMetersForScorer(subTrack, segLens)
+        : -1;
+
+      // Same iso-prior stripping as phase 1 — the routed comparison must
+      // not re-apply the demoted pool's tie-break terms.
+      boolean stripIsoRouted = stripIsoPriorTerms && isIsoCandidate;
+      double routedScorerScore = scorer.score(
+        subTrack.distance, subTarget,
+        s.totalDistance, estimatedReturn, desiredDistance,
+        snappedBearing, s.dirPref,
+        step, subRouteCount,
+        actualVisitedRatio,
+        airDistToStart, searchRadius,
+        distFromPrevious,
+        stripIsoRouted ? RoundTripCandidateProvider.NO_ISO_COST : cp.costFromStart,
+        stripIsoRouted ? RoundTripCandidateProvider.NO_ISO_DENSITY : cp.bucketHits,
+        stripIsoRouted ? RoundTripCandidateProvider.NO_ISO_CONTOUR : cp.sourceContour,
+        worstHostile);
+
+      double costPerMeter = (double) subTrack.cost / subTrack.distance;
+      double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
+      int tentativeSelfIntersections = countTentativeSelfIntersections(committedPrefixNodes, subTrack);
+      if (tentativeSelfIntersections > 0) {
+        routedScore += PARTIAL_SELF_INTERSECTION_WEIGHT * tentativeSelfIntersections;
+      }
+
+      ScoredRoute candidate = new ScoredRoute();
+      candidate.track = subTrack;
+      candidate.toMwp = toMwp;
+      candidate.routeDistance = subTrack.distance;
+      candidate.visitedRatio = actualVisitedRatio;
+      candidate.fromIsoCandidate = isIsoCandidate;
+      candidate.fromQuotaInjection = cp.quotaInjected;
+      candidate.oracleBackedReturn = returnOracle != null
+        && returnOracle.covers(snappedIlon, snappedIlat);
+      candidate.routedScore = routedScore;
+      candidate.candidateIndex = r;
+      candidate.tentativeSelfIntersections = tentativeSelfIntersections;
+      candidate.routedLegWorstHostileMeters = worstHostile;
+      routedCandidates.add(candidate);
+      if (isIsoCandidate) {
+        isoPriced = true;
+      } else {
+        graphPriced = true;
+      }
+    }
+
+    boolean mixedSourceRouting = isoPriced && graphPriced;
+
+    sortByRoutedScore(routedCandidates);
+
+    return new RoutedRound(routedCandidates, mixedSourceRouting);
+  }
+
+  /** How the trial loop over one routed round ended. */
+  private enum TrialOutcome {
+    /** The loop closed within tolerance — {@code s.result} is final. */
+    CLOSED,
+    /** A leg was committed (loop not closed yet). */
+    COMMITTED,
+    /** All trials failed, dominated by too-long projections — shrink hard. */
+    EXHAUSTED_TOO_LONG,
+    /** All trials failed for other reasons — shrink gently. */
+    EXHAUSTED
+  }
+
+  /**
+   * Loop assembler: the closure-aware trial loop over one routed round —
+   * tentative commit, closure check, detail upgrade, gate evaluation, and the
+   * undo machinery. May finalize the whole plan (CLOSED) when a closure lands
+   * within tolerance and passes the gate.
+   */
+  private TrialOutcome tryCommitTrials(GreedyPlanSession s, int step, RoutedRound round,
+      long stepDeadline, int currentIlon, int currentIlat, OsmTrack cachedRefTrack,
+      MatchedWaypoint fromMwp) {
+    final List<ScoredRoute> routedCandidates = round.candidates;
+    final boolean mixedSourceRouting = round.mixedSourceRouting;
+    final RoundTripResult result = s.result;
+    final List<OsmTrack> segments = s.segments;
+    final VisitedEdgeStore visitedEdges = s.visitedEdges;
+    final List<MatchedWaypoint> waypointStack = s.waypointStack;
+    final MatchedWaypoint startMwp = s.startMwp;
+    final OsmNodeNamed start = s.start;
+    final double desiredDistance = s.desiredDistance;
+    final double startDirection = s.startDirection;
+    final double subTarget = s.subTarget;
+    // --- Phase 3+4: closure-aware trial loop over the ranked routed
+    // candidates (the "Step 3" the ranked list was built for, previously
+    // unimplemented). Historically only the top-ranked candidate was
+    // tried; a closure rejection or too-long projection undid the leg
+    // and paid a WHOLE fresh attempt — re-expansion, re-matching,
+    // re-routing K candidates — although ranks 1..K-1 were already
+    // routed and in hand. Now those runner-ups are tried in score order
+    // (each costs at most one return Dijkstra plus detailing); only when
+    // the whole ranked list fails does the attempt loop shrink the
+    // radius and regenerate.
+    //
+    // Work ordering per trial (cheap-reject-first): the RAW single-pass
+    // leg is committed and the length (too-long) decision made BEFORE
+    // the detail retrack. A too-long undo — the most common rejection —
+    // now costs zero detail Dijkstras (it used to discard 1-3 of them).
+    // Detailing, and the paved-hostility/fidelity checks that need
+    // per-edge metadata, run only for legs that survive the length
+    // decision; the quality gate still only ever sees fully detailed
+    // geometry.
+    boolean legCommitted = false;
+    boolean tooLongSeen = false;
+    // Record previous waypoint position for next step's Silesian scoring.
+    // Saved once per attempt so every trial's undo can restore it.
+    int savedPrevIlon = s.prevIlon;
+    int savedPrevIlat = s.prevIlat;
+    // SAFE-6: reuse cachedRefTrack instead of rebuilding it. segments is
+    // not mutated between its construction (top of step) and here beyond
+    // this trial loop's own add/undo pairs, which always restore
+    // step-start content before the next detail call. Routing/retrack
+    // treat the refTrack as read-only (a fresh OsmTrack is built
+    // internally).
+    OsmTrack refBeforeAccept = cachedRefTrack;
+
+    for (int trial = 0; trial < routedCandidates.size(); trial++) {
+      if (System.currentTimeMillis() >= stepDeadline) break;
+      ScoredRoute accepted = routedCandidates.get(trial);
+
+      result.addDiagnostic("step " + step + (trial > 0 ? " trial " + (trial + 1) : "")
+        + ": routed " + (int) accepted.routeDistance
+        + "m (target " + (int) subTarget + "m)"
+        + ", reuse=" + String.format("%.1f%%", accepted.visitedRatio * 100));
+
+      // Tentatively commit the RAW single-pass leg.
+      segments.add(accepted.track);
+      s.totalDistance += accepted.routeDistance;
+      if (accepted.fromIsoCandidate) s.acceptedIsoLegs++;
+      else s.acceptedNonIsoLegs++;
+      if (accepted.fromQuotaInjection) s.acceptedQuotaInjectedLegs++;
+      s.prevIlon = currentIlon;
+      s.prevIlat = currentIlat;
+
+      // Use actual track endpoint for next step
+      OsmPathElement lastNode = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
+      MatchedWaypoint nextMwp = matchPoint(lastNode.getILon(), lastNode.getILat(), "greedy_next");
+      s.currentMwp = (nextMwp != null) ? nextMwp : accepted.toMwp;
+      waypointStack.add(s.currentMwp);
+
+      // Learn the observed air-to-road ratio of this leg (kept on undo —
+      // a routed leg is a real terrain measurement either way). Only the
+      // top-ranked trial updates the estimate: the pre-trial-loop code
+      // learned exactly once per attempt (from its single candidate), and
+      // letting every runner-up update it would let a rejection-heavy
+      // attempt shift the EMA several times before a leg commits.
+      double legAir = CheapRuler.distance(currentIlon, currentIlat, lastNode.getILon(), lastNode.getILat());
+      if (trial == 0 && legAir > 500) {
+        double observed = accepted.routeDistance / legAir;
+        s.indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
+          (1 - INDIRECTNESS_EMA_ALPHA) * s.indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
+        if (s.indirectnessEst > ROAD_INDIRECTNESS + 0.05) {
+          result.addDiagnostic(String.format(Locale.US,
+            "step %d: observed indirectness %.2f, estimate now %.2f", step, observed, s.indirectnessEst));
         }
+      }
 
-        // Terrain-feasibility reference for the direction term: the best heading
-        // actually reachable this step. When the requested direction is blocked
-        // (sea/mountain), the best candidate is far off-bearing, and charging only
-        // the offset BEYOND it stops direction from forcing a bad route. No-op
-        // unless CandidateScorer.DIR_FEASIBILITY (which leaves the reference unused otherwise).
-        double dirRef = 0.0;
-        if (dirPref != DirectionPreference.ANY && !candidates.isEmpty()) {
-          double best = 180.0;
-          for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
-            double diff = CheapAngleMeter.getDifferenceFromDirection(dirPref.bearing, cp.bearing);
-            if (diff < best) best = diff;
-          }
-          dirRef = best;
+      // --- Closure check (ONE return Dijkstra per trial) ---
+      int fromRetIlon = s.currentMwp.crosspoint.getILon();
+      int fromRetIlat = s.currentMwp.crosspoint.getILat();
+      double airDistToStart = CheapRuler.distance(fromRetIlon, fromRetIlat, start.ilon, start.ilat);
+      boolean oracleBacked = returnOracle != null && returnOracle.covers(fromRetIlon, fromRetIlat);
+      double minReturn = estimateReturnMeters(s, fromRetIlon, fromRetIlat, airDistToStart);
+
+      // Skip the return check only when closure is clearly out of reach AND
+      // we still have multiple steps left. The safety factor covers the
+      // estimate's blindness to constrained networks forcing much longer
+      // returns — a sector-resolved oracle estimate already carries the
+      // graph's detour truth, so it needs far less headroom than the
+      // global-EMA guess. Never skip on the last two steps where closure
+      // matters.
+      boolean isLateStep = step >= subRouteCount - 1;
+      double skipSafety = oracleBacked ? RETURN_SKIP_SAFETY_ORACLE : RETURN_SKIP_SAFETY;
+      boolean returnChecked = isLateStep
+        || s.totalDistance + minReturn * skipSafety >= desiredDistance * (1 - tolerance);
+      OsmTrack returnTrack = null;
+      OsmTrack returnRef = null;
+      if (returnChecked) {
+        // One Dijkstra: return path to start. When the fully-penalised return
+        // ships a self-crossing, routeReturnWithVariants escalates to
+        // relaxed-penalty variants and picks the best shape (extra Dijkstras
+        // are spent only on the defective case).
+        returnRef = buildRefTrack(segments);
+        returnTrack = routeReturnWithVariants(segments, returnRef,
+          s.currentMwp, startMwp, stepDeadline, result, s.totalDistance, desiredDistance, step);
+        s.returnChecksPerformed++;
+
+        // Too long → undo the RAW sub-route (no detail work paid yet) and
+        // try the next ranked candidate.
+        if (returnTrack != null && returnTrack.distance > 0
+            && s.totalDistance + returnTrack.distance > desiredDistance * (1 + tolerance)) {
+          result.addDiagnostic("step " + step + ": projected "
+            + (int) (s.totalDistance + returnTrack.distance)
+            + "m exceeds desired " + (int) desiredDistance + "m, trying next candidate");
+          tooLongSeen = true;
+          undoTentativeLeg(s, accepted);
+          s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+          s.prevIlon = savedPrevIlon;
+          s.prevIlat = savedPrevIlat;
+          continue;
         }
-        scorer.setDirectionReferenceOffset(dirRef);
+      }
 
-        // Previous leg's bearing for the heading-persistence term: NaN on
-        // step 1 (no previous leg — the start-direction term covers it).
-        // Must use the cos(lat)-scaled bearing so it shares the convention of
-        // cp.bearing (graph-native and isochrone providers both set it
-        // via CheapRuler.getScaledBearing). The raw
-        // CheapAngleMeter.getDirection would distort the kink angle by ~10-15° off
-        // the equator. (loopSweepPenalty uses the same scaled bearings — its
-        // increments are judged against the true-geometry 360/N target.)
-        double prevLegBearing = prevIlon >= 0
-          ? CheapRuler.getScaledBearing(prevIlon, prevIlat, currentIlon, currentIlat)
-          : Double.NaN;
-
-        // Current via's radius from start — fixed per step; the unimodal-radius
-        // term compares each candidate's radius against it.
-        double currentRadius = CheapRuler.distance(currentIlon, currentIlat, start.ilon, start.ilat);
-
-        // Score using air-distance estimates — O(1) per candidate
-        for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
-          double airDistToCp = CheapRuler.distance(currentIlon, currentIlat, cp.ilon, cp.ilat);
-          // Exact-when-known leg distance (F6-lite): graph-native candidates
-          // carry the expansion-compiled leg, whose distance is the routed
-          // truth — strictly better than the air*indirectness guess the
-          // estimate otherwise is. Fewer mis-ranked candidates means fewer
-          // too-long undo cycles downstream.
-          double estimatedRouteDist = (cp.routedTrack != null && cp.routedTrack.distance > 0)
-            ? cp.routedTrack.distance
-            : airDistToCp * indirectnessEst;
-          double airDistToStart = CheapRuler.distance(cp.ilon, cp.ilat, start.ilon, start.ilat);
-          // Deliberately the EMA estimate, NOT the return oracle: in candidate
-          // RANKING an oracle over-estimate mis-ranks with no correction, and
-          // consumer attribution (2026-07, 13-cell three-way) showed the
-          // scoring path caused every 30km distR crash the corpus A/B found.
-          // The oracle serves only the return-check skip decision, where an
-          // over-estimate is self-correcting (it merely buys a real Dijkstra).
-          double estimatedReturn = airDistToStart * indirectnessEst;
-          double distFromStart = airDistToStart;
-
-          double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, cp.ilon, cp.ilat) * indirectnessEst
-            : -1;
-
-          // Health demotion: a DEGRADED pool's candidates lose their iso prior
-          // terms (density bonus, contour-depth preference, iso-hostility
-          // estimate) and compete on geometry + routed truth alone. The
-          // CandidatePoint is NOT mutated — source attribution and the routed
-          // quota still classify it as iso-pool via costFromStart.
-          boolean stripIso = stripIsoPriorTerms && isIsoPoolCandidate(cp);
-          cp.score = scorer.score(
-            estimatedRouteDist, subTarget,
-            totalDistance, estimatedReturn, desiredDistance,
-            cp.bearing, dirPref,
-            step, subRouteCount,
-            0.0, // can't estimate visited ratio without routing
-            distFromStart, searchRadius,
-            distFromPrevious,
-            stripIso ? RoundTripCandidateProvider.NO_ISO_COST : cp.costFromStart,
-            stripIso ? RoundTripCandidateProvider.NO_ISO_DENSITY : cp.bucketHits,
-            stripIso ? RoundTripCandidateProvider.NO_ISO_CONTOUR : cp.sourceContour)
-            + POCKET_PENALTY_WEIGHT * pocketPenalty(cp.reachableCells);
-
-          // Heading persistence: prefer candidates that keep turning gently
-          // instead of kinking at the via — terrain-gated so constrained
-          // networks that force sharp macro-turns are exempt (see
-          // W_HEADING_PERSISTENCE / HEADING_TERRAIN_FADE_MAX), and distress-
-          // braked once closures start failing (see closureRejections).
-          if (!Double.isNaN(prevLegBearing) && closureRejections < HEADING_BRAKE_REJECTIONS) {
-            double terrainFreedom = headingTerrainFreedom(indirectnessEst);
-            cp.score += W_HEADING_PERSISTENCE * terrainFreedom
-              * headingPersistencePenalty(prevLegBearing, cp.bearing, subRouteCount);
-            // Loop-convexity: keep the via sequence sweeping monotonically around
-            // the start and contracting after the apogee — kills radial-dent lobes
-            // (basel_80km via3) and clustered-via tangles. Same terrain/closure
-            // gating as heading persistence.
-            cp.score += W_LOOP_SWEEP * terrainFreedom
-              * loopSweepPenalty(start.ilon, start.ilat, prevIlon, prevIlat,
-                  currentIlon, currentIlat, cp.ilon, cp.ilat, subRouteCount);
-            cp.score += W_UNIMODAL_RADIUS * terrainFreedom
-              * unimodalRadiusPenalty(distFromStart, currentRadius, step, subRouteCount);
-          }
-
-          // Variety seed (= request alternativeidx): jitter the HEURISTIC score
-          // only — it perturbs which candidates get routed, while the routed-
-          // candidate comparison below stays purely quality-driven. The jitter is
-          // ±VARIETY_JITTER_AMPLITUDE of the score MAGNITUDE, added (not multiplied),
-          // so a positive unit always raises the score (= worse rank) regardless of
-          // the score's sign. It flips near-tie
-          // rankings without overriding clear winners; in sparse networks with no
-          // near-ties, variety is best-effort.
-          if (varietySeed > 0) {
-            cp.score += VARIETY_JITTER_AMPLITUDE * Math.abs(cp.score)
-              * seededUnit(varietySeed, cp.ilon, cp.ilat);
-          }
+      // Length decision passed — NOW pay for detail. Phase 2 v3: upgrade
+      // the committed sub-track from single-pass (fast, no per-edge
+      // MessageData) to detailed via the engine's retracking pass. The
+      // quality gate's paved-profile hostility check requires
+      // wayKeyValues on every edge; single-pass tracks don't have them,
+      // so without this step the gate would either bypass hostility
+      // (under suspect-tolerance) or trip the missing-metadata floor.
+      OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, stepDeadline);
+      String detailReject = null;
+      if (detailedAccepted == null || detailedAccepted.distance == 0) {
+        detailReject = "accepted leg could not be detailed";
+      } else if (detailFidelityTooLow(detailedAccepted)) {
+        detailReject = "accepted leg still lacks metadata after retrack ("
+          + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + ")";
+      } else if (pavedProfile) {
+        // Phase 2 v3 hostility post-check. The scorer cannot see hostility
+        // while choosing candidates (single-pass tracks lack metadata),
+        // but the FINAL gate will reject any leg with a contiguous hostile
+        // stretch over the cap. Checking here lets the planner move to the
+        // next candidate instead of committing a hostile leg and losing
+        // the whole loop. Skipped on non-paved profiles where the
+        // predicate would over-flag.
+        RoundTripQualityGate.HostileStretch hostileStretch =
+          RoundTripQualityGate.worstHostileStretchPaved(detailedAccepted);
+        if (hostileStretch.meters > RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS) {
+          detailReject = "accepted leg has " + hostileStretch.meters
+            + "m contiguous hostile stretch (over "
+            + RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS + ")";
         }
+      }
+      if (detailReject != null) {
+        result.addDiagnostic("step " + step + ": " + detailReject + ", trying next candidate");
+        undoTentativeLeg(s, accepted);
+        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+        s.prevIlon = savedPrevIlon;
+        s.prevIlat = savedPrevIlat;
+        continue;
+      }
 
-        // Rank by score (lowest = best)
-        Collections.sort(candidates, BY_HEURISTIC_SCORE);
+      // Swap the detailed leg in (identical node sequence; distance can
+      // shift marginally) and register its edges for reuse scoring.
+      double rawLegDistance = accepted.routeDistance;
+      accepted.track = detailedAccepted;
+      accepted.routeDistance = detailedAccepted.distance;
+      segments.set(segments.size() - 1, detailedAccepted);
+      s.totalDistance += detailedAccepted.distance - rawLegDistance;
+      addVisitedEdges(accepted.track, visitedEdges, s.totalDistance - accepted.routeDistance);
 
-        // --- Phase 2: Route top candidates, pick best by combined routed score ---
-        // Heuristic score uses visitedEdgeRatio=0 since pre-routing can't know it.
-        // Re-score with actual route distance and visited ratio so reuse-heavy
-        // candidates lose to fresh ones at similar cost-per-meter.
-        //
-        // Pick top-K candidates with angular spread (≥ MIN_ANGULAR_SEPARATION_DEG
-        // between picks) rather than just the top K by score — the top heuristic
-        // picks are often spatially redundant in dense networks. Bump K from
-        // MAX_ROUTE_ATTEMPTS to MAX_ROUTE_ATTEMPTS_LATE on late steps or after
-        // an earlier failed attempt this step, where extra exploration pays off.
-        boolean lateStep = step >= subRouteCount - 1 || attempt > 1;
-        int routeBudget = routeBudgetFor(lateStep);
-        List<RoundTripCandidateProvider.CandidatePoint> toRoute =
-          pickDiverseTopK(candidates, routeBudget);
-        // Source fairness for the routed slots (blended ISO_GREEDY only; no-op
-        // for single-source lists): phase-1 ranks iso-pool picks on optimistic
-        // airDist*indirectness estimates but graph-native picks on compiled
-        // routed truth, so a mixed sort lets iso picks monopolize the routed
-        // top-K and the cost-aware routed comparison never prices the honest
-        // local alternative. Guarantee it a seat; phase-2 stays the judge.
-        int minGraphNative = graphNativeQuota(lateStep, stripIsoPriorTerms, routeBudget);
-        if (enforceSourceQuota(toRoute, candidates, routeBudget, minGraphNative)) {
-          result.addDiagnostic("step " + step + " attempt " + attempt
-            + ": source quota injected graph-native candidate(s) into routed top-" + routeBudget);
+      // Endpoint re-anchor: detailWithFallback's fidelity fallback can
+      // REROUTE the leg (toward accepted.toMwp), so the committed leg may
+      // end at a different node than the raw leg the step was anchored on.
+      // The pre-trial-loop code derived s.currentMwp from the DETAILED
+      // track's endpoint, so match that: re-derive the step anchor and,
+      // when a return was already routed from the stale anchor, redo the
+      // return check from the corrected one (rare path — pays one extra
+      // Dijkstra only when a fidelity reroute actually moved the endpoint;
+      // without this, the next leg and the return would start at a point
+      // the committed track never reaches, shipping a seam gap).
+      OsmPathElement detailedEnd = detailedAccepted.nodes.get(detailedAccepted.nodes.size() - 1);
+      if (detailedEnd.getILon() != lastNode.getILon()
+          || detailedEnd.getILat() != lastNode.getILat()) {
+        MatchedWaypoint reanchored = matchPoint(detailedEnd.getILon(), detailedEnd.getILat(), "greedy_next");
+        s.currentMwp = (reanchored != null) ? reanchored : accepted.toMwp;
+        waypointStack.set(waypointStack.size() - 1, s.currentMwp);
+        if (returnChecked) {
+          returnRef = buildRefTrack(segments);
+          returnTrack = routeReturnWithVariants(segments, returnRef,
+            s.currentMwp, startMwp, stepDeadline, result, s.totalDistance, desiredDistance, step);
+          s.returnChecksPerformed++;
         }
-        // Source-attribution context for this attempt: only a step where BOTH
-        // sources actually produced a routed (priced) candidate constitutes a
-        // real iso-vs-graph-native comparison. Computed from the routed
-        // results below, not the pre-routing selection — an iso pick that
-        // fails to route never priced an alternative, and charging the pool a
-        // routed-truth loss for it would demote pools that lost nothing.
-        boolean isoPriced = false;
-        boolean graphPriced = false;
+      }
 
-        // Phase 1 Step 2: keep a ranked list of routed candidates instead of
-        // a single best-pick. Step 2 is structural and behavior-preserving —
-        // we still commit only the top-ranked candidate at the end. Step 3
-        // (closure-aware trial loop) will iterate this list when the locally
-        // best candidate's closed loop is rejected.
-        List<ScoredRoute> routedCandidates = new ArrayList<>();
-        int routeAttempts = toRoute.size();
-        MatchedWaypoint fromMwp = currentMwp;
+      if (!returnChecked || returnTrack == null || returnTrack.distance == 0) {
+        // Either closure is clearly out of reach with steps to spare, or
+        // the return was not routable within budget — keep the leg
+        // (legacy behaviour) and let the next step / force-close handle
+        // closure.
+        recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
+          start.ilon, start.ilat, s.currentMwp);
+        legCommitted = true;
+        break;
+      }
 
-        // SAFE-4: merge the committed segments into a prefix node list ONCE per
-        // attempt and share it (read-only) across every routed candidate's
-        // tentative self-intersection count, instead of re-merging the whole
-        // prefix per candidate. segments is not mutated inside the r-loop.
-        List<OsmPathElement> committedPrefixNodes =
-          segments.isEmpty() ? null : mergeSegmentsNoMap(segments, null).nodes;
+      // Recompute the closure numbers against the DETAILED leg distance
+      // (the length decision above used the raw track).
+      double closedDistance = s.totalDistance + returnTrack.distance;
+      double error = Math.abs(closedDistance - desiredDistance) / desiredDistance;
+      if (closedDistance > desiredDistance * (1 + tolerance)) {
+        // The detail swap nudged the total over the cap — too long after all.
+        result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
+          + "m exceeds desired " + (int) desiredDistance + "m after detailing, trying next candidate");
+        tooLongSeen = true;
+        removeVisitedEdges(accepted.track, visitedEdges);
+        undoTentativeLeg(s, accepted);
+        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+        s.prevIlon = savedPrevIlon;
+        s.prevIlat = savedPrevIlat;
+        continue;
+      }
 
-        for (int r = 0; r < routeAttempts; r++) {
-          RoundTripCandidateProvider.CandidatePoint cp = toRoute.get(r);
+      // Phase 2 v3: detail the closing return leg before either snapshot
+      // or final commit — both paths feed the quality gate which needs
+      // per-edge MessageData. Also re-detail when the current best
+      // fallback was gate-rejected, so we keep searching for a
+      // gate-accepted closure even at higher error.
+      boolean needDetail = (s.bestFallback == null || error < s.bestFallback.error)
+        || (error <= tolerance)
+        || (s.bestFallback != null && !s.bestFallback.gateAccepted);
+      if (needDetail) {
+        // Same fidelity-enforced detailing as committed forward legs: a
+        // failed retrack on the closing leg used to ship raw chord geometry
+        // (no fallback at all here). The reroute fallback needs anti-reuse
+        // poisoning against the path actually COMMITTED: returnRef was
+        // built before the accepted leg was detailed (and possibly
+        // rerouted by the fidelity fallback), so rebuild the ref from the
+        // now-detailed segments — otherwise a return reroute could freely
+        // retrace a fidelity-rerouted leg the stale ref doesn't contain.
+        OsmTrack detailedReturnRef = buildRefTrack(segments);
+        returnTrack = detailWithFallback("greedy-return-detail-fallback",
+          returnTrack, s.currentMwp, startMwp, detailedReturnRef, stepDeadline);
+      }
 
-          // Profile-aware snap for every candidate via: prefer a profile-
-          // compatible road near the candidate over the plain nearest way, so
-          // a via never commits the loop to a junk-road pocket (the via-pinned
-          // bulge source — see RoutingEngine.repairViaPinnedBulges). Graph-
-          // native candidates need this just as much as off-road radial
-          // points: their Dijkstra expansion terminates on whatever node hits
-          // the cost contour, which in a track pocket IS a junk road.
-          MatchedWaypoint toMwp = matchCandidatePointProfileAware(cp.ilon, cp.ilat);
-          if (toMwp == null) continue;
-
-          // Snap distance from the candidate coordinate to its routed-on-road
-          // crosspoint. Reject candidates that snapped too far away.
-          int snappedIlon = toMwp.crosspoint.getILon();
-          int snappedIlat = toMwp.crosspoint.getILat();
-          double snapDist = CheapRuler.distance(cp.ilon, cp.ilat, snappedIlon, snappedIlat);
-          if (snapDist > airRadius * 0.5) continue;
-
-          // A pre-routed graph-native leg ends at the ORIGINAL candidate node;
-          // if the profile-aware snap relocated the via, that cached leg no
-          // longer reaches it. Drop the cache and route to the relocated point
-          // — one extra Dijkstra, paid only when a relocation actually fired.
-          OsmTrack subTrack = cp.routedTrack;
-          if (subTrack != null && snapDist > VIA_RELOCATION_DROP_CACHED_LEG_M) {
-            io.logInfo("greedy: candidate via relocated " + (int) snapDist
-              + "m to profile-friendly road, re-routing leg");
-            subTrack = null;
-          }
-          if (subTrack == null) {
-            subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, stepDeadline);
-          }
-          candidatesRouted++;
-          // Phase 2 v3 deliberate compromise: do NOT retrack candidate
-          // sub-tracks here, even though it would give the scorer's
-          // worst-contiguous signal real data. Retracking every
-          // candidate (3 cands × 5 steps = ~15 per loop) inflates total
-          // runtime ~40×. Empirically, Phase 2 v2 measurement showed the
-          // scorer-level signal moves at most 0-1 pp of pass-rate. The
-          // gate-side win comes from detailing ACCEPTED legs (below) so
-          // the gate sees real metadata; candidate-level detail is
-          // future work if it ever becomes the bottleneck.
-          // Source-aware telemetry: start-iso candidates carry a non-sentinel
-          // costFromStart; graph-native/non-start-iso candidates use NO_ISO_COST. We count
-          // BEFORE the null/zero-distance guard so "routed" reflects what
-          // Dijkstra attempted, not what succeeded.
-          boolean isIsoCandidate = isIsoPoolCandidate(cp);
-          if (isIsoCandidate) routedIso++; else routedNonIso++;
-          if (subTrack == null || subTrack.distance == 0) continue;
-
-          // Recompute scoring inputs from the SNAPPED endpoint (toMwp.crosspoint).
-          // The router actually travels to that snapped location, not the raw
-          // candidate point — so air-distance, bearing, return estimate, and the
-          // overlong-route reject threshold should all reflect what was routed.
-          double snappedAirDistFromCurrent = CheapRuler.distance(
-            currentIlon, currentIlat, snappedIlon, snappedIlat);
-          if (subTrack.distance > snappedAirDistFromCurrent * 3.0) continue;
-
-          // SAFE-5: computeTrackVisitedRatio and the paved-profile
-          // worst-contiguous scan below both iterate subTrack.nodes calling
-          // a.calcDistance(b) over the identical segments in the identical
-          // orientation. On paved profiles (where both run) compute the
-          // per-segment integer distances ONCE and feed both passes, halving
-          // the CheapRuler sqrt+round calls. calcDistance returns an int, so
-          // the cached value widened to double is bit-identical to recomputing
-          // it. Non-paved profiles run only the first pass, so they keep the
-          // inline computation (no buffer to share).
-          int[] segLens = pavedProfile ? segmentDistances(subTrack) : null;
-          double actualVisitedRatio = computeTrackVisitedRatio(subTrack,
-            visitedEdges, totalDistance, desiredDistance, segLens);
-          double airDistToStart = CheapRuler.distance(snappedIlon, snappedIlat, start.ilon, start.ilat);
-          // EMA, not the oracle — same ranking-vs-skip rationale as phase-1.
-          double estimatedReturn = airDistToStart * indirectnessEst;
-          double distFromPrevious = (prevIlon >= 0)
-            ? CheapRuler.distance(prevIlon, prevIlat, snappedIlon, snappedIlat) * indirectnessEst
-            : -1;
-          double snappedBearing = CheapRuler.getScaledBearing(
-            currentIlon, currentIlat, snappedIlon, snappedIlat);
-
-          // Phase 2 v2: feed the routed sub-track's worst contiguous
-          // hostile stretch to the scorer. This mirrors the gate's
-          // physical-experience metric (a single long unbroken off-road
-          // stretch is the cyclist's complaint surface). Phase 2.1's
-          // averaged cost/distance ratio was the wrong signal — diagnostic
-          // data showed 99% of fastbike rejections come from contiguous-
-          // stretch trips, but leg-averages dilute single bad stretches
-          // across surrounding clean kilometres. Worst-contiguous is a
-          // max over edges, the same shape as the gate.
-          //
-          // Computed only for paved profiles (the hostile predicate is
-          // road-bike specific); -1 sentinel for the rest keeps the
-          // scorer on its iso-hostility fall-back.
-          //
-          // Scorer-side approximation: the gate's worstContiguousHostileMetersPaved
-          // returns 0 on single-pass subTracks because it skips edges with
-          // null wayKeyValues (the tag check is the dominant hostility signal,
-          // costfactor>4.0 only catches extreme cases). Use the costfactor-
-          // only variant with the lower SCORER_HOSTILE_COSTFACTOR_THRESHOLD
-          // to get a usable signal on single-pass tracks. The gate's precise
-          // tag-aware check still runs post-detail before commit.
-          int worstHostile = pavedProfile
-            ? RoundTripQualityGate.worstContiguousCostlyMetersForScorer(subTrack, segLens)
-            : -1;
-
-          // Same iso-prior stripping as phase 1 — the routed comparison must
-          // not re-apply the demoted pool's tie-break terms.
-          boolean stripIsoRouted = stripIsoPriorTerms && isIsoCandidate;
-          double routedScorerScore = scorer.score(
-            subTrack.distance, subTarget,
-            totalDistance, estimatedReturn, desiredDistance,
-            snappedBearing, dirPref,
-            step, subRouteCount,
-            actualVisitedRatio,
-            airDistToStart, searchRadius,
-            distFromPrevious,
-            stripIsoRouted ? RoundTripCandidateProvider.NO_ISO_COST : cp.costFromStart,
-            stripIsoRouted ? RoundTripCandidateProvider.NO_ISO_DENSITY : cp.bucketHits,
-            stripIsoRouted ? RoundTripCandidateProvider.NO_ISO_CONTOUR : cp.sourceContour,
-            worstHostile);
-
-          double costPerMeter = (double) subTrack.cost / subTrack.distance;
-          double routedScore = combinedRoutedScore(routedScorerScore, costPerMeter);
-          int tentativeSelfIntersections = countTentativeSelfIntersections(committedPrefixNodes, subTrack);
-          if (tentativeSelfIntersections > 0) {
-            routedScore += PARTIAL_SELF_INTERSECTION_WEIGHT * tentativeSelfIntersections;
-          }
-
-          ScoredRoute candidate = new ScoredRoute();
-          candidate.track = subTrack;
-          candidate.toMwp = toMwp;
-          candidate.routeDistance = subTrack.distance;
-          candidate.visitedRatio = actualVisitedRatio;
-          candidate.fromIsoCandidate = isIsoCandidate;
-          candidate.fromQuotaInjection = cp.quotaInjected;
-          candidate.oracleBackedReturn = returnOracle != null
-            && returnOracle.covers(snappedIlon, snappedIlat);
-          candidate.routedScore = routedScore;
-          candidate.candidateIndex = r;
-          candidate.tentativeSelfIntersections = tentativeSelfIntersections;
-          candidate.routedLegWorstHostileMeters = worstHostile;
-          routedCandidates.add(candidate);
-          if (isIsoCandidate) {
-            isoPriced = true;
-          } else {
-            graphPriced = true;
-          }
+      // Build the closed loop and evaluate the production gate once (only
+      // meaningful when the leg was detailed); reuse the verdict for both
+      // fallback selection and the within-tolerance close decision.
+      OsmTrack finalTrack = null;
+      String reject = null;
+      if (needDetail) {
+        finalTrack = mergeSegmentsDetoured(segments, returnTrack);
+        reportSeamGaps(segments, returnTrack, result);
+        RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
+        reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
+        // Geometry-fidelity guard on the closing leg: when even the
+        // detailWithFallback reroute could not produce faithful geometry,
+        // do not close on it — route the rejection through the existing
+        // undo-and-retry machinery instead of shipping chord geometry.
+        if (reject == null && detailFidelityTooLow(returnTrack)) {
+          reject = "return leg geometry fidelity too low (chord "
+            + LoopQualityMetrics.maxSingleNullEdgeMeters(returnTrack) + "m, missing meta "
+            + formatPct(RoundTripQualityGate.missingMetadataFraction(returnTrack)) + ")";
         }
+        int severity = fallbackSeverity(verdict);
+        // Prefer the soundest fallback (accepted > rideable corridor > chaos)
+        // even at a higher geometric error; among equal-soundness candidates
+        // keep the lowest error. Ranking by error alone could latch a
+        // low-error chaotic (self-intersecting) loop over a usable corridor.
+        if (s.bestFallback == null
+            || isBetterFallback(severity, error, s.bestFallback.severity, s.bestFallback.error)) {
+          s.bestFallback = snapshotFallback(s, finalTrack, returnTrack, error, severity);
+        }
+      }
 
-        boolean mixedSourceRouting = isoPriced && graphPriced;
-
-        sortByRoutedScore(routedCandidates);
-
-        if (routedCandidates.isEmpty()) {
-          // No routable candidate at this radius — gentle shrink so we don't
-          // jump past viable radii. The aggressive halving below applies only
-          // when the route is too long.
-          result.addDiagnostic("step " + step + " attempt " + attempt
-            + ": no routable candidate at radius " + (int) localRadius);
-          localRadius = Math.max(MIN_LOCAL_RADIUS_M, localRadius * BACKOFF_FACTOR_NO_CANDIDATE);
+      // Within tolerance → close the loop
+      if (error <= tolerance) {
+        if (reject != null) {
+          result.addDiagnostic("closed loop rejected at step " + step
+            + ": " + reject + ", trying next candidate");
+          s.closureRejections++;
+          if (poolHealth != null) poolHealth.recordClosureRejection();
+          removeVisitedEdges(accepted.track, visitedEdges);
+          undoTentativeLeg(s, accepted);
+          s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+          s.prevIlon = savedPrevIlon;
+          s.prevIlat = savedPrevIlat;
           continue;
         }
 
-        // --- Phase 3+4: closure-aware trial loop over the ranked routed
-        // candidates (the "Step 3" the ranked list was built for, previously
-        // unimplemented). Historically only the top-ranked candidate was
-        // tried; a closure rejection or too-long projection undid the leg
-        // and paid a WHOLE fresh attempt — re-expansion, re-matching,
-        // re-routing K candidates — although ranks 1..K-1 were already
-        // routed and in hand. Now those runner-ups are tried in score order
-        // (each costs at most one return Dijkstra plus detailing); only when
-        // the whole ranked list fails does the attempt loop shrink the
-        // radius and regenerate.
-        //
-        // Work ordering per trial (cheap-reject-first): the RAW single-pass
-        // leg is committed and the length (too-long) decision made BEFORE
-        // the detail retrack. A too-long undo — the most common rejection —
-        // now costs zero detail Dijkstras (it used to discard 1-3 of them).
-        // Detailing, and the paved-hostility/fidelity checks that need
-        // per-edge metadata, run only for legs that survive the length
-        // decision; the quality gate still only ever sees fully detailed
-        // geometry.
-        boolean legCommitted = false;
-        boolean tooLongSeen = false;
-        // Record previous waypoint position for next step's Silesian scoring.
-        // Saved once per attempt so every trial's undo can restore it.
-        int savedPrevIlon = prevIlon;
-        int savedPrevIlat = prevIlat;
-        // SAFE-6: reuse cachedRefTrack instead of rebuilding it. segments is
-        // not mutated between its construction (top of step) and here beyond
-        // this trial loop's own add/undo pairs, which always restore
-        // step-start content before the next detail call. Routing/retrack
-        // treat the refTrack as read-only (a fresh OsmTrack is built
-        // internally).
-        OsmTrack refBeforeAccept = cachedRefTrack;
-
-        for (int trial = 0; trial < routedCandidates.size(); trial++) {
-          if (System.currentTimeMillis() >= stepDeadline) break;
-          ScoredRoute accepted = routedCandidates.get(trial);
-
-          result.addDiagnostic("step " + step + (trial > 0 ? " trial " + (trial + 1) : "")
-            + ": routed " + (int) accepted.routeDistance
-            + "m (target " + (int) subTarget + "m)"
-            + ", reuse=" + String.format("%.1f%%", accepted.visitedRatio * 100));
-
-          // Tentatively commit the RAW single-pass leg.
-          segments.add(accepted.track);
-          totalDistance += accepted.routeDistance;
-          if (accepted.fromIsoCandidate) acceptedIsoLegs++;
-          else acceptedNonIsoLegs++;
-          if (accepted.fromQuotaInjection) acceptedQuotaInjectedLegs++;
-          prevIlon = currentIlon;
-          prevIlat = currentIlat;
-
-          // Use actual track endpoint for next step
-          OsmPathElement lastNode = accepted.track.nodes.get(accepted.track.nodes.size() - 1);
-          MatchedWaypoint nextMwp = matchPoint(lastNode.getILon(), lastNode.getILat(), "greedy_next");
-          currentMwp = (nextMwp != null) ? nextMwp : accepted.toMwp;
-          waypointStack.add(currentMwp);
-
-          // Learn the observed air-to-road ratio of this leg (kept on undo —
-          // a routed leg is a real terrain measurement either way). Only the
-          // top-ranked trial updates the estimate: the pre-trial-loop code
-          // learned exactly once per attempt (from its single candidate), and
-          // letting every runner-up update it would let a rejection-heavy
-          // attempt shift the EMA several times before a leg commits.
-          double legAir = CheapRuler.distance(currentIlon, currentIlat, lastNode.getILon(), lastNode.getILat());
-          if (trial == 0 && legAir > 500) {
-            double observed = accepted.routeDistance / legAir;
-            indirectnessEst = Math.max(ROAD_INDIRECTNESS, Math.min(MAX_INDIRECTNESS_EST,
-              (1 - INDIRECTNESS_EMA_ALPHA) * indirectnessEst + INDIRECTNESS_EMA_ALPHA * observed));
-            if (indirectnessEst > ROAD_INDIRECTNESS + 0.05) {
-              result.addDiagnostic(String.format(Locale.US,
-                "step %d: observed indirectness %.2f, estimate now %.2f", step, observed, indirectnessEst));
-            }
-          }
-
-          // --- Closure check (ONE return Dijkstra per trial) ---
-          int fromRetIlon = currentMwp.crosspoint.getILon();
-          int fromRetIlat = currentMwp.crosspoint.getILat();
-          double airDistToStart = CheapRuler.distance(fromRetIlon, fromRetIlat, start.ilon, start.ilat);
-          boolean oracleBacked = returnOracle != null && returnOracle.covers(fromRetIlon, fromRetIlat);
-          double minReturn = estimateReturnMeters(fromRetIlon, fromRetIlat, airDistToStart, indirectnessEst);
-
-          // Skip the return check only when closure is clearly out of reach AND
-          // we still have multiple steps left. The safety factor covers the
-          // estimate's blindness to constrained networks forcing much longer
-          // returns — a sector-resolved oracle estimate already carries the
-          // graph's detour truth, so it needs far less headroom than the
-          // global-EMA guess. Never skip on the last two steps where closure
-          // matters.
-          boolean isLateStep = step >= subRouteCount - 1;
-          double skipSafety = oracleBacked ? RETURN_SKIP_SAFETY_ORACLE : RETURN_SKIP_SAFETY;
-          boolean returnChecked = isLateStep
-            || totalDistance + minReturn * skipSafety >= desiredDistance * (1 - tolerance);
-          OsmTrack returnTrack = null;
-          OsmTrack returnRef = null;
-          if (returnChecked) {
-            // One Dijkstra: return path to start. When the fully-penalised return
-            // ships a self-crossing, routeReturnWithVariants escalates to
-            // relaxed-penalty variants and picks the best shape (extra Dijkstras
-            // are spent only on the defective case).
-            returnRef = buildRefTrack(segments);
-            returnTrack = routeReturnWithVariants(segments, returnRef,
-              currentMwp, startMwp, stepDeadline, result, totalDistance, desiredDistance, step);
-            returnChecksPerformed++;
-
-            // Too long → undo the RAW sub-route (no detail work paid yet) and
-            // try the next ranked candidate.
-            if (returnTrack != null && returnTrack.distance > 0
-                && totalDistance + returnTrack.distance > desiredDistance * (1 + tolerance)) {
-              result.addDiagnostic("step " + step + ": projected "
-                + (int) (totalDistance + returnTrack.distance)
-                + "m exceeds desired " + (int) desiredDistance + "m, trying next candidate");
-              tooLongSeen = true;
-              totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
-                totalDistance);
-              currentMwp = waypointStack.get(waypointStack.size() - 1);
-              prevIlon = savedPrevIlon;
-              prevIlat = savedPrevIlat;
-              continue;
-            }
-          }
-
-          // Length decision passed — NOW pay for detail. Phase 2 v3: upgrade
-          // the committed sub-track from single-pass (fast, no per-edge
-          // MessageData) to detailed via the engine's retracking pass. The
-          // quality gate's paved-profile hostility check requires
-          // wayKeyValues on every edge; single-pass tracks don't have them,
-          // so without this step the gate would either bypass hostility
-          // (under suspect-tolerance) or trip the missing-metadata floor.
-          OsmTrack detailedAccepted = detailAcceptedTrack(accepted, fromMwp, refBeforeAccept, stepDeadline);
-          String detailReject = null;
-          if (detailedAccepted == null || detailedAccepted.distance == 0) {
-            detailReject = "accepted leg could not be detailed";
-          } else if (detailFidelityTooLow(detailedAccepted)) {
-            detailReject = "accepted leg still lacks metadata after retrack ("
-              + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + ")";
-          } else if (pavedProfile) {
-            // Phase 2 v3 hostility post-check. The scorer cannot see hostility
-            // while choosing candidates (single-pass tracks lack metadata),
-            // but the FINAL gate will reject any leg with a contiguous hostile
-            // stretch over the cap. Checking here lets the planner move to the
-            // next candidate instead of committing a hostile leg and losing
-            // the whole loop. Skipped on non-paved profiles where the
-            // predicate would over-flag.
-            RoundTripQualityGate.HostileStretch hostileStretch =
-              RoundTripQualityGate.worstHostileStretchPaved(detailedAccepted);
-            if (hostileStretch.meters > RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS) {
-              detailReject = "accepted leg has " + hostileStretch.meters
-                + "m contiguous hostile stretch (over "
-                + RoundTripQualityGate.MAX_CONTIGUOUS_HOSTILE_METERS + ")";
-            }
-          }
-          if (detailReject != null) {
-            result.addDiagnostic("step " + step + ": " + detailReject + ", trying next candidate");
-            totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
-              totalDistance);
-            currentMwp = waypointStack.get(waypointStack.size() - 1);
-            prevIlon = savedPrevIlon;
-            prevIlat = savedPrevIlat;
-            continue;
-          }
-
-          // Swap the detailed leg in (identical node sequence; distance can
-          // shift marginally) and register its edges for reuse scoring.
-          double rawLegDistance = accepted.routeDistance;
-          accepted.track = detailedAccepted;
-          accepted.routeDistance = detailedAccepted.distance;
-          segments.set(segments.size() - 1, detailedAccepted);
-          totalDistance += detailedAccepted.distance - rawLegDistance;
-          addVisitedEdges(accepted.track, visitedEdges, totalDistance - accepted.routeDistance);
-
-          // Endpoint re-anchor: detailWithFallback's fidelity fallback can
-          // REROUTE the leg (toward accepted.toMwp), so the committed leg may
-          // end at a different node than the raw leg the step was anchored on.
-          // The pre-trial-loop code derived currentMwp from the DETAILED
-          // track's endpoint, so match that: re-derive the step anchor and,
-          // when a return was already routed from the stale anchor, redo the
-          // return check from the corrected one (rare path — pays one extra
-          // Dijkstra only when a fidelity reroute actually moved the endpoint;
-          // without this, the next leg and the return would start at a point
-          // the committed track never reaches, shipping a seam gap).
-          OsmPathElement detailedEnd = detailedAccepted.nodes.get(detailedAccepted.nodes.size() - 1);
-          if (detailedEnd.getILon() != lastNode.getILon()
-              || detailedEnd.getILat() != lastNode.getILat()) {
-            MatchedWaypoint reanchored = matchPoint(detailedEnd.getILon(), detailedEnd.getILat(), "greedy_next");
-            currentMwp = (reanchored != null) ? reanchored : accepted.toMwp;
-            waypointStack.set(waypointStack.size() - 1, currentMwp);
-            if (returnChecked) {
-              returnRef = buildRefTrack(segments);
-              returnTrack = routeReturnWithVariants(segments, returnRef,
-                currentMwp, startMwp, stepDeadline, result, totalDistance, desiredDistance, step);
-              returnChecksPerformed++;
-            }
-          }
-
-          if (!returnChecked || returnTrack == null || returnTrack.distance == 0) {
-            // Either closure is clearly out of reach with steps to spare, or
-            // the return was not routable within budget — keep the leg
-            // (legacy behaviour) and let the next step / force-close handle
-            // closure.
-            recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
-              start.ilon, start.ilat, currentMwp);
-            legCommitted = true;
-            break;
-          }
-
-          // Recompute the closure numbers against the DETAILED leg distance
-          // (the length decision above used the raw track).
-          double closedDistance = totalDistance + returnTrack.distance;
-          double error = Math.abs(closedDistance - desiredDistance) / desiredDistance;
-          if (closedDistance > desiredDistance * (1 + tolerance)) {
-            // The detail swap nudged the total over the cap — too long after all.
-            result.addDiagnostic("step " + step + ": projected " + (int) closedDistance
-              + "m exceeds desired " + (int) desiredDistance + "m after detailing, trying next candidate");
-            tooLongSeen = true;
-            removeVisitedEdges(accepted.track, visitedEdges);
-            totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
-              totalDistance);
-            currentMwp = waypointStack.get(waypointStack.size() - 1);
-            prevIlon = savedPrevIlon;
-            prevIlat = savedPrevIlat;
-            continue;
-          }
-
-          // Phase 2 v3: detail the closing return leg before either snapshot
-          // or final commit — both paths feed the quality gate which needs
-          // per-edge MessageData. Also re-detail when the current best
-          // fallback was gate-rejected, so we keep searching for a
-          // gate-accepted closure even at higher error.
-          boolean needDetail = (bestFallback == null || error < bestFallback.error)
-            || (error <= tolerance)
-            || (bestFallback != null && !bestFallback.gateAccepted);
-          if (needDetail) {
-            // Same fidelity-enforced detailing as committed forward legs: a
-            // failed retrack on the closing leg used to ship raw chord geometry
-            // (no fallback at all here). The reroute fallback needs anti-reuse
-            // poisoning against the path actually COMMITTED: returnRef was
-            // built before the accepted leg was detailed (and possibly
-            // rerouted by the fidelity fallback), so rebuild the ref from the
-            // now-detailed segments — otherwise a return reroute could freely
-            // retrace a fidelity-rerouted leg the stale ref doesn't contain.
-            OsmTrack detailedReturnRef = buildRefTrack(segments);
-            returnTrack = detailWithFallback("greedy-return-detail-fallback",
-              returnTrack, currentMwp, startMwp, detailedReturnRef, stepDeadline);
-          }
-
-          // Build the closed loop and evaluate the production gate once (only
-          // meaningful when the leg was detailed); reuse the verdict for both
-          // fallback selection and the within-tolerance close decision.
-          OsmTrack finalTrack = null;
-          String reject = null;
-          if (needDetail) {
-            finalTrack = mergeSegmentsDetoured(segments, returnTrack);
-            reportSeamGaps(segments, returnTrack, result);
-            RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
-            reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
-            // Geometry-fidelity guard on the closing leg: when even the
-            // detailWithFallback reroute could not produce faithful geometry,
-            // do not close on it — route the rejection through the existing
-            // undo-and-retry machinery instead of shipping chord geometry.
-            if (reject == null && detailFidelityTooLow(returnTrack)) {
-              reject = "return leg geometry fidelity too low (chord "
-                + LoopQualityMetrics.maxSingleNullEdgeMeters(returnTrack) + "m, missing meta "
-                + formatPct(RoundTripQualityGate.missingMetadataFraction(returnTrack)) + ")";
-            }
-            int severity = fallbackSeverity(verdict);
-            // Prefer the soundest fallback (accepted > rideable corridor > chaos)
-            // even at a higher geometric error; among equal-soundness candidates
-            // keep the lowest error. Ranking by error alone could latch a
-            // low-error chaotic (self-intersecting) loop over a usable corridor.
-            if (bestFallback == null
-                || isBetterFallback(severity, error, bestFallback.severity, bestFallback.error)) {
-              bestFallback = snapshotFallback(finalTrack, segments, returnTrack, waypointStack, error, severity);
-            }
-          }
-
-          // Within tolerance → close the loop
-          if (error <= tolerance) {
-            if (reject != null) {
-              result.addDiagnostic("closed loop rejected at step " + step
-                + ": " + reject + ", trying next candidate");
-              closureRejections++;
-              if (poolHealth != null) poolHealth.recordClosureRejection();
-              removeVisitedEdges(accepted.track, visitedEdges);
-              totalDistance = undoTentativeLeg(accepted, segments, waypointStack,
-                totalDistance);
-              currentMwp = waypointStack.get(waypointStack.size() - 1);
-              prevIlon = savedPrevIlon;
-              prevIlat = savedPrevIlat;
-              continue;
-            }
-
-            recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
-              start.ilon, start.ilat, currentMwp);
-            addVisitedEdges(returnTrack, visitedEdges, totalDistance);
-            segments.add(returnTrack);
-            totalDistance += returnTrack.distance; // keep consistent with segments
-            populateResult(result, finalTrack, waypointStack, startMwp, segments, desiredDistance, startDirection);
-            result.setTotalDistanceMeters((int) closedDistance);
-            result.setWithinTolerance(true);
-            result.addDiagnostic("loop closed at step " + step
-              + ", total=" + (int) closedDistance + "m"
-              + ", error=" + String.format("%.1f%%", error * 100));
-            stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
-            stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
-            return result;
-          }
-
-          // Between (1-tol) and (1+tol) but not within tol → too short:
-          // keep the leg and continue with the next step.
-          recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
-            start.ilon, start.ilat, currentMwp);
-          legCommitted = true;
-          break;
-        }
-
-        if (legCommitted) {
-          candidateFound = true;
-          break;
-        }
-
-        // Every routed candidate failed its length/detail/closure checks —
-        // restore step-start state is already done per trial; shrink the
-        // radius (aggressively when length was the dominant failure) and
-        // regenerate candidates.
-        currentIlon = currentMwp.crosspoint.getILon();
-        currentIlat = currentMwp.crosspoint.getILat();
-        localRadius = Math.max(MIN_LOCAL_RADIUS_M,
-          localRadius * (tooLongSeen ? BACKOFF_FACTOR_TOO_LONG : BACKOFF_FACTOR_NO_CANDIDATE));
+        recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
+          start.ilon, start.ilat, s.currentMwp);
+        addVisitedEdges(returnTrack, visitedEdges, s.totalDistance);
+        segments.add(returnTrack);
+        s.totalDistance += returnTrack.distance; // keep consistent with segments
+        populateResult(result, finalTrack, waypointStack, startMwp, segments, desiredDistance, startDirection);
+        result.setTotalDistanceMeters((int) closedDistance);
+        result.setWithinTolerance(true);
+        result.addDiagnostic("loop closed at step " + step
+          + ", total=" + (int) closedDistance + "m"
+          + ", error=" + String.format("%.1f%%", error * 100));
+        stampExit(s);
+        return TrialOutcome.CLOSED;
       }
 
-      if (!candidateFound) {
-        result.addDiagnostic("step " + step + ": exhausted all " + maxAttempts + " attempts");
-        break;
-      }
+      // Between (1-tol) and (1+tol) but not within tol → too short:
+      // keep the leg and continue with the next step.
+      recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
+        start.ilon, start.ilat, s.currentMwp);
+      legCommitted = true;
+      break;
     }
 
-    if (bestFallback != null) {
+    return legCommitted ? TrialOutcome.COMMITTED
+      : (tooLongSeen ? TrialOutcome.EXHAUSTED_TOO_LONG : TrialOutcome.EXHAUSTED);
+  }
+
+  /**
+   * Outcome evaluator for a plan that never closed within tolerance: adopt the
+   * soundest fallback snapshot, else force-close, else report no loop. Every
+   * path stamps exit telemetry.
+   */
+  private RoundTripResult finishPlan(GreedyPlanSession s) {
+    final RoundTripResult result = s.result;
+    final List<OsmTrack> segments = s.segments;
+    final List<MatchedWaypoint> waypointStack = s.waypointStack;
+    final MatchedWaypoint startMwp = s.startMwp;
+    final double desiredDistance = s.desiredDistance;
+    final double startDirection = s.startDirection;
+    if (s.bestFallback != null) {
       // Restore the counters captured with the snapshot — the live fields
       // describe the abandoned plan state, not the geometry being shipped.
-      acceptedIsoLegs = bestFallback.isoLegs;
-      acceptedNonIsoLegs = bestFallback.nonIsoLegs;
-      acceptedQuotaInjectedLegs = bestFallback.quotaInjectedLegs;
-      populateResult(result, bestFallback.track, bestFallback.waypointStack,
-        startMwp, bestFallback.legTracks, desiredDistance, startDirection);
-      result.setTotalDistanceMeters(bestFallback.track.distance);
+      s.acceptedIsoLegs = s.bestFallback.isoLegs;
+      s.acceptedNonIsoLegs = s.bestFallback.nonIsoLegs;
+      s.acceptedQuotaInjectedLegs = s.bestFallback.quotaInjectedLegs;
+      populateResult(result, s.bestFallback.track, s.bestFallback.waypointStack,
+        startMwp, s.bestFallback.legTracks, desiredDistance, startDirection);
+      result.setTotalDistanceMeters(s.bestFallback.track.distance);
       result.setWithinTolerance(false);
-      RoundTripQualityResult verdict = qualityGateVerdict(bestFallback.track, desiredDistance);
+      RoundTripQualityResult verdict = qualityGateVerdict(s.bestFallback.track, desiredDistance);
       String reject = (verdict == null || verdict.isAccepted()) ? null : verdict.getRejectionReason();
-      String reason = "best error=" + String.format("%.1f%%", bestFallback.error * 100);
+      String reason = "best error=" + String.format("%.1f%%", s.bestFallback.error * 100);
       // Keep-when-forced: the soundest loop the planner could find is a rideable
-      // same-way-back corridor and nothing clean exists (else bestFallback would
+      // same-way-back corridor and nothing clean exists (else s.bestFallback would
       // be rank-0 accepted). Don't degrade it into oblivion — flag it so the
       // request gate accepts the forced corridor (disclosed) instead of dropping
       // the route or shipping a chaotic alternative.
-      boolean forcedCorridor = bestFallback.severity == 1 && isForcedCorridorVerdict(verdict);
+      boolean forcedCorridor = s.bestFallback.severity == 1 && isForcedCorridorVerdict(verdict);
       result.setForcedCorridorAccepted(forcedCorridor);
       if (forcedCorridor) {
         result.setFallbackReason("forced corridor (no clean alternative): " + reject + "; " + reason);
       } else {
         result.setFallbackReason(reject == null ? reason : DEGRADED_FALLBACK_PREFIX + reject + "; " + reason);
       }
-      stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
-      stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
+      stampExit(s);
       return result;
     }
 
@@ -1756,16 +1852,16 @@ public class GreedyRoundTripPlanner {
     // salvage margin): pre-budget-threading this grace was uncapped and let a
     // plan overrun the request budget it never knew about.
     if (!segments.isEmpty()) {
-      long forceCloseDeadline = Math.max(deadline, System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS);
+      long forceCloseDeadline = Math.max(s.deadline, System.currentTimeMillis() + SUB_ROUTE_TIMEOUT_MS);
       if (externalDeadline != Long.MAX_VALUE) {
         forceCloseDeadline = Math.min(forceCloseDeadline,
           externalDeadline + FORCE_CLOSE_GRACE_PAST_BUDGET_MS);
       }
       OsmTrack returnTrack = timedFindTrack("greedy-force-close",
-        currentMwp, startMwp, buildRefTrack(segments), forceCloseDeadline);
-      returnChecksPerformed++;
+        s.currentMwp, startMwp, buildRefTrack(segments), forceCloseDeadline);
+      s.returnChecksPerformed++;
       if (returnTrack != null && returnTrack.distance > 0) {
-        returnTrack = router.retrackForDetail(returnTrack, currentMwp, startMwp, null);
+        returnTrack = router.retrackForDetail(returnTrack, s.currentMwp, startMwp, null);
         segments.add(returnTrack);
         OsmTrack finalTrack = mergeSegmentsDetoured(segments, null);
         reportSeamGaps(segments, null, result);
@@ -1774,16 +1870,23 @@ public class GreedyRoundTripPlanner {
         result.setWithinTolerance(false);
         String reject = qualityGateReason(finalTrack, desiredDistance);
         result.setFallbackReason(reject == null ? "forced closure" : DEGRADED_FALLBACK_PREFIX + reject + "; forced closure");
-        stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
-        stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
+        stampExit(s);
         return result;
       }
     }
 
     result.setFallbackReason("could not build any loop");
-    stampBudgetDiagnostic(result, planStart, planBudgetMs, deadline);
-    stampTelemetry(result, planStart, candidatesGenerated, candidatesRouted, returnChecksPerformed, routedIso, routedNonIso, acceptedIsoLegs, acceptedNonIsoLegs);
+    stampExit(s);
     return result;
+  }
+
+  /** Exit stamps shared by every plan() outcome path: the budget-pressure
+   *  diagnostic plus the counter telemetry, in the historical order. */
+  private void stampExit(GreedyPlanSession s) {
+    stampBudgetDiagnostic(s);
+    stampTelemetry(s.result, s.planStart, s.candidatesGenerated, s.candidatesRouted,
+      s.returnChecksPerformed, s.routedIso, s.routedNonIso,
+      s.acceptedIsoLegs, s.acceptedNonIsoLegs);
   }
 
   private static double closedDistanceError(double totalDistance, int returnDistance, double desiredDistance) {
@@ -2456,12 +2559,12 @@ public class GreedyRoundTripPlanner {
     return candidateError < incumbentError;
   }
 
-  private Snapshot snapshotFallback(OsmTrack track, List<OsmTrack> segments, OsmTrack returnTrack,
-                                    List<MatchedWaypoint> waypointStack, double error, int severity) {
+  private Snapshot snapshotFallback(GreedyPlanSession s, OsmTrack track, OsmTrack returnTrack,
+                                    double error, int severity) {
     Snapshot snap = new Snapshot();
     snap.track = track;
-    snap.waypointStack = new ArrayList<>(waypointStack);
-    snap.legTracks = new ArrayList<>(segments);
+    snap.waypointStack = new ArrayList<>(s.waypointStack);
+    snap.legTracks = new ArrayList<>(s.segments);
     snap.legTracks.add(returnTrack);
     snap.error = error;
     snap.severity = severity;
@@ -2470,13 +2573,15 @@ public class GreedyRoundTripPlanner {
     // this snapshot may be undone right after, and a plan that ships the
     // snapshot must report the counters of the shipped loop, not of the
     // abandoned plan state.
-    snap.isoLegs = acceptedIsoLegs;
-    snap.nonIsoLegs = acceptedNonIsoLegs;
-    snap.quotaInjectedLegs = acceptedQuotaInjectedLegs;
+    snap.isoLegs = s.acceptedIsoLegs;
+    snap.nonIsoLegs = s.acceptedNonIsoLegs;
+    snap.quotaInjectedLegs = s.acceptedQuotaInjectedLegs;
     return snap;
   }
 
-  private static final class Snapshot {
+  /** Fallback snapshot of a not-within-tolerance closed loop (package-private:
+   *  {@link GreedyPlanSession#bestFallback} holds the best one per plan). */
+  static final class Snapshot {
     OsmTrack track;
     List<MatchedWaypoint> waypointStack;
     List<OsmTrack> legTracks;
