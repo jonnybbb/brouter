@@ -1,7 +1,6 @@
 package btools.router.roundtrip;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -134,14 +133,14 @@ public class RoundTripLadderResolutionTest {
   }
 
   /**
-   * The attempt-boolean contract: FAST/greedy/bounded results must still pass
-   * the orchestrator's shared gate ({@code attempt → true}); the AUTO
-   * competition is self-finalizing — children are gated inside and the winner
-   * decorated on adoption — so it returns {@code false}, guaranteeing the
-   * shared gate can never run twice on an AUTO result. The false side is
-   * observed directly here: on an engine with no segment data every child
-   * candidate fails fast, the competition rejects, and attempt still returns
-   * its constant {@code false}. (The true side is exercised by every
+   * The attempt-outcome contract: FAST/greedy/bounded results must still pass
+   * the orchestrator's shared gate ({@code attempt → NEEDS_SHARED_FINALIZATION});
+   * the AUTO competition is self-finalizing — children are gated inside and the
+   * winner decorated on adoption — so it returns {@code SELF_FINALIZED},
+   * guaranteeing the shared gate can never run twice on an AUTO result. The
+   * self-finalized side is observed directly here: on an engine with no segment
+   * data every child candidate fails fast, the competition rejects, and attempt
+   * still returns its constant outcome. (The other side is exercised by every
    * fixture-backed FAST/greedy run — a flipped constant would double-gate and
    * fail those suites.)
    */
@@ -150,7 +149,7 @@ public class RoundTripLadderResolutionTest {
     RoundTripOrchestrator o = orchestrator(false, 256, 0);
     RoundTripOrchestrator.Rung rung = resolveSingle(o, RoundTripAlgorithm.AUTO);
     assertTrue(rung.strategy instanceof AutoCompetitionStrategy);
-    boolean needsSharedGate = rung.strategy.attempt(o.request, rung.slice);
-    assertFalse("AUTO must be self-finalizing (attempt → false)", needsSharedGate);
+    RoundTripStrategy.Outcome outcome = rung.strategy.attempt(o.request, rung.slice);
+    assertEquals("AUTO must be self-finalizing", RoundTripStrategy.Outcome.SELF_FINALIZED, outcome);
   }
 }

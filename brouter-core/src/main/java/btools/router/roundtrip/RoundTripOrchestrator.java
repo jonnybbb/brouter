@@ -363,7 +363,7 @@ public final class RoundTripOrchestrator {
         RoundTripAlgorithm algo = ops.routingContext().roundTripAlgorithm;
 
         for (Rung rung : resolveLadder(algo, searchRadius, direction)) {
-          if (!rung.strategy.attempt(request, rung.slice)) {
+          if (rung.strategy.attempt(request, rung.slice) == RoundTripStrategy.Outcome.SELF_FINALIZED) {
             // The strategy finalized the result itself: the competition tiers
             // gate their candidates internally and decorate the winner.
             return;
