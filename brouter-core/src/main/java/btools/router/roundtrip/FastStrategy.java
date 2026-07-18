@@ -89,7 +89,9 @@ final class FastStrategy implements RoundTripStrategy {
       // validateAndAdjustWaypoints re-matching pass (and its cache reset).
       // Toggle off with -Droundtrip.fast.optimized=false to compare against the
       // legacy probe+envelope+validate path. AUTO/QUALITY/ISOCHRONE unaffected.
-      boolean fastOptimized = !"false".equals(
+      // (Not Boolean.getBoolean: that reads absent as false, but this flag
+      // must default to ON.)
+      boolean fastOptimized = Boolean.parseBoolean(
         System.getProperty("roundtrip.fast.optimized", "true"));
 
       if (algo == RoundTripAlgorithm.ISOCHRONE) {
