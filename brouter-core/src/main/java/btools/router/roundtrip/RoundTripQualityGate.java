@@ -299,24 +299,28 @@ public final class RoundTripQualityGate {
     //    closure search) — STRUCTURAL, so lenient adoption, best-effort
     //    fallbacks and AUTO children all refuse it and fall through to
     //    cleaner candidates.
-    // Computed once here and stamped onto the returned result below
-    // (RoundTripQualityResult#withSelfIntersections) so RouteChoiceScore and
-    // the shipped-crossings advisory reuse it instead of re-scanning the same
-    // full track for the same count.
-    int selfIntersections = countSelfIntersections(track);
+    // Computed once here and stamped onto every post-scan result below
+    // (RoundTripQualityResult#getLoopAnalysis) so RouteChoiceScore, the
+    // metrics, and the shipped-crossings advisory reuse it instead of
+    // re-scanning the same full track. LoopAnalysis uses the metrics ceiling
+    // (64): identical to the standalone count for every track at or below the
+    // chaos thresholds; above ~20 crossings only the reported number can
+    // differ, never the tier (both counts already exceed 2x the cap there).
+    LoopAnalysis analysis = LoopAnalysis.of(track);
+    int selfIntersections = analysis.selfIntersections;
     ChaosCheck chaos = checkShapeChaos(selfIntersections, track);
     if (chaos != null) {
       RoundTripQualityResult.RejectionTier tier =
         chaos.selfIntersections > 2 * MAX_SELF_INTERSECTIONS
           ? RoundTripQualityResult.RejectionTier.STRUCTURAL
           : RoundTripQualityResult.RejectionTier.QUALITY;
-      // Stamp the count on this reject too: a QUALITY-tier chaos verdict is
+      // Stamp the analysis on this reject too: a QUALITY-tier chaos verdict is
       // exactly what lenient mode returns and AUTO ranks best-effort, so the
       // scorer/advisory reuse matters most on this path (long degraded routes).
       return RoundTripQualityResult.builder()
         .shape(RouteShape.INVALID_RETRACE)
         .reject(tier, chaos.reason)
-        .selfIntersections(selfIntersections)
+        .loopAnalysis(analysis)
         .build();
     }
 
@@ -330,14 +334,14 @@ public final class RoundTripQualityGate {
         return RoundTripQualityResult.builder()
           .shape(RouteShape.INVALID_RETRACE)
           .reject(RoundTripQualityResult.RejectionTier.QUALITY, hostile)
-          .selfIntersections(selfIntersections)
+          .loopAnalysis(analysis)
           .build();
       }
     }
 
     // 7. Semantic reuse classification — the heart of this gate.
     RoundTripQualityResult classified = ReuseClassifier.classify(
-      track, desiredDistance, allowSamewayback).withSelfIntersections(selfIntersections);
+      track, desiredDistance, allowSamewayback).withLoopAnalysis(analysis);
 
     // Explicit-via mode: the user picked the route via the via skeleton, so
     // INVALID_RETRACE (mid-route retrace exceeds caps) downgrades from
@@ -354,7 +358,7 @@ public final class RoundTripQualityGate {
       .maxContiguousReuseMeters(classified.getMaxContiguousReuseMeters())
       .terminalStemReuseMeters(classified.getTerminalStemReuseMeters())
       .scenicSpurReuseMeters(classified.getScenicSpurReuseMeters())
-      .selfIntersections(selfIntersections);
+      .loopAnalysis(analysis);
     for (String d : classified.getDisclosures()) b.addDisclosure(d);
     if (!classified.isAccepted() && classified.getRejectionReason() != null) {
       b.addDisclosure("via-route note: " + classified.getRejectionReason());
@@ -664,6 +668,52 @@ public final class RoundTripQualityGate {
    * NOT crossings; the former is the near-revisit detector's domain, the latter
    * is reuse.
    */
+  /** Per-revisit hook for {@link #transverseNodeRevisits} — LoopAnalysis's
+   *  arc-classification and location collection. */
+  interface NodeRevisitVisitor {
+    void revisit(int k1, int k);
+  }
+
+  /**
+   * Visitor-capable transverse node-revisit scan for {@link LoopAnalysis} —
+   * the same exemptions and {@link #isTransverseRevisit} test as
+   * {@link #countTransverseNodeRevisits}, with the historical
+   * {@code LoopQualityMetrics.detectCrossings} boundary semantics (the
+   * revisit that exceeds {@code budget} is still counted and visited before
+   * the scan stops).
+   */
+  static int transverseNodeRevisits(List<OsmPathElement> nodes, double[] cum,
+                                    int budget, NodeRevisitVisitor visitor) {
+    int n = nodes.size();
+    if (n < 5) return 0;
+    double perim = cum[n - 1];
+    Map<Long, int[]> first = new HashMap<>(n * 2);
+    int crossings = 0;
+    for (int k = 1; k < n - 1; k++) {
+      long id = nodes.get(k).getIdFromPos();
+      int[] prevIdx = first.get(id);
+      if (prevIdx == null) {
+        first.put(id, new int[]{k});
+        continue;
+      }
+      boolean kExempt = cum[k] <= CROSSING_START_END_EXEMPT_M
+        || cum[k] >= perim - CROSSING_START_END_EXEMPT_M;
+      for (int k1 : prevIdx) {
+        if (k - k1 <= 1) continue;
+        if (kExempt || cum[k1] <= CROSSING_START_END_EXEMPT_M) continue;
+        if (isTransverseRevisit(nodes, k1, k)) {
+          crossings++;
+          if (visitor != null) visitor.revisit(k1, k);
+          if (crossings > budget) return crossings;
+        }
+      }
+      int[] grown = Arrays.copyOf(prevIdx, prevIdx.length + 1);
+      grown[prevIdx.length] = k;
+      first.put(id, grown);
+    }
+    return crossings;
+  }
+
   private static int countTransverseNodeRevisits(List<OsmPathElement> nodes, int ceiling, double[] cum) {
     int n = nodes.size();
     if (n < 5 || ceiling <= 0) return 0;

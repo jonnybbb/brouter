@@ -54,7 +54,7 @@ public final class RoundTripQualityResult {
   private final int terminalStemReuseMeters;
   private final int scenicSpurReuseMeters;
   private final List<String> disclosures;
-  private final int selfIntersections;
+  private final LoopAnalysis loopAnalysis;
 
   private RoundTripQualityResult(Builder b) {
     this.accepted = b.accepted;
@@ -68,7 +68,7 @@ public final class RoundTripQualityResult {
     this.disclosures = (b.disclosures == null || b.disclosures.isEmpty())
       ? Collections.emptyList()
       : Collections.unmodifiableList(new ArrayList<>(b.disclosures));
-    this.selfIntersections = b.selfIntersections;
+    this.loopAnalysis = b.loopAnalysis;
   }
 
   public boolean isAccepted() { return accepted; }
@@ -83,21 +83,32 @@ public final class RoundTripQualityResult {
   public List<String> getDisclosures() { return disclosures; }
 
   /**
-   * The gate's own {@code countSelfIntersections} count for the evaluated track,
-   * or -1 when the gate rejected before reaching that scan (result discarded
-   * anyway) or the caller built this result directly. Downstream consumers that
-   * re-derive the same count for the same track ({@link RouteChoiceScore},
-   * the shipped-crossings advisory) should read this instead of re-scanning —
-   * one full-track crossing scan per track, not several.
+   * The gate's own crossing count for the evaluated track (via the shared
+   * {@link LoopAnalysis}), or -1 when the gate rejected before reaching that
+   * scan (result discarded anyway) or the caller built this result directly.
+   * Downstream consumers that re-derive the same count for the same track
+   * ({@link RouteChoiceScore}, the shipped-crossings advisory) should read
+   * this instead of re-scanning — one full-track crossing scan per track.
    */
-  int getSelfIntersections() { return selfIntersections; }
+  int getSelfIntersections() {
+    return loopAnalysis == null ? -1 : loopAnalysis.selfIntersections;
+  }
 
   /**
-   * Copy with {@link #getSelfIntersections()} attached — the gate computes the
-   * count once per evaluated track and stamps it onto whichever result path
-   * (classified or explicit-via-adjusted) ends up returned.
+   * The full shared crossing analysis the gate computed for this track, or
+   * {@code null} when the gate rejected before the scan. Carries what the
+   * count alone cannot: the small-loop classification and crossing locations
+   * the scorer's lasso surcharge and map markers need.
    */
-  RoundTripQualityResult withSelfIntersections(int n) {
+  LoopAnalysis getLoopAnalysis() { return loopAnalysis; }
+
+  /**
+   * Copy with {@link #getLoopAnalysis()} replaced — the gate computes the
+   * analysis once per evaluated track and stamps it onto whichever result path
+   * (classified or explicit-via-adjusted) ends up returned; tests pass
+   * {@code null} to build an unstamped twin.
+   */
+  RoundTripQualityResult withLoopAnalysis(LoopAnalysis analysis) {
     Builder b = builder()
       .accepted(accepted)
       .shape(shape)
@@ -105,7 +116,7 @@ public final class RoundTripQualityResult {
       .maxContiguousReuseMeters(maxContiguousReuseMeters)
       .terminalStemReuseMeters(terminalStemReuseMeters)
       .scenicSpurReuseMeters(scenicSpurReuseMeters)
-      .selfIntersections(n);
+      .loopAnalysis(analysis);
     if (accepted) {
       if (rejectionReason != null) {
         throw new IllegalStateException("accepted result must not have a rejectionReason");
@@ -148,7 +159,7 @@ public final class RoundTripQualityResult {
     private int terminalStemReuseMeters;
     private int scenicSpurReuseMeters;
     private List<String> disclosures;
-    private int selfIntersections = -1;
+    private LoopAnalysis loopAnalysis;
 
     public Builder accepted(boolean v) { this.accepted = v; return this; }
     public Builder shape(RouteShape v) { this.shape = v; return this; }
@@ -172,7 +183,7 @@ public final class RoundTripQualityResult {
     public Builder maxContiguousReuseMeters(int v) { this.maxContiguousReuseMeters = v; return this; }
     public Builder terminalStemReuseMeters(int v) { this.terminalStemReuseMeters = v; return this; }
     public Builder scenicSpurReuseMeters(int v) { this.scenicSpurReuseMeters = v; return this; }
-    Builder selfIntersections(int v) { this.selfIntersections = v; return this; }
+    Builder loopAnalysis(LoopAnalysis v) { this.loopAnalysis = v; return this; }
     public Builder addDisclosure(String d) {
       if (d == null) return this;
       if (disclosures == null) disclosures = new ArrayList<>();
