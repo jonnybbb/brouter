@@ -24,7 +24,7 @@ final class FastStrategy implements RoundTripStrategy {
   }
 
   @Override
-  public boolean attempt(RoundTripRequest request, TierSlice slice) {
+  public Outcome attempt(RoundTripRequest request, TierSlice slice) {
     WaypointSnapper snapper = orchestrator.snapper;
     GeometricWaypointPlacer placer = orchestrator.placer;
     RoundTripAlgorithm algo = slice.algo;
@@ -179,7 +179,7 @@ final class FastStrategy implements RoundTripStrategy {
       ops.setMatchedWaypoints(null);
       orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
     }
-    return true;
+    return Outcome.NEEDS_SHARED_FINALIZATION;
   }
 
   /**

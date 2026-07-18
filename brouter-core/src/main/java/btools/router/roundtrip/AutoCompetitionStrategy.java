@@ -29,10 +29,10 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   }
 
   @Override
-  public boolean attempt(RoundTripRequest request, TierSlice slice) {
+  public Outcome attempt(RoundTripRequest request, TierSlice slice) {
     request.effortPolicy = slice.effortPolicy;
     runAutoCandidateCompetition(slice.searchRadius, slice.direction);
-    return false;
+    return Outcome.SELF_FINALIZED;
   }
 
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;

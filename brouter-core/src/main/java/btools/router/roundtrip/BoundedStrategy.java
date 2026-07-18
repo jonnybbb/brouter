@@ -33,7 +33,7 @@ final class BoundedStrategy implements RoundTripStrategy {
   }
 
   @Override
-  public boolean attempt(RoundTripRequest request, TierSlice slice) {
+  public Outcome attempt(RoundTripRequest request, TierSlice slice) {
     RoundTripEffortPolicy policy = slice.effortPolicy;
     String tierLabel = slice.label;
     double searchRadius = slice.searchRadius;
@@ -145,6 +145,6 @@ final class BoundedStrategy implements RoundTripStrategy {
     ops.logInfo(tierLabel + ": finished in " + (System.currentTimeMillis() - t0)
       + "ms (planner " + plannerMs + "ms, budget " + tierBudgetMs + "ms/slice, "
       + (request.track == null ? "no track" : "track " + request.track.distance + "m") + ")");
-    return true;
+    return Outcome.NEEDS_SHARED_FINALIZATION;
   }
 }
