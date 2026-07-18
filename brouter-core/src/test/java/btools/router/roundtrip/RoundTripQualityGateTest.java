@@ -1119,6 +1119,76 @@ public class RoundTripQualityGateTest {
   }
 
   // ======================================================================
+  // Shared self-intersection count on RoundTripQualityResult (review finding
+  // #3: the gate computes countSelfIntersections once and stamps it onto the
+  // returned result so RouteChoiceScore and the shipped-crossings advisory
+  // reuse it instead of re-scanning the same track).
+  // ======================================================================
+
+  @Test
+  public void gate_stampsSelfIntersectionsOnAcceptedResult() {
+    // 3 crossings: under MAX_SELF_INTERSECTIONS (5), so the chaos check does
+    // not fire and the track reaches the classifier — the accepted path this
+    // optimization targets.
+    OsmTrack t = closedBowties(3);
+    int direct = RoundTripQualityGate.countSelfIntersections(t);
+    assertEquals("fixture sanity", 3, direct);
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(
+      t, t.distance, /*pavedProfile*/ false, false, false, false);
+    assertTrue("moderate reuse-clean bow-tie loop should be accepted", r.isAccepted());
+    assertEquals("gate must stamp the exact count it already computed internally",
+      direct, r.getSelfIntersections());
+  }
+
+  @Test
+  public void gate_leavesSelfIntersectionsUnknownOnChaosReject() {
+    // The chaos-reject early-return happens before the classifier and does
+    // not stamp a count — downstream consumers (RouteChoiceScore, the
+    // shipped-crossings advisory) must fall back to a fresh scan for this
+    // case rather than reading a stale/absent value as zero.
+    OsmTrack t = closedBowties(6);
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(
+      t, t.distance, /*pavedProfile*/ false, false, false, false);
+    assertFalse(r.isAccepted());
+    assertEquals("chaos-rejected results carry no stamped count (sentinel -1)",
+      -1, r.getSelfIntersections());
+  }
+
+  @Test
+  public void gate_stampsSelfIntersectionsOnExplicitViaResult() {
+    // The explicit-via branch rebuilds the result in a separate builder chain
+    // (distance-ratio mismatch becomes a disclosure) — confirm that path also
+    // stamps the count rather than only the direct classify() return.
+    OsmTrack t = closedBowties(3);
+    int direct = RoundTripQualityGate.countSelfIntersections(t);
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(
+      t, t.distance, /*pavedProfile*/ false, /*allowSamewayback*/ false,
+      /*explicitViaMode*/ true, /*allowFerries*/ false);
+    assertTrue(r.isAccepted());
+    assertEquals(direct, r.getSelfIntersections());
+  }
+
+  @Test
+  public void routeChoiceScore_reusesGateCountAndMatchesDirectRecompute() {
+    // Equivalence proof for the reuse path: scoring with the gate's stamped
+    // count must produce the identical verdict as scoring with a fresh direct
+    // recompute (qualityGate stripped of its stamped value) — the fast path
+    // is not allowed to diverge from the recompute it replaces.
+    OsmTrack t = closedBowties(3);
+    RoundTripQualityResult stamped = RoundTripQualityGate.evaluate(
+      t, t.distance, /*pavedProfile*/ false, false, false, false);
+    assertTrue(stamped.isAccepted());
+    assertTrue("fixture must actually carry a stamped count for this to be a real test",
+      stamped.getSelfIntersections() >= 0);
+
+    RoundTripQualityResult unstamped = stamped.withSelfIntersections(-1);
+    RouteChoiceScore.Verdict viaReuse = RouteChoiceScore.score(t, t.distance, "gravel", stamped);
+    RouteChoiceScore.Verdict viaRecompute = RouteChoiceScore.score(t, t.distance, "gravel", unstamped);
+    assertEquals("reused-count score must equal the freshly recomputed score",
+      viaRecompute.score(), viaReuse.score(), 1e-9);
+  }
+
+  // ======================================================================
   // Node-shared crossings (the CCW scan's blind spot)
   // ======================================================================
 

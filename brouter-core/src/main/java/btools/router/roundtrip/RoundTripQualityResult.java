@@ -54,6 +54,7 @@ public final class RoundTripQualityResult {
   private final int terminalStemReuseMeters;
   private final int scenicSpurReuseMeters;
   private final List<String> disclosures;
+  private final int selfIntersections;
 
   private RoundTripQualityResult(Builder b) {
     this.accepted = b.accepted;
@@ -67,6 +68,7 @@ public final class RoundTripQualityResult {
     this.disclosures = (b.disclosures == null || b.disclosures.isEmpty())
       ? Collections.emptyList()
       : Collections.unmodifiableList(new ArrayList<>(b.disclosures));
+    this.selfIntersections = b.selfIntersections;
   }
 
   public boolean isAccepted() { return accepted; }
@@ -79,6 +81,41 @@ public final class RoundTripQualityResult {
   int getTerminalStemReuseMeters() { return terminalStemReuseMeters; }
   int getScenicSpurReuseMeters() { return scenicSpurReuseMeters; }
   public List<String> getDisclosures() { return disclosures; }
+
+  /**
+   * The gate's own {@code countSelfIntersections} count for the evaluated track,
+   * or -1 when the gate rejected before reaching that scan (result discarded
+   * anyway) or the caller built this result directly. Downstream consumers that
+   * re-derive the same count for the same track ({@link RouteChoiceScore},
+   * the shipped-crossings advisory) should read this instead of re-scanning —
+   * one full-track crossing scan per track, not several.
+   */
+  int getSelfIntersections() { return selfIntersections; }
+
+  /**
+   * Copy with {@link #getSelfIntersections()} attached — the gate computes the
+   * count once per evaluated track and stamps it onto whichever result path
+   * (classified or explicit-via-adjusted) ends up returned.
+   */
+  RoundTripQualityResult withSelfIntersections(int n) {
+    Builder b = builder()
+      .accepted(accepted)
+      .shape(shape)
+      .totalReuseRatio(totalReuseRatio)
+      .maxContiguousReuseMeters(maxContiguousReuseMeters)
+      .terminalStemReuseMeters(terminalStemReuseMeters)
+      .scenicSpurReuseMeters(scenicSpurReuseMeters)
+      .selfIntersections(n);
+    if (accepted) {
+      if (rejectionReason != null) {
+        throw new IllegalStateException("accepted result must not have a rejectionReason");
+      }
+    } else {
+      b.reject(rejectionTier, rejectionReason);
+    }
+    for (String d : disclosures) b.addDisclosure(d);
+    return b.build();
+  }
 
   @Override
   public String toString() {
@@ -111,6 +148,7 @@ public final class RoundTripQualityResult {
     private int terminalStemReuseMeters;
     private int scenicSpurReuseMeters;
     private List<String> disclosures;
+    private int selfIntersections = -1;
 
     public Builder accepted(boolean v) { this.accepted = v; return this; }
     public Builder shape(RouteShape v) { this.shape = v; return this; }
@@ -134,6 +172,7 @@ public final class RoundTripQualityResult {
     public Builder maxContiguousReuseMeters(int v) { this.maxContiguousReuseMeters = v; return this; }
     public Builder terminalStemReuseMeters(int v) { this.terminalStemReuseMeters = v; return this; }
     public Builder scenicSpurReuseMeters(int v) { this.scenicSpurReuseMeters = v; return this; }
+    Builder selfIntersections(int v) { this.selfIntersections = v; return this; }
     public Builder addDisclosure(String d) {
       if (d == null) return this;
       if (disclosures == null) disclosures = new ArrayList<>();

@@ -358,10 +358,14 @@ public final class RouteChoiceScore {
 
     // 9. Self-intersection penalty. A route-shape defect the cyclist sees that
     //    no term above captures (reuse = co-linear retrace, not transverse
-    //    crossings). Read directly from the track — the gate's count isn't
-    //    exposed on the verdict. Lets AUTO pick the cleaner of two comparable
-    //    candidates; measured to take shipped crossings 12.8%→3.7% (see constant).
-    int selfIntersections = RoundTripQualityGate.countSelfIntersections(track);
+    //    crossings). Reuse the gate's own count when it computed one for this
+    //    same track (RoundTripQualityResult#getSelfIntersections) instead of
+    //    re-scanning; falls back to a fresh scan when no gate verdict is
+    //    available. Lets AUTO pick the cleaner of two comparable candidates;
+    //    measured to take shipped crossings 12.8%→3.7% (see constant).
+    int selfIntersections = (qualityGate != null && qualityGate.getSelfIntersections() >= 0)
+      ? qualityGate.getSelfIntersections()
+      : RoundTripQualityGate.countSelfIntersections(track);
     double selfIntPenalty = 0;
     if (selfIntersections > 0) {
       selfIntPenalty = SHAPE_PENALTY_PER_SELF_INTERSECTION * selfIntersections;
