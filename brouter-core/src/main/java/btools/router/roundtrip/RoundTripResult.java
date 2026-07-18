@@ -11,12 +11,14 @@ import java.util.List;
  * Mutable result of a round-trip planning attempt (GREEDY / ISO_GREEDY), read
  * by {@code RoutingEngine}. Carries the chosen {@link OsmTrack}, loop
  * waypoints, summary metrics, and diagnostic telemetry. NOT a defensive-copy
- * value object: getters return the live lists and the telemetry setters stay
- * public for the planner — treat an instance you did not produce as
- * read-only by convention. Telemetry fields are
- * sentinel-valued (NaN / -1 / false) when their producing path did not run, so
- * a reader can tell "not applied" from a real measurement. Treated as
- * read-only downstream; setters exist only for staged population.
+ * value object: getters return the live lists. Every setter is package-private
+ * — staged population is confined to {@code btools.router.roundtrip}
+ * (the greedy planner and its strategies); outside the package (confirmed:
+ * only {@code RoutingEngine#getLastRoundTripResult} and its readers) this is
+ * read-only, and the compiler enforces it rather than a comment convention.
+ * Telemetry fields are sentinel-valued (NaN / -1 / false) when their
+ * producing path did not run, so a reader can tell "not applied" from a real
+ * measurement.
  */
 public class RoundTripResult {
 
@@ -77,7 +79,7 @@ public class RoundTripResult {
     return track;
   }
 
-  public void setTrack(OsmTrack track) {
+  void setTrack(OsmTrack track) {
     this.track = track;
   }
 
@@ -85,7 +87,7 @@ public class RoundTripResult {
     return loopWaypoints;
   }
 
-  public void setLoopWaypoints(List<OsmNodeNamed> loopWaypoints) {
+  void setLoopWaypoints(List<OsmNodeNamed> loopWaypoints) {
     this.loopWaypoints = loopWaypoints;
   }
 
@@ -125,7 +127,7 @@ public class RoundTripResult {
     return fallbackReason;
   }
 
-  public void setFallbackReason(String fallbackReason) {
+  void setFallbackReason(String fallbackReason) {
     this.fallbackReason = fallbackReason;
   }
 
@@ -190,97 +192,97 @@ public class RoundTripResult {
 
   /** Number of iso-derived candidates the planner Dijkstra-routed. */
   public int getRoutedIsoCandidates() { return routedIsoCandidates; }
-  public void setRoutedIsoCandidates(int v) { this.routedIsoCandidates = v; }
+  void setRoutedIsoCandidates(int v) { this.routedIsoCandidates = v; }
 
   /** Number of non-iso (graph-native) candidates the planner Dijkstra-routed. */
   public int getRoutedNonIsoCandidates() { return routedNonIsoCandidates; }
-  public void setRoutedNonIsoCandidates(int v) { this.routedNonIsoCandidates = v; }
+  void setRoutedNonIsoCandidates(int v) { this.routedNonIsoCandidates = v; }
 
   /** Number of iso-derived candidates that became legs in the final loop. */
   public int getAcceptedIsoLegs() { return acceptedIsoLegs; }
-  public void setAcceptedIsoLegs(int v) { this.acceptedIsoLegs = v; }
+  void setAcceptedIsoLegs(int v) { this.acceptedIsoLegs = v; }
 
   /** Number of non-iso candidates that became legs in the final loop. */
   public int getAcceptedNonIsoLegs() { return acceptedNonIsoLegs; }
-  public void setAcceptedNonIsoLegs(int v) { this.acceptedNonIsoLegs = v; }
+  void setAcceptedNonIsoLegs(int v) { this.acceptedNonIsoLegs = v; }
 
   /** Accepted legs whose candidate held its routed slot only via source-quota
    *  injection. High = the iso pool kept outranking local alternatives that then
    *  won on routed truth — the plain-GREEDY-win signature the health tracker
    *  demotes on. */
   public int getAcceptedQuotaInjectedLegs() { return acceptedQuotaInjectedLegs; }
-  public void setAcceptedQuotaInjectedLegs(int v) { this.acceptedQuotaInjectedLegs = v; }
+  void setAcceptedQuotaInjectedLegs(int v) { this.acceptedQuotaInjectedLegs = v; }
 
   /** First step at which iso-pool influence was reduced ({@code IsoPoolHealth}
    *  DEGRADED or worse); {@code -1} = never demoted (or no iso pool). */
   public int getPoolDemotedAtStep() { return poolDemotedAtStep; }
-  public void setPoolDemotedAtStep(int v) { this.poolDemotedAtStep = v; }
+  void setPoolDemotedAtStep(int v) { this.poolDemotedAtStep = v; }
 
   /** Final iso-pool health score in [0,1]; {@code NaN} when the plan ran
    *  without an iso pool (plain GREEDY / graph-native-only provider). */
   public double getIsoPoolHealthScore() { return isoPoolHealthScore; }
-  public void setIsoPoolHealthScore(double v) { this.isoPoolHealthScore = v; }
+  void setIsoPoolHealthScore(double v) { this.isoPoolHealthScore = v; }
 
   /** True when ISO_GREEDY already compared an internal graph-native-only branch,
    *  so AUTO can skip a duplicate plain-GREEDY child for this request. */
   public boolean isInternalGraphNativeCompared() { return internalGraphNativeCompared; }
-  public void setInternalGraphNativeCompared(boolean v) { this.internalGraphNativeCompared = v; }
+  void setInternalGraphNativeCompared(boolean v) { this.internalGraphNativeCompared = v; }
 
   /** The engine's explicit start-policy decision: this plan ran on graph-native
    *  candidates only (iso pool unadmitted or statically unhealthy). AUTO's
    *  plain-GREEDY absorption reads THIS, not inferred telemetry sentinels. */
   boolean isGraphNativeOnlyStart() { return graphNativeOnlyStart; }
-  public void setGraphNativeOnlyStart(boolean v) { this.graphNativeOnlyStart = v; }
+  void setGraphNativeOnlyStart(boolean v) { this.graphNativeOnlyStart = v; }
 
   /** Whether the Phase 2.0 iso-asymmetry bearing bias fired. False for non-ISO_GREEDY,
    *  an explicit user direction, or no bucket meeting the frontier-quality
    *  thresholds (airDist &gt;= 0.6 * searchRadius AND hits &gt;= 3). */
   boolean isIsoAsymmetryBearingApplied() { return isoAsymmetryBearingApplied; }
-  public void setIsoAsymmetryBearingApplied(boolean v) { this.isoAsymmetryBearingApplied = v; }
+  void setIsoAsymmetryBearingApplied(boolean v) { this.isoAsymmetryBearingApplied = v; }
 
   /** Bearing (degrees) the iso-asymmetry bias selected as the most-reaching
    *  sector; {@code NaN} when not applied. */
   double getIsoAsymmetryBearingDegrees() { return isoAsymmetryBearingDegrees; }
-  public void setIsoAsymmetryBearingDegrees(double v) { this.isoAsymmetryBearingDegrees = v; }
+  void setIsoAsymmetryBearingDegrees(double v) { this.isoAsymmetryBearingDegrees = v; }
 
   /** {@code cost / airDist} of the bucket that won the bias; {@code NaN}
    *  when not applied. Lower = more direct reach. */
   double getIsoAsymmetryBestBucketIndirectness() { return isoAsymmetryBestBucketIndirectness; }
-  public void setIsoAsymmetryBestBucketIndirectness(double v) { this.isoAsymmetryBestBucketIndirectness = v; }
+  void setIsoAsymmetryBestBucketIndirectness(double v) { this.isoAsymmetryBestBucketIndirectness = v; }
 
   /** Hit count of the bucket that won the bias; {@code -1} when not applied. */
   int getIsoAsymmetryBestBucketHits() { return isoAsymmetryBestBucketHits; }
-  public void setIsoAsymmetryBestBucketHits(int v) { this.isoAsymmetryBestBucketHits = v; }
+  void setIsoAsymmetryBestBucketHits(int v) { this.isoAsymmetryBestBucketHits = v; }
 
   /** Air distance (meters) at the frontier of the winning bucket;
    *  {@code -1} when not applied. */
   int getIsoAsymmetryBestBucketAirDistMeters() { return isoAsymmetryBestBucketAirDistMeters; }
-  public void setIsoAsymmetryBestBucketAirDistMeters(int v) { this.isoAsymmetryBestBucketAirDistMeters = v; }
+  void setIsoAsymmetryBestBucketAirDistMeters(int v) { this.isoAsymmetryBestBucketAirDistMeters = v; }
 
   /** Whether the Phase 2.1 axis-retry path fired: the first attempt (user
    *  direction) degraded AND the frontier showed a strong terrain axis
    *  perpendicular to that direction. */
   boolean isPhase21AxisRetryTriggered() { return phase21AxisRetryTriggered; }
-  public void setPhase21AxisRetryTriggered(boolean v) { this.phase21AxisRetryTriggered = v; }
+  void setPhase21AxisRetryTriggered(boolean v) { this.phase21AxisRetryTriggered = v; }
 
   /** Whether the Phase 2.1 axis retry produced a non-degraded loop. False when
    *  retry did not trigger, or retry also degraded (geographic infeasibility). */
   boolean isPhase21AxisRetrySucceeded() { return phase21AxisRetrySucceeded; }
-  public void setPhase21AxisRetrySucceeded(boolean v) { this.phase21AxisRetrySucceeded = v; }
+  void setPhase21AxisRetrySucceeded(boolean v) { this.phase21AxisRetrySucceeded = v; }
 
   /** Bearing of the principal frontier axis (in [0, 180); axis is
    *  bidirectional). {@code NaN} when 2.1 did not trigger. */
   double getPhase21AxisBearingDegrees() { return phase21AxisBearingDegrees; }
-  public void setPhase21AxisBearingDegrees(double v) { this.phase21AxisBearingDegrees = v; }
+  void setPhase21AxisBearingDegrees(double v) { this.phase21AxisBearingDegrees = v; }
 
   /** Eigenvalue ratio of the displacement covariance; higher = more
    *  elongated reachable region. {@code 0.0} when 2.1 did not trigger. */
   double getPhase21AxisStrength() { return phase21AxisStrength; }
-  public void setPhase21AxisStrength(double v) { this.phase21AxisStrength = v; }
+  void setPhase21AxisStrength(double v) { this.phase21AxisStrength = v; }
 
   /** Direction used on the axis-retry attempt (axis-aligned bearing
    *  closest to the user's original direction). {@code NaN} when 2.1
    *  did not trigger. */
   double getPhase21RetryDirectionDegrees() { return phase21RetryDirectionDegrees; }
-  public void setPhase21RetryDirectionDegrees(double v) { this.phase21RetryDirectionDegrees = v; }
+  void setPhase21RetryDirectionDegrees(double v) { this.phase21RetryDirectionDegrees = v; }
 }
