@@ -49,10 +49,11 @@ public final class RoundTripOrchestrator {
   private final RoundTripStrategy boundedStrategy;
 
   /**
-   * AUTO candidate competition over child engines; self-finalizing (children
-   * are gated inside the competition, the winner is decorated on adoption).
-   * QUALITY is this strategy pinned to the MAX preset — configuration, not a
-   * separate implementation.
+   * AUTO candidate competition over child engines. Children run with
+   * decoration suppressed and the winner's gate verdict is stashed for the
+   * shared finalization below, so AUTO outcomes flow through the same floors,
+   * gate, and advisory pipeline as every other tier. QUALITY is this strategy
+   * pinned to the MAX preset — configuration, not a separate implementation.
    */
   private final RoundTripStrategy autoCompetitionStrategy;
 
@@ -363,11 +364,7 @@ public final class RoundTripOrchestrator {
         RoundTripAlgorithm algo = ops.routingContext().roundTripAlgorithm;
 
         for (Rung rung : resolveLadder(algo, searchRadius, direction)) {
-          if (rung.strategy.attempt(request, rung.slice) == RoundTripStrategy.Outcome.SELF_FINALIZED) {
-            // The strategy finalized the result itself: the competition tiers
-            // gate their candidates internally and decorate the winner.
-            return;
-          }
+          rung.strategy.attempt(request, rung.slice);
           if (request.track != null || request.error != null) {
             break; // outcome decided — hand it to the shared floors + gate below
           }
@@ -387,6 +384,7 @@ public final class RoundTripOrchestrator {
       // out-and-back. The user is expressing route intent, not a loop request.
       int intermediateWaypoints = (ops.matchedWaypoints() == null) ? 0 : ops.matchedWaypoints().size() - 2;
       if (!ops.routingContext().allowSamewayback && !explicitViaMode
+          && !request.candidateFloorsEnforced
           && intermediateWaypoints < MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS) {
         setError("round-trip could not place enough waypoints to form a loop (need "
           + MIN_ROUNDTRIP_INTERMEDIATE_WAYPOINTS + " intermediate, got " + Math.max(0, intermediateWaypoints)
@@ -405,8 +403,12 @@ public final class RoundTripOrchestrator {
       // one-via route may produce fewer than MIN_ROUNDTRIP_LOOP_NODES if the
       // via is right next to the start. We still reject null/no-track outcomes
       // below as a safety net.
+      // candidateFloorsEnforced (AUTO adoption): the child engine already ran
+      // these floors on its own placement; only the null-track safety net
+      // applies to an adopted candidate.
       if (request.track == null || request.track.nodes == null
-          || (!explicitViaMode && (request.track.nodes.size() < MIN_ROUNDTRIP_LOOP_NODES
+          || (!explicitViaMode && !request.candidateFloorsEnforced
+              && (request.track.nodes.size() < MIN_ROUNDTRIP_LOOP_NODES
                                 || request.track.distance < MIN_ROUNDTRIP_LOOP_METERS))) {
         int n = (request.track == null || request.track.nodes == null) ? 0 : request.track.nodes.size();
         int d = request.track == null ? 0 : request.track.distance;
@@ -435,6 +437,11 @@ public final class RoundTripOrchestrator {
         ? request.boundedGateVerdict
         : evaluateRoundTripGate(request.track, searchRadius, explicitViaMode);
       request.boundedGateVerdict = null;
+      // Child engines of the AUTO competition skip ALL user-facing track
+      // decoration below (advisories, lenient Warning, info-message sync):
+      // the parent decorates the adopted winner exactly once. Gate policy
+      // (accept / hard-reject / lenient-keep) is unaffected.
+      boolean suppressDecoration = ops.routingContext().roundTripSuppressDecoration;
       if (!quality.isAccepted()) {
         // STRUCTURAL failures (broken / un-routable / not-a-loop) are always
         // hard-rejected — there is nothing usable to offer. QUALITY failures
@@ -459,7 +466,9 @@ public final class RoundTripOrchestrator {
           + " (shape=" + quality.getShape() + ") — route returned anyway; ride at your"
           + " discretion, or set roundTripStrictQuality=1 to reject it.";
         ops.logInfo("round-trip quality advisory (lenient): " + advisory);
-        appendRouteMessage(request.track, advisory);
+        if (!suppressDecoration) {
+          appendRouteMessage(request.track, advisory);
+        }
         // fall through to disclosure surfacing + success
       }
       // Surface the route shape + disclosures (e.g. "contains retraced
@@ -467,8 +476,10 @@ public final class RoundTripOrchestrator {
       // they're returning the same way along a stretch. Stays in the
       // route message stream so it propagates to GPX/JSON exports.
       ops.logInfo("round-trip quality: " + quality);
-      for (String d : quality.getDisclosures()) {
-        appendRouteMessage(request.track, d);
+      if (!suppressDecoration) {
+        for (String d : quality.getDisclosures()) {
+          appendRouteMessage(request.track, d);
+        }
       }
 
       // Transparency for the silent band: 1..MAX crossings and guard-blocked
@@ -478,72 +489,84 @@ public final class RoundTripOrchestrator {
       // The whole decoration block runs under its own guard: the loop is
       // complete and gate-accepted at this point, and the outer catch nulls
       // request.track — an exception in a cosmetic advisory must never destroy
-      // a rideable result.
-      try {
-        // Reuse the gate's own count for this track instead of re-scanning it
-        // a third time (already computed once in evaluateRoundTripGate above,
-        // once again inside RouteChoiceScore for AUTO candidates).
-        int shippedCrossings = quality.getSelfIntersections() >= 0
-          ? quality.getSelfIntersections()
-          : RoundTripQualityGate.countSelfIntersections(request.track);
-        if (shippedCrossings > 0) {
-          appendRouteMessage(request.track, String.format(Locale.US,
-            "Note: route crosses its own path %d time%s.",
-            shippedCrossings, shippedCrossings == 1 ? "" : "s"));
-        }
-        if (request.track.nodes != null) {
-          int[] spurInfo = LoopQualityMetrics.computeSpurInfo(request.track.nodes);
-          if (spurInfo[0] > 0 && spurInfo[1] > 600) {
+      // a rideable result. Suppressed entirely for AUTO child engines (the
+      // parent decorates the adopted winner once).
+      if (!suppressDecoration) {
+        try {
+          // Reuse the gate's own count for this track instead of re-scanning it
+          // a third time (already computed once in evaluateRoundTripGate above,
+          // once again inside RouteChoiceScore for AUTO candidates).
+          int shippedCrossings = quality.getSelfIntersections() >= 0
+            ? quality.getSelfIntersections()
+            : RoundTripQualityGate.countSelfIntersections(request.track);
+          if (shippedCrossings > 0) {
             appendRouteMessage(request.track, String.format(Locale.US,
-              "Note: route contains %d out-and-back section%s (longest %.1fkm).",
-              spurInfo[0], spurInfo[0] == 1 ? "" : "s", spurInfo[1] / 1000.0));
+              "Note: route crosses its own path %d time%s.",
+              shippedCrossings, shippedCrossings == 1 ? "" : "s"));
           }
-        }
-
-        // Residual-chord advisory (loop-review backlog item 1): the planner's
-        // fidelity enforcement retries chord legs, but a best-effort adoption or
-        // a non-greedy path can still ship a long null-tag edge that renders as
-        // a straight line cutting across terrain. Ground truth (Lozère study):
-        // these follow a real curving road whose detail is missing, so the route
-        // is rideable — disclose, don't reject. Same threshold as the planner's
-        // fidelity check so the two mechanisms never disagree about what a
-        // chord is.
-        int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(request.track);
-        if (chordMeters > GreedyRoundTripPlanner.MAX_UNDETAILED_EDGE_METERS) {
-          appendRouteMessage(request.track, String.format(Locale.US,
-            "Note: route contains an undetailed straight-line section of ~%dm "
-              + "(way detail missing in the map data; the actual road may curve).",
-            chordMeters));
-        }
-
-        // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
-        // overshoot is worth flagging so the caller can suggest a shorter
-        // distance. This stays informational because the hard gate above
-        // already rejects ratios outside the safe range.
-        if (request.track.distance > 0) {
-          double ratio = request.track.distance / expectedDistance;
-          if (ratio > 1.5) {
-            String warning = String.format(
-              "Warning: route distance (%dkm) exceeds requested loop distance (%dkm) by %.0f%%. "
-              + "The road network in this area is too constrained for a compact loop at this distance. "
-              + "Consider a shorter distance or an out-and-back route.",
-              request.track.distance / 1000, (int) (expectedDistance / 1000), (ratio - 1) * 100);
-            ops.logInfo(warning);
-            appendRouteMessage(request.track, warning);
+          if (request.track.nodes != null) {
+            int[] spurInfo = LoopQualityMetrics.computeSpurInfo(request.track.nodes);
+            if (spurInfo[0] > 0 && spurInfo[1] > 600) {
+              appendRouteMessage(request.track, String.format(Locale.US,
+                "Note: route contains %d out-and-back section%s (longest %.1fkm).",
+                spurInfo[0], spurInfo[0] == 1 ? "" : "s", spurInfo[1] / 1000.0));
+            }
           }
-        }
 
-        // The advisory/disclosures above were appended to request.track.message, but
-        // FormatGpx emits <brouter:info> and its message comments from
-        // messageList, not message. Sync messageList[0] so the quality warning
-        // actually reaches GPX/JSON consumers. Idempotent; no-op for the AUTO
-        // path (which returns earlier and syncs via adoptCandidateWinner).
-        cleanup.ensureInfoMessage(request.track);
-      } catch (RuntimeException advisoryFailure) {
-        ops.logInfo("round-trip advisory decoration failed ("
-          + advisoryFailure.getClass().getSimpleName()
-          + "); returning the track without advisories");
-        ops.logThrowable(advisoryFailure);
+          // Residual-chord advisory (loop-review backlog item 1): the planner's
+          // fidelity enforcement retries chord legs, but a best-effort adoption or
+          // a non-greedy path can still ship a long null-tag edge that renders as
+          // a straight line cutting across terrain. Ground truth (Lozère study):
+          // these follow a real curving road whose detail is missing, so the route
+          // is rideable — disclose, don't reject. Same threshold as the planner's
+          // fidelity check so the two mechanisms never disagree about what a
+          // chord is.
+          int chordMeters = LoopQualityMetrics.maxSingleNullEdgeMeters(request.track);
+          if (chordMeters > GreedyRoundTripPlanner.MAX_UNDETAILED_EDGE_METERS) {
+            appendRouteMessage(request.track, String.format(Locale.US,
+              "Note: route contains an undetailed straight-line section of ~%dm "
+                + "(way detail missing in the map data; the actual road may curve).",
+              chordMeters));
+          }
+
+          // Soft advisory: even within the [0.5, 1.8] ratio band, a >1.5
+          // overshoot is worth flagging so the caller can suggest a shorter
+          // distance. This stays informational because the hard gate above
+          // already rejects ratios outside the safe range.
+          if (request.track.distance > 0) {
+            double ratio = request.track.distance / expectedDistance;
+            if (ratio > 1.5) {
+              String warning = String.format(
+                "Warning: route distance (%dkm) exceeds requested loop distance (%dkm) by %.0f%%. "
+                + "The road network in this area is too constrained for a compact loop at this distance. "
+                + "Consider a shorter distance or an out-and-back route.",
+                request.track.distance / 1000, (int) (expectedDistance / 1000), (ratio - 1) * 100);
+              ops.logInfo(warning);
+              appendRouteMessage(request.track, warning);
+            }
+          }
+
+          // The advisory/disclosures above were appended to request.track.message, but
+          // FormatGpx emits <brouter:info> and its message comments from
+          // messageList, not message. Sync messageList[0] so the quality warning
+          // actually reaches GPX/JSON consumers. Idempotent; covers every tier
+          // including the AUTO adoption (whose summary was appended by the
+          // strategy before this shared finalization ran).
+          cleanup.ensureInfoMessage(request.track);
+        } catch (RuntimeException advisoryFailure) {
+          ops.logInfo("round-trip advisory decoration failed ("
+            + advisoryFailure.getClass().getSimpleName()
+            + "); returning the track without advisories");
+          ops.logThrowable(advisoryFailure);
+        }
+      }
+
+      // Deferred single output write (AUTO adoption): children ran with output
+      // suppressed, and the write must happen AFTER the decoration above so
+      // the file carries the advisories the direct-dispatch write gets from
+      // doRouting's own flow.
+      if (request.deferredOutputWrite && request.track != null) {
+        ops.writeAdoptedTrackOutput(request.track);
       }
 
       long endTime = System.currentTimeMillis();

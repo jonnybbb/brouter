@@ -2,6 +2,7 @@ package btools.router.roundtrip;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
@@ -133,23 +134,24 @@ public class RoundTripLadderResolutionTest {
   }
 
   /**
-   * The attempt-outcome contract: FAST/greedy/bounded results must still pass
-   * the orchestrator's shared gate ({@code attempt → NEEDS_SHARED_FINALIZATION});
-   * the AUTO competition is self-finalizing — children are gated inside and the
-   * winner decorated on adoption — so it returns {@code SELF_FINALIZED},
-   * guaranteeing the shared gate can never run twice on an AUTO result. The
-   * self-finalized side is observed directly here: on an engine with no segment
-   * data every child candidate fails fast, the competition rejects, and attempt
-   * still returns its constant outcome. (The other side is exercised by every
-   * fixture-backed FAST/greedy run — a flipped constant would double-gate and
-   * fail those suites.)
+   * The single-finalization contract: EVERY strategy — including the AUTO
+   * competition — leaves its outcome on the request (track XOR error) for the
+   * orchestrator's one shared finalization; no strategy finalizes itself.
+   * Observed here on an engine with no segment data: every AUTO child
+   * candidate fails fast, the competition publishes a clean error on the
+   * request (not a thrown exception, not a silently-empty outcome), and the
+   * shared pipeline's early error-return handles it. The success side is
+   * exercised by every fixture-backed AUTO run (double decoration or a
+   * double-gated winner would fail the message assertions in those suites).
    */
   @Test
-  public void autoCompetitionIsSelfFinalizing() {
+  public void autoCompetitionLeavesOutcomeForSharedFinalization() {
     RoundTripOrchestrator o = orchestrator(false, 256, 0);
     RoundTripOrchestrator.Rung rung = resolveSingle(o, RoundTripAlgorithm.AUTO);
     assertTrue(rung.strategy instanceof AutoCompetitionStrategy);
-    RoundTripStrategy.Outcome outcome = rung.strategy.attempt(o.request, rung.slice);
-    assertEquals("AUTO must be self-finalizing", RoundTripStrategy.Outcome.SELF_FINALIZED, outcome);
+    rung.strategy.attempt(o.request, rung.slice);
+    assertTrue("failed AUTO competition must publish a clean error on the request",
+      o.request.error != null && !o.request.error.isEmpty());
+    assertNull("no track alongside the error (track XOR error)", o.request.track);
   }
 }

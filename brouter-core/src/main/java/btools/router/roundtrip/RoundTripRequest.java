@@ -83,8 +83,26 @@ final class RoundTripRequest {
   /** Per-leg routing budget (ms) for the round-trip fallthrough; 0 = untimed. */
   long routingBudgetMs;
 
-  /** Bounded tier's gate verdict, consumed once by the shared gate. */
+  /** Bounded tier's gate verdict, consumed once by the shared gate. The AUTO
+   *  competition stashes its winner's (parent-computed) verdict here too, so
+   *  the shared finalization never re-gates an already-gated candidate. */
   RoundTripQualityResult boundedGateVerdict;
+
+  /**
+   * Set by the AUTO competition on adoption: the winner came from a child
+   * engine that already enforced the waypoint/node/meter floors internally, so
+   * the shared finalization skips them (the parent never placed waypoints for
+   * this outcome; only the null-track safety net still applies).
+   */
+  boolean candidateFloorsEnforced;
+
+  /**
+   * Set by the AUTO competition on adoption: children run with output
+   * suppressed (null outfileBase), so the parent writes the single output
+   * artifact — AFTER the shared finalization has decorated the track, so the
+   * written file carries the advisories.
+   */
+  boolean deferredOutputWrite;
 
   /** Forced same-way-back corridor latch from the greedy adoption. */
   boolean forcedCorridorAccepted;
