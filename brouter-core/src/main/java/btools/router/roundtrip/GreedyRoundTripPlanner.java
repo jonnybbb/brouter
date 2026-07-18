@@ -586,7 +586,7 @@ public class GreedyRoundTripPlanner {
       OsmPathElement b = track.nodes.get(i);
       double segLen = a.calcDistance(b);
       total += segLen;
-      long key = edgeKey(a, b);
+      long key = LoopGeometry.edgeKey(a, b);
       Integer cur = localCounts.get(key);
       int prev = (cur == null ? 0 : cur) + 1;
       localCounts.put(key, prev);
@@ -2294,7 +2294,7 @@ public class GreedyRoundTripPlanner {
       OsmPathElement a = track.nodes.get(i - 1);
       OsmPathElement b = track.nodes.get(i);
       double segLen = a.calcDistance(b);
-      long key = edgeKey(a, b);
+      long key = LoopGeometry.edgeKey(a, b);
       if (edges.count(key) == 0) {
         // First visit ever — record the segment midpoint as the first-visit
         // cumulative distance, used downstream for boundary-proximity weighting.
@@ -2308,7 +2308,7 @@ public class GreedyRoundTripPlanner {
   private void removeVisitedEdges(OsmTrack track, VisitedEdgeStore edges) {
     if (track.nodes == null || track.nodes.size() < 2) return;
     for (int i = 1; i < track.nodes.size(); i++) {
-      long key = edgeKey(track.nodes.get(i - 1), track.nodes.get(i));
+      long key = LoopGeometry.edgeKey(track.nodes.get(i - 1), track.nodes.get(i));
       int count = edges.count(key);
       if (count == 0) continue;
       if (count <= 1) {
@@ -2346,7 +2346,7 @@ public class GreedyRoundTripPlanner {
       double segLen = (segLens != null) ? segLens[i - 1] : a.calcDistance(b);
       double midPos = cumDist + segLen / 2;
       total += segLen;
-      long key = edgeKey(a, b);
+      long key = LoopGeometry.edgeKey(a, b);
       // A present key always has its firstPos recorded (setFirstPos precedes
       // increment on first visit), so this reproduces the former
       // containsKey-count + non-null-firstPos path exactly; firstPos may be
@@ -2405,13 +2405,6 @@ public class GreedyRoundTripPlanner {
     return lens;
   }
 
-  private static long edgeKey(OsmPathElement a, OsmPathElement b) {
-    long idA = a.getIdFromPos();
-    long idB = b.getIdFromPos();
-    long lo = Math.min(idA, idB);
-    long hi = Math.max(idA, idB);
-    return lo ^ (hi * 0x9E3779B97F4A7C15L);
-  }
 
 
   /**

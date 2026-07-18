@@ -433,11 +433,10 @@ public final class RouteChoiceScore {
     List<OsmPathElement> nodes = track.nodes;
     int n = nodes.size();
     if (n < 4) return 0;
-    double[] cum = new double[n];
-    for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
+    double[] cum = LoopGeometry.cumulativeDistances(nodes);
     double total = cum[n - 1];
     double sev = 0;
-    for (int[] s : LoopQualityMetrics.nearRevisitSpans(nodes,
+    for (int[] s : LoopQualityMetrics.nearRevisitSpans(nodes, cum,
         NEAR_REVISIT_EPS_M, NEAR_REVISIT_MIN_ARC_M, NEAR_REVISIT_MAX_ARC_M)) {
       double arc = cum[s[1]] - cum[s[0]];
       if (total > 0 && arc > CLOSURE_EXCLUSION_FRACTION * total) continue; // loop closure, not a teardrop

@@ -130,7 +130,7 @@ final class ReuseClassifier {
       int segLen = a.calcDistance(b);
       segLens[i] = segLen;
 
-      long key = edgeKey(a, b);
+      long key = LoopGeometry.edgeKey(a, b);
       double[] state = edgeState.get(key);
       boolean identityReuse;
       if (state == null) {
@@ -545,13 +545,6 @@ final class ReuseClassifier {
     return occurrences >= 2;
   }
 
-  private static long edgeKey(OsmPathElement a, OsmPathElement b) {
-    long idA = a.getIdFromPos();
-    long idB = b.getIdFromPos();
-    long lo = Math.min(idA, idB);
-    long hi = Math.max(idA, idB);
-    return lo ^ (hi * 0x9E3779B97F4A7C15L);
-  }
 
   // ---- Per-stretch types ---------------------------------------------------
 

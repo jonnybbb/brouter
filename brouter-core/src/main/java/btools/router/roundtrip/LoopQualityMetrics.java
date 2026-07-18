@@ -207,34 +207,16 @@ public final class LoopQualityMetrics {
   public static int[] computeSpurInfo(List<OsmPathElement> nodes) {
     int n = nodes.size();
     if (n < 4) return new int[]{0, 0};
-
-    double[] cum = new double[n];
-    for (int i = 1; i < n; i++) {
-      cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
-    }
-
+    // Delegates to the generalized near-revisit scan (2026-07-18 dedup: the
+    // two loops were structurally identical, this one with the SPUR_* bounds
+    // baked in) and derives the count / worst arc from the spans.
+    double[] cum = LoopGeometry.cumulativeDistances(nodes);
     int spurCount = 0;
     int worstArc = 0;
-    int i = 0;
-    while (i < n) {
-      // Farthest forward node within the arc-gap band that the route returns near.
-      int bestJ = -1;
-      OsmPathElement a = nodes.get(i);
-      for (int j = i + 1; j < n; j++) {
-        double gap = cum[j] - cum[i];
-        if (gap > SPUR_MAX_ARC_GAP) break;
-        if (gap >= SPUR_MIN_ARC_GAP && a.calcDistance(nodes.get(j)) <= SPUR_EPS_METERS) {
-          bestJ = j;
-        }
-      }
-      if (bestJ >= 0) {
-        spurCount++;
-        int arc = (int) Math.round(cum[bestJ] - cum[i]);
-        if (arc > worstArc) worstArc = arc;
-        i = bestJ; // non-overlapping spans
-      } else {
-        i++;
-      }
+    for (int[] span : nearRevisitSpans(nodes, cum, SPUR_EPS_METERS, SPUR_MIN_ARC_GAP, SPUR_MAX_ARC_GAP)) {
+      spurCount++;
+      int arc = (int) Math.round(cum[span[1]] - cum[span[0]]);
+      if (arc > worstArc) worstArc = arc;
     }
     return new int[]{spurCount, worstArc};
   }
@@ -255,14 +237,19 @@ public final class LoopQualityMetrics {
   public static List<int[]> nearRevisitSpans(List<OsmPathElement> nodes,
                                              double epsMeters, double minArcMeters,
                                              double maxArcMeters) {
+    if (nodes == null || nodes.size() < 4) return new ArrayList<>();
+    return nearRevisitSpans(nodes, LoopGeometry.cumulativeDistances(nodes),
+      epsMeters, minArcMeters, maxArcMeters);
+  }
+
+  /** As above with the caller's cumulative-distance array — callers that
+   *  already built one (spur info, the teardrop scorer) avoid a second pass. */
+  static List<int[]> nearRevisitSpans(List<OsmPathElement> nodes, double[] cum,
+                                      double epsMeters, double minArcMeters,
+                                      double maxArcMeters) {
     List<int[]> spans = new ArrayList<>();
     int n = nodes == null ? 0 : nodes.size();
     if (n < 4) return spans;
-
-    double[] cum = new double[n];
-    for (int i = 1; i < n; i++) {
-      cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
-    }
 
     int i = 0;
     while (i < n) {
@@ -336,8 +323,7 @@ public final class LoopQualityMetrics {
     List<OsmPathElement> nodes = track.nodes;
     int n = nodes.size();
     if (n < 4) return none;
-    double[] cum = new double[n];
-    for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + nodes.get(i - 1).calcDistance(nodes.get(i));
+    double[] cum = LoopGeometry.cumulativeDistances(nodes);
     double total = cum[n - 1];
     int[] worst = none;
     int i = 0;
@@ -402,11 +388,7 @@ public final class LoopQualityMetrics {
       // old `lo*31 + hi` form is a trivially-collidable linear combination of
       // packed (ilon<<32)|ilat ids, which could fold a genuinely-new edge into
       // an existing bucket and inflate the reuse percentage.
-      long idA = a.getIdFromPos();
-      long idB = b.getIdFromPos();
-      long lo = Math.min(idA, idB);
-      long hi = Math.max(idA, idB);
-      long edgeKey = lo ^ (hi * 0x9E3779B97F4A7C15L);
+      long edgeKey = LoopGeometry.edgeKey(a, b);
 
       int[] entry = edgeCounts.get(edgeKey);
       boolean identityReuse = entry != null;
