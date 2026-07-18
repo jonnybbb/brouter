@@ -5,18 +5,26 @@ import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * Mutable result of a round-trip planning attempt (GREEDY / ISO_GREEDY), read
- * by {@code RoutingEngine}. Carries the chosen {@link OsmTrack}, loop
- * waypoints, summary metrics, and diagnostic telemetry. NOT a defensive-copy
- * value object: getters return the live lists. Every setter is package-private
- * — staged population is confined to {@code btools.router.roundtrip}
- * (the greedy planner and its strategies); outside the package (confirmed:
- * only {@code RoutingEngine#getLastRoundTripResult} and its readers) this is
+ * Result of a round-trip planning attempt (GREEDY / ISO_GREEDY), read by
+ * {@code RoutingEngine}. Carries the chosen {@link OsmTrack}, loop waypoints,
+ * summary metrics, and diagnostic telemetry. Every setter is package-private —
+ * staged population is confined to {@code btools.router.roundtrip} (the greedy
+ * planner and its strategies); outside the package (confirmed: only
+ * {@code RoutingEngine#getLastRoundTripResult} and its readers) this is
  * read-only, and the compiler enforces it rather than a comment convention.
- * Telemetry fields are sentinel-valued (NaN / -1 / false) when their
+ *
+ * <p>List getters return unmodifiable views ({@link #getMatchedWaypoints()} a
+ * defensive copy — the engine takes that list as mutable working state), so a
+ * caller cannot alter the recorded plan through them. The contained
+ * {@link OsmTrack}/waypoint OBJECTS stay mutable by engine design (tracks are
+ * decorated after planning); deep-copying them per read would be
+ * disproportionate — treat them as read-only unless you own the request.
+ *
+ * <p>Telemetry fields are sentinel-valued (NaN / -1 / false) when their
  * producing path did not run, so a reader can tell "not applied" from a real
  * measurement.
  */
@@ -84,15 +92,18 @@ public class RoundTripResult {
   }
 
   public List<OsmNodeNamed> getLoopWaypoints() {
-    return loopWaypoints;
+    return loopWaypoints == null ? null : Collections.unmodifiableList(loopWaypoints);
   }
 
   void setLoopWaypoints(List<OsmNodeNamed> loopWaypoints) {
     this.loopWaypoints = loopWaypoints;
   }
 
+  /** Defensive copy — the engine adopts the returned list as mutable working
+   *  state (matched-waypoint stack), so an unmodifiable view would throw at
+   *  runtime mid-request; a copy keeps the recorded plan intact instead. */
   public List<MatchedWaypoint> getMatchedWaypoints() {
-    return matchedWaypoints;
+    return matchedWaypoints == null ? null : new ArrayList<>(matchedWaypoints);
   }
 
   void setMatchedWaypoints(List<MatchedWaypoint> matchedWaypoints) {
@@ -116,7 +127,7 @@ public class RoundTripResult {
   }
 
   public List<String> getDiagnostics() {
-    return diagnostics;
+    return Collections.unmodifiableList(diagnostics);
   }
 
   void addDiagnostic(String message) {
@@ -147,7 +158,7 @@ public class RoundTripResult {
   }
 
   public List<OsmTrack> getLegTracks() {
-    return legTracks;
+    return legTracks == null ? null : Collections.unmodifiableList(legTracks);
   }
 
   void setLegTracks(List<OsmTrack> legTracks) {
