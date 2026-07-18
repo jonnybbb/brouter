@@ -357,10 +357,7 @@ public final class RoundTripTrackCleanup {
       int maxArc = (int) Math.min(SPUR_REPAIR_MAX_ARC_M, WaypointSnapper.VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
       List<int[]> spans = new ArrayList<>(LoopQualityMetrics.nearRevisitSpans(
         nodes, SPUR_REPAIR_EPS_M, SPUR_REPAIR_MIN_ARC_M, maxArc));
-      double[] cum = new double[nodes.size()];
-      for (int k = 1; k < nodes.size(); k++) {
-        cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
-      }
+      double[] cum = LoopGeometry.cumulativeDistances(nodes);
       // Largest-arc first: the distance floor caps how much can be removed in
       // total, so spend that budget on the worst offender, not scan order.
       Collections.sort(spans, (a, b) -> Double.compare(cum[b[1]] - cum[b[0]], cum[a[1]] - cum[a[0]]));

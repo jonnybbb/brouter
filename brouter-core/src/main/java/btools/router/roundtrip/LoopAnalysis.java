@@ -70,10 +70,7 @@ final class LoopAnalysis {
   static LoopAnalysis of(List<OsmPathElement> nodes) {
     int n = nodes == null ? 0 : nodes.size();
     if (n < 4) return EMPTY;
-    double[] cum = new double[n];
-    for (int k = 1; k < n; k++) {
-      cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
-    }
+    double[] cum = LoopGeometry.cumulativeDistances(nodes);
     double perim = cum[n - 1];
     int[] smallLoop = new int[1];
     List<double[]> pts = new ArrayList<>();

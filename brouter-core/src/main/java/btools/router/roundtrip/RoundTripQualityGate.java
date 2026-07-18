@@ -474,10 +474,7 @@ public final class RoundTripQualityGate {
     // gate=21 where the full count is 0) is no longer needed.
     List<OsmPathElement> nodes = track.nodes;
     int n = nodes.size();
-    double[] cum = new double[n];
-    for (int k = 1; k < n; k++) {
-      cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
-    }
+    double[] cum = LoopGeometry.cumulativeDistances(nodes);
     double perim = cum[n - 1];
     // Hard ceiling proportional to the threshold; routes that already
     // qualify as chaotic don't benefit from precise upper counting and
@@ -832,8 +829,7 @@ public final class RoundTripQualityGate {
     List<int[]> out = new ArrayList<>();
     int n = nodes.size();
     if (n < 5) return out;
-    double[] cum = new double[n];
-    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + nodes.get(k - 1).calcDistance(nodes.get(k));
+    double[] cum = LoopGeometry.cumulativeDistances(nodes);
     double perim = cum[n - 1];
 
     List<int[]> pairs = new ArrayList<>();
