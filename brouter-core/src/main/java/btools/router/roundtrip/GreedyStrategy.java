@@ -26,9 +26,8 @@ final class GreedyStrategy implements RoundTripStrategy {
   }
 
   @Override
-  public Outcome attempt(RoundTripRequest request, TierSlice slice) {
+  public void attempt(RoundTripRequest request, TierSlice slice) {
     doGreedyRoundTrip(slice.searchRadius, slice.direction, slice.algo);
-    return Outcome.NEEDS_SHARED_FINALIZATION;
   }
 
   private void doGreedyRoundTrip(double searchRadius, double direction, RoundTripAlgorithm algo) {

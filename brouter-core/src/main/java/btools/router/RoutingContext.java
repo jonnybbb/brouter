@@ -305,6 +305,17 @@ public final class RoutingContext {
    */
   public boolean roundTripIsochrone;
 
+  /**
+   * Internal (never a request parameter): set by the AUTO competition on its
+   * child-engine contexts so the child's round-trip finalization skips ALL
+   * user-facing track decoration (advisories, quality Warning, info-message
+   * sync). The parent decorates the adopted winner exactly once in its own
+   * shared finalization — without this flag every advisory would appear twice
+   * on AUTO routes. Not copied by {@link #copyRequestFields()}; the parent sets
+   * it explicitly after copying.
+   */
+  public boolean roundTripSuppressDecoration;
+
   public CheapAngleMeter anglemeter = new CheapAngleMeter();
 
   public double nogoCost = 0.;

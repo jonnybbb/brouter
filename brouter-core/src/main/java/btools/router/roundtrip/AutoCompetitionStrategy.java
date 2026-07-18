@@ -13,10 +13,14 @@ import btools.router.RoutingEngine;
 /**
  * AUTO candidate competition tier: runs candidate algorithms in isolated
  * child engines, scores the gated results, and adopts the winner (or the
- * least-bad best-effort track in lenient mode). Self-finalizing — candidates
- * are gated inside the competition and the winner is decorated on adoption,
- * so the outcome does NOT pass the orchestrator's shared gate again. QUALITY
- * is this strategy pinned to the MAX preset (see the ladder resolution).
+ * least-bad best-effort track in lenient mode). The adopted outcome flows
+ * through the orchestrator's SHARED finalization like every other tier:
+ * children run with decoration suppressed
+ * ({@link btools.router.RoutingContext#roundTripSuppressDecoration}), the
+ * winner's parent-computed gate verdict is stashed for the shared gate to
+ * consume (no third gate pass), and the parent decorates and writes output
+ * exactly once. QUALITY is this strategy pinned to the MAX preset (see the
+ * ladder resolution).
  */
 final class AutoCompetitionStrategy implements RoundTripStrategy {
 
@@ -29,10 +33,9 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   }
 
   @Override
-  public Outcome attempt(RoundTripRequest request, TierSlice slice) {
+  public void attempt(RoundTripRequest request, TierSlice slice) {
     request.effortPolicy = slice.effortPolicy;
     runAutoCandidateCompetition(slice.searchRadius, slice.direction);
-    return Outcome.SELF_FINALIZED;
   }
 
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
@@ -224,26 +227,19 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   }
 
   /**
-   * Adopt the winning candidate's track as this engine's result and attach a
-   * summary diagnostic of what was tried and which won.
+   * Adopt the winning candidate's track as this engine's working result and
+   * hand it to the orchestrator's shared finalization: the winner's
+   * parent-computed gate verdict is stashed for the shared gate (which also
+   * appends the lenient Warning for a best-effort winner — children run
+   * undecorated, so it cannot already be present), the floors are marked as
+   * child-enforced, and the output write is deferred until after decoration.
+   * Only the AUTO competition summary is strategy-specific and appended here.
    */
   private void adoptCandidateWinner(RoundTripCandidateResult winner,
                                     List<RoundTripCandidateResult> all, long totalMs) {
     orchestrator.setTrack(winner.track);
     orchestrator.setError(null);
     orchestrator.cleanup.finalizeAdoptedRoundTripTrack(orchestrator.request.track, orchestrator.request.track == null ? null : orchestrator.request.track.getMatchedWaypoints());
-    // Best-effort (quality-failed) winner adopted under lenient mode: make sure
-    // the user-facing quality Warning is present. The child engine usually
-    // attaches it, but when the parent's gate re-evaluation in runChildCandidate
-    // disagrees with the child's own verdict the child may not have — so attach
-    // it here if absent, mirroring the direct-dispatch advisory (and skip when a
-    // "Warning:" is already present to avoid a duplicate).
-    if (orchestrator.request.track != null && !winner.accepted() && winner.gateVerdict != null
-        && (orchestrator.request.track.message == null || !orchestrator.request.track.message.contains("Warning:"))) {
-      orchestrator.appendRouteMessage(orchestrator.request.track, "Warning: " + winner.gateVerdict.getRejectionReason()
-        + " (shape=" + winner.gateVerdict.getShape() + ") — route returned anyway; ride at your"
-        + " discretion, or set roundTripStrictQuality=1 to reject it.");
-    }
     // Append a summary message so debugging consumers can see the
     // competition outcome. Score breakdown is in the route-choice verdict.
     StringBuilder summary = new StringBuilder(256);
@@ -257,27 +253,19 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
                              : (r.errorMessage == null ? "no track" : "rejected"))
         .append('.');
     }
-    if (orchestrator.request.track != null) {
-      // orchestrator.request.track is nullable here (a best-effort winner can carry no track —
-      // see the null-guards above at adoption and the warning block); only
-      // attach the AUTO summary when there is a track to annotate.
-      if (orchestrator.request.track.message == null || orchestrator.request.track.message.isEmpty()) {
-        orchestrator.request.track.message = summary.toString();
-      } else {
-        orchestrator.request.track.message += " " + summary.toString();
-      }
-    }
-    // Keep messageList.get(0) in sync with the just-extended message so the
-    // GPX <brouter:info> / comment block reflects the AUTO summary too.
-    orchestrator.cleanup.ensureInfoMessage(orchestrator.request.track);
+    orchestrator.appendRouteMessage(orchestrator.request.track, summary.toString());
     ops.logInfo(summary.toString());
     if (winner.score != null) {
       ops.logInfo("AUTO winner score breakdown:\n" + winner.score.describe());
     }
-    // Format + persist the adopted track if the caller asked for an
-    // output file. The child engines ran with null outfileBase (output
-    // suppressed); the parent does the single final write.
-    ops.writeAdoptedTrackOutput(orchestrator.request.track);
+    // Shared-finalization handoff: consume the verdict runChildCandidate
+    // already computed on this track (no third gate pass), honor the child's
+    // keep-when-forced marker, skip the parent-placement floors (the child
+    // enforced its own), and write output after decoration.
+    orchestrator.request.boundedGateVerdict = winner.gateVerdict;
+    orchestrator.request.forcedCorridorAccepted = winner.forcedCorridorAccepted();
+    orchestrator.request.candidateFloorsEnforced = true;
+    orchestrator.request.deferredOutputWrite = true;
   }
 
   /**
@@ -329,6 +317,10 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       RoutingContext childCtx = ops.routingContext().copyRequestFields();
       childCtx.roundTripAlgorithm = algo;
       childCtx.startDirection = (int) direction;
+      // Children never decorate: the parent's shared finalization appends the
+      // advisories/Warning to the adopted winner exactly once. Without this,
+      // every advisory would appear twice on AUTO routes (child + parent).
+      childCtx.roundTripSuppressDecoration = true;
       // Inherit the user's direction intent from copyRequestFields rather than
       // hard-forcing it. forceUseStartDirection makes the first leg leave on a
       // strict bearing; when the user supplied only a soft `direction` (or
