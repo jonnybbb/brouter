@@ -1141,16 +1141,29 @@ public class RoundTripQualityGateTest {
   }
 
   @Test
-  public void gate_leavesSelfIntersectionsUnknownOnChaosReject() {
-    // The chaos-reject early-return happens before the classifier and does
-    // not stamp a count — downstream consumers (RouteChoiceScore, the
-    // shipped-crossings advisory) must fall back to a fresh scan for this
-    // case rather than reading a stale/absent value as zero.
+  public void gate_stampsSelfIntersectionsOnChaosReject() {
+    // A QUALITY-tier chaos reject is exactly what lenient mode returns and
+    // AUTO ranks best-effort, so this reject must carry the stamped count too
+    // (Codex review P2: without it, scoreBestEffort and the shipped advisory
+    // re-scan long degraded routes, defeating the reuse where it matters most).
     OsmTrack t = closedBowties(6);
     RoundTripQualityResult r = RoundTripQualityGate.evaluate(
       t, t.distance, /*pavedProfile*/ false, false, false, false);
     assertFalse(r.isAccepted());
-    assertEquals("chaos-rejected results carry no stamped count (sentinel -1)",
+    assertEquals("chaos-rejected results carry the count the gate already computed",
+      RoundTripQualityGate.countSelfIntersections(t), r.getSelfIntersections());
+  }
+
+  @Test
+  public void gate_leavesSelfIntersectionsUnknownOnPreScanReject() {
+    // Rejections BEFORE the crossing scan (closure, distance ratio, beeline,
+    // node floor) never computed a count — the sentinel stays -1 so downstream
+    // consumers fall back to a fresh scan rather than misreading zero.
+    OsmTrack open = squareLoopWithClosureGap(5000, 500);
+    RoundTripQualityResult r = RoundTripQualityGate.evaluate(
+      open, open.distance, /*pavedProfile*/ false, false, false, false);
+    assertFalse(r.isAccepted());
+    assertEquals("pre-scan rejects carry no stamped count (sentinel -1)",
       -1, r.getSelfIntersections());
   }
 

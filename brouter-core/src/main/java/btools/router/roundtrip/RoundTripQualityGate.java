@@ -310,9 +310,13 @@ public final class RoundTripQualityGate {
         chaos.selfIntersections > 2 * MAX_SELF_INTERSECTIONS
           ? RoundTripQualityResult.RejectionTier.STRUCTURAL
           : RoundTripQualityResult.RejectionTier.QUALITY;
+      // Stamp the count on this reject too: a QUALITY-tier chaos verdict is
+      // exactly what lenient mode returns and AUTO ranks best-effort, so the
+      // scorer/advisory reuse matters most on this path (long degraded routes).
       return RoundTripQualityResult.builder()
         .shape(RouteShape.INVALID_RETRACE)
         .reject(tier, chaos.reason)
+        .selfIntersections(selfIntersections)
         .build();
     }
 
@@ -326,6 +330,7 @@ public final class RoundTripQualityGate {
         return RoundTripQualityResult.builder()
           .shape(RouteShape.INVALID_RETRACE)
           .reject(RoundTripQualityResult.RejectionTier.QUALITY, hostile)
+          .selfIntersections(selfIntersections)
           .build();
       }
     }
