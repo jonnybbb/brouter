@@ -13,9 +13,10 @@ import btools.router.OsmTrack;
  * whatever its score; {@link #planner} is the child's full
  * {@link RoundTripResult}, through which all winner-attribution telemetry reads.
  *
- * <p>Internal-only; do not expose on the public API.
+ * <p>Internal-only; package-private so the compiler enforces that this never
+ * reaches the public API (confirmed unused outside {@code btools.router.roundtrip}).
  */
-public final class RoundTripCandidateResult {
+final class RoundTripCandidateResult {
   public final RoundTripAlgorithm algorithm;
   public OsmTrack track;
   public RoundTripQualityResult gateVerdict;
