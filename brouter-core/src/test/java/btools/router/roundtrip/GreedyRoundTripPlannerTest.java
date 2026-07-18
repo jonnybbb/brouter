@@ -135,39 +135,7 @@ public class GreedyRoundTripPlannerTest {
     Assert.assertEquals(2, GreedyRoundTripPlanner.graphNativeQuota(true, false, 3));
   }
 
-  @Test
-  public void legacyRoundTripIsochroneParamMapsToIsochrone() {
-    // The parser only stores the boolean; the AUTO -> ISOCHRONE promotion is
-    // the orchestrator's, applied once at ladder resolution, so the outcome
-    // cannot depend on the request parameters' (map-)iteration order.
-    RoutingContext rctx = new RoutingContext();
-    Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
-    Map<String, String> params = new LinkedHashMap<>();
-    params.put("roundTripIsochrone", "1");
-    new RoutingParamCollector().setParams(rctx, null, params);
-    Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
-    Assert.assertTrue(rctx.roundTripIsochrone);
-  }
 
-  @Test
-  public void explicitRoundTripAlgorithmWinsOverIsochroneShortcut() {
-    // An explicit roundTripAlgorithm beats the roundTripIsochrone=1 shortcut,
-    // regardless of parameter order (the parser only promotes when AUTO).
-    for (boolean algoFirst : new boolean[]{true, false}) {
-      RoutingContext rctx = new RoutingContext();
-      Map<String, String> params = new LinkedHashMap<>();
-      if (algoFirst) {
-        params.put("roundTripAlgorithm", "GREEDY");
-        params.put("roundTripIsochrone", "1");
-      } else {
-        params.put("roundTripIsochrone", "1");
-        params.put("roundTripAlgorithm", "GREEDY");
-      }
-      new RoutingParamCollector().setParams(rctx, null, params);
-      Assert.assertEquals("explicit algorithm must win (algoFirst=" + algoFirst + ")",
-        RoundTripAlgorithm.GREEDY, rctx.roundTripAlgorithm);
-    }
-  }
 
   // ---- Ladder hold-and-restore selection (forced-corridor retry) -----------
 
@@ -222,36 +190,6 @@ public class GreedyRoundTripPlannerTest {
     Assert.assertSame(overshoot, GreedyStrategy.betterForcedFallback(near, overshoot, desired));
   }
 
-  @Test
-  public void explicitAutoWinsOverIsochroneShortcut() {
-    // An EXPLICIT roundTripAlgorithm=AUTO must also beat the shortcut — the
-    // algorithm value alone cannot distinguish it from the default, so the
-    // parser records the explicit flag and the orchestrator's promotion
-    // honors it, in either parameter order.
-    for (boolean algoFirst : new boolean[]{true, false}) {
-      RoutingContext rctx = new RoutingContext();
-      Map<String, String> params = new LinkedHashMap<>();
-      if (algoFirst) {
-        params.put("roundTripAlgorithm", "AUTO");
-        params.put("roundTripIsochrone", "1");
-      } else {
-        params.put("roundTripIsochrone", "1");
-        params.put("roundTripAlgorithm", "AUTO");
-      }
-      new RoutingParamCollector().setParams(rctx, null, params);
-      Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
-      Assert.assertTrue("explicit AUTO must be recorded (algoFirst=" + algoFirst + ")",
-        rctx.roundTripAlgorithmExplicit);
-      Assert.assertTrue(rctx.roundTripIsochrone);
-    }
-    // The default (no roundTripAlgorithm parameter) stays non-explicit, so the
-    // shortcut still applies there.
-    RoutingContext dflt = new RoutingContext();
-    Map<String, String> params = new LinkedHashMap<>();
-    params.put("roundTripIsochrone", "1");
-    new RoutingParamCollector().setParams(dflt, null, params);
-    Assert.assertFalse(dflt.roundTripAlgorithmExplicit);
-  }
 
   @Test
   public void tierAliasesResolveThroughSetParams() {
@@ -355,7 +293,7 @@ public class GreedyRoundTripPlannerTest {
     // the whole collector has one consistent fail-loud parsing contract.
     String[] intParams = {
       "roundTripLength", "roundTripDistance", "roundTripDirectionAdd",
-      "roundTripPoints", "roundTripIsochrone", "allowSamewayback"};
+      "roundTripPoints", "allowSamewayback"};
     for (String key : intParams) {
       RoutingContext rctx = new RoutingContext();
       Map<String, String> params = new LinkedHashMap<>();

@@ -18,8 +18,8 @@ import java.util.Locale;
  *
  * <p>The internal enum names are also accepted for explicit forcing (e.g. tests
  * pinning one planner). {@link #ISOCHRONE} places waypoints directly from the
- * frontier (no routed legs); from AUTO it is reached only via
- * {@code roundTripIsochrone=1} or as the competition's last resort.
+ * frontier (no routed legs); from AUTO it is reached only as the competition's
+ * last resort, or by explicit request.
  */
 public enum RoundTripAlgorithm {
   /** Pick a mode based on terrain, length, and request parameters. */
@@ -35,8 +35,8 @@ public enum RoundTripAlgorithm {
   QUALITY,
   /** FAST mode: geometric probe/waypoint placement (sub-second preview, lower quality). */
   WAYPOINT,
-  /** Direct isochrone-frontier waypoint placement (from AUTO only via the
-   *  {@code roundTripIsochrone=1} shortcut or as the competition's last resort). */
+  /** Direct isochrone-frontier waypoint placement (explicitly requested, or
+   *  the AUTO competition's last resort). */
   ISOCHRONE,
   /** Iterative routed-leg planner, radial candidate provider — an AUTO competitor. */
   GREEDY,

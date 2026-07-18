@@ -218,7 +218,9 @@ public class RoutingEngineTest {
     // waypoint can't be matched within the catching range — round-trip code
     // must defeat this by snapping points to the road graph beforehand.
     rctx.buildBeelineOnRange = true;
-    rctx.roundTripIsochrone = isochrone;
+    if (isochrone) {
+      rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
+    }
     rctx.allowSamewayback = samewayback;
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, trackname, rctx);
@@ -342,7 +344,7 @@ public class RoutingEngineTest {
     RoutingContext rctx = new RoutingContext();
     rctx.startDirection = 0;
     rctx.roundTripDistance = 1000;
-    rctx.roundTripIsochrone = true;
+    rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtIsochrone", rctx);
 
@@ -365,7 +367,7 @@ public class RoutingEngineTest {
       RoutingContext rctx = new RoutingContext();
       rctx.startDirection = dir;
       rctx.roundTripDistance = 3000; // need realistic radius for indirectness-based placement
-      rctx.roundTripIsochrone = true;
+      rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
 
       RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtIsoDir" + dir, rctx);
 
@@ -388,7 +390,7 @@ public class RoutingEngineTest {
     RoutingContext isoCtx = new RoutingContext();
     isoCtx.startDirection = 0;
     isoCtx.roundTripDistance = 1000;
-    isoCtx.roundTripIsochrone = true;
+    isoCtx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
     RoutingEngine isoRe = calcRoundTrip(8.720, 50.000, "rtBothIso", isoCtx);
 
     Assert.assertNull("probe failed: " + probeRe.getErrorMessage(), probeRe.getErrorMessage());
@@ -408,7 +410,7 @@ public class RoutingEngineTest {
     RoutingContext rctx = new RoutingContext();
     rctx.startDirection = 90;
     rctx.roundTripDistance = 3000;
-    rctx.roundTripIsochrone = true;
+    rctx.roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtIsoAccuracy", rctx);
 
@@ -427,9 +429,8 @@ public class RoutingEngineTest {
     RoutingContext rctx = new RoutingContext();
     rctx.startDirection = 0;
     rctx.roundTripDistance = 1000;
-    // roundTripIsochrone NOT set — should default to false
-
-    Assert.assertFalse("roundTripIsochrone should default to false", rctx.roundTripIsochrone);
+    // no algorithm set — must default to AUTO (the probe-based competition)
+    Assert.assertEquals(RoundTripAlgorithm.AUTO, rctx.roundTripAlgorithm);
 
     RoutingEngine re = calcRoundTrip(8.720, 50.000, "rtDefaultProbe", rctx);
     Assert.assertNull(re.getErrorMessage());

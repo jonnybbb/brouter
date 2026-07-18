@@ -264,14 +264,6 @@ public final class RoutingContext {
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
   /**
-   * Whether {@link #roundTripAlgorithm} was EXPLICITLY supplied by the request
-   * (vs left at its AUTO default). Distinguishes an explicit
-   * {@code roundTripAlgorithm=AUTO} — which must win over the
-   * {@link #roundTripIsochrone} shortcut like any other explicit choice — from
-   * the default, where the shortcut applies.
-   */
-  public boolean roundTripAlgorithmExplicit;
-  /**
    * Quality-gate strictness for generated round-trips. When {@code false}
    * (the default), a route that fails only a QUALITY check
    * ({@link RoundTripQualityResult.RejectionTier#QUALITY}: distance off-target,
@@ -292,18 +284,6 @@ public final class RoutingContext {
    * regression cannot hide behind a winning comparison branch.
    */
   public boolean roundTripInternalCompare = true;
-
-  /**
-   * Shortcut for {@link #roundTripAlgorithm} = {@link RoundTripAlgorithm#ISOCHRONE},
-   * settable via the URL parameter {@code roundTripIsochrone=1}. Honoured only when
-   * {@link #roundTripAlgorithm} is left at AUTO — an explicit algorithm always wins.
-   *
-   * <p>This is a request-input shortcut only: {@code doRoundTrip()} resolves it
-   * into {@link #roundTripAlgorithm} once, up front, after which the algorithm
-   * field is the single source of truth (this boolean is no longer read and is
-   * not copied into child contexts by {@link #copyRequestFields()}).
-   */
-  public boolean roundTripIsochrone;
 
   /**
    * Internal (never a request parameter): set by the AUTO competition on its
@@ -722,9 +702,6 @@ public final class RoutingContext {
     // but can only surface "unknown" instead of the child's real reason.
     c.roundTripStrictQuality = this.roundTripStrictQuality;
     c.roundTripInternalCompare = this.roundTripInternalCompare;
-    // roundTripIsochrone is intentionally NOT copied: doRoundTrip() resolves it
-    // into roundTripAlgorithm before any child is spawned, so the algorithm
-    // (copied above) is the single source of truth in child contexts.
     c.outputFormat = this.outputFormat;
     c.waypointCatchingRange = this.waypointCatchingRange;
     c.exportWaypoints = this.exportWaypoints;

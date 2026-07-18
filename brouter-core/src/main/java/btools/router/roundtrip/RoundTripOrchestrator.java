@@ -349,18 +349,6 @@ public final class RoundTripOrchestrator {
           ops.logInfo(request.error);
           return;
         }
-        // Resolve the roundTripIsochrone shortcut into the canonical
-        // roundTripAlgorithm ONCE, so the algorithm is the single source of
-        // truth from here down and the boolean never has to propagate to child
-        // contexts. Honoured only when no explicit algorithm was chosen — an
-        // explicit algorithm always wins, INCLUDING an explicit AUTO (the
-        // explicit-flag check; the algorithm value alone cannot tell an
-        // explicit AUTO from the default).
-        if (ops.routingContext().roundTripAlgorithm == RoundTripAlgorithm.AUTO
-            && !ops.routingContext().roundTripAlgorithmExplicit
-            && ops.routingContext().roundTripIsochrone) {
-          ops.routingContext().roundTripAlgorithm = RoundTripAlgorithm.ISOCHRONE;
-        }
         RoundTripAlgorithm algo = ops.routingContext().roundTripAlgorithm;
 
         for (Rung rung : resolveLadder(algo, searchRadius, direction)) {
