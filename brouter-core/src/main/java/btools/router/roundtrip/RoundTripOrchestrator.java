@@ -480,7 +480,12 @@ public final class RoundTripOrchestrator {
       // request.track — an exception in a cosmetic advisory must never destroy
       // a rideable result.
       try {
-        int shippedCrossings = RoundTripQualityGate.countSelfIntersections(request.track);
+        // Reuse the gate's own count for this track instead of re-scanning it
+        // a third time (already computed once in evaluateRoundTripGate above,
+        // once again inside RouteChoiceScore for AUTO candidates).
+        int shippedCrossings = quality.getSelfIntersections() >= 0
+          ? quality.getSelfIntersections()
+          : RoundTripQualityGate.countSelfIntersections(request.track);
         if (shippedCrossings > 0) {
           appendRouteMessage(request.track, String.format(Locale.US,
             "Note: route crosses its own path %d time%s.",

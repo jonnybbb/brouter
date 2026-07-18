@@ -299,7 +299,12 @@ public final class RoundTripQualityGate {
     //    closure search) — STRUCTURAL, so lenient adoption, best-effort
     //    fallbacks and AUTO children all refuse it and fall through to
     //    cleaner candidates.
-    ChaosCheck chaos = checkShapeChaos(track);
+    // Computed once here and stamped onto the returned result below
+    // (RoundTripQualityResult#withSelfIntersections) so RouteChoiceScore and
+    // the shipped-crossings advisory reuse it instead of re-scanning the same
+    // full track for the same count.
+    int selfIntersections = countSelfIntersections(track);
+    ChaosCheck chaos = checkShapeChaos(selfIntersections, track);
     if (chaos != null) {
       RoundTripQualityResult.RejectionTier tier =
         chaos.selfIntersections > 2 * MAX_SELF_INTERSECTIONS
@@ -327,7 +332,7 @@ public final class RoundTripQualityGate {
 
     // 7. Semantic reuse classification — the heart of this gate.
     RoundTripQualityResult classified = ReuseClassifier.classify(
-      track, desiredDistance, allowSamewayback);
+      track, desiredDistance, allowSamewayback).withSelfIntersections(selfIntersections);
 
     // Explicit-via mode: the user picked the route via the via skeleton, so
     // INVALID_RETRACE (mid-route retrace exceeds caps) downgrades from
@@ -343,7 +348,8 @@ public final class RoundTripQualityGate {
       .totalReuseRatio(classified.getTotalReuseRatio())
       .maxContiguousReuseMeters(classified.getMaxContiguousReuseMeters())
       .terminalStemReuseMeters(classified.getTerminalStemReuseMeters())
-      .scenicSpurReuseMeters(classified.getScenicSpurReuseMeters());
+      .scenicSpurReuseMeters(classified.getScenicSpurReuseMeters())
+      .selfIntersections(selfIntersections);
     for (String d : classified.getDisclosures()) b.addDisclosure(d);
     if (!classified.isAccepted() && classified.getRejectionReason() != null) {
       b.addDisclosure("via-route note: " + classified.getRejectionReason());
@@ -393,8 +399,7 @@ public final class RoundTripQualityGate {
     }
   }
 
-  private static ChaosCheck checkShapeChaos(OsmTrack track) {
-    int selfIntersections = countSelfIntersections(track);
+  private static ChaosCheck checkShapeChaos(int selfIntersections, OsmTrack track) {
     if (selfIntersections > MAX_SELF_INTERSECTIONS) {
       return new ChaosCheck("route has " + selfIntersections + " self-intersections (max "
         + MAX_SELF_INTERSECTIONS + ") — chaotic loop geometry", selfIntersections);
