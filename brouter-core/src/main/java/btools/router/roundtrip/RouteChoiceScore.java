@@ -262,7 +262,15 @@ public final class RouteChoiceScore {
       return new Verdict(0.0, 0.0, empty);
     }
 
-    LoopQualityMetrics m = LoopQualityMetrics.compute(track, (int) requestedDistance, requestedDirection);
+    // ONE crossing analysis for this verdict: the gate's stamped analysis when
+    // it evaluated this same track, else computed here once — feeds the
+    // metrics, the self-intersection penalty (#9), and the lasso surcharge
+    // (#9b) instead of three independent full-track scans.
+    LoopAnalysis analysis = (qualityGate != null && qualityGate.getLoopAnalysis() != null)
+      ? qualityGate.getLoopAnalysis()
+      : LoopAnalysis.of(track);
+    LoopQualityMetrics m = LoopQualityMetrics.compute(track, (int) requestedDistance,
+      requestedDirection, analysis);
     List<Reason> reasons = new ArrayList<>(8);
     double total = 0;
 
@@ -358,14 +366,10 @@ public final class RouteChoiceScore {
 
     // 9. Self-intersection penalty. A route-shape defect the cyclist sees that
     //    no term above captures (reuse = co-linear retrace, not transverse
-    //    crossings). Reuse the gate's own count when it computed one for this
-    //    same track (RoundTripQualityResult#getSelfIntersections) instead of
-    //    re-scanning; falls back to a fresh scan when no gate verdict is
-    //    available. Lets AUTO pick the cleaner of two comparable candidates;
+    //    crossings). Read from the shared analysis (gate-stamped or computed
+    //    once above). Lets AUTO pick the cleaner of two comparable candidates;
     //    measured to take shipped crossings 12.8%→3.7% (see constant).
-    int selfIntersections = (qualityGate != null && qualityGate.getSelfIntersections() >= 0)
-      ? qualityGate.getSelfIntersections()
-      : RoundTripQualityGate.countSelfIntersections(track);
+    int selfIntersections = analysis.selfIntersections;
     double selfIntPenalty = 0;
     if (selfIntersections > 0) {
       selfIntPenalty = SHAPE_PENALTY_PER_SELF_INTERSECTION * selfIntersections;
@@ -383,7 +387,7 @@ public final class RouteChoiceScore {
     double lassoPenalty = 0;
     if (selfIntersections > 0 && track.nodes != null) {
       double lassoSeverity = 0;
-      for (double[] x : LoopQualityMetrics.crossingPoints(track.nodes)) {
+      for (double[] x : analysis.crossingPoints) {
         double enclosed = x[2];
         if (enclosed <= LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS) {
           lassoSeverity += 1.0 - enclosed / LoopQualityMetrics.SMALL_LOOP_MAX_ARC_METERS;

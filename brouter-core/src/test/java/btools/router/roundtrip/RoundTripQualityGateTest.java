@@ -1182,22 +1182,23 @@ public class RoundTripQualityGateTest {
   }
 
   @Test
-  public void routeChoiceScore_reusesGateCountAndMatchesDirectRecompute() {
+  public void routeChoiceScore_reusesGateAnalysisAndMatchesDirectRecompute() {
     // Equivalence proof for the reuse path: scoring with the gate's stamped
-    // count must produce the identical verdict as scoring with a fresh direct
-    // recompute (qualityGate stripped of its stamped value) — the fast path
-    // is not allowed to diverge from the recompute it replaces.
+    // analysis must produce the identical verdict as scoring with a fresh
+    // direct recompute (qualityGate stripped of its stamped analysis) — the
+    // fast path is not allowed to diverge from the recompute it replaces.
     OsmTrack t = closedBowties(3);
     RoundTripQualityResult stamped = RoundTripQualityGate.evaluate(
       t, t.distance, /*pavedProfile*/ false, false, false, false);
     assertTrue(stamped.isAccepted());
-    assertTrue("fixture must actually carry a stamped count for this to be a real test",
+    assertTrue("fixture must actually carry a stamped analysis for this to be a real test",
       stamped.getSelfIntersections() >= 0);
 
-    RoundTripQualityResult unstamped = stamped.withSelfIntersections(-1);
+    RoundTripQualityResult unstamped = stamped.withLoopAnalysis(null);
+    assertEquals("stripped twin must read as unstamped", -1, unstamped.getSelfIntersections());
     RouteChoiceScore.Verdict viaReuse = RouteChoiceScore.score(t, t.distance, "gravel", stamped);
     RouteChoiceScore.Verdict viaRecompute = RouteChoiceScore.score(t, t.distance, "gravel", unstamped);
-    assertEquals("reused-count score must equal the freshly recomputed score",
+    assertEquals("reused-analysis score must equal the freshly recomputed score",
       viaRecompute.score(), viaReuse.score(), 1e-9);
   }
 

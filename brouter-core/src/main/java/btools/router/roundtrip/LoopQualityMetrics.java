@@ -91,6 +91,17 @@ public final class LoopQualityMetrics {
    */
   public static LoopQualityMetrics compute(OsmTrack track, int requestedDistanceMeters,
                                            double requestedDirectionDeg) {
+    return compute(track, requestedDistanceMeters, requestedDirectionDeg,
+      LoopAnalysis.of(track.nodes));
+  }
+
+  /**
+   * As {@link #compute(OsmTrack, int, double)} with the crossing analysis
+   * supplied by the caller — the scorer path passes the gate's already-computed
+   * {@link LoopAnalysis} instead of re-scanning the same track.
+   */
+  static LoopQualityMetrics compute(OsmTrack track, int requestedDistanceMeters,
+                                    double requestedDirectionDeg, LoopAnalysis analysis) {
     List<OsmPathElement> nodes = track.nodes;
 
     double reusePercent = computeRoadReusePercent(nodes);
@@ -124,12 +135,11 @@ public final class LoopQualityMetrics {
     }
 
     int[] spurInfo = computeSpurInfo(nodes);
-    int[] crossInfo = detectCrossings(nodes);
 
     return new LoopQualityMetrics(reusePercent, distRatio, dirDelta,
       track.distance, requestedDistanceMeters, contScore, maxGap, totalGap,
       compact, avgCostPerMeter, closureDist, spurInfo[0], spurInfo[1],
-      crossInfo[0], crossInfo[1]);
+      analysis.selfIntersections, analysis.smallLoopCrossings);
   }
 
   /** Spur detector: a near-revisit must be this close spatially (m) to count. */
@@ -162,58 +172,12 @@ public final class LoopQualityMetrics {
    * @return int[]{totalCrossings, smallLoopCrossings}
    */
   static int[] detectCrossings(List<OsmPathElement> nodes) {
-    int n = nodes.size();
-    if (n < 4) return new int[]{0, 0};
-    List<OsmPathElement> pts = nodes;
-    double[] cum = new double[n];
-    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + pts.get(k - 1).calcDistance(pts.get(k));
-    double perim = cum[n - 1];
-    int ceiling = 64; // we only need counts; bound degenerate inputs
-    int[] smallLoopBox = new int[1];
-    int total = RoundTripQualityGate.countSegmentPairCrossings(pts, cum, perim, ceiling,
-      (i, j) -> {
-        double arc = cum[j] - cum[i];
-        double enclosed = Math.min(arc, perim - arc);
-        if (enclosed <= SMALL_LOOP_MAX_ARC_METERS) smallLoopBox[0]++;
-      });
-    int smallLoop = smallLoopBox[0];
-    if (total > ceiling) return new int[]{total, smallLoop};
-    // Crossings AT a shared junction node — invisible to the CCW scan above
-    // (its shared-endpoint exclusion), yet the dominant real-world case on a
-    // road network: both passes ride through the same intersection. Same
-    // transversality test as the gate (RoundTripQualityGate.isTransverseRevisit)
-    // so the report metric and the production gate cannot drift.
-    Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
-    for (int k = 1; k < n - 1; k++) {
-      long id = pts.get(k).getIdFromPos();
-      List<Integer> prev = occ.get(id);
-      if (prev == null) {
-        prev = new ArrayList<>();
-        occ.put(id, prev);
-      }
-      boolean kExempt = cum[k] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-        || cum[k] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M;
-      for (int k1 : prev) {
-        if (k - k1 <= 1) continue;
-        if (kExempt || cum[k1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
-        if (RoundTripQualityGate.isTransverseRevisit(pts, k1, k)) {
-          total++;
-          double arc = cum[k] - cum[k1];
-          double enclosed = Math.min(arc, perim - arc);
-          if (enclosed <= SMALL_LOOP_MAX_ARC_METERS) smallLoop++;
-          if (total > ceiling) return new int[]{total, smallLoop};
-        }
-      }
-      prev.add(k);
-    }
-    // Shared-corridor crossings (gate: RoundTripQualityGate.countSelfIntersections
-    // does the same) — knots through a short shared run that the two scans above
-    // miss because every run node has a shared incident edge. Run on FULL-res
-    // nodes (run-grouping needs node identity, which the sampling to pts breaks).
-    // Counted toward total only, not smallLoop: these are structural shared-run
-    // knots, not small detour lassos, so they must not inflate the lasso surcharge.
-    total += RoundTripQualityGate.countCorridorCrossings(nodes);
-    return new int[]{total, smallLoop};
+    // Delegates to the shared one-pass analysis (see LoopAnalysis) — the
+    // historical inline scans lived here and are preserved there verbatim,
+    // including the corridor-crossings-count-only rule (structural shared-run
+    // knots must not inflate the lasso surcharge).
+    LoopAnalysis a = LoopAnalysis.of(nodes);
+    return new int[]{a.selfIntersections, a.smallLoopCrossings};
   }
 
   /**
@@ -224,59 +188,7 @@ public final class LoopQualityMetrics {
    * count — counts stay authoritative). Report/visualization only.
    */
   public static List<double[]> crossingPoints(List<OsmPathElement> nodes) {
-    List<double[]> out = new ArrayList<>();
-    int n = nodes == null ? 0 : nodes.size();
-    if (n < 4) return out;
-    List<OsmPathElement> pts = nodes;
-    double[] cum = new double[n];
-    for (int k = 1; k < n; k++) cum[k] = cum[k - 1] + pts.get(k - 1).calcDistance(pts.get(k));
-    double perim = cum[n - 1];
-    int ceiling = 64;
-    RoundTripQualityGate.countSegmentPairCrossings(pts, cum, perim, ceiling,
-      (i, j) -> {
-        double arc = cum[j] - cum[i];
-        double enclosed = Math.min(arc, perim - arc);
-        out.add(intersectionLonLat(pts.get(i), pts.get(i + 1), pts.get(j), pts.get(j + 1), enclosed));
-      });
-    if (out.size() > ceiling) return out;
-    Map<Long, List<Integer>> occ = new HashMap<>(n * 2);
-    for (int k = 1; k < n - 1; k++) {
-      long id = pts.get(k).getIdFromPos();
-      List<Integer> prev = occ.get(id);
-      if (prev == null) {
-        prev = new ArrayList<>();
-        occ.put(id, prev);
-      }
-      boolean kExempt = cum[k] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M
-        || cum[k] >= perim - RoundTripQualityGate.CROSSING_START_END_EXEMPT_M;
-      for (int k1 : prev) {
-        if (k - k1 <= 1) continue;
-        if (kExempt || cum[k1] <= RoundTripQualityGate.CROSSING_START_END_EXEMPT_M) continue;
-        if (RoundTripQualityGate.isTransverseRevisit(pts, k1, k)) {
-          double arc = cum[k] - cum[k1];
-          double enclosed = Math.min(arc, perim - arc);
-          out.add(new double[]{pts.get(k).getILon() / 1e6 - 180.0,
-            pts.get(k).getILat() / 1e6 - 90.0, enclosed});
-          if (out.size() > ceiling) return out;
-        }
-      }
-      prev.add(k);
-    }
-    return out;
-  }
-
-  /** Parametric intersection of two (known-crossing) segments, in degrees. */
-  private static double[] intersectionLonLat(OsmPathElement p1, OsmPathElement p2,
-                                             OsmPathElement p3, OsmPathElement p4, double enclosed) {
-    double x1 = p1.getILon(), y1 = p1.getILat();
-    double dx1 = p2.getILon() - x1, dy1 = p2.getILat() - y1;
-    double x3 = p3.getILon(), y3 = p3.getILat();
-    double dx2 = p4.getILon() - x3, dy2 = p4.getILat() - y3;
-    double denom = dx1 * dy2 - dy1 * dx2;
-    double t = denom == 0 ? 0.5 : ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom;
-    double lon = (x1 + t * dx1) / 1e6 - 180.0;
-    double lat = (y1 + t * dy1) / 1e6 - 90.0;
-    return new double[]{lon, lat, enclosed};
+    return LoopAnalysis.of(nodes).crossingPoints;
   }
 
   /**
