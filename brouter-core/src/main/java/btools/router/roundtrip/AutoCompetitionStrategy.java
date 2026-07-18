@@ -365,14 +365,20 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       r.planner = child.getLastRoundTripResult();
 
       if (r.track != null) {
-        // Score against the parent's expected loop distance. This produces
-        // a verdict that may differ from the child's internal gate result
-        // because the parent's ops.routingContext() is the source of truth (e.g.
-        // for profile-name lookup), but in practice both agree.
+        // Child-verdict transport: the child already gated this exact track in
+        // its own shared finalization and published the verdict (with its
+        // stamped LoopAnalysis, which the scorer below reuses). Consuming it
+        // makes the child's run the single gate evaluation per candidate.
+        // ChildVerdictTransportEquivalenceTest pins field-level equality with
+        // the re-gate this replaces; the re-gate remains only as the defensive
+        // fallback for a child that shipped a track without publishing (which
+        // no current path does).
         double expectedDist = 2 * Math.PI * searchRadius;
         String profileName = ops.routingContext().getProfileName();
-        r.gateVerdict = orchestrator.evaluateRoundTripGate(r.track, searchRadius, false,
-          r.forcedCorridorAccepted());
+        RoundTripQualityResult childVerdict = child.getLastRoundTripQuality();
+        r.gateVerdict = childVerdict != null ? childVerdict
+          : orchestrator.evaluateRoundTripGate(r.track, searchRadius, false,
+              r.forcedCorridorAccepted());
         if (r.gateVerdict.isAccepted()) {
           r.score = RouteChoiceScore.score(r.track, expectedDist,
             profileName, r.gateVerdict, direction);

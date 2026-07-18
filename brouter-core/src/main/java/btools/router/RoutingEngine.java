@@ -77,6 +77,7 @@ public class RoutingEngine extends Thread {
    */
   private OsmTrack lastRejectedTrack;
   private RoundTripResult lastRoundTripResult;
+  private RoundTripQualityResult lastRoundTripQuality;
   private int alternativeIndex = 0;
 
   protected String outputMessage = null;
@@ -1003,6 +1004,11 @@ public class RoutingEngine extends Thread {
       @Override
       public void setLastRoundTripResult(RoundTripResult result) {
         lastRoundTripResult = result;
+      }
+
+      @Override
+      public void setLastRoundTripQuality(RoundTripQualityResult quality) {
+        lastRoundTripQuality = quality;
       }
 
       @Override
@@ -3749,6 +3755,17 @@ public class RoutingEngine extends Thread {
   /** The last round-trip planning result (carries the planned loop waypoints), or null. */
   public RoundTripResult getLastRoundTripResult() {
     return lastRoundTripResult;
+  }
+
+  /**
+   * The last round-trip request's final quality-gate verdict (for the shipped
+   * track, or — on a hard reject — the track in {@link #getLastRejectedTrack()}).
+   * Null when the request never reached the gate (floors, budget, no loop).
+   * The AUTO competition reads this off child engines so a candidate is gated
+   * exactly once (in the child) instead of re-evaluated in the parent.
+   */
+  public RoundTripQualityResult getLastRoundTripQuality() {
+    return lastRoundTripQuality;
   }
 
   /**

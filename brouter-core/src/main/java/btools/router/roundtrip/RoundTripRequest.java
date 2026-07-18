@@ -110,6 +110,12 @@ final class RoundTripRequest {
   /** Last gate-rejected track; published to the engine at request end. */
   OsmTrack lastRejectedTrack;
 
+  /** Final quality-gate verdict of this request (shipped or hard-rejected
+   *  track); null when the gate was never reached. Published to the engine at
+   *  request end so a parent AUTO competition can consume it instead of
+   *  re-gating the child's track. */
+  RoundTripQualityResult qualityVerdict;
+
   /** Planner result telemetry; published to the engine at request end. */
   RoundTripResult lastResult;
 }
