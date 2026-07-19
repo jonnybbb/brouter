@@ -1,5 +1,7 @@
 plugins {
     id 'brouter.application-conventions'
+    id 'java-test-fixtures'
+    id 'brouter.integration-test-conventions'
 }
 
 dependencies {
@@ -8,4 +10,27 @@ dependencies {
     implementation project(':brouter-expressions')
 
     implementation 'org.openstreetmap.osmosis:osmosis-osm-binary:0.48.3'
+
+    // ImageIO plugin for the lossless WebP tiles in Mapterhorn's PMTiles archives.
+    // Wraps libwebp; a pure-Java decoder was rejected upstream in GraphHopper because
+    // it mis-decoded elevation in some coastal regions.
+    runtimeOnly 'com.github.usefulness:webp-imageio:0.10.0'
+
+    testImplementation testFixtures(project(':brouter-map-creator'))
+}
+
+// --- Integration tests -----------------------------------------------------
+// Wiring comes from brouter.integration-test-conventions; this module additionally
+// reuses the shared WebP/terrain test fixtures (src/testFixtures/resources) — the
+// slow suite validates the converter against the swissALTI3D LiDAR reference, with
+// the per-climb reference CSVs next to the suite in src/integrationTest.
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.testFixtures.output
+        runtimeClasspath += sourceSets.testFixtures.output
+    }
+}
+
+tasks.named('integrationTest') {
+    description = 'Runs the slow, real-tile Mapterhorn validation suite (offline; builds a full 1-arcsecond raster).'
 }

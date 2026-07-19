@@ -1,0 +1,25 @@
+// Shared wiring for slow suites that live in src/integrationTest/{java,resources}
+// and run only via `./gradlew integrationTest`, keeping `./gradlew test` fast.
+// Modules add their own extra classpath entries (e.g. testFixtures output) locally.
+
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+tasks.register('integrationTest', Test) {
+    group = 'verification'
+    useJUnit()
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+    // the Mapterhorn suites build full 1-arcsecond cell rasters (648 MB each)
+    maxHeapSize = '2g'
+}
