@@ -126,25 +126,15 @@ final class FastStrategy implements RoundTripStrategy {
           targetPoints, true);
         placedPath = fastOutcome.path;
       } else {
-        ProbeResult probe = snapper.probeReachableDirections(ops.waypoints().get(0), searchRadius);
-        // FAST tier: drop single-probe-success directions when enough strong
-        // alternatives exist. Avoids fragile sea-edge/dead-end picks.
-        double[] viableDirections = PlacementGeometry.filterByProbeConfidence(probe, targetPoints);
-        if (viableDirections != null && viableDirections.length >= 3) {
-          orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.ENVELOPE_FAST);
-          placer.placeWaypointsFromEnvelope(ops.waypoints(), viableDirections, searchRadius, direction, targetPoints);
-        } else {
-          ops.logInfo("reachability probe returned < 3 directions, falling back to circle");
-          orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.CIRCLE);
-          ops.buildPointsFromCircle(ops.waypoints(), direction, searchRadius, targetPoints);
-        }
+        placeLegacy(snapper, placer, searchRadius, direction, targetPoints);
       }
 
       // Idea 4: the optimized FAST module fully validates its own skeleton —
       // probe-snapped vias are pre-validated, and its circle fallback runs this
-      // pass behind FastPlacementOps.circleFallbackValidated. Only the ISOCHRONE
-      // and legacy A/B placements need the caller-side matching pass.
-      if (algo == RoundTripAlgorithm.ISOCHRONE || !fastOptimized) {
+      // pass behind FastPlacementOps.circleFallbackValidated. The legacy
+      // placement validates inside placeLegacy; only ISOCHRONE needs the
+      // caller-side matching pass here.
+      if (algo == RoundTripAlgorithm.ISOCHRONE) {
         snapper.validateAndAdjustWaypoints(ops.waypoints(), searchRadius);
       }
 
@@ -180,6 +170,106 @@ final class FastStrategy implements RoundTripStrategy {
       placeOptimized(searchRadius, direction, targetPoints, false);
       ops.setMatchedWaypoints(null);
       orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
+    }
+
+    // Shape retry: the optimized placement is faster but can produce tangled
+    // loops where the legacy probe+envelope placement stays clean (measured —
+    // Limoux 180 km east: 5 self-crossings optimized vs 1 legacy; Basel
+    // 180 km: hostile-stretch warning vs a gate-accepted loop). Probe this
+    // attempt's own gate verdict; on a rejection, redo the placement the
+    // legacy way and keep the better outcome. WAYPOINT tier only — ISOCHRONE
+    // and forced-legacy runs are already on the legacy pass.
+    if (algo == RoundTripAlgorithm.WAYPOINT
+        && !ops.routingContext().allowSamewayback
+        && Boolean.parseBoolean(System.getProperty("roundtrip.fast.optimized", "true"))
+        && Boolean.parseBoolean(System.getProperty("roundtrip.fast.shape.retry", "true"))
+        && !degenerateOutcome(request)) {
+      RoundTripQualityResult optVerdict =
+        orchestrator.evaluateRoundTripGate(request.track, searchRadius, false, false);
+      if (!optVerdict.isAccepted()) {
+        retryLegacyPlacement(request, snapper, placer, searchRadius, direction,
+          targetPoints, optVerdict);
+      }
+    }
+  }
+
+  /**
+   * The legacy probe+envelope FAST placement (the pre-optimization path):
+   * reachability probe, confidence filter, envelope placement (circle
+   * fallback), then the full re-validation pass. Selectable for a whole run
+   * via {@code -Droundtrip.fast.optimized=false}; the shape retry uses it
+   * when the optimized loop fails the gate.
+   */
+  private void placeLegacy(WaypointSnapper snapper, GeometricWaypointPlacer placer,
+                           double searchRadius, double direction, int targetPoints) {
+    ProbeResult probe = snapper.probeReachableDirections(ops.waypoints().get(0), searchRadius);
+    // FAST tier: drop single-probe-success directions when enough strong
+    // alternatives exist. Avoids fragile sea-edge/dead-end picks.
+    double[] viableDirections = PlacementGeometry.filterByProbeConfidence(probe, targetPoints);
+    if (viableDirections != null && viableDirections.length >= 3) {
+      orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.ENVELOPE_FAST);
+      placer.placeWaypointsFromEnvelope(ops.waypoints(), viableDirections, searchRadius, direction, targetPoints);
+    } else {
+      ops.logInfo("reachability probe returned < 3 directions, falling back to circle");
+      orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.CIRCLE);
+      ops.buildPointsFromCircle(ops.waypoints(), direction, searchRadius, targetPoints);
+    }
+    snapper.validateAndAdjustWaypoints(ops.waypoints(), searchRadius);
+  }
+
+  /**
+   * Redo placement with the legacy pass and keep the better of the two
+   * outcomes: the legacy loop ships when its verdict is accepted or it has
+   * fewer self-crossings than the rejected optimized loop; otherwise the
+   * optimized outcome (track + matched waypoints + skeleton) is restored.
+   */
+  private void retryLegacyPlacement(RoundTripRequest request, WaypointSnapper snapper,
+                                    GeometricWaypointPlacer placer, double searchRadius,
+                                    double direction, int targetPoints,
+                                    RoundTripQualityResult optVerdict) {
+    ops.logInfo("FAST: optimized placement rejected by the gate ("
+      + (optVerdict.getRejectionReason() == null
+        ? String.valueOf(optVerdict.getShape()) : optVerdict.getRejectionReason())
+      + "); retrying with the legacy placement");
+    btools.router.OsmTrack optTrack = request.track;
+    List<btools.mapaccess.MatchedWaypoint> optMatched = ops.matchedWaypoints();
+    List<OsmNodeNamed> optSkeleton = new java.util.ArrayList<>(ops.waypoints());
+
+    orchestrator.setError(null);
+    // Route fresh: doRoutingIntoRequest seeds the engine with request.track,
+    // which the round-trip anti-reuse penalty treats as a reference — leaving
+    // the optimized loop in place would steer the retry AWAY from its roads
+    // instead of re-deciding freely (measured: 198 km warned vs the 147 km
+    // accepted loop the same placement finds on a clean engine).
+    orchestrator.setTrack(null);
+    OsmNodeNamed start = ops.waypoints().get(0);
+    ops.waypoints().clear();
+    ops.waypoints().add(start);
+    placeLegacy(snapper, placer, searchRadius, direction, targetPoints);
+    snapper.snapStartToRoad(ops.waypoints(), searchRadius);
+    ops.setMatchedWaypoints(null);
+    orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
+
+    boolean legacyUsable = request.error == null && !degenerateOutcome(request);
+    RoundTripQualityResult legacyVerdict = legacyUsable
+      ? orchestrator.evaluateRoundTripGate(request.track, searchRadius, false, false)
+      : null;
+    int optCrossings = optVerdict.getSelfIntersections() < 0
+      ? Integer.MAX_VALUE : optVerdict.getSelfIntersections();
+    boolean keepLegacy = legacyUsable
+      && (legacyVerdict.isAccepted()
+        || (legacyVerdict.getSelfIntersections() >= 0
+          && legacyVerdict.getSelfIntersections() < optCrossings));
+    if (keepLegacy) {
+      ops.logInfo("FAST: shipping the legacy-placement loop ("
+        + (legacyVerdict.isAccepted() ? "gate-accepted" : "fewer self-crossings") + ")");
+    } else {
+      ops.logInfo("FAST: legacy retry not better; keeping the optimized loop");
+      orchestrator.setError(null);
+      orchestrator.setTrack(optTrack);
+      ops.setMatchedWaypoints(optMatched);
+      ops.waypoints().clear();
+      ops.waypoints().addAll(optSkeleton);
     }
   }
 
