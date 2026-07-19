@@ -60,6 +60,29 @@ public class PlacementGeometryTest {
   }
 
   @Test
+  public void sortDirectionsForFanSweepsAcrossTheAnchor() {
+    // A directional fan STRADDLES its anchor: the loop must sweep from the
+    // fan's left edge to its right edge (signed relative order), not start at
+    // the anchor and wrap (0..360 relative) — the wrap order routes
+    // middle -> right -> far-right -> JUMP far-left -> left, a built-in
+    // zigzag for every directional lobe skeleton.
+    double[] fan = {90, 120, 150, 30, 60};
+    double[] sorted = PlacementGeometry.sortDirectionsForFan(fan, 90);
+    Assert.assertArrayEquals(new double[]{30, 60, 90, 120, 150}, sorted, 0.001);
+
+    // Wrap-around fan (anchor 0): 350 is LEFT of the anchor, 30 right of it.
+    double[] wrap = {30, 350, 10};
+    Assert.assertArrayEquals(new double[]{350, 10, 30},
+      PlacementGeometry.sortDirectionsForFan(wrap, 0), 0.001);
+
+    // Substitute mix (the Girona 50km-E mtb case): SE(135), S(171), N(15), E(75)
+    // around anchor 90 must sweep N -> E -> SE -> S.
+    double[] mix = {135, 171, 15, 75};
+    Assert.assertArrayEquals(new double[]{15, 75, 135, 171},
+      PlacementGeometry.sortDirectionsForFan(mix, 90), 0.001);
+  }
+
+  @Test
   public void sortDirectionsForLoop() {
     double[] dirs = {270, 90, 180, 0};
     double[] sorted = PlacementGeometry.sortDirectionsForLoop(dirs, 0);

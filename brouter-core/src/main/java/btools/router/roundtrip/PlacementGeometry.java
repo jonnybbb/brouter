@@ -119,6 +119,32 @@ public final class PlacementGeometry {
     return sorted;
   }
 
+  /**
+   * Sort a DIRECTIONAL fan into loop order: by signed relative angle to the
+   * anchor, ascending — a left-to-right sweep across the fan. Unlike
+   * {@link #sortDirectionsForLoop} (whose [0,360) relative order is right for
+   * a full encircling ring), this handles a fan that STRADDLES its anchor:
+   * the ring order would start at the anchor and wrap, routing
+   * middle → right edge → JUMP to the far-left edge — a built-in zigzag for
+   * every directional lobe skeleton (found via scrambled via numbering on
+   * girona_50km_mtb_E, compactness 0.14).
+   */
+  public static double[] sortDirectionsForFan(double[] directions, double anchor) {
+    int n = directions.length;
+    double[][] relative = new double[n][2];
+    for (int i = 0; i < n; i++) {
+      double rel = directions[i] - anchor;
+      while (rel <= -180) rel += 360;
+      while (rel > 180) rel -= 360;
+      relative[i][0] = rel;
+      relative[i][1] = directions[i];
+    }
+    java.util.Arrays.sort(relative, (a, b) -> Double.compare(a[0], b[0]));
+    double[] sorted = new double[n];
+    for (int i = 0; i < n; i++) sorted[i] = relative[i][1];
+    return sorted;
+  }
+
   /** Absolute angular difference in [0, 180] degrees. Delegates to CheapAngleMeter. */
   public static double angleDiff(double a, double b) {
     return CheapAngleMeter.getDifferenceFromDirection(a, b);

@@ -296,12 +296,17 @@ final class FastStrategy implements RoundTripStrategy {
     RoundTripQualityResult circleVerdict = circleUsable
       ? orchestrator.evaluateRoundTripGate(request.track, searchRadius, false, false)
       : null;
-    // Shape-first cascade (the FAST tier's contract: loop FORM over length —
-    // length is the user's input knob): a real loop beats a thread even when
-    // the thread is gate-accepted (the gate cannot see threads: an
-    // out-and-back over parallel streets closes, retraces nothing and passes
-    // every check); then acceptance; then fewer self-crossings; then clearly
-    // higher compactness. Length never decides. Ties keep the optimized loop.
+    // Shape-first cascade (the FAST tier's contract: loop FORM first —
+    // length is the user's input knob): 1) a real loop beats a thread even
+    // when the thread is gate-accepted (the gate cannot see threads);
+    // 2) a STRUCTURALLY rejected loop (broken closure/beeline class) never
+    // ships over a structurally sound one; 3) fewer self-crossings beats
+    // MORE, even against gate acceptance — a QUALITY-tier warning is a
+    // disclosed imperfection the lenient gate ships anyway, while a tangle
+    // is exactly what the user sees (measured: an accepted 4-crossing lobe
+    // must lose to a clean warned circle); 4) then acceptance; 5) then
+    // clearly higher compactness. Length never decides. Ties keep the
+    // optimized loop.
     boolean keepCircle = false;
     if (circleUsable) {
       double cirCompact = trackCompactness(request);
@@ -311,12 +316,18 @@ final class FastStrategy implements RoundTripStrategy {
         ? Integer.MAX_VALUE : circleVerdict.getSelfIntersections();
       boolean optIsLoop = optCompact >= MIN_FAST_COMPACTNESS;
       boolean cirIsLoop = cirCompact >= MIN_FAST_COMPACTNESS;
+      boolean optStructural = !optVerdict.isAccepted()
+        && optVerdict.getRejectionTier() == RoundTripQualityResult.RejectionTier.STRUCTURAL;
+      boolean cirStructural = !circleVerdict.isAccepted()
+        && circleVerdict.getRejectionTier() == RoundTripQualityResult.RejectionTier.STRUCTURAL;
       if (cirIsLoop != optIsLoop) {
         keepCircle = cirIsLoop;
-      } else if (circleVerdict.isAccepted() != optVerdict.isAccepted()) {
-        keepCircle = circleVerdict.isAccepted();
+      } else if (cirStructural != optStructural) {
+        keepCircle = optStructural;
       } else if (cirCrossings != optCrossings) {
         keepCircle = cirCrossings < optCrossings;
+      } else if (circleVerdict.isAccepted() != optVerdict.isAccepted()) {
+        keepCircle = circleVerdict.isAccepted();
       } else {
         keepCircle = cirCompact > optCompact + 0.02;
       }
