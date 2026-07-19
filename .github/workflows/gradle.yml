@@ -31,7 +31,7 @@ jobs:
         ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.BROUTER_KEY_ALIAS }}
         ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.BROUTER_KEY_PASSWORD }}
         ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.BROUTER_STORE_PASSWORD }}
-      run: ./gradlew build integrationTest
+      run: ./gradlew build :brouter-map-creator:integrationTest :brouter-server:integrationTest
     - name: Upload ZIP
       uses: actions/upload-artifact@v4
       with:
