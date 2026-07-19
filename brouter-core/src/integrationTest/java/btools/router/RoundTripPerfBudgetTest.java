@@ -85,7 +85,11 @@ public class RoundTripPerfBudgetTest {
     // -Dperf.calibrate=true after intentional planner-cost changes.
     return Arrays.asList(new Object[][]{
       // Small-loop class (afischerdev's CLI scenario scale)
-      {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.WAYPOINT, 64, 200_000, -1, "basel_15km_fastbike_FAST"},
+      // 200k -> 450k (2026-07-19): the FAST shape retry routes a second
+      // (circle) pass when the first loop is flawed — bounded x2 work by
+      // design, observed 228k on this cell; 450k keeps the ~2x margin over
+      // the observed retry-inclusive cost.
+      {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.WAYPOINT, 64, 450_000, -1, "basel_15km_fastbike_FAST"},
       {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.BALANCED, 64, 8_000_000, 60, "basel_15km_fastbike_BALANCED"},
       {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.AUTO, 64, 9_000_000, -1, "basel_15km_fastbike_AUTO"},
       // Standard class
