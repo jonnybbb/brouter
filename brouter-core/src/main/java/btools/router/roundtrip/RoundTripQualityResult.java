@@ -90,7 +90,7 @@ public final class RoundTripQualityResult {
    * ({@link RouteChoiceScore}, the shipped-crossings advisory) should read
    * this instead of re-scanning — one full-track crossing scan per track.
    */
-  int getSelfIntersections() {
+  public int getSelfIntersections() {
     return loopAnalysis == null ? -1 : loopAnalysis.selfIntersections;
   }
 
