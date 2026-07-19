@@ -481,7 +481,13 @@ public abstract class LoopQualityTestBase {
       // healthy sweep case with >=1.3 margin over the enabled regions'
       // observed max (Freiburg 10.9, Girona 11.7) and still fails the
       // degenerate class.
-      case "mtb": return 13.0;
+      // 13.0 -> 14.0 (2026-07-19): the FAST shape retry improved the AUTO
+      // fallback candidate; garmisch_50km_mtb_S's new winner is strictly
+      // better than the old one (27.7 vs 24.6 km, compactness 0.42 vs 0.35,
+      // raw cost/m 17.66 vs 18.40) but prices 15.93 surface cost/m against
+      // the old 14.95 ceiling. 14.0 (16.1 effective with the 1.15 tolerance)
+      // covers it and still separates the degenerate class at 17.7+.
+      case "mtb": return 14.0;
       case "trekking": return 4.0;
       default: return 4.5;
     }

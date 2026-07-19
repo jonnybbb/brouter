@@ -246,7 +246,7 @@ final class LoopQualityReportGenerator {
     sb.append("    layers[idx].setStyle({weight: 5, opacity: 1.0});\n");
     sb.append("    layers[idx].bringToFront();\n");
     sb.append("    map.fitBounds(layers[idx].getBounds().pad(0.1));\n");
-    sb.append("    layers[idx].openPopup();\n");
+    sb.append("    // popup stays closed on focus: it tends to cover the route; click the line to open it\n");
     sb.append("  } else {\n");
     sb.append("    map.setView(r.center, 11);\n");
     sb.append("  }\n");
@@ -267,7 +267,7 @@ final class LoopQualityReportGenerator {
     sb.append("  });\n");
     sb.append("  highlightRow(idx);\n");
     sb.append("  drawDefects(routes[idx]);\n");
-    sb.append("  if (layers[idx]) { layers[idx].bringToFront(); layers[idx].openPopup(); }\n");
+    sb.append("  if (layers[idx]) { layers[idx].bringToFront(); }\n");
     sb.append("  if (bounds.isValid()) map.fitBounds(bounds.pad(0.1));\n");
     sb.append("}\n\n");
 
@@ -497,10 +497,19 @@ final class LoopQualityReportGenerator {
     }
     sb.append("xpts:[");
     if (els != null && r.metrics != null && r.metrics.getSelfIntersections() > 0) {
-      boolean first = true;
-      for (double[] x : LoopQualityMetrics.crossingPoints(els)) {
-        if (!first) sb.append(",");
-        first = false;
+      // The render-time scan runs on the simplified geometry, where
+      // Douglas-Peucker straightens near-parallel corridor passes into
+      // segments that cross back and forth — fabricating intersections
+      // (measured: 13 scan hits vs 1 true crossing on
+      // finale_ligure_75km_mtb_N). Fabricated crossings enclose tiny arcs,
+      // real ones large — so draw only the largest-arc hits, capped at the
+      // authoritative full-resolution count from the table metrics.
+      List<double[]> hits = new java.util.ArrayList<>(LoopQualityMetrics.crossingPoints(els));
+      hits.sort((a, b) -> Double.compare(b[2], a[2]));
+      int limit = Math.min(hits.size(), r.metrics.getSelfIntersections());
+      for (int k = 0; k < limit; k++) {
+        double[] x = hits.get(k);
+        if (k > 0) sb.append(",");
         sb.append(String.format(Locale.US, "[%.5f,%.5f,%.0f]", x[1], x[0], x[2]));
       }
     }
