@@ -511,6 +511,33 @@ public final class LoopQualityMetrics {
    * circle with the same circumference as the track distance ({@code distance} in meters). A
    * perfect circle scores 1.0, an out-and-back line ~0.
    */
+  /**
+   * Isoperimetric compactness over the NET enclosed area (signed shoelace,
+   * perimeter = track distance): out-and-back legs cancel, so a "thread" — a
+   * loop-shaped route that goes out and comes back on parallel roads — scores
+   * near 0 even when its convex hull is large (a V-shaped thread hulls into a
+   * fat triangle, which is why {@link #computeCompactnessScore} cannot see
+   * it). 1.0 = a perfect circle.
+   */
+  public static double enclosedAreaCompactness(List<OsmPathElement> nodes, int distance) {
+    if (nodes == null || nodes.size() < 3 || distance <= 0) return 0.0;
+    double latScale = Math.cos(Math.toRadians(nodes.get(0).getILat() / 1e6 - 90.0));
+    double signedArea = 0;
+    int step = Math.max(1, nodes.size() / 2000);
+    OsmPathElement prev = nodes.get(0);
+    for (int i = step; i < nodes.size(); i += step) {
+      OsmPathElement n = nodes.get(i);
+      signedArea += (double) prev.getILon() * n.getILat() - (double) n.getILon() * prev.getILat();
+      prev = n;
+    }
+    OsmPathElement first = nodes.get(0);
+    signedArea += (double) prev.getILon() * first.getILat() - (double) first.getILon() * prev.getILat();
+    // ilon/ilat microdegrees -> meters^2 (lon scaled by cos(lat))
+    double areaM2 = Math.abs(signedArea) / 2.0 * (111320.0 * latScale * 1e-6) * (110540.0 * 1e-6);
+    double perim = distance;
+    return Math.min(1.0, 4 * Math.PI * areaM2 / (perim * perim));
+  }
+
   static double computeCompactnessScore(List<OsmPathElement> nodes, int distance) {
     if (nodes.size() < 3 || distance <= 0) return 0.0;
 

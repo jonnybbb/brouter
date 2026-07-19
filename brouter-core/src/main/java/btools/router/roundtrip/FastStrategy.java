@@ -186,11 +186,37 @@ final class FastStrategy implements RoundTripStrategy {
         && !degenerateOutcome(request)) {
       RoundTripQualityResult optVerdict =
         orchestrator.evaluateRoundTripGate(request.track, searchRadius, false, false);
-      if (!optVerdict.isAccepted()) {
-        retryLegacyPlacement(request, snapper, placer, searchRadius, direction,
-          targetPoints, optVerdict);
+      // Retry on any of FAST's three measured failure shapes, not only on a
+      // gate rejection (Freiburg corpus, 20 cells vs upstream's old routine):
+      // tolerated self-crossings (34 vs 11 with the rejection-only trigger),
+      // and near-zero-area "threads" — an out-and-back over PARALLEL streets
+      // closes cleanly, retraces nothing and crosses little, so every gate
+      // check passes while the enclosed area collapses (11 of 20 cells at
+      // compactness 0.00-0.09 vs upstream's 0.15-0.45). The keep-better rule
+      // below ships the legacy loop only when it is strictly better, so a
+      // clean optimized loop never loses.
+      double optCompact = trackCompactness(request);
+      if (!optVerdict.isAccepted() || optVerdict.getSelfIntersections() > 0
+          || optCompact < MIN_FAST_COMPACTNESS) {
+        retryCirclePlacement(request, snapper, searchRadius, direction,
+          targetPoints, optVerdict, optCompact);
       }
     }
+  }
+
+  /**
+   * Loop-vs-thread floor for the shape retry: isoperimetric compactness below
+   * this means the routed "loop" encloses almost no area. Corpus calibration
+   * (Freiburg fastbike, 20 cells): degenerate threads price 0.00-0.09, the old
+   * routine's real loops 0.09-0.45 — 0.10 catches the thread class while a
+   * borderline real loop merely earns a (harmless) second attempt.
+   */
+  static final double MIN_FAST_COMPACTNESS = 0.10;
+
+  private double trackCompactness(RoundTripRequest request) {
+    // NET enclosed area, not the hull metric: only this discriminates a real
+    // loop from a thread (see enclosedAreaCompactness).
+    return LoopQualityMetrics.enclosedAreaCompactness(request.track.nodes, request.track.distance);
   }
 
   /**
@@ -223,14 +249,21 @@ final class FastStrategy implements RoundTripStrategy {
    * fewer self-crossings than the rejected optimized loop; otherwise the
    * optimized outcome (track + matched waypoints + skeleton) is restored.
    */
-  private void retryLegacyPlacement(RoundTripRequest request, WaypointSnapper snapper,
-                                    GeometricWaypointPlacer placer, double searchRadius,
-                                    double direction, int targetPoints,
-                                    RoundTripQualityResult optVerdict) {
-    ops.logInfo("FAST: optimized placement rejected by the gate ("
-      + (optVerdict.getRejectionReason() == null
-        ? String.valueOf(optVerdict.getShape()) : optVerdict.getRejectionReason())
-      + "); retrying with the legacy placement");
+  private void retryCirclePlacement(RoundTripRequest request, WaypointSnapper snapper,
+                                    double searchRadius, double direction, int targetPoints,
+                                    RoundTripQualityResult optVerdict, double optCompact) {
+    String why;
+    if (!optVerdict.isAccepted()) {
+      why = "rejected by the gate (" + (optVerdict.getRejectionReason() == null
+        ? String.valueOf(optVerdict.getShape()) : optVerdict.getRejectionReason()) + ")";
+    } else if (optVerdict.getSelfIntersections() > 0) {
+      why = "has " + optVerdict.getSelfIntersections() + " self-crossing(s)";
+    } else {
+      why = String.format(java.util.Locale.ROOT,
+        "is a near-zero-area thread (compactness %.2f)", optCompact);
+    }
+    ops.logInfo("FAST: optimized placement " + why
+      + "; retrying with the classic circle placement");
     btools.router.OsmTrack optTrack = request.track;
     List<btools.mapaccess.MatchedWaypoint> optMatched = ops.matchedWaypoints();
     List<OsmNodeNamed> optSkeleton = new java.util.ArrayList<>(ops.waypoints());
@@ -245,26 +278,64 @@ final class FastStrategy implements RoundTripStrategy {
     OsmNodeNamed start = ops.waypoints().get(0);
     ops.waypoints().clear();
     ops.waypoints().add(start);
-    placeLegacy(snapper, placer, searchRadius, direction, targetPoints);
+    // The upstream-equivalent placement class: raw geometric circle vias
+    // toward the requested direction, routed as-is — NO relocation pass.
+    // This is what holds direction and length in terrain where the
+    // probe-filtered placements collapse (Freiburg corpus: upstream's routine
+    // averages 99% of the ask where the optimized lobe threads or stars), and
+    // the relocation pass is exactly what collapsed the 50km-east circle back
+    // into the valley thread it was meant to escape. Degenerate outcomes
+    // (beelines, islands — the old routine's failure modes) lose in the
+    // keep-better cascade below, so the rawness is safe here.
+    ops.buildPointsFromCircle(ops.waypoints(), direction, searchRadius, targetPoints);
     snapper.snapStartToRoad(ops.waypoints(), searchRadius);
     ops.setMatchedWaypoints(null);
     orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
 
-    boolean legacyUsable = request.error == null && !degenerateOutcome(request);
-    RoundTripQualityResult legacyVerdict = legacyUsable
+    boolean circleUsable = request.error == null && !degenerateOutcome(request);
+    RoundTripQualityResult circleVerdict = circleUsable
       ? orchestrator.evaluateRoundTripGate(request.track, searchRadius, false, false)
       : null;
-    int optCrossings = optVerdict.getSelfIntersections() < 0
-      ? Integer.MAX_VALUE : optVerdict.getSelfIntersections();
-    boolean keepLegacy = legacyUsable
-      && (legacyVerdict.isAccepted()
-        || (legacyVerdict.getSelfIntersections() >= 0
-          && legacyVerdict.getSelfIntersections() < optCrossings));
-    if (keepLegacy) {
-      ops.logInfo("FAST: shipping the legacy-placement loop ("
-        + (legacyVerdict.isAccepted() ? "gate-accepted" : "fewer self-crossings") + ")");
+    // Shape-first cascade (the FAST tier's contract: loop FORM over length —
+    // length is the user's input knob): a real loop beats a thread even when
+    // the thread is gate-accepted (the gate cannot see threads: an
+    // out-and-back over parallel streets closes, retraces nothing and passes
+    // every check); then acceptance; then fewer self-crossings; then clearly
+    // higher compactness. Length never decides. Ties keep the optimized loop.
+    boolean keepCircle = false;
+    if (circleUsable) {
+      double cirCompact = trackCompactness(request);
+      int optCrossings = optVerdict.getSelfIntersections() < 0
+        ? Integer.MAX_VALUE : optVerdict.getSelfIntersections();
+      int cirCrossings = circleVerdict.getSelfIntersections() < 0
+        ? Integer.MAX_VALUE : circleVerdict.getSelfIntersections();
+      boolean optIsLoop = optCompact >= MIN_FAST_COMPACTNESS;
+      boolean cirIsLoop = cirCompact >= MIN_FAST_COMPACTNESS;
+      if (cirIsLoop != optIsLoop) {
+        keepCircle = cirIsLoop;
+      } else if (circleVerdict.isAccepted() != optVerdict.isAccepted()) {
+        keepCircle = circleVerdict.isAccepted();
+      } else if (cirCrossings != optCrossings) {
+        keepCircle = cirCrossings < optCrossings;
+      } else {
+        keepCircle = cirCompact > optCompact + 0.02;
+      }
+    }
+    if (circleUsable) {
+      ops.logInfo(String.format(java.util.Locale.ROOT,
+        "FAST: circle attempt %.1fkm accepted=%s crossings=%d compactness=%.2f",
+        request.track.distance / 1000.0, circleVerdict.isAccepted(),
+        circleVerdict.getSelfIntersections(),
+        trackCompactness(request)));
     } else {
-      ops.logInfo("FAST: legacy retry not better; keeping the optimized loop");
+      ops.logInfo("FAST: circle attempt unusable ("
+        + (request.error != null ? request.error : "degenerate track") + ")");
+    }
+    if (keepCircle) {
+      ops.logInfo("FAST: shipping the circle-placement loop ("
+        + (circleVerdict.isAccepted() ? "gate-accepted" : "better shape or length") + ")");
+    } else {
+      ops.logInfo("FAST: circle retry not better; keeping the optimized loop");
       orchestrator.setError(null);
       orchestrator.setTrack(optTrack);
       ops.setMatchedWaypoints(optMatched);
