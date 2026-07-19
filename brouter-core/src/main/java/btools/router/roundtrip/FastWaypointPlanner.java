@@ -325,7 +325,11 @@ public final class FastWaypointPlanner {
     for (int i = 0; i < loopDirs.length; i++) {
       loopDirs[i] = chosen.get(i);
     }
-    loopDirs = PlacementGeometry.sortDirectionsForLoop(loopDirs, anchor);
+    // Directional fan: sweep across the fan (signed relative order). Ring
+    // (no requested direction): full clockwise circle from the anchor.
+    loopDirs = startDirection >= 0
+      ? PlacementGeometry.sortDirectionsForFan(loopDirs, anchor)
+      : PlacementGeometry.sortDirectionsForLoop(loopDirs, anchor);
     int added = 0;
     for (double dir : loopDirs) {
       MatchedWaypoint m = byDir.get(dir);
