@@ -3,7 +3,10 @@
 # Builds BRouter from source using Gradle, runs the standalone HTTP server.
 # Uses Bellsoft Liberica to share base layers with the Spring Boot app image.
 # =============================================================================
-FROM bellsoft/liberica-openjdk-alpine:21@sha256:d939f0118532acc680d10dd0c0438cbffab5f028eaa0537ebb2bd97537329c74 AS build
+# glibc + JDK 17: the daemon JVM is pinned to 17 (gradle-daemon-jvm.properties)
+# and Gradle 9's native services do not run on musl, so an Alpine build stage
+# cannot work on either axis. The runtime stage below stays Alpine.
+FROM bellsoft/liberica-openjdk-debian:17@sha256:9a38411cf122f56caed5b6e28462a0cdf1d4525aa904544028ffb4418ba691ad AS build
 
 WORKDIR /tmp/brouter
 COPY . .
