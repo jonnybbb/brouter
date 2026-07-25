@@ -78,8 +78,8 @@ public class RoundTripUndershootSentinelTest {
     List<OsmNodeNamed> wplist = new ArrayList<>();
     OsmNodeNamed start = new OsmNodeNamed();
     start.name = "from";
-    start.ilon = region.ilon;
-    start.ilat = region.ilat;
+    start.ilon = region.ilonFor(profileName);
+    start.ilat = region.ilatFor(profileName);
     wplist.add(start);
 
     RoutingContext rctx = new RoutingContext();

@@ -94,7 +94,13 @@ public class RoundTripPerfBudgetTest {
       {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.AUTO, 64, 9_000_000, -1, "basel_15km_fastbike_AUTO"},
       // Standard class
       {LoopTestRegion.BASEL, 100_000, "fastbike", RoundTripAlgorithm.BALANCED, 64, 1_000_000, 120, "basel_100km_fastbike_BALANCED"},
-      {LoopTestRegion.BASEL, 100_000, "fastbike", RoundTripAlgorithm.AUTO, 64, 2_500_000, -1, "basel_100km_fastbike_AUTO"},
+      // Ceiling 2.5M -> 3.2M (2026-07-25): AUTO's weak-winner second opinion
+      // (a winner below the 0.85 clear-accept bar earns one WAYPOINT
+      // challenger pass) is a deliberate feature cost on weak cells — this
+      // one measures 2.82M links with the extra pass. Same contract precedent
+      // as the FAST shape retry's second pass; strong-winner cells spend
+      // nothing extra.
+      {LoopTestRegion.BASEL, 100_000, "fastbike", RoundTripAlgorithm.AUTO, 64, 3_200_000, -1, "basel_100km_fastbike_AUTO"},
       // Max-effort tier: both planners always + top-K 4/6 + doubled plan budget
       {LoopTestRegion.BASEL, 100_000, "fastbike", RoundTripAlgorithm.QUALITY, 64, 6_000_000, -1, "basel_100km_fastbike_QUALITY"},
       // Sentinel terrain under the bounded tier
@@ -119,8 +125,8 @@ public class RoundTripPerfBudgetTest {
     List<OsmNodeNamed> wplist = new ArrayList<>();
     OsmNodeNamed start = new OsmNodeNamed();
     start.name = "from";
-    start.ilon = region.ilon;
-    start.ilat = region.ilat;
+    start.ilon = region.ilonFor(profileName);
+    start.ilat = region.ilatFor(profileName);
     wplist.add(start);
 
     RoutingContext rctx = new RoutingContext();
