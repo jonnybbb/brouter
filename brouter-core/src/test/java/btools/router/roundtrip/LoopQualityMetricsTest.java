@@ -707,4 +707,185 @@ public class LoopQualityMetricsTest {
     Assert.assertEquals(4, m.getSelfIntersections());
     Assert.assertEquals(1, m.getSmallLoopCrossings());
   }
+
+  // ---- petalAmplitude (clover detection) --------------------------------
+
+  /** Closed ring sampled from r(theta) = R * (1 + amp*sin(lobes*theta)). */
+  private static List<OsmPathElement> radialRing(double radiusM, int lobes, double amp) {
+    // meters -> microdegrees at BASE_ILAT (~50N)
+    double latScale = Math.cos(Math.toRadians(BASE_ILAT / 1e6 - 90.0));
+    double perMx = 1e6 / (111320.0 * latScale);
+    double perMy = 1e6 / 110540.0;
+    List<OsmPathElement> nodes = new ArrayList<>();
+    int steps = 360;
+    for (int i = 0; i < steps; i++) {
+      double th = 2 * Math.PI * i / steps;
+      double r = radiusM * (1 + amp * Math.sin(lobes * th));
+      int ilon = BASE_ILON + (int) Math.round(r * Math.cos(th) * perMx);
+      int ilat = BASE_ILAT + (int) Math.round(r * Math.sin(th) * perMy);
+      nodes.add(OsmPathElement.create(ilon, ilat, (short) 0, null));
+    }
+    nodes.add(nodes.get(0));
+    return nodes;
+  }
+
+  private static int ringLength(List<OsmPathElement> nodes) {
+    double latScale = Math.cos(Math.toRadians(BASE_ILAT / 1e6 - 90.0));
+    double mx = 111320.0 * latScale * 1e-6;
+    double my = 110540.0 * 1e-6;
+    double d = 0;
+    for (int i = 1; i < nodes.size(); i++) {
+      double dx = (nodes.get(i).getILon() - nodes.get(i - 1).getILon()) * mx;
+      double dy = (nodes.get(i).getILat() - nodes.get(i - 1).getILat()) * my;
+      d += Math.sqrt(dx * dx + dy * dy);
+    }
+    return (int) Math.round(d);
+  }
+
+  @Test
+  public void petalAmplitudeIsNearZeroForACircle() {
+    List<OsmPathElement> ring = radialRing(5000, 0, 0.0);
+    Assert.assertEquals(0.0, LoopQualityMetrics.petalAmplitude(ring, ringLength(ring)), 0.02);
+  }
+
+  @Test
+  public void petalAmplitudeIgnoresAnOval() {
+    // 2 lobes = an oval/peanut, an ordinary loop shape - below the lobe band.
+    List<OsmPathElement> ring = radialRing(5000, 2, 0.35);
+    Assert.assertTrue("an oval must not read as a clover",
+      LoopQualityMetrics.petalAmplitude(ring, ringLength(ring)) < 0.10);
+  }
+
+  @Test
+  public void petalAmplitudeDetectsAFourLeafClover() {
+    List<OsmPathElement> ring = radialRing(5000, 4, 0.40);
+    double amp = LoopQualityMetrics.petalAmplitude(ring, ringLength(ring));
+    Assert.assertTrue("4-petal clover must score high, got " + amp, amp > 0.30);
+  }
+
+  @Test
+  public void petalAmplitudeRecoversTheInjectedAmplitude() {
+    // The metric is calibrated: it returns roughly the relative radial swing.
+    List<OsmPathElement> ring = radialRing(5000, 5, 0.25);
+    double amp = LoopQualityMetrics.petalAmplitude(ring, ringLength(ring));
+    Assert.assertEquals(0.25, amp, 0.06);
+  }
+
+  @Test
+  public void petalAmplitudeIsDegenerateSafe() {
+    Assert.assertEquals(0.0, LoopQualityMetrics.petalAmplitude(null, 1000), 1e-9);
+    Assert.assertEquals(0.0, LoopQualityMetrics.petalAmplitude(new ArrayList<>(), 1000), 1e-9);
+    List<OsmPathElement> ring = radialRing(5000, 4, 0.40);
+    Assert.assertEquals(0.0, LoopQualityMetrics.petalAmplitude(ring, 0), 1e-9);
+  }
+
+  // ---- shape metrics v2: far-field dwell, kink regularity, stem/scatter ---
+
+  /** Circle PASSING THROUGH the start point (start on the rim, not the centre). */
+  private static List<OsmPathElement> circleThroughStart(double radiusM) {
+    double latScale = Math.cos(Math.toRadians(BASE_ILAT / 1e6 - 90.0));
+    double perMx = 1e6 / (111320.0 * latScale);
+    double perMy = 1e6 / 110540.0;
+    List<OsmPathElement> nodes = new ArrayList<>();
+    int steps = 360;
+    for (int i = 0; i <= steps; i++) {
+      double th = 2 * Math.PI * i / steps;
+      // centre at (radius, 0) from start, so theta=PI passes through the start
+      double x = radiusM * (1 + Math.cos(th + Math.PI));
+      double y = radiusM * Math.sin(th + Math.PI);
+      nodes.add(OsmPathElement.create(BASE_ILON + (int) Math.round(x * perMx),
+        BASE_ILAT + (int) Math.round(y * perMy), (short) 0, null));
+    }
+    return nodes;
+  }
+
+  /** N-petal clover through the start: r(theta) = R*(1+cos(lobes*theta))/2 from the START. */
+  private static List<OsmPathElement> cloverThroughStart(double radiusM, int lobes) {
+    double latScale = Math.cos(Math.toRadians(BASE_ILAT / 1e6 - 90.0));
+    double perMx = 1e6 / (111320.0 * latScale);
+    double perMy = 1e6 / 110540.0;
+    List<OsmPathElement> nodes = new ArrayList<>();
+    int steps = 720;
+    for (int i = 0; i <= steps; i++) {
+      double th = 2 * Math.PI * i / steps;
+      double r = radiusM * (1 + Math.cos(lobes * th)) / 2;
+      nodes.add(OsmPathElement.create(BASE_ILON + (int) Math.round(r * Math.cos(th) * perMx),
+        BASE_ILAT + (int) Math.round(r * Math.sin(th) * perMy), (short) 0, null));
+    }
+    return nodes;
+  }
+
+  @Test
+  public void farFieldDwellHighForACircleThroughStart() {
+    // Analytic: arc share where 2R*sin(t/2) >= 0.6*2R is ~59% for a circle through start.
+    double dwell = LoopQualityMetrics.farFieldDwell(circleThroughStart(5000));
+    Assert.assertEquals(0.59, dwell, 0.05);
+  }
+
+  @Test
+  public void farFieldDwellLowForAClover() {
+    double dwell = LoopQualityMetrics.farFieldDwell(cloverThroughStart(5000, 4));
+    Assert.assertTrue("clover must dwell little in the far field, got " + dwell, dwell < 0.45);
+  }
+
+  @Test
+  public void farFieldDwellDegenerateSafe() {
+    Assert.assertEquals(0.0, LoopQualityMetrics.farFieldDwell(null), 1e-9);
+    Assert.assertEquals(0.0, LoopQualityMetrics.farFieldDwell(new ArrayList<>()), 1e-9);
+  }
+
+  @Test
+  public void kinkRegularityHighForARegularPolygon() {
+    // hexagon with rounded-ish edges: six evenly spaced sharp corners = the via-fan look
+    double latScale = Math.cos(Math.toRadians(BASE_ILAT / 1e6 - 90.0));
+    double perMx = 1e6 / (111320.0 * latScale);
+    double perMy = 1e6 / 110540.0;
+    List<OsmPathElement> nodes = new ArrayList<>();
+    double r = 5000;
+    for (int k = 0; k <= 6; k++) {
+      double a0 = k * Math.PI / 3;
+      double a1 = (k + 1) * Math.PI / 3;
+      for (int u = 0; u < 30 && k < 6; u++) {
+        double x0 = r * Math.cos(a0), y0 = r * Math.sin(a0);
+        double x1 = r * Math.cos(a1), y1 = r * Math.sin(a1);
+        double x = x0 + (x1 - x0) * u / 30.0, y = y0 + (y1 - y0) * u / 30.0;
+        nodes.add(OsmPathElement.create(BASE_ILON + (int) Math.round(x * perMx),
+          BASE_ILAT + (int) Math.round(y * perMy), (short) 0, null));
+      }
+    }
+    nodes.add(nodes.get(0));
+    double reg = LoopQualityMetrics.kinkRegularity(nodes);
+    Assert.assertTrue("regular hexagon corners must score high, got " + reg, reg > 0.5);
+  }
+
+  @Test
+  public void kinkRegularityZeroForACircle() {
+    Assert.assertEquals(0.0, LoopQualityMetrics.kinkRegularity(circleThroughStart(5000)), 0.01);
+  }
+
+  @Test
+  public void reuseStemSplitSeparatesLollipopFromScatter() {
+    double latScale = Math.cos(Math.toRadians(BASE_ILAT / 1e6 - 90.0));
+    double perMx = 1e6 / (111320.0 * latScale);
+    double perMy = 1e6 / 110540.0;
+    // lollipop: 2 km straight out east, 12-point circle, same 2 km back
+    List<OsmPathElement> nodes = new ArrayList<>();
+    int stemPts = 20;
+    for (int i = 0; i <= stemPts; i++) {
+      nodes.add(OsmPathElement.create(BASE_ILON + (int) Math.round(i * 100 * perMx), BASE_ILAT, (short) 0, null));
+    }
+    double cx = 2000 + 1500;
+    for (int k = 1; k < 24; k++) {
+      double th = Math.PI + 2 * Math.PI * k / 24;
+      nodes.add(OsmPathElement.create(
+        BASE_ILON + (int) Math.round((cx + 1500 * Math.cos(th)) * perMx),
+        BASE_ILAT + (int) Math.round((1500 * Math.sin(th)) * perMy), (short) 0, null));
+    }
+    for (int i = stemPts; i >= 0; i--) {
+      nodes.add(OsmPathElement.create(BASE_ILON + (int) Math.round(i * 100 * perMx), BASE_ILAT, (short) 0, null));
+    }
+    int[] split = LoopQualityMetrics.reuseStemSplit(nodes);
+    Assert.assertTrue("lollipop stem must be detected (~2000 m), got " + split[0], split[0] >= 1500);
+    Assert.assertTrue("lollipop must have no scatter, got " + split[1], split[1] <= 400);
+  }
 }

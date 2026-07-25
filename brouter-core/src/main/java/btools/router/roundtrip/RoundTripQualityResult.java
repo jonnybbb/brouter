@@ -49,6 +49,7 @@ public final class RoundTripQualityResult {
   private final RouteShape shape;
   private final String rejectionReason;
   private final RejectionTier rejectionTier;
+  private final boolean distanceBandRejection;
   private final double totalReuseRatio;
   private final int maxContiguousReuseMeters;
   private final int terminalStemReuseMeters;
@@ -61,6 +62,7 @@ public final class RoundTripQualityResult {
     this.shape = b.shape;
     this.rejectionReason = b.rejectionReason;
     this.rejectionTier = b.rejectionTier;
+    this.distanceBandRejection = b.distanceBandRejection;
     this.totalReuseRatio = b.totalReuseRatio;
     this.maxContiguousReuseMeters = b.maxContiguousReuseMeters;
     this.terminalStemReuseMeters = b.terminalStemReuseMeters;
@@ -76,6 +78,17 @@ public final class RoundTripQualityResult {
   public String getRejectionReason() { return rejectionReason; }
   /** Rejection tier (STRUCTURAL vs QUALITY); only meaningful when not accepted. */
   public RejectionTier getRejectionTier() { return rejectionTier; }
+
+  /**
+   * True when the gate rejected AT the distance-band check (routed length
+   * outside [0.5, 1.8]x the request). The gate returns at that check, so the
+   * later checks (crossings, surface, reuse) were NOT evaluated — this flag
+   * means "the only KNOWN fault is length", not "everything else passed".
+   * The FAST tier's contract is loop shape, not length, so its shape retry
+   * must not fire on this rejection alone and must derive shape facts
+   * independently (the result carries no {@link LoopAnalysis} on this path).
+   */
+  public boolean isDistanceBandRejection() { return distanceBandRejection; }
   double getTotalReuseRatio() { return totalReuseRatio; }
   int getMaxContiguousReuseMeters() { return maxContiguousReuseMeters; }
   int getTerminalStemReuseMeters() { return terminalStemReuseMeters; }
@@ -123,6 +136,7 @@ public final class RoundTripQualityResult {
       }
     } else {
       b.reject(rejectionTier, rejectionReason);
+      b.distanceBandRejection(distanceBandRejection);
     }
     for (String d : disclosures) b.addDisclosure(d);
     return b.build();
@@ -154,6 +168,7 @@ public final class RoundTripQualityResult {
     // enforces it — so a new reject site can't silently default to hard-reject.
     private RejectionTier rejectionTier = RejectionTier.STRUCTURAL;
     private boolean rejectionTierSet = false;
+    private boolean distanceBandRejection;
     private double totalReuseRatio;
     private int maxContiguousReuseMeters;
     private int terminalStemReuseMeters;
@@ -179,6 +194,8 @@ public final class RoundTripQualityResult {
       this.rejectionReason = reason;
       return this;
     }
+    /** Mark a rejection as made at the distance-band check; see {@link #isDistanceBandRejection()}. */
+    public Builder distanceBandRejection(boolean v) { this.distanceBandRejection = v; return this; }
     public Builder totalReuseRatio(double v) { this.totalReuseRatio = v; return this; }
     public Builder maxContiguousReuseMeters(int v) { this.maxContiguousReuseMeters = v; return this; }
     public Builder terminalStemReuseMeters(int v) { this.terminalStemReuseMeters = v; return this; }

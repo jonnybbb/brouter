@@ -366,46 +366,243 @@ public final class LoopQualityMetrics {
    */
   static double computeRoadReusePercent(List<OsmPathElement> nodes) {
     if (nodes.size() < 2) return 0.0;
-
-    // Spatial corridor overlap (a parallel return on a different way) unioned
-    // with edge-identity retrace, so this metric — consumed by RouteChoiceScore
-    // (W_REUSE) and the composite score — sees same-corridor-back that edge
-    // identity is blind to, and cannot drift from ReuseClassifier's gate which
-    // uses the same primitive.
-    boolean[] spatialOverlap = CorridorOverlapIndex.computeEdgeOverlap(nodes);
-
-    Map<Long, int[]> edgeCounts = new HashMap<>();
+    boolean[] reused = reusedSegmentFlags(nodes);
     double totalDistance = 0;
     double reusedDistance = 0;
-
     for (int i = 1; i < nodes.size(); i++) {
-      OsmPathElement a = nodes.get(i - 1);
-      OsmPathElement b = nodes.get(i);
-      int segDist = a.calcDistance(b);
+      int segDist = nodes.get(i - 1).calcDistance(nodes.get(i));
       totalDistance += segDist;
-
-      // Mixed undirected edge key (matches GreedyRoundTripPlanner.edgeKey). The
-      // old `lo*31 + hi` form is a trivially-collidable linear combination of
-      // packed (ilon<<32)|ilat ids, which could fold a genuinely-new edge into
-      // an existing bucket and inflate the reuse percentage.
-      long edgeKey = LoopGeometry.edgeKey(a, b);
-
-      int[] entry = edgeCounts.get(edgeKey);
-      boolean identityReuse = entry != null;
-      if (entry == null) {
-        edgeCounts.put(edgeKey, new int[]{1, segDist});
-      } else {
-        entry[0]++;
-      }
-      // Second/subsequent identity traversal OR a spatial parallel corridor.
-      boolean spatial = (i - 1) < spatialOverlap.length && spatialOverlap[i - 1];
-      if (identityReuse || spatial) {
+      if (reused[i - 1]) {
         reusedDistance += segDist;
       }
     }
 
     return (totalDistance > 0) ? (reusedDistance / totalDistance) * 100.0 : 0.0;
   }
+
+  /**
+   * Per-segment reuse flags: segment {@code i} (nodes[i] to nodes[i+1]) is flagged when it
+   * is a second/subsequent identity traversal of an edge OR runs in a spatial parallel
+   * corridor of an earlier stretch. Single source of truth for
+   * {@link #computeRoadReusePercent} and {@link #reuseStemSplit} — the two must never
+   * disagree on what counts as reuse.
+   */
+  static boolean[] reusedSegmentFlags(List<OsmPathElement> nodes) {
+    int segCount = Math.max(0, nodes.size() - 1);
+    boolean[] reused = new boolean[segCount];
+    if (segCount == 0) return reused;
+    // Spatial corridor overlap (a parallel return on a different way) unioned
+    // with edge-identity retrace, so reuse — consumed by RouteChoiceScore
+    // (W_REUSE) and the composite score — sees same-corridor-back that edge
+    // identity is blind to, and cannot drift from ReuseClassifier's gate which
+    // uses the same primitive.
+    boolean[] spatialOverlap = CorridorOverlapIndex.computeEdgeOverlap(nodes);
+    Map<Long, int[]> edgeCounts = new HashMap<>();
+    for (int i = 1; i < nodes.size(); i++) {
+      OsmPathElement a = nodes.get(i - 1);
+      OsmPathElement b = nodes.get(i);
+      // Mixed undirected edge key (matches GreedyRoundTripPlanner.edgeKey). The
+      // old `lo*31 + hi` form is a trivially-collidable linear combination of
+      // packed (ilon<<32)|ilat ids, which could fold a genuinely-new edge into
+      // an existing bucket and inflate the reuse percentage.
+      long edgeKey = LoopGeometry.edgeKey(a, b);
+      int[] entry = edgeCounts.get(edgeKey);
+      boolean identityReuse = entry != null;
+      if (entry == null) {
+        edgeCounts.put(edgeKey, new int[]{1, a.calcDistance(b)});
+      } else {
+        entry[0]++;
+      }
+      boolean spatial = (i - 1) < spatialOverlap.length && spatialOverlap[i - 1];
+      reused[i - 1] = identityReuse || spatial;
+    }
+    return reused;
+  }
+
+  /**
+   * Split the reused meters of a loop into STEM and SCATTER.
+   *
+   * <p>A lollipop stem — one contiguous both-ways approach anchored at the route's start
+   * or end — is often the only way out of a constrained start (coastal half-plane, valley
+   * floor) and a rider reads it as an honest approach, not a defect. The same meters of
+   * reuse SCATTERED through the middle of the loop are riding-the-same-road-twice, which
+   * riders reject. {@link #computeRoadReusePercent} conflates the two; this split lets
+   * scoring price scatter harder while merely DISCLOSING the stem.
+   *
+   * <p>Stem = reused meters inside the maximal contiguous flagged runs touching the
+   * first or last segment of the track (identity reuse flags the SECOND traversal, so a
+   * stem typically shows as the flagged run touching the END). Everything else is scatter.
+   *
+   * @return int[]{stemMeters, scatterMeters}
+   */
+  public static int[] reuseStemSplit(List<OsmPathElement> nodes) {
+    int segCount = Math.max(0, nodes.size() - 1);
+    if (segCount == 0) return new int[]{0, 0};
+    boolean[] reused = reusedSegmentFlags(nodes);
+    int[] segDist = new int[segCount];
+    for (int i = 0; i < segCount; i++) {
+      segDist[i] = nodes.get(i).calcDistance(nodes.get(i + 1));
+    }
+    int stem = 0;
+    int total = 0;
+    for (int i = 0; i < segCount; i++) {
+      if (reused[i]) total += segDist[i];
+    }
+    // run touching the start
+    for (int i = 0; i < segCount && reused[i]; i++) {
+      stem += segDist[i];
+    }
+    // run touching the end (guard against double-counting a fully-flagged track)
+    int endStart = segCount;
+    while (endStart > 0 && reused[endStart - 1]) {
+      endStart--;
+    }
+    int startEnd = 0;
+    while (startEnd < segCount && reused[startEnd]) {
+      startEnd++;
+    }
+    for (int i = Math.max(endStart, startEnd); i < segCount; i++) {
+      stem += segDist[i];
+    }
+    return new int[]{Math.min(stem, total), total - Math.min(stem, total)};
+  }
+
+  /**
+   * Far-field dwell in [0, 1]: the share of the loop's arc length ridden in the FAR FIELD —
+   * beyond {@link #FAR_FIELD_FRACTION} of the loop's own maximum distance from the start.
+   *
+   * <p>The integral complement of {@link #petalAmplitude}: a clover (repeated returns to
+   * the centre) and a loop that orbits its start town both spend little arc far from home,
+   * however clean their other metrics look. A circular loop through the start dwells ~0.59
+   * by construction (arc where {@code 2R·sin(θ/2) ≥ 0.6·2R}); a straight out-and-back
+   * dwells ~0.40; a 4-petal clover ~0.30 (synthetic validation in the unit tests).
+   * Distances from the actual start node, not the centroid — "away from home" is the
+   * rider's frame.
+   */
+  public static double farFieldDwell(List<OsmPathElement> nodes) {
+    int n = nodes == null ? 0 : nodes.size();
+    if (n < 4) return 0.0;
+    OsmPathElement start = nodes.get(0);
+    double maxR = 0;
+    double[] r = new double[n];
+    for (int i = 0; i < n; i++) {
+      r[i] = start.calcDistance(nodes.get(i));
+      if (r[i] > maxR) maxR = r[i];
+    }
+    if (maxR < 1.0) return 0.0;
+    double bar = FAR_FIELD_FRACTION * maxR;
+    double far = 0;
+    double total = 0;
+    for (int i = 1; i < n; i++) {
+      int d = nodes.get(i - 1).calcDistance(nodes.get(i));
+      total += d;
+      // segment counts as far-field when its midpoint radius clears the bar
+      if ((r[i - 1] + r[i]) / 2.0 >= bar) far += d;
+    }
+    return total > 0 ? far / total : 0.0;
+  }
+
+  /** Far-field bar as a fraction of the loop's own max distance from start. */
+  static final double FAR_FIELD_FRACTION = 0.6;
+
+  /**
+   * Kink regularity in [0, 1]: how evenly the loop's SHARP corners are spaced in angle
+   * around its centroid. Evenly spaced sharp corners at via spacing are the "manual fan"
+   * signature — a skeleton polygon showing through the routed track. Organic loops have
+   * corners where the terrain puts them (irregular); a placement artifact has them where
+   * the via ring put them (regular).
+   *
+   * <p>Method (mirrors the validated Python prototype in the 2026-07-20 comparison
+   * tooling): resample the closed ring at 100 m arc steps, flag bearing changes over a
+   * 200 m window above 55°, merge flags closer than 500 m, and — for 3 to 16 kinks —
+   * score {@code 1 − std/mean} of the sorted angular gaps between kinks around the
+   * centroid. Fewer than 3 kinks: no polygon to detect, returns 0.
+   */
+  public static double kinkRegularity(List<OsmPathElement> nodes) {
+    int n = nodes == null ? 0 : nodes.size();
+    if (n < 8) return 0.0;
+    double latScale = Math.cos(Math.toRadians(nodes.get(0).getILat() / 1e6 - 90.0));
+    double mx = 111320.0 * latScale * 1e-6;
+    double my = 110540.0 * 1e-6;
+    // closed-ring cumulative arc
+    double[] cum = new double[n + 1];
+    for (int i = 1; i <= n; i++) {
+      OsmPathElement a = nodes.get(i - 1);
+      OsmPathElement b = nodes.get(i % n);
+      double dx = (b.getILon() - a.getILon()) * mx;
+      double dy = (b.getILat() - a.getILat()) * my;
+      cum[i] = cum[i - 1] + Math.sqrt(dx * dx + dy * dy);
+    }
+    double perim = cum[n];
+    int samples = (int) (perim / KINK_SAMPLE_STEP_M);
+    if (samples < 12) return 0.0;
+    double[] px = new double[samples];
+    double[] py = new double[samples];
+    int seg = 0;
+    for (int s = 0; s < samples; s++) {
+      double target = perim * s / samples;
+      while (seg < n - 1 && cum[seg + 1] < target) seg++;
+      double segLen = cum[seg + 1] - cum[seg];
+      double t = segLen <= 0 ? 0.0 : (target - cum[seg]) / segLen;
+      OsmPathElement a = nodes.get(seg);
+      OsmPathElement b = nodes.get((seg + 1) % n);
+      px[s] = (a.getILon() + t * (b.getILon() - a.getILon())) * mx;
+      py[s] = (a.getILat() + t * (b.getILat() - a.getILat())) * my;
+    }
+    // bearing change over a 2-sample (~200 m) window, kinks merged within 5 samples
+    double cx = 0;
+    double cy = 0;
+    for (int s = 0; s < samples; s++) {
+      cx += px[s];
+      cy += py[s];
+    }
+    cx /= samples;
+    cy /= samples;
+    List<Double> kinkTheta = new ArrayList<>();
+    int lastKink = -1000;
+    for (int s = 0; s < samples; s++) {
+      int s0 = (s - 1 + samples) % samples;
+      int s1 = (s + 1) % samples;
+      int s2 = (s + 2) % samples;
+      double a1 = Math.atan2(py[s] - py[s0], px[s] - px[s0]);
+      double a2 = Math.atan2(py[s1] - py[s], px[s1] - px[s]);
+      double a3 = Math.atan2(py[s2] - py[s1], px[s2] - px[s1]);
+      double d1 = normalizePi(a2 - a1);
+      double d2 = normalizePi(a3 - a2);
+      if (Math.abs(d1 + d2) > Math.toRadians(KINK_TURN_DEG)) {
+        if (s - lastKink >= KINK_MERGE_SAMPLES) {
+          kinkTheta.add(Math.atan2(py[s] - cy, px[s] - cx));
+          lastKink = s;
+        }
+      }
+    }
+    int k = kinkTheta.size();
+    if (k < 3 || k > 16) return 0.0;
+    double[] theta = new double[k];
+    for (int i = 0; i < k; i++) theta[i] = kinkTheta.get(i);
+    Arrays.sort(theta);
+    double[] gaps = new double[k];
+    double mean = 2 * Math.PI / k;
+    double var = 0;
+    for (int i = 0; i < k; i++) {
+      double gap = (i + 1 < k ? theta[i + 1] : theta[0] + 2 * Math.PI) - theta[i];
+      gaps[i] = gap;
+      var += (gap - mean) * (gap - mean);
+    }
+    double std = Math.sqrt(var / k);
+    return Math.max(0.0, 1.0 - std / mean);
+  }
+
+  private static double normalizePi(double a) {
+    while (a <= -Math.PI) a += 2 * Math.PI;
+    while (a > Math.PI) a -= 2 * Math.PI;
+    return a;
+  }
+
+  /** Kink scan: resample step, turn threshold over ~2 steps, merge distance in samples. */
+  static final double KINK_SAMPLE_STEP_M = 100.0;
+  static final double KINK_TURN_DEG = 55.0;
+  static final int KINK_MERGE_SAMPLES = 5;
 
   /** Profile-ideal cost-per-meter (cycleway/tertiary on fastbike). Score plateaus at 1.0 below this. */
   private static final double IDEAL_COST_PER_METER = 1.5;
@@ -536,6 +733,109 @@ public final class LoopQualityMetrics {
     double areaM2 = Math.abs(signedArea) / 2.0 * (111320.0 * latScale * 1e-6) * (110540.0 * 1e-6);
     double perim = distance;
     return Math.min(1.0, 4 * Math.PI * areaM2 / (perim * perim));
+  }
+
+  /**
+   * Lowest petal count the scan considers. A 1- or 2-lobe radius profile is an
+   * ordinary oval or peanut — every real loop has some radial variation — while
+   * 3+ lobes is the clover/fan signature.
+   */
+  private static final int PETAL_MIN_LOBES = 3;
+
+  /** Highest petal count: beyond this the "lobes" are road wiggle, not loop form. */
+  private static final int PETAL_MAX_LOBES = 12;
+
+  /** Arc-length samples for the radial profile. Enough to resolve 12 lobes; cheap. */
+  private static final int PETAL_SAMPLES = 256;
+
+  /**
+   * Petal (clover) amplitude in [0, 1]: the strongest 3-to-12-lobe harmonic of
+   * the loop's radius measured around its own centroid, as a fraction of the
+   * mean radius. A round or oval loop scores near 0; a clover — several lobes
+   * pinched together at a shared centre, i.e. several out-and-backs pretending
+   * to be a loop — scores high.
+   *
+   * <p><b>Why this metric exists.</b> A clover is invisible to every other
+   * shape check the round-trip gate has: its petals meet at a shared junction
+   * rather than crossing, so the self-crossing scan correctly reports ZERO;
+   * and its enclosed area stays well above the thread floor, so
+   * {@link #enclosedAreaCompactness} passes it too. Measured on the 548-cell
+   * loop matrix, clover loops score 0.30-0.56 here while the corpus median is
+   * 0.16 — the only dimension that separates them.
+   *
+   * <p>Sampling is by ARC LENGTH (not node index) so the harmonic measures the
+   * loop's form rather than the router's node density.
+   */
+  public static double petalAmplitude(List<OsmPathElement> nodes, int distance) {
+    if (nodes == null || nodes.size() < 8 || distance <= 0) return 0.0;
+    double latScale = Math.cos(Math.toRadians(nodes.get(0).getILat() / 1e6 - 90.0));
+    double mx = 111320.0 * latScale * 1e-6;
+    double my = 110540.0 * 1e-6;
+
+    // Cumulative arc length over the closed ring (last point back to first).
+    int n = nodes.size();
+    double[] cum = new double[n + 1];
+    for (int i = 1; i <= n; i++) {
+      OsmPathElement a = nodes.get(i - 1);
+      OsmPathElement b = nodes.get(i % n);
+      double dx = (b.getILon() - a.getILon()) * mx;
+      double dy = (b.getILat() - a.getILat()) * my;
+      cum[i] = cum[i - 1] + Math.sqrt(dx * dx + dy * dy);
+    }
+    double perim = cum[n];
+    if (perim <= 0) return 0.0;
+
+    // Resample the ring at PETAL_SAMPLES equal arc-length steps.
+    double[] px = new double[PETAL_SAMPLES];
+    double[] py = new double[PETAL_SAMPLES];
+    int seg = 0;
+    for (int s = 0; s < PETAL_SAMPLES; s++) {
+      double target = perim * s / PETAL_SAMPLES;
+      while (seg < n - 1 && cum[seg + 1] < target) seg++;
+      double segLen = cum[seg + 1] - cum[seg];
+      double t = segLen <= 0 ? 0.0 : (target - cum[seg]) / segLen;
+      OsmPathElement a = nodes.get(seg);
+      OsmPathElement b = nodes.get((seg + 1) % n);
+      px[s] = (a.getILon() + t * (b.getILon() - a.getILon())) * mx;
+      py[s] = (a.getILat() + t * (b.getILat() - a.getILat())) * my;
+    }
+
+    double cx = 0;
+    double cy = 0;
+    for (int s = 0; s < PETAL_SAMPLES; s++) {
+      cx += px[s];
+      cy += py[s];
+    }
+    cx /= PETAL_SAMPLES;
+    cy /= PETAL_SAMPLES;
+
+    double[] r = new double[PETAL_SAMPLES];
+    double rMean = 0;
+    for (int s = 0; s < PETAL_SAMPLES; s++) {
+      r[s] = Math.hypot(px[s] - cx, py[s] - cy);
+      rMean += r[s];
+    }
+    rMean /= PETAL_SAMPLES;
+    // A loop whose radius is tiny relative to its length is a thread, not a
+    // clover; enclosedAreaCompactness owns that class.
+    if (rMean < 1.0) return 0.0;
+
+    // Direct DFT of the relative radial profile over the lobe band. 10 harmonics
+    // x 256 samples is a few thousand flops — negligible next to a routing pass.
+    double best = 0;
+    for (int k = PETAL_MIN_LOBES; k <= PETAL_MAX_LOBES; k++) {
+      double re = 0;
+      double im = 0;
+      for (int s = 0; s < PETAL_SAMPLES; s++) {
+        double ang = 2 * Math.PI * k * s / PETAL_SAMPLES;
+        double rel = (r[s] - rMean) / rMean;
+        re += rel * Math.cos(ang);
+        im += rel * Math.sin(ang);
+      }
+      double amp = 2.0 * Math.sqrt(re * re + im * im) / PETAL_SAMPLES;
+      if (amp > best) best = amp;
+    }
+    return Math.min(1.0, best);
   }
 
   static double computeCompactnessScore(List<OsmPathElement> nodes, int distance) {
