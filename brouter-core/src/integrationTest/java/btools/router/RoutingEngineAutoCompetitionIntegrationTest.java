@@ -307,12 +307,19 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
       isoGreedy.getFoundTrack(), auto.getFoundTrack(), "fastbike", 8000, 0);
 
     Assert.assertNotNull("AUTO track has message", auto.getFoundTrack().message);
-    Assert.assertTrue("AUTO stopped after the absorbed ISO_GREEDY candidate: "
-        + auto.getFoundTrack().message,
-      auto.getFoundTrack().message.contains("after 1 candidate(s)"));
+    // The absorption invariant: plain GREEDY never runs as a duplicate of an
+    // ISO_GREEDY that already absorbed the graph-native provider. The ladder
+    // MAY still add the cross-family WAYPOINT second opinion when the
+    // absorbed winner scores below the clear-accept bar (this cell: ~0.39) —
+    // that is the 2026-07-25 weak-winner step, not a duplicate greedy run.
     Assert.assertFalse("AUTO did not run a duplicate plain GREEDY child: "
         + auto.getFoundTrack().message,
       auto.getFoundTrack().message.contains("Also tried GREEDY"));
+    Assert.assertTrue("AUTO ran no greedy-family duplicate — only the absorbed "
+        + "ISO_GREEDY plus at most the WAYPOINT second opinion: "
+        + auto.getFoundTrack().message,
+      auto.getFoundTrack().message.contains("after 1 candidate(s)")
+        || auto.getFoundTrack().message.contains("Also tried WAYPOINT"));
   }
 
   /**
@@ -423,7 +430,8 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
 
   private RoutingEngine runRoundTrip(LoopTestRegion region, String profileName,
       int searchRadius, int direction, RoundTripAlgorithm algo, long timeoutMs) {
-    return runRoundTripEngine(region.ilon, region.ilat, profileName, searchRadius,
+    return runRoundTripEngine(region.ilonFor(profileName), region.ilatFor(profileName),
+      profileName, searchRadius,
       direction, algo, false, 0, timeoutMs);
   }
 

@@ -504,8 +504,8 @@ public abstract class LoopQualityTestBase {
       List<OsmNodeNamed> wplist = new ArrayList<>();
       OsmNodeNamed start = new OsmNodeNamed();
       start.name = "from";
-      start.ilon = region.ilon;
-      start.ilat = region.ilat;
+      start.ilon = region.ilonFor(profileName);
+      start.ilat = region.ilatFor(profileName);
       wplist.add(start);
 
       RoutingContext rctx = new RoutingContext();
@@ -553,6 +553,18 @@ public abstract class LoopQualityTestBase {
       variantRcs.put(variant,
         RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).qualityScore());
       variantGateCostPerM.put(variant, surfaceCostPerMeter(track, profileName));
+      // Shape-metrics-v2 disclosure (2026-07-20): computed on the FULL-resolution
+      // track (never on the simplified report coordinates — DP simplification
+      // fabricates crossings on retraces). Parsed from the run log for corpus
+      // calibration; not yet persisted or gated.
+      int[] stemSplit = LoopQualityMetrics.reuseStemSplit(track.nodes);
+      System.out.println(String.format(Locale.US,
+        "%s [%s]: shape2 dwell=%.2f kinkReg=%.2f stem=%dm scatter=%dm petal=%.2f",
+        testLabel, variant,
+        LoopQualityMetrics.farFieldDwell(track.nodes),
+        LoopQualityMetrics.kinkRegularity(track.nodes),
+        stemSplit[0], stemSplit[1],
+        LoopQualityMetrics.petalAmplitude(track.nodes, track.distance)));
       double[][] coords = extractCoordinates(track);
       LoopQualityResult ok = new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);

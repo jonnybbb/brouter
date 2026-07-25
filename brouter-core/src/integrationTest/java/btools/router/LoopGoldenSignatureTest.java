@@ -158,8 +158,8 @@ public class LoopGoldenSignatureTest {
       List<OsmNodeNamed> wplist = new ArrayList<>();
       OsmNodeNamed start = new OsmNodeNamed();
       start.name = "from";
-      start.ilon = s.region.ilon;
-      start.ilat = s.region.ilat;
+      start.ilon = s.region.ilonFor(s.profile);
+      start.ilat = s.region.ilatFor(s.profile);
       wplist.add(start);
 
       RoutingContext rctx = new RoutingContext();

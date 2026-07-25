@@ -95,8 +95,14 @@ public enum LoopTestRegion {
   // (single Inn valley, few non-retrace loops). Freiburg/Basel are dense rolling
   // cycling country; Annecy/Grenoble/Garmisch are mountain-but-loopable candidates
   // (keep the best after the evaluation run). Same thresholds as comparable terrain.
+  // mtb starts at Kirchzarten (the region's real mtb base — Black Forest
+  // marathon home): the city-center start smoothed mtb loops onto valley
+  // roads/cycleways, while Kirchzarten loops climb straight into the forest
+  // (2026-07-24 start audit: visibly trail-denser boundaries at similar
+  // ratio/retrace; small compactness cost accepted for realism).
   FREIBURG(7.852, 48.000, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel", "mtb")), // Black Forest edge, dense network;
+    profiles("fastbike", "gravel", "mtb"), 7.955, 47.966),
+                                            // Black Forest edge, dense network;
                                             // mtb: 2026-07 sweep 8/8 healthy
   BASEL(7.590, 47.560, "E5_N45.rd5", 30.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Rhine / Jura foothills
@@ -108,8 +114,13 @@ public enum LoopTestRegion {
     profiles("fastbike", "gravel")),       // lake basin + Bornes/Bauges/Semnoz climbs
   GRENOBLE(5.720, 45.190, "E5_N45.rd5", 35.0, 0.4, 1.8, 180,
     profiles("fastbike", "gravel")),       // Vercors/Chartreuse/Belledonne valleys
+  // mtb starts at Farchant (valley village north of town): the town start
+  // shipped claw-shaped loops with out-and-back appendages and one degenerate
+  // 27 km cell; Farchant rides four full ~45-51 km mountain loops at AUTO
+  // cost/m 8.3-8.5 vs the town's 9.2-10.2 (2026-07-24 start audit).
   GARMISCH(11.100, 47.500, "E10_N45.rd5", 35.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel", "mtb")), // Bavarian Alps, more valley connectivity;
+    profiles("fastbike", "gravel", "mtb"), 11.109, 47.531),
+                                            // Bavarian Alps, more valley connectivity;
                                             // mtb: 2026-07 sweep 7/8 healthy — from
                                             // 50km only (30km W runs into the
                                             // Zugspitze massif: distR 0.51 @ 18.7)
@@ -124,8 +135,13 @@ public enum LoopTestRegion {
   // Girona, Catalonia (city centre, El Pont Major) — pro-cycling hub with a
   // dense dirt lattice through Les Gavarres and the Garrotxa volcanic zone,
   // dry year-round. Shares Lozère's E0_N40 tile (no new download).
+  // mtb starts at Celra (Les Gavarres trailhead village): trail-denser loops
+  // than the city start; the 2026-07-24 start audit read this one as the
+  // closest call of the four (city-start Girona is authentically rideable),
+  // moved with the rest by product decision for mtb realism.
   GIRONA(2.8214, 41.9794, "E0_N40.rd5", 30.0, 0.4, 1.8, 180,
-    profiles("fastbike", "gravel", "mtb")), // Les Gavarres / Garrotxa dirt;
+    profiles("fastbike", "gravel", "mtb"), 2.8745, 42.0335),
+                                            // Les Gavarres / Garrotxa dirt;
                                             // mtb: 2026-07 sweep 8/8 healthy
   // Tuscany — Crete Senesi, the open white-clay hills near Asciano (SE of
   // Siena), the densest strade bianche (white gravel road) heartland. Start
@@ -147,7 +163,13 @@ public enum LoopTestRegion {
   // Sweep 60km: distR 0.86-0.92, reuse <=3%, cost 9.2-12.4. At 30km the
   // coastal half-plane collapses every heading onto one direction-blind
   // loop (all four dirs identical: distR 0.78) — below-50km skipped.
-  FINALE_LIGURE(8.343, 44.170, "E5_N40.rd5", 35.0, 0.4, 1.8, 180,
+  // Start moved from the coastal town (8.343, 44.170) to Finalborgo, the
+  // actual mtb base one valley in (2026-07-24 start audit): the coastal
+  // half-plane start was where the bowtie/pinch class lived (compactness
+  // 0.01-0.23 across town cells); Finalborgo rides clean polygons
+  // (0.26-0.37) and FAST/AUTO converge on the same loop in 3 of 4
+  // directions. mtb-only region, so the main anchor moves.
+  FINALE_LIGURE(8.320, 44.180, "E5_N40.rd5", 35.0, 0.4, 1.8, 180,
     profiles("mtb")),
   // Vosges / La Bresse — large French trail area around the Hautes-Vosges
   // ridges. Sweep 60km: distR 0.87-0.96, cost 9.6-11.5. At 30km the valley
@@ -176,6 +198,32 @@ public enum LoopTestRegion {
   public final double maxDirectionDelta;
   /** Profile names that are plausibly usable in this region's terrain */
   public final Set<String> supportedProfiles;
+  /**
+   * mtb start override in decimal degrees (equal to lon/lat when the region
+   * has none). mtb rides start where mtb riders actually start — the
+   * trailhead-class base of the region, not the city-center anchor the road
+   * profiles use: a city start makes every mtb loop pay an urban egress the
+   * real rider drives past, and the 2026-07-24 start audit showed it also
+   * distorts the loops themselves (Garmisch town: claw shapes and one
+   * degenerate cell vs Farchant's four full mountain loops; Finale coastal
+   * town: the bowtie/pinch class vs Finalborgo's clean polygons). Gravel
+   * deliberately KEEPS the city start — riding gravel from town is the
+   * authentic use case, and it keeps the urban-egress path under test.
+   */
+  public final double mtbLon;
+  public final double mtbLat;
+
+  /** BRouter internal longitude of the start for the given profile. */
+  public int ilonFor(String profileName) {
+    return "mtb".equalsIgnoreCase(profileName)
+      ? 180000000 + (int) (mtbLon * 1000000 + 0.5) : ilon;
+  }
+
+  /** BRouter internal latitude of the start for the given profile. */
+  public int ilatFor(String profileName) {
+    return "mtb".equalsIgnoreCase(profileName)
+      ? 90000000 + (int) (mtbLat * 1000000 + 0.5) : ilat;
+  }
 
   /**
    * Minimum matrix loop distance (meters) for a profile in this region;
@@ -206,6 +254,14 @@ public enum LoopTestRegion {
                  double maxReusePercent, double minDistanceRatio,
                  double maxDistanceRatio, double maxDirectionDelta,
                  Set<String> supportedProfiles) {
+    this(lon, lat, segmentFile, maxReusePercent, minDistanceRatio,
+      maxDistanceRatio, maxDirectionDelta, supportedProfiles, lon, lat);
+  }
+
+  LoopTestRegion(double lon, double lat, String segmentFile,
+                 double maxReusePercent, double minDistanceRatio,
+                 double maxDistanceRatio, double maxDirectionDelta,
+                 Set<String> supportedProfiles, double mtbLon, double mtbLat) {
     this.lon = lon;
     this.lat = lat;
     this.ilon = 180000000 + (int) (lon * 1000000 + 0.5);
@@ -216,6 +272,8 @@ public enum LoopTestRegion {
     this.maxDistanceRatio = maxDistanceRatio;
     this.maxDirectionDelta = maxDirectionDelta;
     this.supportedProfiles = supportedProfiles;
+    this.mtbLon = mtbLon;
+    this.mtbLat = mtbLat;
   }
 
   private static Set<String> profiles(String... names) {
