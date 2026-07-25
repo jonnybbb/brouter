@@ -256,6 +256,7 @@ public final class RoundTripQualityGate {
             .reject(RoundTripQualityResult.RejectionTier.QUALITY,
               String.format(Locale.US, "distance ratio %.2f outside [%.1f, %.1f]",
                 ratio, MIN_DISTANCE_RATIO, MAX_DISTANCE_RATIO))
+            .distanceBandRejection(true)
             .build();
         }
         explicitViaDistanceRatioMismatch = ratio;

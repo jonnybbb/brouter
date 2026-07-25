@@ -41,6 +41,21 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
   private static final long DEFAULT_AUTO_BUDGET_MS = 60_000;
 
   /**
+   * The weak-winner second opinion may displace the incumbent only when its
+   * surface price stays within this factor of the incumbent's cost/m — "no
+   * more than a quarter pricier per metre". See the 3b adoption comment for
+   * the measured case this guards.
+   */
+  private static final double SECOND_OPINION_COST_TOLERANCE = 1.25;
+
+  /** Surface cost per meter of a candidate's track; MAX_VALUE when unusable
+   *  (an unusable challenger must never pass the cost guard). */
+  private static double costPerMeter(RoundTripCandidateResult r) {
+    return (r.track == null || r.track.distance <= 0)
+      ? Double.MAX_VALUE : (double) r.track.cost / r.track.distance;
+  }
+
+  /**
    * AUTO's plain-GREEDY entitlement check: a below-threshold ISO_GREEDY does not
    * imply a useful second GREEDY run — if ISO_GREEDY already used graph-native
    * candidates (provider fallback or internal graph-native compare), GREEDY would
@@ -136,6 +151,41 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
       if (!r.accepted()) continue;
       if (winner == null || r.scoreValue() > winner.scoreValue()) {
         winner = r;
+      }
+    }
+
+    // 3b. Weak-winner second opinion from the other tier family. A winner
+    //    below the clear-accept bar means every greedy-family candidate
+    //    carries a defect the scorer can price — and the 2026-07-25
+    //    root-cause investigation showed those pools are usually a pool of
+    //    ONE (greedy skipped by graph-native absorption, or hard-failing on
+    //    mtb), so the defect ships unopposed while the FAST tier — whose
+    //    retry cascade prices petal/dwell/thread shapes the greedy planner
+    //    cannot see — produces a visibly better loop nobody compares
+    //    (Crete 75 gravel S: necked two-lobe 0.829 vs FAST's full ring;
+    //    Vosges 75 mtb W: serpentine crumple 0.843 vs FAST's clean
+    //    polygon). Run the sub-second WAYPOINT candidate and let it compete
+    //    on score; a strong winner (>= the bar) keeps AUTO's latency
+    //    unchanged.
+    if (winner != null
+        && winner.scoreValue() < RoundTripOrchestrator.CLEAR_ACCEPT_THRESHOLD
+        && System.currentTimeMillis() < deadline) {
+      RoundTripCandidateResult waypointR = runChildCandidate(
+        RoundTripAlgorithm.WAYPOINT, searchRadius, direction, deadline);
+      results.add(waypointR);
+      ops.logInfo("AUTO candidate (weak-winner second opinion): " + waypointR);
+      // The challenger exists to fix SHAPE; road choice stays the profile's
+      // domain, and the score cannot defend it (cost weight 0.05, zeroed
+      // outside its band). So a displacement must stay in the incumbent's
+      // cost class: at most SECOND_OPINION_COST_TOLERANCE x its cost/m.
+      // Measured need: Grenoble 100 km fastbike E — the FAST challenger won
+      // the score (0.688 vs 0.632, better shape) while riding 4.14 cost/m
+      // against the incumbent's ~2.1: double the surface price for a road
+      // bike, over the suite's empirical 4.02 fastbike bar. The Crete and
+      // Vosges flips ride the incumbent's own cost class and pass.
+      if (waypointR.accepted() && waypointR.scoreValue() > winner.scoreValue()
+          && costPerMeter(waypointR) <= costPerMeter(winner) * SECOND_OPINION_COST_TOLERANCE) {
+        winner = waypointR;
       }
     }
 

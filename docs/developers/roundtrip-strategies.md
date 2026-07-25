@@ -125,7 +125,45 @@ flowchart TD
 ```
 
 A *variety seed* (`alternativeidx`) perturbs direction (±15°), radius (±3 %) and via
-count (±1) deterministically; seed 0 is bit-identical to the unseeded baseline.
+count (±1, clamped so the derived count stays at 3–4 generated vias) deterministically;
+seed 0 is bit-identical to the unseeded baseline.
+
+### 3.1 Post-routing passes (WAYPOINT only)
+
+After the first routing pass, up to two guarded correction stages run — each an
+extra budget-gated routing pass that ships only a strictly better loop:
+
+- **Length correction** (`correctForLengthMiss`): fires on an explicit
+  `roundTripLength` miss beyond ±10%, or on a radius-implied
+  (`2π × searchRadius`) undershoot below 0.85×. One re-placement at radius
+  × (asked/delivered); if that overshoots the ask, one damped half-step retry
+  (geometric mean) — loop length grows super-linearly with placement radius in
+  some terrain. Acceptance guards: compactness held (relative + absolute
+  floors), no new clover (petal), **no new self-crossings**, overshoot cap
+  (1.10× explicit / 1.15× radius on the weighted-miss path), and the radius
+  path must land ≥ 5 pp closer to the ask on a weighted miss (overshoot free
+  to +10%, then priced 2×) — the 5 pp materiality bar is waived (strict
+  improvement still required) when the corrected loop's compactness rises by
+  ≥ 0.15, so a length bar cannot veto a shape transformation. A second
+  acceptance path implements length tolerance (product call 2026-07-24):
+  when BOTH loops sit inside the tolerant band 0.75–1.25× of the ask, a
+  visible shape upgrade (compactness +0.05) ships, spending at most 0.10 of
+  weighted miss — this path alone may use the 1.25× band edge; the
+  weighted-miss path keeps its 1.15× cap so a terrible first pass cannot
+  launder a band-edge loop past the shape retry's circle rescue. On
+  rejection the first loop is restored byte-identically.
+- **Shape retry** (`retryCirclePlacement`): probes the (possibly corrected)
+  track's own gate verdict and retries with the classic circle placement — at
+  `searchRadius`, NOT the corrected radius, because the circle fan reaches
+  ~`2π × R` by construction and a lobe-corrected radius double-corrects — on
+  a gate rejection or any of FAST's four measured failure shapes:
+  self-crossings, near-zero-area thread (compactness < 0.10), clover
+  (petal ≥ 0.30), or start-pinched bowtie (far-field dwell < 0.35). A
+  shape-first keep-better cascade decides what ships; ties keep the
+  optimized loop.
+
+Worst case three routing passes (initial + correction + shape retry), all
+budget-gated; the perf-budget suite's ceilings cover it.
 
 ## 4. GreedyStrategy (GREEDY / ISO_GREEDY)
 
@@ -226,7 +264,10 @@ flowchart TD
     C -- yes --> D[child 2: GREEDY]
     C -- no --> E
     D --> E{any accepted candidate?}
-    E -- yes --> W[winner = highest RouteChoiceScore]
+    E -- yes --> W2{winner < 0.85?}
+    W2 -- yes --> S[weak-winner second opinion:<br/>WAYPOINT child competes on score;<br/>displaces only within 1.25× of the<br/>incumbent's cost/m]
+    S --> W[winner = highest RouteChoiceScore]
+    W2 -- no --> W
     E -- no --> F[child 3: WAYPOINT fallback]
     F --> G{accepted?}
     G -- no --> H[child 4: ISOCHRONE last resort]
@@ -245,6 +286,43 @@ Review-relevant details:
 - **Budget sharing**: one wall-clock deadline across all children; each child gets
   the remaining slice, floored at `MIN_CHILD_BUDGET_MS` (5 s) — a deliberate,
   bounded overrun so a spawned candidate never gets a ~0 ms slice.
+- **Weak-winner second opinion** (2026-07-25): a winner below the 0.85 clear-accept
+  bar earns one cross-family WAYPOINT challenger — the greedy-family pools are
+  usually singletons there (absorption skip, or greedy hard-failing on mtb), so a
+  shape defect ships unopposed while the FAST tier's cascade produces a better loop
+  nobody compares. The challenger competes on `RouteChoiceScore` (whose compactness
+  term reads NET enclosed area since the same change) but may displace only within
+  1.25× of the incumbent's surface cost/m — shape is the challenger's mandate, road
+  choice stays the profile's. Strong winners spend nothing extra; the perf contract
+  covers the pass (Basel 100 km AUTO ceiling 2.5M → 3.2M links).
+- **Shape penalties in `RouteChoiceScore`** — every one is ranking-only (excluded
+  from `qualityScore()`), so none can fail a cell; they only let AUTO prefer a
+  cleaner alternative. Each exists because it is invisible to the ones before it:
+  self-intersections (0.08 each) → the lasso surcharge for short enclosed arcs
+  (0.12) → near-revisit teardrops (0.12/unit) → **clover** (0.12, `petalAmplitude`
+  0.30→0.60: petals meet at a junction so the crossing scan reads zero and the area
+  clears the thread floor) → **home-hugging** (0.10, `farFieldDwell` below 0.35,
+  the same floor FAST retries on) → **crumple** (0.12, net enclosed-area compactness
+  below 0.10). The crumple term exists because the compactness *credit* term can
+  only withhold its 0.10 weight, which is not enough to keep a pathological shape
+  off the 0.85 clear-accept bar when every other dimension is satisfied — Vosges
+  75 km mtb scored 0.850 riding 73 km around nothing.
+- **Shape-retry cascade, and where length speaks** (FAST): when the optimized
+  placement is gate-rejected or carries a shape defect, the tier re-places with
+  the classic circle and keeps the better of the two. The ladder is shape-first —
+  isLoop → structural rejection → crossings → clover → bowtie → gate acceptance →
+  **length** → compactness. The length rung (`lengthBandPreference`) is the only
+  place length votes, and it votes only when the two candidates disagree about
+  being a plausible size at all: exactly one inside the same `[0.75, 1.25]`
+  tolerant band the radius correction uses. It costs nothing — both tracks are
+  already routed and measured when it runs. Motivating case: Garmisch 96 km east
+  shipped a 0.67× loop over a 0.91× one because the short loop scored higher
+  compactness and every rung above tied. Measured on the 588-cell FAST matrix:
+  581 identical, 3 better, 0 worse, 4 mixed, wall-clock 1.01×.
+- **Profile cost/m bands**: fastbike/road [1.2, 3.0], gravel [2.0, 5.0],
+  mtb **[8.0, 14.0]**, trekking and default [1.5, 4.0]. The mtb band was measured
+  over 64 mtb loop cells (7.98–15.18 cost/m, median 10.20); the previous [4, 9]
+  scored 55 of those 64 at zero, spending 5% of the score on a constant.
 - **Sequential children**: the candidates run one after another on the request
   thread (ISO_GREEDY first, then GREEDY only when still needed), so an AUTO
   request occupies one core and stays within the pool's "≈ 1 CPU-bound thread

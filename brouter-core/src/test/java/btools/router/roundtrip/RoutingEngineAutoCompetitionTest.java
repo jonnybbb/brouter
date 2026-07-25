@@ -520,7 +520,9 @@ public class RoutingEngineAutoCompetitionTest {
     Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("road"), 1e-9);
     Assert.assertArrayEquals(new double[]{1.2, 3.0}, RouteChoiceScore.costMBand("racing"), 1e-9);
     Assert.assertArrayEquals(new double[]{2.0, 5.0}, RouteChoiceScore.costMBand("gravel"), 1e-9);
-    Assert.assertArrayEquals(new double[]{4.0, 9.0}, RouteChoiceScore.costMBand("mtb"), 1e-9);
+    // mtb recalibrated 2026-07-25 from 64 measured mtb loop cells (7.98-15.18
+    // cost/m, median 10.20): the old [4, 9] scored 55 of those 64 at zero.
+    Assert.assertArrayEquals(new double[]{8.0, 14.0}, RouteChoiceScore.costMBand("mtb"), 1e-9);
     Assert.assertArrayEquals(new double[]{1.5, 4.0}, RouteChoiceScore.costMBand("trekking"), 1e-9);
     Assert.assertArrayEquals("unknown profile → default band",
       new double[]{1.5, 4.0}, RouteChoiceScore.costMBand("shortest"), 1e-9);

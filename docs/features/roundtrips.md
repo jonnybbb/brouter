@@ -22,7 +22,7 @@ You control the loop with a few request parameters:
 | :----- | :----- |
 | `roundTripLength` | desired total loop length in meters (takes precedence over `roundTripDistance`) |
 | `roundTripDistance` | search radius in meters; the loop length is roughly `2π × radius` |
-| `roundTripPoints` | waypoint count for the geometric placements (`FAST`/`WAYPOINT`/`ISOCHRONE`, and the `BALANCED` fallback); accepted range 3–20 (out-of-range values fall back to 5). The greedy planners derive their own count and ignore it |
+| `roundTripPoints` | waypoint count for the geometric placements (`FAST`/`WAYPOINT`/`ISOCHRONE`, and the `BALANCED` fallback); accepted range 3–20 (out-of-range values fall back to 5). When absent, the engine uses 5 points (4 generated vias) at every radius — a few good vias with point-to-point routing doing the rest; more vias overconstrain the route into fan-like shapes. The greedy planners derive their own count and ignore it |
 | `direction` / `heading` | compass bearing the loop heads out toward (`heading` additionally forces it for the opening leg); without it the start bearing is drawn randomly, so fix it whenever the loop should be reproducible. Same keys as upstream point-to-point routing |
 | `alternativeidx` | deterministic loop variety seed (`0` = default loop, any value ≥ 0 gives a reproducible variant — see [note below](#loop-quality)) |
 | `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing |
@@ -127,14 +127,25 @@ What stays the same with `FAST`:
 
 What is different:
 
-- **Loops are shorter for the same `roundTripDistance`.** The old routine
-  reached the full `2π × radius` length partly by force-routing through
-  unreachable points — the same behaviour that caused stacked waypoints and
-  failing loops near rivers and islands. `FAST` drops such points instead, so
-  its loops come out shorter in constrained terrain (roughly 75% of the old
-  length in our A/B measurements). If you need a loop of a certain length,
-  ask for it with `roundTripLength` — or use `AUTO`, which corrects the
-  distance and is the reason it takes longer.
+- **Length is corrected, not forced.** The old routine reached the full
+  `2π × radius` length partly by force-routing through unreachable points —
+  the same behaviour that caused stacked waypoints and failing loops near
+  rivers and islands. `FAST` drops such points instead, and when the first
+  loop then comes in clearly short (below ~0.85× of the implied length) it
+  re-places once at a scaled radius — with one damped half-step retry when
+  the first correction runs past the ask. The corrected loop ships only when
+  it lands closer to the ask without losing shape (no new self-crossings, no
+  clover, compactness held, overshoot capped at ~1.15×) — or, length being a
+  soft promise here, when both loops already sit inside a tolerant
+  0.75–1.25× band and the corrected one has visibly better shape: then the
+  fuller loop wins even at, say, 1.17× of the ask. Otherwise the first loop
+  ships unchanged. Measured on the 588-cell matrix: mean length miss fell
+  from 19% to 14%, cells shorter than 0.85× fell from 289 to ~170, at a
+  median cost of ~0.3 s per request. In terrain whose length response defeats
+  both corrective steps the loop still comes in short — `roundTripLength`
+  states the ask explicitly, and `AUTO` searches harder.
+- **The result is length-checked against your ask.** `roundTripLength` keeps
+  its stricter promise: any miss beyond ±10% earns the corrective pass.
 - **The result is checked.** Every loop passes the quality gate. A loop with
   problems is still returned, but tagged with a `Warning:` message.
 

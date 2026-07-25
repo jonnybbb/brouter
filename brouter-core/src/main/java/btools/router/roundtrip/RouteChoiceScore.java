@@ -123,6 +123,35 @@ public final class RouteChoiceScore {
   // baselines on their preferred surfaces (a 1.5 cost/m gravel route may
   // be on perfect terrain; the same value on fastbike means rough roads).
 
+  /**
+   * Weight of the cost/m term for a profile — {@link #W_COSTM} everywhere except
+   * <b>mtb, where it is deliberately ZERO</b>.
+   *
+   * <p>Cost per metre measures how much the profile dislikes the ground. For a paved
+   * profile that is a quality signal: low cost/m means good roads. <b>For mtb it is not
+   * a quality signal at all</b> — it measures how EASY the terrain is, and an mtb rider
+   * is not looking for easy terrain. Rewarding low cost/m there steers the scorer toward
+   * forest road over technical trail, which is backwards for the profile.
+   *
+   * <p>Measured, 2026-07-25, 588-cell AUTO matrix A/B: giving the term a live band for
+   * mtb ({@code [8,14]} instead of the old {@code [4,9]}, which saturated at zero) moved
+   * 15 cells — length |dev| 8.2% → 7.0%, but mean compactness 0.342 → 0.286, worse on 10
+   * cells and better on 5. It bought 1.2 points of length accuracy with 16% of loop
+   * shape. Zeroing the weight is the honest form of that result: the dimension does not
+   * rank mtb loops, and saying so explicitly stops a future reader "fixing" a band that
+   * looks mis-calibrated but is inert on purpose.
+   *
+   * <p>Consequence to know: the positive weights therefore sum to 0.95 for mtb, not 1.0,
+   * so mtb scores sit ~0.05 below an otherwise identical paved-profile score against the
+   * absolute bars ({@code CLEAR_ACCEPT_THRESHOLD}, {@code MIN_RCS_PASS}). That matches
+   * the behaviour the corpus was calibrated on — the old band already scored 55 of 64
+   * mtb cells at zero.
+   */
+  static double costMWeight(String profileName) {
+    return profileName != null && profileName.toLowerCase(Locale.ROOT).contains("mtb")
+      ? 0.0 : W_COSTM;
+  }
+
   public static double[] costMBand(String profileName) {
     if (profileName == null) return new double[]{1.5, 4.0};
     String n = profileName.toLowerCase(Locale.ROOT);
@@ -138,7 +167,11 @@ public final class RouteChoiceScore {
       return new double[]{2.0, 5.0};
     }
     if (n.contains("mtb")) {
-      return new double[]{4.0, 9.0};
+      // The measured range: 64 mtb loop cells (Finale/Freiburg/Garmisch/Girona
+      // x town vs trailhead x 4 headings x FAST/AUTO) run 7.98-15.18 cost/m,
+      // median 10.20. Reported for logging only — the term carries ZERO weight
+      // for mtb, see costMWeight.
+      return new double[]{8.0, 14.0};
     }
     if (n.contains("trekking")) {
       return new double[]{1.5, 4.0};
@@ -309,10 +342,18 @@ public final class RouteChoiceScore {
       W_CONTINUITY, m.getContinuityScore(), contContrib));
     total += contContrib;
 
-    // 5. Compactness — convex hull area vs ideal-circle area. Already in [0,1].
-    double compactContrib = W_COMPACTNESS * m.getCompactnessScore();
-    reasons.add(new Reason("compactness " + fmt(m.getCompactnessScore()),
-      W_COMPACTNESS, m.getCompactnessScore(), compactContrib));
+    // 5. Compactness — NET enclosed area (isoperimetric), not the convex
+    //    hull. The hull credits exactly the defect classes this term exists
+    //    to price: a V-thread hulls into a fat triangle (raw 0.35 for a loop
+    //    enclosing ~nothing — pinned by threadLoopGetsNoCompactnessCredit),
+    //    a serpentine crumple fills its hull (Vosges 75 mtb W: hull 0.25 vs
+    //    net 0.03), a necked two-lobe likewise (Crete 75 gravel S: 0.29 vs
+    //    0.13). Display/report surfaces keep the hull metric; only the
+    //    ranking term reads net area. Already in [0,1].
+    double netCompact = LoopQualityMetrics.enclosedAreaCompactness(track.nodes, track.distance);
+    double compactContrib = W_COMPACTNESS * netCompact;
+    reasons.add(new Reason("compactness " + fmt(netCompact) + " (net enclosed area)",
+      W_COMPACTNESS, netCompact, compactContrib));
     total += compactContrib;
 
     // 6. cost/m within profile-typical band.
@@ -322,10 +363,12 @@ public final class RouteChoiceScore {
     if (costM <= band[0]) costMScore = 1.0;
     else if (costM >= band[1]) costMScore = 0.0;
     else costMScore = (band[1] - costM) / (band[1] - band[0]);
-    double costMContrib = W_COSTM * costMScore;
+    double wCostM = costMWeight(profileName);
+    double costMContrib = wCostM * costMScore;
     reasons.add(new Reason("cost/m " + fmt(costM)
-      + " (preferred band [" + fmt(band[0]) + ", " + fmt(band[1]) + "])",
-      W_COSTM, costM, costMContrib));
+      + (wCostM > 0 ? " (preferred band [" + fmt(band[0]) + ", " + fmt(band[1]) + "])"
+                    : " (not ranked for this profile)"),
+      wCostM, costM, costMContrib));
     total += costMContrib;
 
     // 6b. Road character — profile-aware highway desirability from the route's tags (not its cost,
@@ -414,12 +457,52 @@ public final class RouteChoiceScore {
       total -= teardropPenalty;
     }
 
-    // Ranking score includes the self-intersection, lasso and teardrop penalties;
-    // qualityScore excludes ALL THREE (they are ranking signals to pick the cleaner
-    // alternative — a terrain-forced defect shipping as best-available must not
-    // trip the soft floor).
+    // 11. Clover / petal penalty. Several out-and-backs sharing a centre: no
+    //     transverse crossing (#9 blind), real enclosed area (#5 blind), each
+    //     petal too long for the teardrop window (#10 blind). FAST already
+    //     retries on this shape; this is the same eye for AUTO's ranking.
+    double petalAmp = LoopQualityMetrics.petalAmplitude(track.nodes, track.distance);
+    double petalPenalty = 0;
+    if (petalAmp > PETAL_FREE_AMPLITUDE) {
+      double sev = Math.min(1.0, (petalAmp - PETAL_FREE_AMPLITUDE)
+        / (PETAL_FULL_AMPLITUDE - PETAL_FREE_AMPLITUDE));
+      petalPenalty = SHAPE_PENALTY_PETAL * sev;
+      reasons.add(new Reason("petal amplitude " + fmt(petalAmp)
+        + " (clover; free below " + fmt(PETAL_FREE_AMPLITUDE) + ")",
+        -petalPenalty, petalAmp, -petalPenalty));
+      total -= petalPenalty;
+    }
+
+    // 12. Far-field dwell penalty. How much of the ride is actually spent away
+    //     from home — the bowtie/orbit defect. Floor mirrors FAST's own.
+    double dwell = LoopQualityMetrics.farFieldDwell(track.nodes);
+    double dwellPenalty = 0;
+    if (dwell < DWELL_FLOOR) {
+      double sev = Math.min(1.0, (DWELL_FLOOR - dwell) / (DWELL_FLOOR - DWELL_FULL_PENALTY_AT));
+      dwellPenalty = SHAPE_PENALTY_DWELL * sev;
+      reasons.add(new Reason("far-field dwell " + fmt(dwell)
+        + " (floor " + fmt(DWELL_FLOOR) + ")", -dwellPenalty, dwell, -dwellPenalty));
+      total -= dwellPenalty;
+    }
+
+    // 13. Crumple penalty. #5 can only withhold credit; a loop enclosing
+    //     ~nothing needs to be pushed DOWN, or it reaches the clear-accept bar
+    //     on the strength of its other, perfectly satisfied dimensions.
+    double crumplePenalty = 0;
+    if (netCompact < CRUMPLE_FLOOR) {
+      double sev = Math.min(1.0, (CRUMPLE_FLOOR - netCompact) / CRUMPLE_FLOOR);
+      crumplePenalty = SHAPE_PENALTY_CRUMPLE * sev;
+      reasons.add(new Reason("crumple: encloses " + fmt(netCompact)
+        + " (floor " + fmt(CRUMPLE_FLOOR) + ")", -crumplePenalty, netCompact, -crumplePenalty));
+      total -= crumplePenalty;
+    }
+
+    // Ranking score includes every shape penalty; qualityScore excludes them ALL
+    // (they are ranking signals to pick the cleaner alternative — a terrain-forced
+    // defect shipping as best-available must not trip the soft floor).
     double clamped = Math.max(0.0, Math.min(1.0, total));
-    double qualityClamped = Math.max(0.0, Math.min(1.0, total + selfIntPenalty + lassoPenalty + teardropPenalty));
+    double qualityClamped = Math.max(0.0, Math.min(1.0, total + selfIntPenalty + lassoPenalty
+      + teardropPenalty + petalPenalty + dwellPenalty + crumplePenalty));
     return new Verdict(clamped, qualityClamped, reasons);
   }
 
@@ -428,7 +511,7 @@ public final class RouteChoiceScore {
    * near-revisit spans, excluding the loop's own start≈end closure. Drives the shape penalty.
    * See {@link LoopQualityMetrics#nearRevisitSpans}.
    */
-  private static double teardropSeverity(OsmTrack track) {
+  static double teardropSeverity(OsmTrack track) {
     if (track == null || track.nodes == null) return 0;
     List<OsmPathElement> nodes = track.nodes;
     int n = nodes.size();
@@ -440,10 +523,93 @@ public final class RouteChoiceScore {
         NEAR_REVISIT_EPS_M, NEAR_REVISIT_MIN_ARC_M, NEAR_REVISIT_MAX_ARC_M)) {
       double arc = cum[s[1]] - cum[s[0]];
       if (total > 0 && arc > CLOSURE_EXCLUSION_FRACTION * total) continue; // loop closure, not a teardrop
-      sev += Math.min(1.0, arc / NEAR_REVISIT_NORM_M);
+      // Position weight: a teardrop in the ride's first or last kilometres is
+      // what the rider sees while still fresh (and what a screenshot shows).
+      // Measured tile-clean A/B (2026-07-20, 548 AUTO cells): moves 10 routes,
+      // all inside the planners' own top-K selection (0 changed the AUTO
+      // winner); removes 5.1 + 5.1 + 3.2 km of ridden-twice stretches in the
+      // three biggest cells, aggregate double-riding −47%; one regression in a
+      // chronically terrain-walled Garmisch cell that is poor either way.
+      // (An earlier same-day A/B read as a 66-cell wash and led to a brief
+      // revert — that spread was a mid-experiment E5_N45 tile refresh, not
+      // this weight. Full history: .agents/route-comparison-20260720/.)
+      // Ranking-only, like the whole teardrop term: qualityScore excludes it,
+      // so it steers selection and can never fail a cell.
+      double mid = (cum[s[0]] + cum[s[1]]) / 2.0;
+      double edgeFrac = total > 0 ? Math.min(mid, total - mid) / total : 1.0;
+      double posWeight = edgeFrac <= TEARDROP_START_ZONE_FRACTION
+        ? TEARDROP_START_ZONE_WEIGHT : 1.0;
+      sev += posWeight * Math.min(1.0, arc / NEAR_REVISIT_NORM_M);
     }
     return sev;
   }
+
+  /**
+   * Clover penalty — {@link LoopQualityMetrics#petalAmplitude} above
+   * {@link #PETAL_FREE_AMPLITUDE}, ramped to full at {@link #PETAL_FULL_AMPLITUDE}.
+   *
+   * <p>Prices the defect NO other term sees. A clover's petals meet at a shared junction
+   * instead of crossing, so {@code countSelfIntersections} correctly reports zero; its
+   * enclosed area stays well above the thread floor, so {@link #W_COMPACTNESS} passes it;
+   * and each petal is short enough to duck the teardrop arc window. FAST's retry cascade
+   * has treated {@code petalAmplitude >= 0.30} as a failure shape since the shape work —
+   * this term gives AUTO's ranking the same eye, so a clean alternative can win on it.
+   *
+   * <p>Magnitude sits just under {@link #SHAPE_PENALTY_OUT_AND_BACK}: a full clover is
+   * about as unwelcome as a disclosed out-and-back. Ranking-only, excluded from
+   * {@link Verdict#qualityScore()}.
+   */
+  static final double SHAPE_PENALTY_PETAL = 0.12;
+  /** Petal amplitude that starts costing: FAST's clover trigger; corpus median is 0.16. */
+  static final double PETAL_FREE_AMPLITUDE = 0.30;
+  /** Petal amplitude at full penalty; measured clover maximum on the 548-cell matrix is 0.56. */
+  static final double PETAL_FULL_AMPLITUDE = 0.60;
+
+  /**
+   * Home-hugging penalty — {@link LoopQualityMetrics#farFieldDwell} below
+   * {@link #DWELL_FLOOR}, ramped to full at {@link #DWELL_FULL_PENALTY_AT}.
+   *
+   * <p>The rider's "am I actually going somewhere" dimension: the share of the ride spent
+   * far from the start. A circle through the start dwells ~0.59 by construction, a plain
+   * out-and-back ~0.40, a clover ~0.30. The floor mirrors {@code FastStrategy.MIN_FAST_DWELL}
+   * so both tiers call the same shape bad.
+   *
+   * <p>Deliberately smaller than {@link #SHAPE_PENALTY_PETAL}: dwell overlaps the petal and
+   * out-and-back signals, and stacking two full-weight penalties on one defect would let a
+   * shape term outvote reuse. An out-and-back's ~0.40 clears the floor, so this never
+   * double-charges {@link #SHAPE_PENALTY_OUT_AND_BACK}. Ranking-only.
+   */
+  static final double SHAPE_PENALTY_DWELL = 0.10;
+  /** Far-field dwell below which the loop reads as orbiting its own start. */
+  static final double DWELL_FLOOR = 0.35;
+  /** Far-field dwell at full penalty. */
+  static final double DWELL_FULL_PENALTY_AT = 0.15;
+
+  /**
+   * Crumple penalty — net {@link LoopQualityMetrics#enclosedAreaCompactness} below
+   * {@link #CRUMPLE_FLOOR}, ramped to full at zero enclosed area.
+   *
+   * <p>Why a penalty when {@link #W_COMPACTNESS} already scores compactness: that term can
+   * only WITHHOLD its 0.10, which is not enough to keep a pathological shape off the 0.85
+   * clear-accept bar when every other dimension is satisfied. Vosges 75 km mtb shipped a
+   * serpentine crumple (net compactness 0.033) that scored 0.850 with clean reuse, closure,
+   * continuity and excellent trails — it was held below the bar only by the mtb cost band
+   * being dead, and reviving that band (measured: +0.029) pushed it over, silencing the
+   * weak-winner second opinion that had fixed the cell. A loop that rides 73 km around
+   * nothing is a defect, and is priced as one.
+   *
+   * <p>Floor calibrated on the 12-cell three-way corpus: shipped loops run 0.19-0.58 net
+   * compactness with a median near 0.32; everything below 0.10 (Annecy 0.07, Finale 0.00-0.11,
+   * Garmisch 0.01-0.04) is a route no rider would follow. Ranking-only.
+   */
+  static final double SHAPE_PENALTY_CRUMPLE = 0.12;
+  /** Net enclosed-area compactness below which a loop reads as a crumple/thread. */
+  static final double CRUMPLE_FLOOR = 0.10;
+
+  /** Arc fraction from either end of the loop that counts as the start/finish zone. */
+  static final double TEARDROP_START_ZONE_FRACTION = 0.10;
+  /** Severity multiplier for a teardrop inside the start/finish zone. */
+  static final double TEARDROP_START_ZONE_WEIGHT = 2.0;
 
   private static String fmt(double v) {
     return String.format(Locale.US, "%.2f", v);
