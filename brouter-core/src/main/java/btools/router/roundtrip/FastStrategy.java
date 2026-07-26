@@ -97,16 +97,6 @@ final class FastStrategy implements RoundTripStrategy {
           targetPoints + (int) Math.round(GreedyRoundTripPlanner.seededUnit(varietySeed, 3, 0))));
       }
 
-      // FAST perf optimization (ideas 1/2/4): when on, the FAST tier reuses the
-      // probe's already-snapped road nodes as vias and skips the redundant
-      // validateAndAdjustWaypoints re-matching pass (and its cache reset).
-      // Toggle off with -Droundtrip.fast.optimized=false to compare against the
-      // legacy probe+envelope+validate path. AUTO/QUALITY/ISOCHRONE unaffected.
-      // (Not Boolean.getBoolean: that reads absent as false, but this flag
-      // must default to ON.)
-      boolean fastOptimized = Boolean.parseBoolean(
-        System.getProperty("roundtrip.fast.optimized", "true"));
-
       if (algo == RoundTripAlgorithm.ISOCHRONE) {
         ProbeResult probe = snapper.probeReachableDirections(ops.waypoints().get(0), searchRadius);
         double[] probeDirections = (probe != null) ? probe.viableDirections : null;
@@ -126,7 +116,7 @@ final class FastStrategy implements RoundTripStrategy {
           orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.CIRCLE);
           ops.buildPointsFromCircle(ops.waypoints(), direction, searchRadius, targetPoints);
         }
-      } else if (fastOptimized) {
+      } else {
         // Directional lobe, always: the loop heads toward the resolved bearing
         // (caller-supplied startDirection/heading, or the random draw) like the
         // pre-1.7.9 upstream circle placement — it never encircles the start
@@ -138,15 +128,12 @@ final class FastStrategy implements RoundTripStrategy {
         FastPlacementOutcome fastOutcome = placeOptimized(placementRadius, direction,
           targetPoints, true);
         placedPath = fastOutcome.path;
-      } else {
-        placeLegacy(snapper, placer, placementRadius, direction, targetPoints);
       }
 
       // Idea 4: the optimized FAST module fully validates its own skeleton —
       // probe-snapped vias are pre-validated, and its circle fallback runs this
-      // pass behind FastPlacementOps.circleFallbackValidated. The legacy
-      // placement validates inside placeLegacy; only ISOCHRONE needs the
-      // caller-side matching pass here.
+      // pass behind FastPlacementOps.circleFallbackValidated. Only ISOCHRONE
+      // needs the caller-side matching pass here.
       if (algo == RoundTripAlgorithm.ISOCHRONE) {
         snapper.validateAndAdjustWaypoints(ops.waypoints(), searchRadius);
       }
@@ -224,7 +211,6 @@ final class FastStrategy implements RoundTripStrategy {
     // and forced-legacy runs are already on the legacy pass.
     if (algo == RoundTripAlgorithm.WAYPOINT
         && !ops.routingContext().allowSamewayback
-        && Boolean.parseBoolean(System.getProperty("roundtrip.fast.optimized", "true"))
         && Boolean.parseBoolean(System.getProperty("roundtrip.fast.shape.retry", "true"))
         && !degenerateOutcome(request)) {
       RoundTripQualityResult optVerdict =
@@ -628,30 +614,6 @@ final class FastStrategy implements RoundTripStrategy {
       break;
     }
     return placementRadius;
-  }
-
-  /**
-   * The legacy probe+envelope FAST placement (the pre-optimization path):
-   * reachability probe, confidence filter, envelope placement (circle
-   * fallback), then the full re-validation pass. Selectable for a whole run
-   * via {@code -Droundtrip.fast.optimized=false}; the shape retry uses it
-   * when the optimized loop fails the gate.
-   */
-  private void placeLegacy(WaypointSnapper snapper, GeometricWaypointPlacer placer,
-                           double searchRadius, double direction, int targetPoints) {
-    ProbeResult probe = snapper.probeReachableDirections(ops.waypoints().get(0), searchRadius);
-    // FAST tier: drop single-probe-success directions when enough strong
-    // alternatives exist. Avoids fragile sea-edge/dead-end picks.
-    double[] viableDirections = PlacementGeometry.filterByProbeConfidence(probe, targetPoints);
-    if (viableDirections != null && viableDirections.length >= 3) {
-      orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.ENVELOPE_FAST);
-      placer.placeWaypointsFromEnvelope(ops.waypoints(), viableDirections, searchRadius, direction, targetPoints);
-    } else {
-      ops.logInfo("reachability probe returned < 3 directions, falling back to circle");
-      orchestrator.recordPlacementPath(RoundTripOrchestrator.PlacementPath.CIRCLE);
-      ops.buildPointsFromCircle(ops.waypoints(), direction, searchRadius, targetPoints);
-    }
-    snapper.validateAndAdjustWaypoints(ops.waypoints(), searchRadius);
   }
 
   /**

@@ -99,8 +99,6 @@ Placement paths (recorded in `PlacementPath` counters):
   lobe* — the loop heads toward the requested bearing — reusing probe-snapped road
   nodes as vias (no separate validation pass). If the lobe *places* but routing
   produces a degenerate stub, one retry with an *encircling ring* around the start.
-- **WAYPOINT, legacy** (`-Droundtrip.fast.optimized=false`): reachability probe →
-  place vias on the probe envelope → validate/re-match → route.
 - **ISOCHRONE**: run an isochrone expansion from the start, merge the frontier with
   the probe directions, place vias on the merged frontier. Fallbacks: probe
   envelope → plain circle.
