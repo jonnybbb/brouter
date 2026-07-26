@@ -442,7 +442,7 @@ public final class WaypointSnapper {
 
   public ProbeResult probeReachableDirections(OsmNodeNamed start, double searchRadius) {
     // Legacy sweep: 24 bearings every 15°, radii {0.7, 1.0, 1.3}·R — the
-    // ISOCHRONE path and the -Droundtrip.fast.optimized=false A/B baseline.
+    // ISOCHRONE path.
     return probeDirections(start, searchRadius, PlacementGeometry.fullCircleBearings(24),
       new double[]{0.7, 1.0, 1.3}, false, "reachability probe");
   }

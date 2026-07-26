@@ -14,10 +14,9 @@ import java.util.*;
  * so their call order cannot drift across call sites — both regressions this
  * module descends from were exactly that drift.
  *
- * <p>Scope: only the optimized FAST path ({@code roundtrip.fast.optimized},
- * default on). ISOCHRONE, legacy A/B FAST, explicit-via and same-way-back use
- * the engine's shared helpers directly; AUTO reaches this module through its
- * FAST candidate child engines.
+ * <p>Scope: the FAST placement path (WAYPOINT tier). ISOCHRONE, explicit-via and
+ * same-way-back use the engine's shared helpers directly; AUTO reaches this
+ * module through its FAST candidate child engines.
  *
  * <p>The planner reaches the engine only through the narrow
  * {@link FastPlacementOps} seam, so scenario tests can drive it with a
