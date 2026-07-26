@@ -1,7 +1,6 @@
 package btools.router;
 
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -76,14 +75,41 @@ public class RoundTripContractTest {
       closing <= CLOSURE_MAX_M);
   }
 
-  /** Identical inputs must yield an identical track (reproducible routing). */
+  /**
+   * Identical inputs must yield an identical OUTCOME — and that includes failure.
+   *
+   * <p>This used to {@code Assume} its way past every case the fixture cannot form a loop
+   * for, which silently disabled the determinism contract on <b>31 of 48</b> parameter
+   * combinations: the assertion only ever ran where a loop happened to exist. Infeasible
+   * cases are the ones most likely to expose non-determinism — they run the full retry
+   * ladder and every fallback before giving up — so they were exactly the wrong cases to
+   * skip. A deterministic engine must fail the same way twice: same message, still no track.
+   */
   @Test
   public void deterministic() {
     RoutingEngine re1 = RoundTripFixture.engine(profile, direction, radius);
-    Assume.assumeTrue("no loop for this case", re1.getErrorMessage() == null);
+    String err1 = re1.getErrorMessage();
     OsmTrack t1 = re1.getFoundTrack();
 
-    OsmTrack t2 = RoundTripFixture.engine(profile, direction, radius).getFoundTrack();
+    RoutingEngine re2 = RoundTripFixture.engine(profile, direction, radius);
+    String err2 = re2.getErrorMessage();
+    OsmTrack t2 = re2.getFoundTrack();
+
+    Assert.assertEquals(label() + ": one run failed and the other did not",
+      err1 == null, err2 == null);
+    if (err1 != null) {
+      // Failure determinism: same reason, and the trackless contract holds both times.
+      // Compare with elapsed times normalised: the engine embeds a wall-clock
+      // duration in some failure messages ("tried 4 candidates in 497ms"), which
+      // varies run to run by construction. Everything that carries meaning —
+      // the reason, the candidate count, the tier — must still match exactly.
+      Assert.assertEquals(label() + ": error message differs between runs",
+        withoutTimings(err1), withoutTimings(err2));
+      Assert.assertNull(label() + ": error set but run 1 returned a track", t1);
+      Assert.assertNull(label() + ": error set but run 2 returned a track", t2);
+      return;
+    }
+
     Assert.assertNotNull(label() + ": second run produced no track", t2);
     Assert.assertEquals(label() + ": node count differs between runs",
       t1.nodes.size(), t2.nodes.size());
@@ -92,6 +118,11 @@ public class RoundTripContractTest {
       Assert.assertTrue(label() + ": node " + i + " differs between runs",
         a.getILon() == b.getILon() && a.getILat() == b.getILat());
     }
+  }
+
+  /** Strip embedded wall-clock durations so determinism is asserted on content, not timing. */
+  private static String withoutTimings(String msg) {
+    return msg == null ? null : msg.replaceAll("\\d+\\s?ms", "<ms>");
   }
 
   private String label() {
