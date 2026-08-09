@@ -1823,15 +1823,15 @@ ORDER BY
 SELECT
     m.osm_id losmid,
     m.highway lhighway,
-    CASE WHEN q.population::decimal > '2000000' THEN
+    CASE WHEN q.population::decimal > '1000000' THEN
         1
-    WHEN q.population::decimal > '1000000' THEN
+    WHEN q.population::decimal > '300000' THEN
         0.8
-    WHEN q.population::decimal > '400000' THEN
+    WHEN q.population::decimal > '100000' THEN
         0.6
-    WHEN q.population::decimal > '150000' THEN
+    WHEN q.population::decimal > '30000' THEN
         0.4
-    WHEN q.population::decimal > '80000' THEN
+    WHEN q.population::decimal > '10000' THEN
         0.2
     ELSE
         0.1
@@ -1841,7 +1841,7 @@ FROM
     INNER JOIN cities_all AS q ON ST_Within (m.way, q.way)
 WHERE
     m.highway IS NOT NULL
-    AND q.population > '50000'
+    AND q.population > '5000'
 ORDER BY
     town_factor DESC;
 
