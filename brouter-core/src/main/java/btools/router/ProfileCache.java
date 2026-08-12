@@ -42,7 +42,12 @@ public final class ProfileCache {
       profileFile = new File(profileDir, rc.localFunction + ".brf");
     }
 
-    rc.profileTimestamp = profileFile.lastModified() + rc.getKeyValueChecksum() << 24;
+    // Was `profileFile.lastModified() + rc.getKeyValueChecksum() << 24`. In Java `+` binds tighter
+    // than `<<`, so that parsed as `(lastModified + checksum) << 24` rather than the evidently
+    // intended `lastModified + (checksum << 24)`. lastModified is ~1.7e12 ms, so the shift
+    // overflowed long and discarded high bits, aliasing distinct (mtime, checksum) pairs onto one
+    // cache key. Mixed explicitly instead, so both inputs survive into the key.
+    rc.profileTimestamp = profileFile.lastModified() * 1099511628211L + rc.getKeyValueChecksum();
     File lookupFile = new File(profileDir, "lookups.dat");
 
     // invalidate cache at lookup-table update

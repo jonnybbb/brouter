@@ -19,6 +19,7 @@ import btools.util.CheapRuler;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -137,12 +138,42 @@ public final class RoutingContext {
     pm.init(expctxWay, expctxNode, keyValues);
   }
 
+  /**
+   * Checksum over the request's profile parameters, used by ProfileCache to decide whether a
+   * parsed profile can be reused.
+   *
+   * <p>This was <code>s += key.hashCode() + value.hashCode()</code>, which is commutative in a way
+   * that made it blind to WHICH key held WHICH value: swapping two values left the sum untouched,
+   * so the second of two such requests was served the first one's route. With real parameters,
+   * <code>{avoid_arterials=6, avoid_residential=12}</code> and the same values swapped both
+   * produced 306203190.
+   *
+   * <p>Note that per-entry <code>a*key + b*value</code> does not fix it either: summed across
+   * entries the value terms still add up to the same total under any permutation. The key and the
+   * value have to be bound together before they are combined, which is what hashing the joined
+   * "key=value" text does.
+   *
+   * <p>Sorting keeps the result independent of map iteration order (so it stays a stable cache
+   * key) while remaining sensitive to the assignment itself. The separator stops "a=b" + "c" from
+   * colliding with "a=bc" + "". The 64-bit accumulator also makes accidental collisions far less
+   * likely than the previous 32-bit sum, which collided readily on numeric strings —
+   * "72762.0753" and "206.069547" share a String.hashCode.
+   */
   public long getKeyValueChecksum() {
-    long s = 0L;
-    if (keyValues != null) {
-      for (Map.Entry<String, String> e : keyValues.entrySet()) {
-        s += e.getKey().hashCode() + e.getValue().hashCode();
+    if (keyValues == null || keyValues.isEmpty()) {
+      return 0L;
+    }
+    List<String> pairs = new ArrayList<>(keyValues.size());
+    for (Map.Entry<String, String> e : keyValues.entrySet()) {
+      pairs.add(e.getKey() + '=' + e.getValue());
+    }
+    Collections.sort(pairs);
+    long s = 1125899906842597L;
+    for (String pair : pairs) {
+      for (int i = 0; i < pair.length(); i++) {
+        s = 31L * s + pair.charAt(i);
       }
+      s = 31L * s + '\n';
     }
     return s;
   }
