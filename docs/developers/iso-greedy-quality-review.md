@@ -1,35 +1,52 @@
-# ISO_GREEDY quality review: v1 (PR #903) vs. current master
+# Round-trip quality review: v1 (PR #903) vs. current master
 
-Code-reading review triggered by the observation that loop quality feels worse
-than the first ISO_GREEDY version (merged as PR #903 / `e2f07ac`, reverted
-upstream by #945) while latency improved markedly.
+Investigation into the observation that generated loops feel worse than the
+first ISO_GREEDY version, while latency improved markedly.
 
-Baseline compared: `e2f07ac` (v1) → `dd2be35` (current master).
-Diff size: 77 files, +14440 / −10330 in `brouter-core/src/main`.
+**Baseline compared:** `e2f07ac` (merge of PR #903, "v1" below) → `dd2be35`
+(current master). 161 files, +20396 / −11505; 16 commits touch
+`btools/router` after the upstream revert.
 
-## Summary
+**Method.** Rename-aware diff of every round-trip source file; a name-and-value
+diff over every `static final` numeric constant in `btools.router`; comment-
+stripped code diffs of each moved class; a read of the repo's own recorded
+evidence (golden signatures, parity goldens, developer docs); and live
+measurement — the offline fixture suite runs, so the numbers below marked
+*measured* were produced by running the current code, not inferred.
 
-The core ISO_GREEDY machinery survived the refactor intact. Every candidate
-scorer weight, the planner's routed top-K (3 normal / 5 late), the window
-bounds, the source-fairness quota, and the isochrone pool filters are numerically
-identical to v1 — a name-and-value diff over every `static final` numeric
-constant in `btools.router` finds no real change (only two identical constants
-that moved between files, and `1.6`/`1.65` formatting noise). The angular-stride
-change in `IsochroneCandidateProvider` is a fix, not a regression: v1's
-adjacent-alternating bucket order filled the 24-candidate pool cap with a
-contiguous band and silently dropped a 120° wedge opposite the start.
-
-So the perceived quality loss is very unlikely to come from ISO_GREEDY's inner
-loop. It comes from **what now runs instead of ISO_GREEDY, and from a new
-mechanism that turns ISO_GREEDY into plain GREEDY mid-plan.** Findings are
-ordered by expected impact.
+**What could not be run.** The real-map loop-quality matrix needs `segments4`
+tiles that are not available offline, so no production-scale A/B was possible.
+Fixture numbers show the *direction* of an effect, not its production
+magnitude.
 
 ---
 
-## 1. The shipped default is no longer AUTO — it is FAST
+## Executive summary
 
-This is almost certainly the dominant effect, and it is by design
-(`26d699b`, "Round-trip: FAST is the default algorithm").
+The ISO_GREEDY algorithm itself is essentially unchanged and, in a few places,
+improved. Every scorer weight, the routed top-K, the source-fairness quota, the
+pool filters, and all twelve quality-gate thresholds are numerically identical
+to v1. A dedicated parity test pins the planner's full observable output
+bit-for-bit against the pre-refactor baseline, and it passes at HEAD.
+
+The quality change comes from three things around it, in descending order of
+expected impact:
+
+1. **A request that names no algorithm no longer reaches ISO_GREEDY at all** —
+   the shipped default moved from AUTO to FAST.
+2. **ISO_GREEDY increasingly resolves to plain GREEDY**, via a new one-way
+   pool-health demotion whose bunching signal fires on loop geometry alone, and
+   via two new conditions that suppress the plain-GREEDY competitor.
+3. **Nothing in CI would have caught either** — the loop-quality suite was
+   scoped out of CI, and a real placement bug (every FAST loop 25–40 % short)
+   shipped and survived several commits before being found by hand.
+
+---
+
+## 1. The shipped default is FAST, not AUTO
+
+Deliberate, and documented in `26d699b`: *"The #903 revert was driven by
+on-device latency… a request that names no algorithm gets FAST."*
 
 ```java
 // v1 — RoutingContext.java:263
@@ -37,238 +54,446 @@ public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.AUTO;
 
 // master — RoutingContext.java:296
 public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.defaultAlgorithm();
-//                                             -> System.getProperty("roundtrip.default.algorithm", "FAST")
+//                                             -> getProperty("roundtrip.default.algorithm", "FAST")
 ```
 
-Nothing else in `brouter-server` or `brouter-core` assigns this field; the only
-other writer is `RoutingParamCollector:261`, i.e. an explicit
-`roundTripAlgorithm=` request parameter. So **a round-trip request that names no
-algorithm now runs `WAYPOINT` — geometric placement with no routed-leg
-evaluation — where v1 ran the full AUTO competition.**
+Nothing else in core or server writes that field — the only other writer is an
+explicit `roundTripAlgorithm=` request parameter (`RoutingParamCollector:261`).
+*Measured:* a fresh `RoutingContext` reports `WAYPOINT`.
 
-That single change accounts for the whole symptom: much faster, visibly worse
-loops, no ISO_GREEDY involved at all.
+### 1a. What that costs, measured
 
-**Check this first.** If the loops being compared were produced without an
-explicit `roundTripAlgorithm`, the comparison is not "ISO_GREEDY v1 vs.
-ISO_GREEDY v2" — it is "ISO_GREEDY v1 vs. FAST". Re-run with
-`roundTripAlgorithm=AUTO` (or `-Droundtrip.default.algorithm=AUTO` for a
-deployment-wide comparison) before reading anything into findings 2–4.
+Same fixture, same request, only the tier changed (Dreieich, gravel, r=1000 m,
+target loop 6283 m):
+
+| direction | tier | length | cost/m | vs. GREEDY |
+|---|---|---:|---:|---|
+| 0 | **WAYPOINT (default)** | 4265 m | **8.281** | 2.6× the cost per metre |
+| 0 | GREEDY | 5545 m | 3.138 | |
+| 0 | ISO_GREEDY / AUTO | 5545 m | 3.127 | |
+| 90 | **WAYPOINT (default)** | — | — | **no track: gate-rejected, ratio 0.25** |
+| 90 | GREEDY | 5998 m | 3.034 | |
+| 90 | ISO_GREEDY / AUTO | 6005 m | 3.149 | |
+| 180 | **WAYPOINT (default)** | 4148 m | **7.408** | 2.5× |
+| 180 | GREEDY / ISO_GREEDY / AUTO | 6242 m | 3.000 | |
+| 270 | **WAYPOINT (default)** | 6362 m | **4.196** | 1.4× |
+| 270 | GREEDY / ISO_GREEDY / AUTO | 6242 m | 3.000 | |
+
+The fixture is a tiny synthetic map, so do not read the magnitudes as
+production numbers. The pattern — the default tier riding markedly more
+expensive ground, landing short, and failing outright in one of four
+directions — is what a user comparing against v1's AUTO default would see.
+
+### 1b. FAST is also a different loop *shape* now
+
+FAST's primary placement is `FastWaypointPlanner.directionalLobeBearings` —
+four vias fanned across a ~108° forward arc — and the encircling ring is only
+a fallback (`FastStrategy:128`, *"it never encircles the start as the primary
+shape"*). v1's WAYPOINT instead spread vias across the probed viable
+directions (`selectSpreadDirections` + `sortDirectionsForLoop`).
+`directionalLobeBearings` does not exist in v1.
+
+So the default now yields a directional lobe where v1's default yielded a
+routed circuit. The user-facing doc says so plainly: *"it is a lobe pointing
+the way you asked, not a circle around the start point."*
+
+### 1c. FAST's own measured accuracy
+
+From `docs/features/roundtrips.md`, after the corrective pass was added:
+mean length miss **14 %** (down from 19 %), with **~170 of 588** matrix cells
+still shorter than 0.85× the ask. FAST also deliberately does **not** spend its
+shape retry on a pure length miss (`isDistanceBandRejection`,
+`FastStrategy:239`) — length is treated as the user's knob, shape as FAST's
+contract.
+
+### 1d. The mitigation works
+
+*Measured:* `-Droundtrip.default.algorithm=AUTO` yields `AUTO`; `QUALITY`
+yields `QUALITY`; an unparseable value falls back to `AUTO`. Per request,
+`roundTripAlgorithm=AUTO` always wins over the property.
+
+**Check this before reading anything below.** If the loops being compared did
+not pass `roundTripAlgorithm`, the comparison is "ISO_GREEDY v1 vs. FAST", not
+"ISO_GREEDY v1 vs. ISO_GREEDY v2".
 
 ---
 
-## 2. AUTO now suppresses the plain-GREEDY competitor in two new cases
+## 2. ISO_GREEDY is collapsing into plain GREEDY
 
-v1 consulted plain GREEDY whenever ISO_GREEDY was not clearly strong — a single
-condition:
+The repo records this in two independent places.
 
-```java
-// v1 — RoutingEngine.runAutoCandidateCompetition
-boolean isoGreedyWeak = !isoGreedyR.accepted()
-  || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;   // 0.85
-boolean greedyNeeded = isoGreedyWeak && greedyEntitled;
-```
+### 2a. Real-map golden signatures
 
-Master adds two further discard reasons
-(`AutoCompetitionStrategy.autoPlainGreedyDiscardReason`):
+`brouter-core/src/test/resources/test-data/golden/loop-signatures.txt`,
+regenerated in `ec06485`. Target loop 50 265 m (r = 8000). Start coordinates
+for these four cells did **not** move between versions (`ilonFor` only
+overrides `mtb`, and these cells are fastbike/gravel).
 
-```java
-if (isoGreedyR.scoreValue() >= CLEAR_ACCEPT_THRESHOLD) return "ISO_GREEDY strong";
-if (isoGreedyR.internalGraphNativeCompared())           return "ISO_GREEDY already compared graph-native branch";
-if (isoGreedyAbsorbedGraphNativeTruth(isoGreedyR))      return "ISO_GREEDY absorbed graph-native truth";
-```
+| cell | length error v1 → new | cost/m v1 → new |
+|---|---|---|
+| `iso_greedy dreieich dir0 fastbike` | 8.5 % → 8.3 % | 1.680 → **1.878 (+11.8 %)** |
+| `iso_greedy dreieich dir90 fastbike` | 17.1 % → 1.0 % | 1.846 → 1.589 (−13.9 %) |
+| `iso_greedy rural_lozere gravel` | 4.4 % → 4.4 % | 2.998 → 2.998 (=) |
+| `iso_greedy urban_berlin fastbike` | 6.3 % → 2.8 % | 1.459 → 1.554 (+6.5 %) |
+| `greedy dreieich dir0 fastbike` | 8.5 % → **13.6 %** | 1.680 → 1.787 (+6.4 %) |
+| `greedy dreieich dir90 fastbike` | 3.0 % → 1.0 % | 1.625 → 1.589 (−2.2 %) |
+| `greedy rural_lozere gravel` | 2.9 % → **9.2 %** | 2.594 → **3.147 (+21.3 %)** |
+| `greedy urban_berlin fastbike` | 8.1 % → 2.8 % | 1.538 → 1.554 (+1.1 %) |
 
-So a **weak** ISO_GREEDY result — one v1 would always have raced against plain
-GREEDY — now skips that competitor whenever ISO_GREEDY happened to run its
-internal graph-native branch. `RoundTripAlgorithm`'s own javadoc puts the stake
-at "greedy wins ~a quarter of the competition cells".
+Length accuracy improved on 3 cells and worsened on 2; **cost per metre
+worsened on 5 of 8**. The two clearest single-cell regressions are
+`iso_greedy dreieich dir0` (identical length, 11.8 % pricier ground) and
+`greedy rural_lozere` (length error tripled *and* 21 % pricier, with *less*
+climbing — so not an elevation trade).
 
-The internal branch is not an equivalent substitute. It runs
-(`GreedyStrategy.maybeRunInternalComparison`):
+And the structural signal — identical hash means ISO_GREEDY produced
+byte-identical output to plain GREEDY:
 
-```java
-runGreedyAttempt(request, start, searchRadius, desiredDistance,
-                 src.effectiveDirection, ...)   // <- iso-asymmetry-BIASED bearing
-```
+| cell | v1 | master |
+|---|---|---|
+| dreieich dir0 | same | differ |
+| dreieich dir90 | differ | **same — newly collapsed** |
+| rural_lozere | differ | differ |
+| urban_berlin | differ | **same — newly collapsed** |
 
-`src.effectiveDirection` is the bearing the Phase 2.0 iso-asymmetry bias
-selected, which only exists for ISO_GREEDY. A real plain-GREEDY child starts
-from the unbiased direction. The internal branch is therefore a graph-native
-ladder anchored to the iso pool's asymmetry bearing — correlated with the
-candidate it is supposed to check, not independent of it.
+v1: 1 of 4 cells identical. Master: 2 of 4.
 
-Compounding this: v1 ran the GREEDY child *speculatively in parallel* (permit-gated
-thread, killed when ISO_GREEDY turned out strong), so consulting it was nearly free
-in wall-clock terms. Master runs children sequentially (`5141eda`, `f21b3e3`), which
-puts the competitor squarely on the latency path and raises the incentive to skip it.
+The authors noticed: `ec06485` had to **add** a `blend_only` golden cell,
+because *"the plain dir90 cell's golden is byte-identical to greedy's because
+the internal graph-native branch wins there — without this cell no golden
+covers the blended planner's dir90 output at all."*
+
+**Caveat.** The COASTAL_NICE threshold comment in `LoopTestRegion` records that
+OSM tile data moved between the two captures (*"~35.9 % reuse, up from ~30 % on
+older tile data"*), and `ensureRegionPinned` was added afterwards precisely to
+stop that. So these deltas are code **plus** possible data drift. The hash
+collapses are not explainable by data drift — greedy and iso_greedy were
+captured on the same tiles in the same run.
+
+### 2b. Where the accepted legs actually come from
+
+`GreedyPlannerParityTest` fingerprints the planner's telemetry against goldens
+captured on the pre-refactor baseline. It runs offline and **passes at HEAD**,
+so these are current numbers, and my own probe reproduces them:
+
+| ISO_GREEDY cell | routed iso / non-iso | **accepted iso legs** | accepted non-iso | pool health |
+|---|---|---|---|---|
+| gravel dir0 | 2 / 11 | **1** | 2 | 0.74 |
+| gravel dir90 | 2 / 11 | **0** | 3 | 0.69 |
+| gravel dir180 | 2 / 6 | **0** | 2 | 0.75 |
+| gravel dir270 | 1 / 7 | **0** | 2 | 0.75 |
+| trekking dir270 | 3 / 10 | 1 | 2 | 0.81 |
+
+Across these plans the isochrone pool supplies **1 of 10 committed legs**, and
+three of four gravel directions commit **zero** iso legs. Three of the four
+gravel directions produce a track byte-identical to plain GREEDY's.
+
+These are 6.3 km loops on a synthetic fixture where the pool is legitimately
+thin — this is not proof of production behaviour on its own. It is the same
+signature the real-map goldens show.
 
 ---
 
-## 3. `IsoPoolHealth` is new, and it only ever demotes ISO_GREEDY
+## 3. `IsoPoolHealth`: a new, one-way demotion with a geometric false positive
 
-`IsoPoolHealth` (271 lines, added in `ec06485`) does not exist in v1. It scores
-the start-centered pool in `[0, 1]`, monotonically decreasing, with two sticky
-effects applied from the next candidate decision on:
+`IsoPoolHealth` (271 lines) does not exist in v1; it was added in `ec06485`. It
+scores the start-centred pool in `[0, 1]`, monotonically decreasing, with two
+sticky effects:
 
-- `< 0.55` **DEGRADED** — iso candidates lose their prior-based scoring terms and
-  the graph-native routed-slot quota grows by one.
-- `< 0.30` **UNHEALTHY** — the planner goes graph-native-only for the remaining
-  steps, i.e. **ISO_GREEDY becomes plain GREEDY mid-plan.**
+- **< 0.55 DEGRADED** — iso candidates lose their prior-based scoring terms and
+  the graph-native routed quota gains a seat.
+- **< 0.30 UNHEALTHY** — the planner goes graph-native-only for the rest of the
+  plan, i.e. **ISO_GREEDY becomes plain GREEDY mid-plan**.
 
-There is no counterpart that restores trust. Every firing is a move away from
-v1's behaviour, so miscalibration here is a pure one-way quality loss relative
-to v1.
+There is no path back up. A statically DEGRADED pool starts the plan already
+demoted (`selectIsoStartPolicy`: *"it engages from step 1 because the static
+deduction is already in the score"*). Every firing is a move away from v1's
+behaviour, so any miscalibration here is a one-way loss relative to v1.
 
-### 3a. The sector-bunching signal is geometrically guaranteed to fire
+### 3a. The sector-bunching signal cannot be satisfied
 
 ```java
 /** Per accepted via landing in an already-used angular sector (bunching). */
-static final double W_SECTOR_REPEAT = 0.08;
-static final double CAP_SECTOR_REPEAT = 0.16;
-static final int ACCEPTED_SECTOR_COUNT = 8;          // 45° sectors
+static final double W_SECTOR_REPEAT = 0.08;      // cap 0.16
+static final int ACCEPTED_SECTOR_COUNT = 8;      // 45° sectors
 ```
 
-with the stated assumption:
+with the premise: *"a healthy loop visits a fresh sector nearly every step."*
 
-> "Repeated acceptance in one 45° sector is the bunching signature — a healthy
-> loop visits a fresh sector nearly every step."
+The bearing is measured **from the loop start**
+(`GreedyRoundTripPlanner:780`, `start.ilon, start.ilat`) — and the start lies
+**on** the loop, not at its centre. For any convex closed curve through the
+start, every other point lies on one side of the tangent at the start, so
+bearings span at most 180°.
 
-That assumption does not hold for the geometry this planner produces. The
-bearing is measured **from the loop start** (`GreedyRoundTripPlanner:780-781`,
-`start.ilon, start.ilat`), and the start lies **on** the loop, not at its centre.
-For any convex closed curve through the start, every other point of the curve
-lies on one side of the tangent at the start — so the bearings span **at most
-180°**, i.e. at most 5 of the 8 sectors, and in practice 4.
+*Measured* by driving the shipped `IsoPoolHealth` with bearings from an ideal
+circular loop through the start:
 
-Simulating the shipped `sectorOf` over an ideal circular loop through the start
-(`min(7, (int)(bearing/45))`), vias spaced evenly by arc length:
+```
+sectors any via can occupy: [0, 1, 6, 7]  ->  4 of 8
+```
 
-| vias | distinct sectors | sector repeats | deduction |
-|-----:|-----------------:|---------------:|----------:|
-| 4 | 4 | 0 | 0.00 |
-| 5 | 4 | 1 | 0.08 |
-| 6 | 4 | **2** | **0.16 (cap)** |
-| 7 | 4 | 3 | 0.16 (cap) |
+Half the sector space is structurally unreachable. Consequently:
 
-Identical for an ellipse; worse for a teardrop (2 distinct sectors, 4 repeats at
-6 vias). Adding 15 % positional jitter over 200 samples does not change the means
-(1.00 / 2.00 / 3.00 repeats at 5 / 6 / 7 vias). `distinct` saturates at 4 because
-of the 180° bound, so repeats grow linearly with via count no matter how good the
-loop is.
+| vias | distinct sectors | forced repeats | score after geometry alone |
+|---|---|---|---|
+| 3 | 3 | 0 | 1.00 |
+| 4 | 4 | 0 | 1.00 |
+| 5 | 4 | 1 | 0.92 |
+| 6 | 4 | **2 (the cap)** | **0.84** |
 
-`planStep` runs `step = 1..subRouteCount`, and `selectGreedySubRouteCount`
-returns 6 for loops ≥ 80 km — plus one for `mtb` profiles, so ≥ 30 km on MTB.
-Six is also the ladder's ceiling (`addUniqueCount` clamps to `[3, 6]`), so the
-6-via row is the realistic worst case, not an outlier. **Every such plan spends
-the full `CAP_SECTOR_REPEAT` on loop geometry alone, before any real evidence.**
+Identical for an ellipse; worse for a teardrop; unchanged under 15 % jitter.
+`selectGreedySubRouteCount` returns 6 for loops ≥ 80 km — and ≥ 30 km on mtb
+(`n++`) — and 6 is also the ladder ceiling (`addUniqueCount` clamps to
+`[3, 6]`), so **the 6-via case is the realistic worst case, not an outlier.**
 
-Effect on the demotion bar:
+What that costs, *measured* on a pool with perfect static shape:
 
-| geometric sector-repeats | → DEGRADED after | → UNHEALTHY after |
+| vias | → DEGRADED after | → UNHEALTHY (becomes plain GREEDY) after |
 |---|---|---|
-| 0 (short loops, ≤ 4 vias) | 3 graph-native wins | 4 quota-injected wins |
-| 2 (6+ vias — the ≥ 80 km / MTB case) | **2 graph-native wins** | **3 quota-injected wins** |
+| 4 | 3 graph-native wins | not within 6 |
+| 5 | 2 graph-native wins | not within 6 |
+| **6** | **2 graph-native wins** | **3 quota-injected wins** |
 
-### 3b. The graph-native-win signal penalises the source quota for working
+The loop's own geometry spends one demotion step's worth of headroom before any
+real evidence is collected.
+
+### 3b. The win signal penalises the source quota for working
 
 `W_GRAPH_NATIVE_WIN = 0.16` per mixed-source routed comparison won by a
-graph-native candidate (cap `0.48`, i.e. three wins). But the source quota exists
-precisely to guarantee that candidate a routed seat so it *can* win — its own
-rationale in `GreedyRoundTripPlanner`:
+graph-native candidate (cap 0.48 = three wins). But the source quota exists to
+guarantee that candidate a routed seat so it *can* win — its own rationale in
+`GreedyRoundTripPlanner`:
 
 > "Reserving a seat changes nothing when the honest pick deserves to lose;
 > phase-2 still judges on routed truth."
 
-Since the quota guarantees a graph-native seat in essentially every step, nearly
-every step is a mixed-source comparison. The same event is read two ways: as the
-quota working as designed, and as 0.16 of evidence that the pool is stale. On a
-5–6 step plan, three such wins are unremarkable — and they are the cap.
+Since the quota fills a graph-native seat in essentially every step, nearly
+every step is a mixed-source comparison. The same event is read two ways: as
+the quota working as designed, and as 0.16 of evidence that the pool is stale.
+*Measured* on the fixture, a single win already puts a perfect-shape pool at
+0.74 — 36 % of the way to DEGRADED. On a 5–6 step plan three such wins are
+unremarkable, and three is the cap.
 
-### 3c. The interaction is the part that bites
-
-The three findings chain:
-
-1. Sector-bunching fires on loop geometry (3a) → the DEGRADED/UNHEALTHY bar drops.
-2. Two or three graph-native wins (3b) → UNHEALTHY → the planner goes
-   graph-native-only for the remaining steps, producing a hybrid plan whose early
-   legs came from the iso pool and whose later legs did not.
-3. That hybrid sets `graphNativeOnlyStart` / `internalGraphNativeCompared`, which
-   is exactly what makes AUTO **skip the real plain-GREEDY child** (finding 2).
-
-So the plan the health model just declared untrustworthy also suppresses the
-competitor that would have replaced it — and the surviving loop is one neither
-v1's ISO_GREEDY nor v1's GREEDY would have produced.
-
-### 3d. Minor: the health model uses the unscaled bearing
+### 3c. Minor: the health model uses the unscaled bearing
 
 `recordAcceptedLegBearing` is fed `CheapAngleMeter.getDirection`, which uses raw
 integer lon/lat diffs with no latitude scaling, while the planner's own geometry
-moved to `CheapRuler.getScaledBearing` in this same refactor (10 call sites; see
-the `loopSweepPenalty` change). Elsewhere `getDirection` is used for *local*
-angle comparisons where the distortion cancels; here it is a tens-of-kilometres
-bearing bucketed into *absolute* 45° sectors. At 47° N the longitude component is
-overweighted by `1/cos(lat) ≈ 1.47`. It does not change the table in 3a (the 180°
-bound dominates), but it makes sector assignment latitude-dependent for no reason.
+moved to `CheapRuler.getScaledBearing` in this same refactor (10 call sites).
+Elsewhere `getDirection` compares *local* angles where the distortion cancels;
+here it is a tens-of-kilometres bearing bucketed into *absolute* 45° sectors.
+At 47° N the longitude component is overweighted by `1/cos(lat) ≈ 1.47`. It
+does not change the table in 3a (the 180° bound dominates) but makes sector
+assignment latitude-dependent for no reason.
 
 ---
 
-## 4. AUTO can silently resolve to BOUNDED effort
+## 4. The AUTO competition got narrower
 
-`RoundTripEffortPolicy.resolveAuto` downgrades AUTO to `BOUNDED_PRESET`
-(top-K 2/3 instead of 3/5, 8 s tier budget, `skipRetryLayers = true`) when:
+v1 consulted plain GREEDY on a single condition:
 
 ```java
-static final int  CONSTRAINED_MEMORYCLASS_MAX = 48;
-static final long CONSTRAINED_BUDGET_MAX_MS   = 10_000;
+boolean isoGreedyWeak = !isoGreedyR.accepted()
+  || isoGreedyR.scoreValue() < CLEAR_ACCEPT_THRESHOLD;   // 0.85, unchanged
 ```
 
-The server's ceiling is 60 s, so this is inert for default server requests — but
-a client passing `timeout=10` or lower, or an Android device reporting
-`memoryclass ≤ 48` (`BRouterView:557`), gets bounded effort while having asked
-for AUTO. Worth ruling out if the comparison ran on-device.
+Master adds two more discard reasons (`autoPlainGreedyDiscardReason`):
+
+```java
+if (isoGreedyR.internalGraphNativeCompared()) return "ISO_GREEDY already compared graph-native branch";
+if (isoGreedyAbsorbedGraphNativeTruth(isoGreedyR)) return "ISO_GREEDY absorbed graph-native truth";
+```
+
+So a **weak** ISO_GREEDY result — one v1 always raced — now skips the
+competitor whenever ISO_GREEDY ran its internal graph-native branch.
+`RoundTripAlgorithm`'s javadoc puts the stake at *"greedy wins ~a quarter of
+the competition cells."*
+
+The internal branch is not equivalent: it runs with `src.effectiveDirection`,
+the Phase 2.0 iso-asymmetry-biased bearing that only exists for ISO_GREEDY,
+whereas a real plain-GREEDY child starts unbiased. It is a graph-native ladder
+anchored to the iso pool's own asymmetry — correlated with the candidate it is
+meant to check.
+
+v1 also ran the GREEDY child **speculatively in parallel** (permit-gated
+thread, killed when ISO turned out strong), so consulting it was nearly free in
+wall-clock terms. Master runs children sequentially (`5141eda`, `f21b3e3`),
+putting the competitor on the latency path.
+
+**The repo confirms the consequence.** From `roundtrip-strategies.md`:
+
+> **Weak-winner second opinion** (2026-07-25): a winner below the 0.85
+> clear-accept bar earns one cross-family WAYPOINT challenger — the
+> greedy-family pools are usually singletons there (**absorption skip**, or
+> greedy hard-failing on mtb), **so a shape defect ships unopposed** while the
+> FAST tier's cascade produces a better loop nobody compares.
+
+That is the absorption skip causing defective loops to ship. The mitigation
+added was a WAYPOINT challenger (bounded to 1.25× of the incumbent's cost/m),
+not restoring the GREEDY competitor.
+
+### 4a. The chain
+
+1. Geometry alone lowers the pool-health bar (3a).
+2. Two or three graph-native wins (3b) → DEGRADED or UNHEALTHY → a hybrid plan
+   whose early legs came from the iso pool and later legs did not.
+3. That hybrid sets `internalGraphNativeCompared` / `graphNativeOnlyStart` —
+   exactly what suppresses the plain-GREEDY child (4).
+
+The plan the health model just declared untrustworthy also suppresses the
+competitor that would have replaced it.
 
 ---
 
-## What is *not* the cause
+## 5. No CI guard, and a real bug got through
 
-Checked and found identical or improved versus v1:
+`8941cc1` scoped CI to the offline Mapterhorn suites:
 
-- All `CandidateScorer` weights (`1.0, 2.0, 0.5, 3.0, 1.5, 1.5`) and the
+```diff
+-      run: ./gradlew build integrationTest
++      run: ./gradlew build :brouter-map-creator:integrationTest :brouter-server:integrationTest
+```
+
+`brouter-core:integrationTest` — the loop-quality matrix, the gold-standard
+suite, the golden signatures, the mtb sweep — is not in that list. The commit
+is explicit: *"The round-trip suite stays a local/on-demand gate."* The
+reasoning is sound (it downloads hundreds of MB and asserts dev-box latency),
+but the effect is that **16 round-trip commits landed after `ec06485` with no
+automated loop-quality verification**, and the golden signature file has not
+moved since.
+
+What that gap costs is not hypothetical. `8996fef` fixed a placement bug
+introduced by the modularization:
+
+> the fan… sorts into a zig-zag order whose perimeter overestimates the real
+> routed skeleton by ~30 %. The scale came out 0.73 instead of ~0.95, shrinking
+> every FAST loop up front — the systematic undershoot vs the old routine.
+>
+> Basel 50 km: 29.6 km (59 %) → 42.2 km (84 %)
+> Basel 100 km: 77.4 km (77 %) → 104.6 km (105 %)
+> Dreieich 20 km: 15.3 km (77 %) → 19.5 km (98 %)
+
+Every FAST loop came back 25–40 % short, in the tier that is the shipped
+default, and it was found by hand rather than by a test. If the comparison that
+prompted this review ran between `ec06485` and `8996fef`, that bug alone
+explains it — and it is fixed now.
+
+---
+
+## 6. Smaller deltas worth knowing
+
+- **AUTO can silently resolve to BOUNDED.** `RoundTripEffortPolicy.resolveAuto`
+  drops to top-K 2/3, an 8 s tier budget and `skipRetryLayers` when
+  `maxRunningTime ≤ 10 s` or `memoryclass ≤ 48`. The server ceiling is 60 s so
+  this is inert by default, but a client passing `timeout=10`, or an Android
+  device reporting a small memory class (`BRouterView:557`), asks for AUTO and
+  gets bounded effort.
+- **mtb loops are no longer ranked on road cost.** `costMWeight` returns 0 for
+  mtb, so the positive weights sum to 0.95 there. Deliberate and evidence-backed
+  (the old `[4, 9]` band already scored 55 of 64 mtb cells at zero), but it means
+  cost/m no longer participates in mtb candidate selection at all.
+- **Two request parameters disappeared.** `roundTripIsochrone` (an alias for
+  `roundTripAlgorithm=ISOCHRONE`, still documented in
+  `roundtrip-strategies.md:59` — stale) and `roundTripDensify`.
+- **Explicit-via densification was removed outright** — parameter, the five
+  `explicitViaDensify*` context fields, and the implementation. It went with the
+  upstream revert (`84c4a47`) and was never re-added, so explicit-via loops no
+  longer bulge the arcs between user vias to honour the requested length.
+- **Crossing counting changed for the better.** The 10 000-node decimation
+  (`MAX_SHAPE_SCAN_NODES`, `CROSS_SCAN_MAX_NODES`) is gone; `LoopAnalysis` runs
+  the gate's own primitives at full resolution with an early-exit ceiling of 64.
+  v1's own comment noted decimation *fabricated* crossings on switchbacks
+  (gate = 21 where the true count was 0).
+
+---
+
+## 7. What is *not* the cause
+
+Checked and found identical, or improved:
+
+- **Every `CandidateScorer` weight** (`1.0, 2.0, 0.5, 3.0, 1.5, 1.5`) and the
   hostility-active policy.
-- Planner routed top-K at STANDARD effort (`MAX_ROUTE_ATTEMPTS` 3 /
-  `..._LATE` 5) — the effort policy's `STANDARD_PRESET` reproduces v1 exactly.
-- `GRAPH_NATIVE_MIN_ROUTED` 1 / `..._LATE` 2 source-fairness quota.
-- Isochrone pool filters (`MIN_AIR_DIST_FRAC`, `POOL_CAP`, `DEDUPE_GRANULARITY`,
-  `MIN_DISTINCT_BUCKETS` 4, `MIN_ANGULAR_SPAN_DEG` 180).
-- `CLEAR_ACCEPT_THRESHOLD` 0.85.
-- Step-window bounds, backoff factors, indirectness EMA.
-- **Improved:** the coprime angular-stride bucket order, which fixes v1's
-  dropped 120° wedge; and `CheapRuler.getScaledBearing` replacing the
-  latitude-distorting bearing in `loopSweepPenalty`.
-- **Improved:** self-intersection scanning no longer decimates via
-  `MAX_SHAPE_SCAN_NODES` (which the old code itself noted fabricated crossings
-  on switchbacks); it early-exits at `CROSSING_SCAN_CEILING = 64` instead.
+- **Planner routed top-K** — `MAX_ROUTE_ATTEMPTS` 3 / `_LATE` 5; the effort
+  policy's `STANDARD_PRESET` reproduces v1 exactly.
+- **`GRAPH_NATIVE_MIN_ROUTED`** 1 / `_LATE` 2 source-fairness quota.
+- **All twelve quality-gate thresholds** — distance ratio `[0.5, 1.8]`, closure
+  400 m, `MAX_SELF_INTERSECTIONS` 5, hairpins 20, hostile fractions, contiguous
+  hostile 1500 m, both cost-factor thresholds. Verified by value.
+- **All eight `RouteChoiceScore` weights** and `CLEAR_ACCEPT_THRESHOLD` 0.85.
+- **`ReuseClassifier` and `RoadCharacterScore`** — visibility-only changes.
+- **Isochrone pool filters** — `MIN_AIR_DIST_FRAC`, `POOL_CAP`,
+  `DEDUPE_GRANULARITY`, `MIN_DISTINCT_BUCKETS` 4, `MIN_ANGULAR_SPAN_DEG` 180.
+- **`RoundTripTrackCleanup` and `WaypointSnapper`** — all 14 public entry points
+  are extractions of methods that existed in v1's `RoutingEngine`.
+- **The finalization sequence** — disclosures, shipped-crossings note, spur
+  note, residual-chord note, >1.5 overshoot warning, `ensureInfoMessage`, in the
+  same order, now with a try/catch so a cosmetic advisory cannot destroy a
+  rideable track.
+
+Improved:
+
+- **Coprime angular-stride bucket order** in `IsochroneCandidateProvider` —
+  fixes v1 silently dropping a contiguous 120° wedge opposite the start
+  whenever the pool cap bound.
+- **`CheapRuler.getScaledBearing`** replaces the latitude-distorting bearing in
+  `loopSweepPenalty`.
+- **Three new shape penalties** in the judge — clover/petal (0.12), far-field
+  dwell (0.10), crumple (0.12) — plus compactness now measured on **net enclosed
+  area** (signed shoelace), which catches out-and-back "threads" that convex-hull
+  compactness reads as fat. Teardrops near the start now cost **2×**. All
+  ranking-only; the judge got stricter on shape, not looser.
 
 ---
 
-## Suggested order of investigation
+## 8. How to confirm which mechanism you are seeing
 
-1. **Confirm what actually ran.** Re-run the comparison with an explicit
-   `roundTripAlgorithm=AUTO`. If quality returns, finding 1 is the whole story
-   and 2–4 are secondary.
-2. **Read the logs.** Every mechanism above is already instrumented — grep a
-   request's log for:
-   - `round trip algorithm:` / `round trip effort:` (findings 1 and 4)
-   - `iso-pool health: score=…, demotedAtStep=…` and
-     `step N: iso-pool influence reduced` (finding 3)
-   - `AUTO candidate: …` plus the discard reason (finding 2)
-3. **If demotions show up in the logs**, the two cheapest calibration fixes are:
-   - measure the sector-bunching signal against the loop's own centroid (or the
-     via's bearing from the *previous* via) rather than from the start, which
-     removes the 180° artefact; or leave the signal but require repeats beyond
-     the geometric floor `max(0, vias − 4)`;
-   - reconsider `W_GRAPH_NATIVE_WIN = 0.16` given that the quota guarantees the
-     graph-native candidate a seat in nearly every step.
+Every mechanism above is already instrumented. For one real request, grep the
+log for:
 
-Both are calibration changes to a heuristic tuned against a loop-quality corpus,
-so they should be measured on that matrix rather than applied blind.
+| what it tells you | log line |
+|---|---|
+| which tier ran (§1) | `round trip algorithm:` |
+| effort resolution / BOUNDED downgrade (§6) | `round trip effort:` |
+| pool health, sector repeats, graph-native wins (§3) | `iso-pool health: score=… sectorRepeats=… graphWins=…` |
+| mid-plan demotion (§3) | `step N: iso-pool influence reduced` |
+| per-leg source (§2b) | `leg N source: iso-pool \| graph-native` |
+| competitor skipped (§4) | `AUTO candidate: …`, `ISO_GREEDY absorbed graph-native truth` |
+
+To A/B properly, run the same request three ways —
+`roundTripAlgorithm=FAST`, `=AUTO`, `=QUALITY` — and compare length error and
+cost/m. If FAST vs AUTO explains the gap, §1 is the whole story.
+
+---
+
+## 9. Recommendations
+
+**Do first — no code change.**
+
+1. Confirm the tier. If loops are being requested without
+   `roundTripAlgorithm`, set `-Droundtrip.default.algorithm=AUTO` (verified
+   working) or pass the parameter, and re-compare. This is the single largest
+   lever and costs nothing to test.
+2. Re-run `LoopGoldenSignatureTest` with `-Dgolden.tests=true` on pinned tiles.
+   The goldens have not moved since `ec06485` despite 16 subsequent round-trip
+   commits; that number should be believed only after it is re-verified.
+
+**Then — calibration, needs measurement on the loop matrix, not a blind edit.**
+
+3. The sector-bunching signal (§3a) is measuring loop geometry, not pool
+   staleness. Either measure the via's bearing from the loop's **centroid**
+   (or from the previous via) instead of from the start, or keep the signal but
+   subtract the geometric floor `max(0, vias − 4)` before charging repeats.
+4. Reconsider `W_GRAPH_NATIVE_WIN = 0.16` (§3b) given the quota guarantees the
+   graph-native candidate a seat in nearly every step. One honest loss should
+   not cost a third of the DEGRADED budget.
+5. Reconsider the `internalGraphNativeCompared` / `absorbed graph-native truth`
+   skips (§4). The repo already documented that they let shape defects ship
+   unopposed; the WAYPOINT second opinion mitigates the symptom, but a
+   direction-unbiased GREEDY child is what v1 actually ran.
+
+**Process.**
+
+6. The loop-quality suite is the only thing that would have caught the lobe
+   radius bug, and it does not run anywhere automatically. Even a small pinned
+   subset — the four golden cells plus the offline fixture parity test — on a
+   nightly or pre-release job would close the gap that §5 documents.
