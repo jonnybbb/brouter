@@ -517,6 +517,17 @@ public abstract class LoopQualityTestBase {
 
       RoutingContext rctx = new RoutingContext();
       rctx.localFunction = profileFile.getAbsolutePath();
+      // -Dloop.profileParams=avoid_towns=true[,key=value...] overrides the
+      // profile's marked assigns (the request's profile-parameter surface), so a
+      // matrix run can measure a profile switch without editing the .brf.
+      String profileParams = System.getProperty("loop.profileParams", "").trim();
+      if (!profileParams.isEmpty()) {
+        rctx.keyValues = new HashMap<>();
+        for (String kv : profileParams.split(",")) {
+          int eq = kv.indexOf('=');
+          if (eq > 0) rctx.keyValues.put(kv.substring(0, eq).trim(), kv.substring(eq + 1).trim());
+        }
+      }
       rctx.startDirection = (int) direction;
       rctx.roundTripDistance = searchRadius;
       rctx.roundTripAlgorithm = algorithm;
