@@ -1275,6 +1275,32 @@ public class RoutingEngine extends Thread {
    * pool, or {@code null} on failure.
    */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
+    // Memoized per (start, radius): the orchestrator's profile-aware default
+    // direction and the ISO_GREEDY pool/oracle both need this same
+    // start-centered expansion, and the greedy ladder may re-prepare its
+    // candidate sources several times per request. The result is treated as
+    // read-only by every consumer (pool filtering copies, the oracle and the
+    // asymmetry bias only read), so one expansion serves them all.
+    if (startIsoCache != null && startIsoCacheIlon == start.ilon && startIsoCacheIlat == start.ilat
+        && startIsoCacheRadius == searchRadius) {
+      return startIsoCache;
+    }
+    IsochroneExpansionResult r = runStartCenteredIsochroneExpansion(start, searchRadius);
+    if (r != null) {
+      startIsoCache = r;
+      startIsoCacheIlon = start.ilon;
+      startIsoCacheIlat = start.ilat;
+      startIsoCacheRadius = searchRadius;
+    }
+    return r;
+  }
+
+  private IsochroneExpansionResult startIsoCache;
+  private int startIsoCacheIlon;
+  private int startIsoCacheIlat;
+  private double startIsoCacheRadius;
+
+  private IsochroneExpansionResult runStartCenteredIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
     // Start-centered expansion (ISO_GREEDY pool, frontier table): budget
     // calibration ON — searchRadius here is the loop radius the reach target
     // is defined against. Fast-motorized profiles use the probed scale instead (see

@@ -239,6 +239,15 @@ public class RoundTripResult {
   public boolean isInternalGraphNativeCompared() { return internalGraphNativeCompared; }
   void setInternalGraphNativeCompared(boolean v) { this.internalGraphNativeCompared = v; }
 
+  /** {@link RouteChoiceScore} of the blended ISO_GREEDY result as evaluated for the
+   *  internal-comparison decision; {@code NaN} when it was not evaluated (no blend,
+   *  QUALITY, budget spent) or the blended result was not gate-comparable. A score
+   *  at or above {@code RoundTripOrchestrator.CLEAR_ACCEPT_THRESHOLD} is why the
+   *  comparison branch was skipped. */
+  public double getInternalBlendedScore() { return internalBlendedScore; }
+  void setInternalBlendedScore(double v) { this.internalBlendedScore = v; }
+  private double internalBlendedScore = Double.NaN;
+
   /** The engine's explicit start-policy decision: this plan ran on graph-native
    *  candidates only (iso pool unadmitted or statically unhealthy). AUTO's
    *  plain-GREEDY absorption reads THIS, not inferred telemetry sentinels. */

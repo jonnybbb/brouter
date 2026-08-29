@@ -12,6 +12,14 @@ dependencies {
 // MapcreatorTest generates the bundled Dreieich fixture used by the fast
 // round-trip tests in src/test.
 test.dependsOn ':brouter-map-creator:test'
+test {
+    // Golden-recapture switch for GreedyPlannerParityTest (see its class doc):
+    // -Dgreedy.parity.print=true prints the current fingerprints instead of
+    // asserting them.
+    if (System.getProperty('greedy.parity.print') != null) {
+        systemProperty 'greedy.parity.print', System.getProperty('greedy.parity.print')
+    }
+}
 
 // --- Integration tests -----------------------------------------------------
 // Slow, real-segment round-trip suites (loop-quality matrix, golden signatures,
@@ -99,7 +107,7 @@ tasks.register('integrationTest', Test) {
     // ad-hoc single-loop and direction/scoring tuning overrides were dropped —
     // no test reads them anymore; re-add the reader and the token together if a
     // manual single-loop harness is reintroduced.)
-    ['mtb.sweep', 'roundtrip.fast.optimized', 'loop.absorption.matrix'].each { k ->
+    ['mtb.sweep', 'roundtrip.fast.optimized', 'loop.absorption.matrix', 'loop.smoke'].each { k ->
         if (System.getProperty(k) != null) systemProperty k, System.getProperty(k)
     }
 

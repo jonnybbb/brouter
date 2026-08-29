@@ -111,8 +111,15 @@ public abstract class LoopQualityTestBase {
    */
   protected static Collection<Object[]> dataForRegion(LoopTestRegion region) {
     List<Object[]> params = new ArrayList<>();
+    // -Dloop.profiles=gravel[,mtb] narrows the matrix to the listed profiles
+    // (same switch LoopGoldStandardTest honours); empty/unset = all.
+    String profileFilter = System.getProperty("loop.profiles", "").trim();
     for (int i = 0; i < TARGET_DISTANCES.length; i++) {
       for (String profile : PROFILES) {
+        if (!profileFilter.isEmpty()
+            && !java.util.Arrays.asList(profileFilter.split("\\s*,\\s*")).contains(profile)) {
+          continue;
+        }
         for (int d = 0; d < DIRECTIONS.length; d++) {
           // Skip directions blocked by open sea — you cannot cycle into the
           // water, so requesting that heading is degenerate (the loop can only
@@ -542,6 +549,7 @@ public abstract class LoopQualityTestBase {
       }
 
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
+      double[] character = roadCharacter(track);
       // Stash the production-selector score for the quality gate (see checkVariantQuality).
       // null gateVerdict scores on geometry — the track already passed the strict
       // production gate (roundTripStrictQuality=true), so this measures its real
@@ -569,6 +577,7 @@ public abstract class LoopQualityTestBase {
       LoopQualityResult ok = new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);
       ok.disclosed = track.message != null && track.message.contains("Warning:");
+      ok.character = character;
       return ok;
     } catch (Exception e) {
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,
@@ -700,5 +709,45 @@ public abstract class LoopQualityTestBase {
     // The published segment tiles and misc/profiles2 are now the same lookup
     // version (v11), so route with the shipped profiles directly.
     return new File(projectDir, "misc/profiles2/" + name + ".brf");
+  }
+
+  /**
+   * Length-weighted road-character fractions from the track's {@code highway=}
+   * tags: {residential-family, track-family, residential share of the first
+   * 15 %, residential share of the last 15 %}. Test-side helper (independent of
+   * the engine's RoadCharacterScore) so baseline runs on older revisions can
+   * persist it too.
+   */
+  static double[] roadCharacter(OsmTrack track) {
+    if (track == null || track.nodes == null || track.nodes.size() < 2 || track.distance <= 0) return null;
+    double total = 0, resid = 0, trk = 0, headLen = 0, headResid = 0, tailLen = 0, tailResid = 0;
+    double pos = 0;
+    double headEnd = track.distance * 0.15, tailStart = track.distance * 0.85;
+    for (int i = 1; i < track.nodes.size(); i++) {
+      btools.router.OsmPathElement p = track.nodes.get(i - 1), q = track.nodes.get(i);
+      int seg = p.calcDistance(q);
+      if (seg <= 0) continue;
+      String tags = q.message != null ? q.message.getWayKeyValues() : null;
+      String h = null;
+      if (tags != null) {
+        int k = tags.indexOf("highway=");
+        if (k >= 0) {
+          int e = tags.indexOf(' ', k);
+          h = tags.substring(k + 8, e < 0 ? tags.length() : e);
+        }
+      }
+      boolean isResid = "residential".equals(h) || "living_street".equals(h) || "service".equals(h);
+      boolean isTrack = "track".equals(h) || "path".equals(h) || "cycleway".equals(h)
+        || "bridleway".equals(h) || "footway".equals(h);
+      total += seg;
+      if (isResid) resid += seg;
+      if (isTrack) trk += seg;
+      if (pos < headEnd) { headLen += seg; if (isResid) headResid += seg; }
+      if (pos >= tailStart) { tailLen += seg; if (isResid) tailResid += seg; }
+      pos += seg;
+    }
+    if (total <= 0) return null;
+    return new double[]{resid / total, trk / total,
+      headLen > 0 ? headResid / headLen : 0, tailLen > 0 ? tailResid / tailLen : 0};
   }
 }

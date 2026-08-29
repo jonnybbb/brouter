@@ -349,6 +349,37 @@ public class CandidateScorerTest {
       scorer.isoHostilityPenalty(RoundTripCandidateProvider.NO_ISO_COST, 5000), 1e-9);
   }
 
+  @Test
+  public void hostilityIsJudgedRelativeToTheProfileBaseline() {
+    // Paved default baseline (1.3): unchanged absolute thresholds.
+    assertEquals(0.2, scorer.isoHostilityPenalty(10000, 5000), 1e-9); // ind=2.0 → (2.0−1.5)/2.5
+    // A gravel-scale baseline (κ ≈ 2.6): the same sector that is "hostile" for a
+    // road bike is profile-typical for gravel and draws no penalty ...
+    CandidateScorer gravel = new CandidateScorer();
+    gravel.setHostilityBaseline(2.6);
+    assertEquals(0.0, gravel.isoHostilityPenalty(10000, 5000), 1e-9);  // ratio 0.77
+    // ... while a sector twice as expensive as its baseline is penalised exactly
+    // like a paved sector at 2× its baseline.
+    assertEquals(scorer.isoHostilityPenalty(13000, 5000), gravel.isoHostilityPenalty(26000, 5000), 1e-9);
+    // Non-positive baselines are ignored.
+    gravel.setHostilityBaseline(0);
+    assertEquals(scorer.isoHostilityPenalty(26000, 5000) > 0, gravel.isoHostilityPenalty(26000, 5000) > 0);
+  }
+
+  @Test
+  public void loopFeasibilitySharpensTowardTheLegTargetInTheClosurePhase() {
+    // A 4 km miss on a 50 km loop: 8 % of the loop early on, 40 % of a 10 km leg late.
+    assertEquals(0.0, CandidateScorer.closurePhaseBlend(1, 5), 1e-9);
+    assertEquals(1.0, CandidateScorer.closurePhaseBlend(4, 5), 1e-9);
+    assertEquals(0.08, scorer.loopFeasibilityScore(30000, 10000, 6000, 50000, 10000, 1, 5), 1e-9);
+    assertEquals(0.40, scorer.loopFeasibilityScore(30000, 10000, 6000, 50000, 10000, 4, 5), 1e-9);
+    // The late norm never drops below 1/8 of the loop, however small the step target.
+    assertEquals(4000.0 / 6250.0, scorer.loopFeasibilityScore(30000, 10000, 6000, 50000, 1000, 5, 5), 1e-9);
+    // Matches the legacy 4-arg form early.
+    assertEquals(scorer.loopFeasibilityScore(30000, 10000, 6000, 50000),
+      scorer.loopFeasibilityScore(30000, 10000, 6000, 50000, 10000, 1, 5), 1e-9);
+  }
+
   // ----- Phase 2 v2 — contiguous-hostile-meters routed-leg term -----------
 
   @Test
