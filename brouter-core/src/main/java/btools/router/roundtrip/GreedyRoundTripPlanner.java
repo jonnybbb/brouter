@@ -373,6 +373,17 @@ public class GreedyRoundTripPlanner {
     scorer.setHostilityActive(active);
   }
 
+  /**
+   * Profile-relative hostility scale (cost per air metre of a normal reach for
+   * the active profile, e.g. the return oracle's κ). Lets non-paved profiles use
+   * the hostility term at all — on the paved absolute scale their typical
+   * cost/airDist (~2.5 for gravel, ~9 for mtb) would flag every candidate. See
+   * {@link CandidateScorer#setHostilityBaseline}.
+   */
+  public void setHostilityBaseline(double costPerAirMeter) {
+    scorer.setHostilityBaseline(costPerAirMeter);
+  }
+
   /** Set the round-trip variety seed (the request's alternativeidx). Negative values clamp to 0 (= inert). */
   public void setVarietySeed(int seed) {
     varietySeed = Math.max(0, seed);
@@ -740,6 +751,11 @@ public class GreedyRoundTripPlanner {
    * total distance; the caller re-reads the anchor and restores prev coordinates.
    */
   private void undoTentativeLeg(GreedyPlanSession s, ScoredRoute accepted) {
+    undoTentativeLeg(s, accepted, true);
+  }
+
+  /** {@code countRejection=false}: a parked (not rejected) leg — no pool-health evidence. */
+  private void undoTentativeLeg(GreedyPlanSession s, ScoredRoute accepted, boolean countRejection) {
     s.segments.remove(s.segments.size() - 1);
     if (accepted.fromIsoCandidate) {
       s.acceptedIsoLegs--;
@@ -749,7 +765,7 @@ public class GreedyRoundTripPlanner {
     if (accepted.fromQuotaInjection) {
       s.acceptedQuotaInjectedLegs--;
     }
-    recordIsoTrialRejection(accepted);
+    if (countRejection) recordIsoTrialRejection(accepted);
     s.waypointStack.remove(s.waypointStack.size() - 1);
     s.totalDistance -= accepted.routeDistance;
   }
@@ -1027,6 +1043,45 @@ public class GreedyRoundTripPlanner {
     return StepOutcome.COMMITTED;
   }
 
+  /**
+   * Strength in [0,1] of the closure-phase levers (sharpened loop term, priced
+   * runner-up closures, parked short legs). 0 for paved profiles — the 2026-08
+   * fastbike matrix showed the levers trading lower reuse/crossings for ten
+   * newly gate-rejected alpine/valley cells, so road bikes keep the calibrated
+   * first-fit closure. Non-paved profiles fade them with the same terrain-freedom
+   * signal as the heading terms: full in open networks (indirectness ≈ 1.3),
+   * off where the graph forces indirect roads (≥ 2.0) and a loop has to close
+   * however it can.
+   */
+  private double closureLeverStrength(GreedyPlanSession s) {
+    return pavedProfile ? 0.0 : headingTerrainFreedom(s.indirectnessEst);
+  }
+
+  /**
+   * Median cost per metre over the candidates that carry an expansion-compiled
+   * leg; -1 when none does (no phase-1 cost steering that step).
+   */
+  static double medianCompiledLegCostPerMeter(List<RoundTripCandidateProvider.CandidatePoint> candidates) {
+    double[] v = new double[candidates.size()];
+    int n = 0;
+    for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
+      if (cp.routedTrack != null && cp.routedTrack.distance > 0) {
+        v[n++] = cp.routedTrack.cost / (double) cp.routedTrack.distance;
+      }
+    }
+    if (n == 0) return -1;
+    Arrays.sort(v, 0, n);
+    return (n % 2 == 1) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+  }
+
+  // NOTE (measured 2026-08-29, gravel matrix, do not re-attempt without new
+  // evidence): redistributing the remaining length budget over the remaining
+  // steps ("dynamic step target", so early overshoot shrinks later legs) was
+  // implemented and A/B-measured on the 230-cell gravel matrix. Alone it raised
+  // self-crossings 0.21 → 0.28 per loop and reuse 2.1 → 2.2 % with no road-
+  // character gain; combined with the other levers it added the most gate
+  // rejections. Reverted; the uniform L/N target stays.
+
   /** Phase-1 output: heuristically scored, sorted candidates plus the pool-health
    *  demotion flag the routed round must honor (computed once per attempt — the
    *  routed re-score must not re-apply prior terms phase 1 stripped). */
@@ -1124,6 +1179,10 @@ public class GreedyRoundTripPlanner {
       dirRef = best;
     }
     scorer.setDirectionReferenceOffset(dirRef);
+    // Closure-phase levers are measured for non-paved profiles in open terrain
+    // (see closureLeverStrength); paved profiles keep their calibrated closure
+    // behaviour, constrained terrain fades the sharpening out.
+    scorer.setClosureSharpening(closureLeverStrength(s));
 
     // Previous leg's bearing for the heading-persistence term: NaN on
     // step 1 (no previous leg — the start-direction term covers it).
@@ -1140,6 +1199,15 @@ public class GreedyRoundTripPlanner {
     // Current via's radius from start — fixed per step; the unimodal-radius
     // term compares each candidate's radius against it.
     double currentRadius = CheapRuler.distance(currentIlon, currentIlat, start.ilon, start.ilat);
+
+    // Non-paved profiles: the compiled graph-native leg already carries the
+    // profile's cost, so phase 1 can rank on road quality BEFORE choosing the
+    // few candidates that get routed — paved profiles get that steering from
+    // the hostility term; gravel/mtb had none, so a leg through the village
+    // and a leg on tracks ranked identically until phase 2, which only ever
+    // sees the top-K. Centred on the step's median so candidates without a
+    // compiled leg (iso-pool picks) sit neutral instead of looking cheaper.
+    double medianLegCostPerMeter = pavedProfile ? -1 : medianCompiledLegCostPerMeter(candidates);
 
     // Score using air-distance estimates — O(1) per candidate
     for (RoundTripCandidateProvider.CandidatePoint cp : candidates) {
@@ -1203,6 +1271,11 @@ public class GreedyRoundTripPlanner {
               currentIlon, currentIlat, cp.ilon, cp.ilat, subRouteCount);
         cp.score += W_UNIMODAL_RADIUS * terrainFreedom
           * unimodalRadiusPenalty(distFromStart, currentRadius, step, subRouteCount);
+      }
+
+      if (medianLegCostPerMeter > 0 && cp.routedTrack != null && cp.routedTrack.distance > 0) {
+        double legCostPerMeter = cp.routedTrack.cost / (double) cp.routedTrack.distance;
+        cp.score += COST_PER_METER_WEIGHT * (legCostPerMeter - medianLegCostPerMeter);
       }
 
       // Variety seed (= request alternativeidx): jitter the HEURISTIC score
@@ -1536,6 +1609,22 @@ public class GreedyRoundTripPlanner {
     // geometry.
     boolean legCommitted = false;
     boolean tooLongSeen = false;
+    // Best within-tolerance, gate-accepted closure seen in this round. A fitting
+    // closure used to end the plan on the spot (first fit); now the remaining
+    // ranked candidates — already routed, one return Dijkstra each — are closed
+    // too and the loop with the best RouteChoiceScore (geometry + road
+    // character + cost/m, the same yardstick AUTO ranks with) ships. For a
+    // gravel profile that is the difference between a closing leg on tracks
+    // and one that pads the length through the start's residential streets.
+    ClosureCandidate bestClosure = null;
+    // Late steps: a too-short trial is no longer committed on sight. It is
+    // parked (first one in rank order wins) while the remaining trials are
+    // priced — a fitting closure among them beats committing short and
+    // filling the leftover with a stub near the start. Re-committed after the
+    // loop when nothing closed.
+    final boolean closureLevers = closureLeverStrength(s) > 0;
+    final boolean lateStepTrials = closureLevers && step >= subRouteCount - 1;
+    DeferredCommit deferredShort = null;
     // Record previous waypoint position for next step's Silesian scoring.
     // Saved once per attempt so every trial's undo can restore it.
     int savedPrevIlon = s.prevIlon;
@@ -1711,7 +1800,16 @@ public class GreedyRoundTripPlanner {
         // Either closure is clearly out of reach with steps to spare, or
         // the return was not routable within budget — keep the leg
         // (legacy behaviour) and let the next step / force-close handle
-        // closure.
+        // closure. Unless a fitting closure (or a parked short leg) is
+        // already in hand: an unclosable runner-up never beats either.
+        if (bestClosure != null || deferredShort != null) {
+          removeVisitedEdges(accepted.track, visitedEdges);
+          undoTentativeLeg(s, accepted);
+          s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+          s.prevIlon = savedPrevIlon;
+          s.prevIlat = savedPrevIlat;
+          continue;
+        }
         recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
           start.ilon, start.ilat, s.currentMwp);
         legCommitted = true;
@@ -1762,10 +1860,11 @@ public class GreedyRoundTripPlanner {
       // fallback selection and the within-tolerance close decision.
       OsmTrack finalTrack = null;
       String reject = null;
+      RoundTripQualityResult verdict = null;
       if (needDetail) {
         finalTrack = mergeSegmentsDetoured(segments, returnTrack);
         reportSeamGaps(segments, returnTrack, result);
-        RoundTripQualityResult verdict = qualityGateVerdict(finalTrack, desiredDistance);
+        verdict = qualityGateVerdict(finalTrack, desiredDistance);
         reject = (verdict == null) ? "no track" : (verdict.isAccepted() ? null : verdict.getRejectionReason());
         // Geometry-fidelity guard on the closing leg: when even the
         // detailWithFallback reroute could not produce faithful geometry,
@@ -1802,31 +1901,173 @@ public class GreedyRoundTripPlanner {
           continue;
         }
 
-        recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
-          start.ilon, start.ilat, s.currentMwp);
-        addVisitedEdges(returnTrack, visitedEdges, s.totalDistance);
-        segments.add(returnTrack);
-        s.totalDistance += returnTrack.distance; // keep consistent with segments
-        populateResult(result, finalTrack, waypointStack, startMwp, segments, desiredDistance, startDirection);
-        result.setTotalDistanceMeters((int) closedDistance);
-        result.setWithinTolerance(true);
-        result.addDiagnostic("loop closed at step " + step
-          + ", total=" + (int) closedDistance + "m"
-          + ", error=" + String.format("%.1f%%", error * 100));
-        stampExit(s);
-        return TrialOutcome.CLOSED;
+        ClosureCandidate closure = new ClosureCandidate(
+          snapshotFallback(s, finalTrack, returnTrack, error, 0), accepted, trial,
+          closedDistance, finalTrack.distance > 0 ? finalTrack.cost / (double) finalTrack.distance : 0,
+          closedLoopChoiceScore(finalTrack, desiredDistance, verdict, startDirection),
+          s.currentMwp);
+        boolean better = bestClosure == null || closure.choiceScore > bestClosure.choiceScore;
+        result.addDiagnostic(String.format(Locale.US,
+          "step %d trial %d: closes at %dm (error %.1f%%), cost/m=%.2f, choice=%.3f%s", step, trial + 1,
+          (int) closedDistance, error * 100, closure.costPerMeter, closure.choiceScore,
+          better ? (bestClosure == null ? "" : " — new best") : " — keeps best"));
+        if (better) bestClosure = closure;
+        boolean moreTrials = closureLevers && trial + 1 < routedCandidates.size()
+          && System.currentTimeMillis() < stepDeadline;
+        if (!moreTrials) {
+          break; // ship the best closure below
+        }
+        // Undo the tentative leg and price the next ranked closure.
+        removeVisitedEdges(accepted.track, visitedEdges);
+        undoTentativeLeg(s, accepted);
+        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+        s.prevIlon = savedPrevIlon;
+        s.prevIlat = savedPrevIlat;
+        continue;
       }
 
-      // Between (1-tol) and (1+tol) but not within tol → too short:
-      // keep the leg and continue with the next step.
+      // Between (1-tol) and (1+tol) but not within tol → too short. Early
+      // steps keep the leg and continue with the next step (unless a fitting
+      // closure is already in hand — a short runner-up never beats it). Late
+      // steps park the first short leg and keep pricing: a fitting closure
+      // among the remaining trials is worth more than a short commit plus a
+      // filler step.
+      boolean moreTrials = trial + 1 < routedCandidates.size()
+        && System.currentTimeMillis() < stepDeadline;
+      if (bestClosure != null || deferredShort != null || (lateStepTrials && moreTrials)) {
+        if (bestClosure == null && deferredShort == null) {
+          deferredShort = new DeferredCommit(accepted, trial, s.currentMwp);
+          result.addDiagnostic("step " + step + " trial " + (trial + 1) + ": closes short at "
+            + (int) closedDistance + "m — parked, pricing the remaining candidates");
+        }
+        removeVisitedEdges(accepted.track, visitedEdges);
+        undoTentativeLeg(s, accepted, /*countRejection*/ false);
+        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
+        s.prevIlon = savedPrevIlon;
+        s.prevIlat = savedPrevIlat;
+        continue;
+      }
       recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
         start.ilon, start.ilat, s.currentMwp);
       legCommitted = true;
       break;
     }
 
+    if (bestClosure != null) {
+      closeWith(s, step, bestClosure, mixedSourceRouting);
+      return TrialOutcome.CLOSED;
+    }
+    if (deferredShort != null) {
+      // Nothing closed within tolerance — commit the parked short leg exactly
+      // as the first-fit path would have, and let the next step continue.
+      recommitLeg(s, deferredShort, currentIlon, currentIlat);
+      result.addDiagnostic("step " + step + ": committing parked trial " + (deferredShort.trial + 1)
+        + " (no fitting closure among " + routedCandidates.size() + " candidates)");
+      recordAcceptedLegAttribution(result, deferredShort.leg, step, deferredShort.trial,
+        mixedSourceRouting, start.ilon, start.ilat, deferredShort.via);
+      return TrialOutcome.COMMITTED;
+    }
+
     return legCommitted ? TrialOutcome.COMMITTED
       : (tooLongSeen ? TrialOutcome.EXHAUSTED_TOO_LONG : TrialOutcome.EXHAUSTED);
+  }
+
+  /**
+   * Closed-loop ranking key for the trial loop: {@link RouteChoiceScore} (higher =
+   * better), the same yardstick the AUTO competition ranks candidates with. 0 when
+   * the profile context is unavailable (direct planner callers in unit tests).
+   */
+  private double closedLoopChoiceScore(OsmTrack finalTrack, double desiredDistance,
+                                       RoundTripQualityResult verdict, double startDirection) {
+    if (finalTrack == null || ctx == null || ctx.routingContext() == null) return 0;
+    try {
+      return RouteChoiceScore.score(finalTrack, desiredDistance,
+        ctx.routingContext().getProfileName(), verdict, Math.max(0, startDirection)).score();
+    } catch (RuntimeException e) {
+      io.logInfo("greedy: closure scoring failed (" + e.getMessage() + "), ranking by order");
+      return 0;
+    }
+  }
+
+  /** A within-tolerance, gate-accepted closed loop priced in the trial loop. */
+  private static final class ClosureCandidate {
+    final Snapshot snapshot;
+    final ScoredRoute leg;
+    final int trial;
+    final double closedDistance;
+    final double costPerMeter;
+    /** {@link RouteChoiceScore} of the closed loop (higher = better). */
+    final double choiceScore;
+    final MatchedWaypoint via;
+
+    ClosureCandidate(Snapshot snapshot, ScoredRoute leg, int trial, double closedDistance,
+                     double costPerMeter, double choiceScore, MatchedWaypoint via) {
+      this.snapshot = snapshot;
+      this.leg = leg;
+      this.trial = trial;
+      this.closedDistance = closedDistance;
+      this.costPerMeter = costPerMeter;
+      this.choiceScore = choiceScore;
+      this.via = via;
+    }
+  }
+
+  /** A too-short late-step leg parked while the remaining trials are priced. */
+  private static final class DeferredCommit {
+    final ScoredRoute leg;
+    final int trial;
+    /** The step anchor the leg committed with (its detailed endpoint, re-matched). */
+    final MatchedWaypoint via;
+
+    DeferredCommit(ScoredRoute leg, int trial, MatchedWaypoint via) {
+      this.leg = leg;
+      this.trial = trial;
+      this.via = via;
+    }
+  }
+
+  /**
+   * Re-apply a parked leg: the same state transitions as the tentative commit
+   * plus the post-detail edge registration ({@code leg.track} is already the
+   * detailed track).
+   */
+  private void recommitLeg(GreedyPlanSession s, DeferredCommit d, int currentIlon, int currentIlat) {
+    ScoredRoute leg = d.leg;
+    s.segments.add(leg.track);
+    s.totalDistance += leg.routeDistance;
+    if (leg.fromIsoCandidate) s.acceptedIsoLegs++;
+    else s.acceptedNonIsoLegs++;
+    if (leg.fromQuotaInjection) s.acceptedQuotaInjectedLegs++;
+    s.prevIlon = currentIlon;
+    s.prevIlat = currentIlat;
+    s.currentMwp = d.via;
+    s.waypointStack.add(d.via);
+    addVisitedEdges(leg.track, s.visitedEdges, s.totalDistance - leg.routeDistance);
+  }
+
+  /** Finalize the plan on a priced closure: restore its geometry/counters and stamp the result. */
+  private void closeWith(GreedyPlanSession s, int step, ClosureCandidate closure,
+                         boolean mixedSourceRouting) {
+    final RoundTripResult result = s.result;
+    Snapshot snap = closure.snapshot;
+    recordAcceptedLegAttribution(result, closure.leg, step, closure.trial, mixedSourceRouting,
+      s.start.ilon, s.start.ilat, closure.via);
+    // The snapshot's counters describe the shipped loop (the tentative leg may
+    // have been undone since to price a runner-up).
+    s.acceptedIsoLegs = snap.isoLegs;
+    s.acceptedNonIsoLegs = snap.nonIsoLegs;
+    s.acceptedQuotaInjectedLegs = snap.quotaInjectedLegs;
+    s.totalDistance = closure.closedDistance;
+    populateResult(result, snap.track, snap.waypointStack, s.startMwp, snap.legTracks,
+      s.desiredDistance, s.startDirection);
+    result.setTotalDistanceMeters((int) closure.closedDistance);
+    result.setWithinTolerance(true);
+    result.addDiagnostic("loop closed at step " + step
+      + (closure.trial > 0 ? " (trial " + (closure.trial + 1) + ")" : "")
+      + ", total=" + (int) closure.closedDistance + "m"
+      + ", error=" + String.format("%.1f%%", snap.error * 100)
+      + String.format(Locale.US, ", cost/m=%.2f", closure.costPerMeter));
+    stampExit(s);
   }
 
   /**

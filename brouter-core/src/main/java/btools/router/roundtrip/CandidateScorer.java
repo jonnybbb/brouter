@@ -90,6 +90,25 @@ public class CandidateScorer {
   }
 
   /**
+   * Cost-per-air-metre of a "normal" reach for the active profile — the unit the
+   * hostility ramp is expressed in. Defaults to {@link #PAVED_HOSTILITY_BASELINE}
+   * (the road-bike figure the absolute 1.5–4.0 thresholds were calibrated on, so
+   * paved profiles are bit-for-bit unchanged); non-paved profiles pass their
+   * measured scale (the return oracle's κ) so "expensive for THIS profile" is
+   * judged relative to what its preferred roads cost, not against asphalt.
+   */
+  void setHostilityBaseline(double costPerAirMeter) {
+    if (costPerAirMeter > 0) this.hostilityBaseline = costPerAirMeter;
+  }
+
+  /** Paved-profile cost-per-air-metre baseline the legacy absolute thresholds assumed. */
+  static final double PAVED_HOSTILITY_BASELINE = 1.3;
+  /** Hostility ramp start / saturation as multiples of the baseline (= 1.5/1.3, 4.0/1.3). */
+  static final double HOSTILITY_FREE_RATIO = 1.5 / PAVED_HOSTILITY_BASELINE;
+  static final double HOSTILITY_FULL_RATIO = 4.0 / PAVED_HOSTILITY_BASELINE;
+  private double hostilityBaseline = PAVED_HOSTILITY_BASELINE;
+
+  /**
    * Score a candidate sub-route endpoint.
    *
    * @param candidateDistance   distance of the sub-route to this candidate (meters)
@@ -176,7 +195,8 @@ public class CandidateScorer {
                       int routedLegWorstContiguousHostileMeters) {
 
     double distScore = distanceScore(candidateDistance, subRouteTarget);
-    double loopScore = loopFeasibilityScore(totalSoFar, candidateDistance, returnDistance, desiredTotal);
+    double loopScore = loopFeasibilityScore(totalSoFar, candidateDistance, returnDistance, desiredTotal,
+      subRouteTarget, step, totalSteps);
     double dirScore = directionScore(candidateBearing, directionPreference, step);
     double reuseScore = visitedEdgeRatio;
     double spreadScore = spreadPenalty(distFromStart, searchRadius, step, totalSteps);
@@ -247,10 +267,12 @@ public class CandidateScorer {
     if (costFromStart == RoundTripCandidateProvider.NO_ISO_COST || distFromStart <= 50) {
       return 0;
     }
-    double indirectness = costFromStart / distFromStart;
-    if (indirectness <= 1.5) return 0;
-    if (indirectness >= 4.0) return 1;
-    return (indirectness - 1.5) / 2.5;
+    // Relative form: (cost/air) / baseline. With the paved baseline this is
+    // exactly the historical (indirectness − 1.5) / 2.5 ramp.
+    double ratio = (costFromStart / distFromStart) / hostilityBaseline;
+    if (ratio <= HOSTILITY_FREE_RATIO) return 0;
+    if (ratio >= HOSTILITY_FULL_RATIO) return 1;
+    return (ratio - HOSTILITY_FREE_RATIO) / (HOSTILITY_FULL_RATIO - HOSTILITY_FREE_RATIO);
   }
 
   /**
@@ -278,13 +300,58 @@ public class CandidateScorer {
   }
 
   /**
-   * How close the projected total (so far + candidate + return) is to the desired total.
+   * How close the projected total (so far + candidate + return) is to the desired total,
+   * normalized by the desired total (the early-loop form; see the phase-aware overload).
    */
   double loopFeasibilityScore(double totalSoFar, double candidateDistance,
                               double returnDistance, double desiredTotal) {
     if (desiredTotal <= 0) return 0;
     double projectedTotal = totalSoFar + candidateDistance + returnDistance;
     return Math.abs(projectedTotal - desiredTotal) / desiredTotal;
+  }
+
+  /**
+   * Phase-aware loop feasibility: early in the loop the projection (which leans on
+   * the air×indirectness return guess) is rough, so a miss is judged against the
+   * whole loop length; in the closure phase (same [0.4, 0.8] blend as
+   * {@link #spreadPenalty}) it is judged against the sub-leg target instead. A
+   * 4 km miss on a 50 km loop is "8 %" early but "40 % of a leg" late — that is
+   * what stops a late leg from turning home 4 km too early, which would leave the
+   * length to be filled by a residential filler leg near the start.
+   */
+  double loopFeasibilityScore(double totalSoFar, double candidateDistance,
+                              double returnDistance, double desiredTotal,
+                              double subRouteTarget, int step, int totalSteps) {
+    if (desiredTotal <= 0) return 0;
+    double projectedTotal = totalSoFar + candidateDistance + returnDistance;
+    double blend = closurePhaseBlend(step, totalSteps) * closureSharpening;
+    // Floor the late norm so a small step target cannot sharpen the term
+    // without bound.
+    double lateNorm = Math.max(subRouteTarget, desiredTotal * CLOSURE_NORM_MIN_FRACTION);
+    double norm = desiredTotal * (1 - blend) + lateNorm * blend;
+    return Math.abs(projectedTotal - desiredTotal) / norm;
+  }
+
+  /**
+   * Strength of the closure-phase sharpening in [0,1]: 1 = full (open terrain,
+   * non-paved profiles), 0 = the legacy loop-length normalisation. The planner
+   * sets it per step from its terrain-freedom estimate (and to 0 for paved
+   * profiles, whose closure behaviour is calibrated separately).
+   */
+  private double closureSharpening = 1.0;
+
+  void setClosureSharpening(double strength) {
+    this.closureSharpening = Math.max(0.0, Math.min(1.0, strength));
+  }
+
+  /** Floor of the closure-phase normalization as a fraction of the loop length. */
+  static final double CLOSURE_NORM_MIN_FRACTION = 1.0 / 8.0;
+
+  /** Exploration→closure blend in [0,1]: 0 up to phase 0.4, 1 from phase 0.8. */
+  static double closurePhaseBlend(int step, int totalSteps) {
+    if (totalSteps <= 0) return 0;
+    double phase = (double) step / totalSteps;
+    return Math.max(0, Math.min(1, (phase - 0.4) / 0.4));
   }
 
   /**
