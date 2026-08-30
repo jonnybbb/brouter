@@ -100,6 +100,7 @@ tasks.register('integrationTest', Test) {
     // Optional filters / golden recapture (no opt-in flag needed — the task IS the gate).
     systemProperty 'loop.profiles', System.getProperty('loop.profiles', '')
     systemProperty 'loop.profileParams', System.getProperty('loop.profileParams', '')
+    systemProperty 'loop.directions', System.getProperty('loop.directions', '')
     systemProperty 'loop.algorithms', System.getProperty('loop.algorithms', '')
     systemProperty 'golden.write', System.getProperty('golden.write', 'false')
     systemProperty 'perf.calibrate', System.getProperty('perf.calibrate', 'false')
