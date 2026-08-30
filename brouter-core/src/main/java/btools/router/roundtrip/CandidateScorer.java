@@ -197,8 +197,7 @@ public class CandidateScorer {
     double distScore = distanceScore(candidateDistance, subRouteTarget);
     double loopScore = loopFeasibilityScore(totalSoFar, candidateDistance, returnDistance, desiredTotal,
       subRouteTarget, step, totalSteps);
-    double dirScore = directionScore(candidateBearing, directionPreference,
-      directionStepOverride >= 0 ? directionStepOverride : step);
+    double dirScore = directionScore(candidateBearing, directionPreference, step);
     double reuseScore = visitedEdgeRatio;
     double spreadScore = spreadPenalty(distFromStart, searchRadius, step, totalSteps);
     double prevScore = previousDistancePenalty(distFromPrevious, subRouteTarget);
@@ -375,15 +374,6 @@ public class CandidateScorer {
 
   /** Best achievable |Δbearing| (deg) among this step's candidates; set by the planner. */
   void setDirectionReferenceOffset(double deg) { this.dirReferenceOffset = deg; }
-
-  /**
-   * Step the direction fade is evaluated at when ≥ 0; -1 = the scoring step. The
-   * forward planner sets the scoring step itself (no-op); a closing-first planner
-   * mirrors it so the fade is strongest on the opening leg it plans last.
-   */
-  private int directionStepOverride = -1;
-
-  void setDirectionStep(int step) { this.directionStepOverride = step; }
 
   /**
    * Penalty for a candidate bearing that misaligns with the direction preference. Scales by

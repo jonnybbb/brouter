@@ -8,7 +8,7 @@ import btools.router.OsmNodeNamed;
 import btools.router.OsmTrack;
 
 /**
- * All mutable state of ONE {@link AbstractGreedyPlanner#plan} invocation —
+ * All mutable state of ONE {@link GreedyRoundTripPlanner#plan} invocation —
  * the "per-plan session" of the internal planner split (code-review finding
  * #2). Pure state holder: every field is written by the planner's plan-phase
  * methods ({@code planStep} / candidate round / trial loop / outcome tails),
@@ -55,7 +55,7 @@ final class GreedyPlanSession {
   MatchedWaypoint startMwp;
   MatchedWaypoint currentMwp;
   final List<MatchedWaypoint> waypointStack = new ArrayList<>();
-  AbstractGreedyPlanner.Snapshot bestFallback;
+  GreedyRoundTripPlanner.Snapshot bestFallback;
   DirectionPreference dirPref = DirectionPreference.ANY;
   /** Loop-scale radius (desiredDistance / 4) for the scorer's distance terms. */
   double searchRadius;
