@@ -114,10 +114,29 @@ public abstract class LoopQualityTestBase {
     // -Dloop.profiles=gravel[,mtb] narrows the matrix to the listed profiles
     // (same switch LoopGoldStandardTest honours); empty/unset = all.
     String profileFilter = System.getProperty("loop.profiles", "").trim();
+    // -Dloop.directions=none  → one row per cell with NO heading (startDirection
+    // unset, the engine's default-direction pick fires); label suffix X.
+    // -Dloop.directions=random → one row per cell with a SEEDED uniform heading
+    // (deterministically mimics the legacy Math.random()*360 draw); suffix R.
+    // Default: the N/E/S/W cross-product.
+    String directionsMode = System.getProperty("loop.directions", "").trim();
     for (int i = 0; i < TARGET_DISTANCES.length; i++) {
       for (String profile : PROFILES) {
         if (!profileFilter.isEmpty()
             && !java.util.Arrays.asList(profileFilter.split("\\s*,\\s*")).contains(profile)) {
+          continue;
+        }
+        if ("none".equals(directionsMode) || "random".equals(directionsMode)) {
+          boolean none = "none".equals(directionsMode);
+          String label = String.format("%s_%dkm_%s_%s",
+            region.name().toLowerCase(), TARGET_DISTANCES[i] / 1000, profile, none ? "X" : "R");
+          // splitmix-style hash of the cell label → uniform [0, 360).
+          long h = 0x9E3779B97F4A7C15L;
+          for (int c = 0; c < label.length(); c++) {
+            h = (h ^ label.charAt(c)) * 0xBF58476D1CE4E5B9L;
+          }
+          double dir = none ? -1 : ((h >>> 11) % 360000) / 1000.0;
+          params.add(new Object[]{region, TARGET_DISTANCES[i], SEARCH_RADII[i], profile, dir, label});
           continue;
         }
         for (int d = 0; d < DIRECTIONS.length; d++) {
@@ -528,7 +547,9 @@ public abstract class LoopQualityTestBase {
           if (eq > 0) rctx.keyValues.put(kv.substring(0, eq).trim(), kv.substring(eq + 1).trim());
         }
       }
-      rctx.startDirection = (int) direction;
+      if (direction >= 0) {
+        rctx.startDirection = (int) direction;
+      }
       rctx.roundTripDistance = searchRadius;
       rctx.roundTripAlgorithm = algorithm;
       // Quality-measurement matrix: grade only gate-accepted clean loops. The
