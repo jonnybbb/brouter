@@ -35,9 +35,21 @@ _Avoid_: round trip route, circuit, ring
 One planner-committed section of a loop, routed between two consecutive vias.
 _Avoid_: sub-route, segment, section
 
+**Skeleton**:
+The ordered via sequence of a loop (start → vias → start) that the legs are routed between.
+_Avoid_: waypoint list, via list, route plan
+
+**Final via**:
+The last via of a skeleton — the point the closing leg runs home from. Its position decides the closing leg's length and character.
+_Avoid_: last waypoint, return point, turn-around point
+
 **Closing leg**:
-The final leg of a loop, from the last via back to the start.
+The final leg of a loop, from the final via back to the start.
 _Avoid_: return leg, return path, way home
+
+**Closing-first plan**:
+A skeleton planned from the final via backward toward the start, so the closing leg is known exactly before the other legs are chosen.
+_Avoid_: backward plan, reverse plan, return-first
 
 **Filler leg**:
 A short late leg whose only purpose is to reach the requested length after the loop turned home too early — a defect, not a design element.
