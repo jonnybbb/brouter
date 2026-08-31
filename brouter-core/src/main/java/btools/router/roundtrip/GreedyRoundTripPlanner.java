@@ -1052,6 +1052,21 @@ public class GreedyRoundTripPlanner {
    * signal as the heading terms: full in open networks (indirectness ≈ 1.3),
    * off where the graph forces indirect roads (≥ 2.0) and a loop has to close
    * however it can.
+   *
+   * <p>NOTE (measured 2026-08-31, gravel matrix, do not re-attempt without new
+   * evidence): this fade is knowingly blind to half-plane terrain (coastal legs
+   * are individually direct, so Coastal Nice keeps full levers and holds all six
+   * of their gate rejections). An additional fade on the angular span of the
+   * step-1 candidates was implemented and A/B-measured in two rounds (raw span,
+   * then with sub-30° sampling holes ignored): the ≤ 36-candidate sample leaves
+   * real ≥ 30° holes even in open terrain, so the fade ran at 70–90 % strength
+   * in half the matrix and diluted the levers' road-character gains, while at
+   * Nice it only swapped WHICH near-cap cells fail (3 healed, 3 broke, count
+   * unchanged — those loops sit within metres of the retrace caps). A clean
+   * topology signal (the start expansion's frontier span) exists only for
+   * ISO_GREEDY, not for the equally affected plain GREEDY. Reverted; the six
+   * rejected forced-planner cells stay a disclosed cost — AUTO ships an
+   * accepted loop in every one of them.
    */
   private double closureLeverStrength(GreedyPlanSession s) {
     return pavedProfile ? 0.0 : headingTerrainFreedom(s.indirectnessEst);
