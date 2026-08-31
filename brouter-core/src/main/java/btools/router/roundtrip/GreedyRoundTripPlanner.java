@@ -374,11 +374,9 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Profile-relative hostility scale (cost per air metre of a normal reach for
-   * the active profile, e.g. the return oracle's κ). Lets non-paved profiles use
-   * the hostility term at all — on the paved absolute scale their typical
-   * cost/airDist (~2.5 for gravel, ~9 for mtb) would flag every candidate. See
-   * {@link CandidateScorer#setHostilityBaseline}.
+   * Profile-relative hostility scale (see {@link CandidateScorer#setHostilityBaseline});
+   * on the paved absolute scale, gravel/mtb cost/airDist (~2.5 / ~9) would flag
+   * every candidate.
    */
   public void setHostilityBaseline(double costPerAirMeter) {
     scorer.setHostilityBaseline(costPerAirMeter);
@@ -1045,28 +1043,16 @@ public class GreedyRoundTripPlanner {
 
   /**
    * Strength in [0,1] of the closure-phase levers (sharpened loop term, priced
-   * runner-up closures, parked short legs). 0 for paved profiles — the 2026-08
-   * fastbike matrix showed the levers trading lower reuse/crossings for ten
-   * newly gate-rejected alpine/valley cells, so road bikes keep the calibrated
-   * first-fit closure. Non-paved profiles fade them with the same terrain-freedom
-   * signal as the heading terms: full in open networks (indirectness ≈ 1.3),
-   * off where the graph forces indirect roads (≥ 2.0) and a loop has to close
-   * however it can.
+   * runner-up closures, parked short legs): 0 for paved profiles (measured
+   * quality-negative on the fastbike matrix), faded by the terrain-freedom
+   * signal for the rest.
    *
-   * <p>NOTE (measured 2026-08-31, gravel matrix, do not re-attempt without new
-   * evidence): this fade is knowingly blind to half-plane terrain (coastal legs
-   * are individually direct, so Coastal Nice keeps full levers and holds all six
-   * of their gate rejections). An additional fade on the angular span of the
-   * step-1 candidates was implemented and A/B-measured in two rounds (raw span,
-   * then with sub-30° sampling holes ignored): the ≤ 36-candidate sample leaves
-   * real ≥ 30° holes even in open terrain, so the fade ran at 70–90 % strength
-   * in half the matrix and diluted the levers' road-character gains, while at
-   * Nice it only swapped WHICH near-cap cells fail (3 healed, 3 broke, count
-   * unchanged — those loops sit within metres of the retrace caps). A clean
-   * topology signal (the start expansion's frontier span) exists only for
-   * ISO_GREEDY, not for the equally affected plain GREEDY. Reverted; the six
-   * rejected forced-planner cells stay a disclosed cost — AUTO ships an
-   * accepted loop in every one of them.
+   * <p>NOTE (measured 2026-08-31, do not re-attempt without new evidence): the
+   * fade misses half-plane terrain (coastal legs are direct), which holds the
+   * six Coastal Nice gate rejections — AUTO ships accepted loops there. A fade
+   * on the step-1 candidates' angular span was tried twice: the sparse sample
+   * reads open terrain as blocked, and at Nice it only swaps which near-cap
+   * cells fail.
    */
   private double closureLeverStrength(GreedyPlanSession s) {
     return pavedProfile ? 0.0 : headingTerrainFreedom(s.indirectnessEst);
@@ -1089,13 +1075,9 @@ public class GreedyRoundTripPlanner {
     return (n % 2 == 1) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
   }
 
-  // NOTE (measured 2026-08-29, gravel matrix, do not re-attempt without new
-  // evidence): redistributing the remaining length budget over the remaining
-  // steps ("dynamic step target", so early overshoot shrinks later legs) was
-  // implemented and A/B-measured on the 230-cell gravel matrix. Alone it raised
-  // self-crossings 0.21 → 0.28 per loop and reuse 2.1 → 2.2 % with no road-
-  // character gain; combined with the other levers it added the most gate
-  // rejections. Reverted; the uniform L/N target stays.
+  // NOTE (measured 2026-08-29, do not re-attempt without new evidence): a
+  // dynamic per-step target (remaining budget / remaining steps) raised
+  // self-crossings 0.21 → 0.28 per loop with no road-character gain.
 
   /** Phase-1 output: heuristically scored, sorted candidates plus the pool-health
    *  demotion flag the routed round must honor (computed once per attempt — the
@@ -1194,9 +1176,7 @@ public class GreedyRoundTripPlanner {
       dirRef = best;
     }
     scorer.setDirectionReferenceOffset(dirRef);
-    // Closure-phase levers are measured for non-paved profiles in open terrain
-    // (see closureLeverStrength); paved profiles keep their calibrated closure
-    // behaviour, constrained terrain fades the sharpening out.
+    // Paved profiles and constrained terrain keep the legacy closure behaviour.
     scorer.setClosureSharpening(closureLeverStrength(s));
 
     // Previous leg's bearing for the heading-persistence term: NaN on
@@ -1215,13 +1195,9 @@ public class GreedyRoundTripPlanner {
     // term compares each candidate's radius against it.
     double currentRadius = CheapRuler.distance(currentIlon, currentIlat, start.ilon, start.ilat);
 
-    // Non-paved profiles: the compiled graph-native leg already carries the
-    // profile's cost, so phase 1 can rank on road quality BEFORE choosing the
-    // few candidates that get routed — paved profiles get that steering from
-    // the hostility term; gravel/mtb had none, so a leg through the village
-    // and a leg on tracks ranked identically until phase 2, which only ever
-    // sees the top-K. Centred on the step's median so candidates without a
-    // compiled leg (iso-pool picks) sit neutral instead of looking cheaper.
+    // Non-paved phase 1: rank compiled graph-native legs on the profile's cost/m
+    // (paved profiles get this steering from the hostility term). Median-centred
+    // so candidates without a compiled leg stay neutral.
     double medianLegCostPerMeter = pavedProfile ? -1 : medianCompiledLegCostPerMeter(candidates);
 
     // Score using air-distance estimates — O(1) per candidate
@@ -1624,19 +1600,12 @@ public class GreedyRoundTripPlanner {
     // geometry.
     boolean legCommitted = false;
     boolean tooLongSeen = false;
-    // Best within-tolerance, gate-accepted closure seen in this round. A fitting
-    // closure used to end the plan on the spot (first fit); now the remaining
-    // ranked candidates — already routed, one return Dijkstra each — are closed
-    // too and the loop with the best RouteChoiceScore (geometry + road
-    // character + cost/m, the same yardstick AUTO ranks with) ships. For a
-    // gravel profile that is the difference between a closing leg on tracks
-    // and one that pads the length through the start's residential streets.
+    // Best within-tolerance, gate-accepted closure of this round: all fitting
+    // closures are priced (one return Dijkstra each) and the best
+    // RouteChoiceScore ships — not the first fit.
     ClosureCandidate bestClosure = null;
-    // Late steps: a too-short trial is no longer committed on sight. It is
-    // parked (first one in rank order wins) while the remaining trials are
-    // priced — a fitting closure among them beats committing short and
-    // filling the leftover with a stub near the start. Re-committed after the
-    // loop when nothing closed.
+    // Late steps park a too-short trial while the rest are priced: a fitting
+    // closure beats a short commit plus a filler leg near the start.
     final boolean closureLevers = closureLeverStrength(s) > 0;
     final boolean lateStepTrials = closureLevers && step >= subRouteCount - 1;
     DeferredCommit deferredShort = null;
@@ -1814,9 +1783,7 @@ public class GreedyRoundTripPlanner {
       if (!returnChecked || returnTrack == null || returnTrack.distance == 0) {
         // Either closure is clearly out of reach with steps to spare, or
         // the return was not routable within budget — keep the leg
-        // (legacy behaviour) and let the next step / force-close handle
-        // closure. Unless a fitting closure (or a parked short leg) is
-        // already in hand: an unclosable runner-up never beats either.
+        // (legacy behaviour) — unless a closure or parked leg is already in hand.
         if (bestClosure != null || deferredShort != null) {
           removeVisitedEdges(accepted.track, visitedEdges);
           undoTentativeLeg(s, accepted);
@@ -1941,12 +1908,8 @@ public class GreedyRoundTripPlanner {
         continue;
       }
 
-      // Between (1-tol) and (1+tol) but not within tol → too short. Early
-      // steps keep the leg and continue with the next step (unless a fitting
-      // closure is already in hand — a short runner-up never beats it). Late
-      // steps park the first short leg and keep pricing: a fitting closure
-      // among the remaining trials is worth more than a short commit plus a
-      // filler step.
+      // Between (1-tol) and (1+tol) but not within tol → too short: early steps
+      // keep the leg and continue; late steps park the first short trial.
       boolean moreTrials = trial + 1 < routedCandidates.size()
         && System.currentTimeMillis() < stepDeadline;
       if (bestClosure != null || deferredShort != null || (lateStepTrials && moreTrials)) {
@@ -1973,8 +1936,7 @@ public class GreedyRoundTripPlanner {
       return TrialOutcome.CLOSED;
     }
     if (deferredShort != null) {
-      // Nothing closed within tolerance — commit the parked short leg exactly
-      // as the first-fit path would have, and let the next step continue.
+      // Nothing closed — commit the parked short leg as first-fit would have.
       recommitLeg(s, deferredShort, currentIlon, currentIlat);
       result.addDiagnostic("step " + step + ": committing parked trial " + (deferredShort.trial + 1)
         + " (no fitting closure among " + routedCandidates.size() + " candidates)");
@@ -1987,11 +1949,8 @@ public class GreedyRoundTripPlanner {
       : (tooLongSeen ? TrialOutcome.EXHAUSTED_TOO_LONG : TrialOutcome.EXHAUSTED);
   }
 
-  /**
-   * Closed-loop ranking key for the trial loop: {@link RouteChoiceScore} (higher =
-   * better), the same yardstick the AUTO competition ranks candidates with. 0 when
-   * the profile context is unavailable (direct planner callers in unit tests).
-   */
+  /** Closed-loop ranking key: {@link RouteChoiceScore}, AUTO's yardstick;
+   *  0 when the profile context is unavailable (unit tests). */
   private double closedLoopChoiceScore(OsmTrack finalTrack, double desiredDistance,
                                        RoundTripQualityResult verdict, double startDirection) {
     if (finalTrack == null || ctx == null || ctx.routingContext() == null) return 0;
@@ -2041,11 +2000,7 @@ public class GreedyRoundTripPlanner {
     }
   }
 
-  /**
-   * Re-apply a parked leg: the same state transitions as the tentative commit
-   * plus the post-detail edge registration ({@code leg.track} is already the
-   * detailed track).
-   */
+  /** Re-apply a parked leg: the tentative-commit transitions plus edge registration. */
   private void recommitLeg(GreedyPlanSession s, DeferredCommit d, int currentIlon, int currentIlat) {
     ScoredRoute leg = d.leg;
     s.segments.add(leg.track);
@@ -2067,8 +2022,7 @@ public class GreedyRoundTripPlanner {
     Snapshot snap = closure.snapshot;
     recordAcceptedLegAttribution(result, closure.leg, step, closure.trial, mixedSourceRouting,
       s.start.ilon, s.start.ilat, closure.via);
-    // The snapshot's counters describe the shipped loop (the tentative leg may
-    // have been undone since to price a runner-up).
+    // The snapshot's counters describe the shipped loop.
     s.acceptedIsoLegs = snap.isoLegs;
     s.acceptedNonIsoLegs = snap.nonIsoLegs;
     s.acceptedQuotaInjectedLegs = snap.quotaInjectedLegs;

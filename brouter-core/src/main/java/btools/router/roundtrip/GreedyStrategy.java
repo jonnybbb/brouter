@@ -589,9 +589,8 @@ final class GreedyStrategy implements RoundTripStrategy {
       ops.logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(ops, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
-      // Hostility steering: paved profiles on the calibrated absolute scale;
-      // non-paved profiles relative to their own measured cost-per-air-metre
-      // (the oracle's κ), when a start expansion measured one.
+      // Hostility: paved on the calibrated absolute scale; non-paved relative
+      // to the oracle's measured κ when available.
       if (request.pavedProfile) {
         planner.setHostilityActive(true);
       } else if (returnOracle != null) {

@@ -283,18 +283,11 @@ public final class RoundTripOrchestrator {
   }
 
   /**
-   * Profile-aware default bearing for a generated loop when the user gave no
-   * direction: the frontier sector of the start-centered isochrone expansion
-   * with the lowest cost-per-air-metre ({@link GeometricWaypointPlacer#computeIsoAsymmetryBearing}),
-   * i.e. the direction in which THIS profile's preferred roads reach farthest —
-   * for gravel the sector with the deepest track network, for a road bike the
-   * cleanest paved exit. The expansion is memoized on the engine, so ISO_GREEDY's
-   * pool build and the return oracle reuse it at no extra cost.
-   *
-   * <p>Returns {@code -1} (caller falls back to the legacy random draw) in
-   * explicit-via mode, for the FAST/WAYPOINT tier (its sub-second contract
-   * does not fund an expansion), with {@code allowSamewayback}, or when no
-   * frontier sector clears the bias quality thresholds.
+   * Default bearing when the user gave none: the frontier sector with the lowest
+   * cost per air-metre ({@link GeometricWaypointPlacer#computeIsoAsymmetryBearing})
+   * — where this profile's preferred roads reach farthest. The expansion is
+   * memoized on the engine. Returns {@code -1} (caller falls back to the random
+   * draw) for explicit vias, samewayback, the FAST tier, or no qualifying sector.
    */
   double profileAwareDefaultDirection(double searchRadius) {
     if (ops.waypoints().size() > 1 || ops.routingContext().allowSamewayback) return -1;
@@ -358,10 +351,7 @@ public final class RoundTripOrchestrator {
       double direction = (ops.routingContext().startDirection == null ? -1 :ops.routingContext().startDirection);
       double directionAdd = (ops.routingContext().roundTripDirectionAdd == null ? ROUNDTRIP_DEFAULT_DIRECTIONADD :ops.routingContext().roundTripDirectionAdd);
       if (direction == -1) {
-        // No user direction: prefer the profile-aware pick (the sector the
-        // profile's cost model reaches farthest into) over the legacy random
-        // draw, which knows nothing about the profile and happily sends a
-        // gravel loop through the city centre.
+        // Prefer the profile-aware pick over the legacy random draw.
         direction = profileAwareDefaultDirection(searchRadius);
         if (direction < 0) {
           direction = ops.getRandomDirectionFromData(ops.waypoints().get(0), searchRadius);

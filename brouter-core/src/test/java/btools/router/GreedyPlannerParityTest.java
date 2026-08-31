@@ -49,11 +49,8 @@ public class GreedyPlannerParityTest {
   private static final Map<String, String> GOLDENS = new LinkedHashMap<>();
 
   static {
-    // Recaptured 2026-08-29 (gravel residential-start levers: closure-phase
-    // loop term, priced runner-up closures / parked short legs, phase-1
-    // compiled-leg cost and κ-relative hostility for non-paved profiles;
-    // paved profiles unchanged — the fastbike rows are identical). See
-    // GreedyRoundTripPlanner.closureLeverStrength.
+    // Recaptured 2026-08-29 (closure-phase levers + phase-1 cost for non-paved
+    // profiles; the fastbike rows are unchanged).
     // Captured on the pre-refactor baseline (2026-07-18, branch
     // roundtrip-upstream-v2 after review findings #1/#3/#4). See class doc
     // for the recapture procedure.

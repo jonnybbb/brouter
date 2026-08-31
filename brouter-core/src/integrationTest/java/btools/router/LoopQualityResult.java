@@ -26,11 +26,9 @@ class LoopQualityResult {
    *  logs instead of failing. Set by runVariant. */
   boolean disclosed;
   /**
-   * Road-character fractions of the shipped track, from {@code highway=} tags
-   * (length-weighted): {residential+living_street+service, track/path/cycleway
-   * family, residential share of the FIRST 15 % of the loop, residential share
-   * of the LAST 15 %}. Null when unavailable. The head/tail shares are the
-   * "leaves through / comes home through the village" measurement.
+   * Length-weighted road-character fractions from {@code highway=} tags:
+   * {residential family, track family, residential share of the first 15 % of
+   * the loop, of the last 15 %}; null when unavailable.
    */
   double[] character;
 

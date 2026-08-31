@@ -90,12 +90,9 @@ public class CandidateScorer {
   }
 
   /**
-   * Cost-per-air-metre of a "normal" reach for the active profile — the unit the
-   * hostility ramp is expressed in. Defaults to {@link #PAVED_HOSTILITY_BASELINE}
-   * (the road-bike figure the absolute 1.5–4.0 thresholds were calibrated on, so
-   * paved profiles are bit-for-bit unchanged); non-paved profiles pass their
-   * measured scale (the return oracle's κ) so "expensive for THIS profile" is
-   * judged relative to what its preferred roads cost, not against asphalt.
+   * Cost per air-metre of a normal reach for the active profile — the hostility
+   * ramp's unit. Defaults to the paved baseline the absolute 1.5–4.0 thresholds
+   * were calibrated on; non-paved profiles pass their measured scale (oracle κ).
    */
   void setHostilityBaseline(double costPerAirMeter) {
     if (costPerAirMeter > 0) this.hostilityBaseline = costPerAirMeter;
@@ -311,13 +308,10 @@ public class CandidateScorer {
   }
 
   /**
-   * Phase-aware loop feasibility: early in the loop the projection (which leans on
-   * the air×indirectness return guess) is rough, so a miss is judged against the
-   * whole loop length; in the closure phase (same [0.4, 0.8] blend as
-   * {@link #spreadPenalty}) it is judged against the sub-leg target instead. A
-   * 4 km miss on a 50 km loop is "8 %" early but "40 % of a leg" late — that is
-   * what stops a late leg from turning home 4 km too early, which would leave the
-   * length to be filled by a residential filler leg near the start.
+   * Phase-aware loop feasibility: early misses are judged against the loop length
+   * (the return estimate is rough there), closure-phase misses against the leg
+   * target — a 4 km miss is 8 % of a 50 km loop but 40 % of a leg, which is what
+   * prevents turning home early and filling the gap with a filler leg.
    */
   double loopFeasibilityScore(double totalSoFar, double candidateDistance,
                               double returnDistance, double desiredTotal,
@@ -325,19 +319,14 @@ public class CandidateScorer {
     if (desiredTotal <= 0) return 0;
     double projectedTotal = totalSoFar + candidateDistance + returnDistance;
     double blend = closurePhaseBlend(step, totalSteps) * closureSharpening;
-    // Floor the late norm so a small step target cannot sharpen the term
-    // without bound.
+    // Floor the late norm so a tiny step target cannot sharpen without bound.
     double lateNorm = Math.max(subRouteTarget, desiredTotal * CLOSURE_NORM_MIN_FRACTION);
     double norm = desiredTotal * (1 - blend) + lateNorm * blend;
     return Math.abs(projectedTotal - desiredTotal) / norm;
   }
 
-  /**
-   * Strength of the closure-phase sharpening in [0,1]: 1 = full (open terrain,
-   * non-paved profiles), 0 = the legacy loop-length normalisation. The planner
-   * sets it per step from its terrain-freedom estimate (and to 0 for paved
-   * profiles, whose closure behaviour is calibrated separately).
-   */
+  /** Closure-sharpening strength in [0,1], set per step by the planner
+   *  (0 = paved profiles / constrained terrain = the legacy normalisation). */
   private double closureSharpening = 1.0;
 
   void setClosureSharpening(double strength) {

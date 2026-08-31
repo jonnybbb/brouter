@@ -132,10 +132,8 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
     Assert.assertNotNull("track produced", re.getFoundTrack());
     RoundTripResult plannerResult = re.getLastRoundTripResult();
     Assert.assertNotNull("ISO_GREEDY records planner telemetry", plannerResult);
-    // The contract: a blended verdict below the clear-accept bar runs the
-    // internal graph-native comparison; a strong blended loop skips it (and
-    // records why). Either outcome is legal for this cell — which one it takes
-    // shifts with planner tuning — but the skip must be justified by the score.
+    // Contract: a blended verdict below the clear-accept bar runs the internal
+    // comparison; a strong one may skip it, justified by the recorded score.
     if (!plannerResult.isInternalGraphNativeCompared()) {
       Assert.assertTrue("ISO_GREEDY skipped the internal comparison without a strong blended verdict: "
           + plannerResult.getInternalBlendedScore(),

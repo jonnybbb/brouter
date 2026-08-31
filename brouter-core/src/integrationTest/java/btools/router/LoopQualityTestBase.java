@@ -114,15 +114,11 @@ public abstract class LoopQualityTestBase {
     // -Dloop.profiles=gravel[,mtb] narrows the matrix to the listed profiles
     // (same switch LoopGoldStandardTest honours); empty/unset = all.
     String profileFilter = System.getProperty("loop.profiles", "").trim();
-    // -Dloop.directions=none  → one row per cell with NO heading (startDirection
-    // unset, the engine's default-direction pick fires); label suffix X.
-    // -Dloop.directions=random → one row per cell with a SEEDED uniform heading
-    // (deterministically mimics the legacy Math.random()*360 draw); suffix R.
-    // Default: the N/E/S/W cross-product.
+    // -Dloop.directions=none: one row per cell without a heading (suffix X);
+    // 'random': a seeded uniform heading per cell (suffix R); default: N/E/S/W.
     String directionsMode = System.getProperty("loop.directions", "").trim();
-    // The filter may name profiles outside the calibrated three (e.g. trekking):
-    // those run MEASUREMENT-ONLY — rows are built, the regional quality bands
-    // are logged instead of asserted (see measurementOnlyProfile).
+    // Profiles outside the calibrated set (e.g. trekking) run measurement-only:
+    // rows are built, the quality bands are logged, not asserted.
     String[] profiles = profileFilter.isEmpty() ? PROFILES : profileFilter.split(",");
     for (int i = 0; i < TARGET_DISTANCES.length; i++) {
       for (String rawProfile : profiles) {
@@ -175,8 +171,7 @@ public abstract class LoopQualityTestBase {
       "Profile " + profileName + " is not a supported profile for " + region.name()
         + " (no plausible route exists for this terrain × profile combination)",
       region.supportedProfiles.contains(profileName)
-        // Measurement-only profiles (outside the calibrated PROFILES set, e.g.
-        // trekking) ride wherever gravel does — the same terrain envelope.
+        // Measurement-only profiles ride wherever gravel does.
         || (measurementOnlyProfile() && region.supportedProfiles.contains("gravel")));
     // Distance-scoped support (2026-07): some region × profile combos are
     // healthy only above a minimum loop size — small-radius geometry walls
@@ -299,9 +294,8 @@ public abstract class LoopQualityTestBase {
    * the composite floor catches loops that are mediocre on several dimensions
    * at once without grossly violating any single threshold.
    */
-  /** True when the running profile is outside the calibrated {@link #PROFILES} set
-   *  (named via -Dloop.profiles, e.g. trekking): results are persisted for
-   *  measurement, the regional quality bands are not asserted. */
+  /** True for a profile outside {@link #PROFILES} (via -Dloop.profiles):
+   *  results persist, the quality bands are not asserted. */
   private boolean measurementOnlyProfile() {
     for (String p : PROFILES) {
       if (p.equalsIgnoreCase(profileName)) return false;
@@ -552,9 +546,7 @@ public abstract class LoopQualityTestBase {
 
       RoutingContext rctx = new RoutingContext();
       rctx.localFunction = profileFile.getAbsolutePath();
-      // -Dloop.profileParams=avoid_towns=true[,key=value...] overrides the
-      // profile's marked assigns (the request's profile-parameter surface), so a
-      // matrix run can measure a profile switch without editing the .brf.
+      // -Dloop.profileParams=key=value[,...] injects profile parameters.
       String profileParams = System.getProperty("loop.profileParams", "").trim();
       if (!profileParams.isEmpty()) {
         rctx.keyValues = new HashMap<>();
@@ -760,11 +752,9 @@ public abstract class LoopQualityTestBase {
   }
 
   /**
-   * Length-weighted road-character fractions from the track's {@code highway=}
-   * tags: {residential-family, track-family, residential share of the first
-   * 15 %, residential share of the last 15 %}. Test-side helper (independent of
-   * the engine's RoadCharacterScore) so baseline runs on older revisions can
-   * persist it too.
+   * Length-weighted road-character fractions from {@code highway=} tags:
+   * {residential family, track family, first-15 % residential, last-15 %
+   * residential}. Test-side so baseline revisions can persist it too.
    */
   static double[] roadCharacter(OsmTrack track) {
     if (track == null || track.nodes == null || track.nodes.size() < 2 || track.distance <= 0) return null;

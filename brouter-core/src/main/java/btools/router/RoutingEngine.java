@@ -1275,12 +1275,8 @@ public class RoutingEngine extends Thread {
    * pool, or {@code null} on failure.
    */
   IsochroneExpansionResult runIsochroneExpansion(OsmNodeNamed start, double searchRadius) {
-    // Memoized per (start, radius): the orchestrator's profile-aware default
-    // direction and the ISO_GREEDY pool/oracle both need this same
-    // start-centered expansion, and the greedy ladder may re-prepare its
-    // candidate sources several times per request. The result is treated as
-    // read-only by every consumer (pool filtering copies, the oracle and the
-    // asymmetry bias only read), so one expansion serves them all.
+    // Memoized per (start, radius): the direction pick, the ISO_GREEDY pool and
+    // the return oracle all consume this same expansion, read-only.
     if (startIsoCache != null && startIsoCacheIlon == start.ilon && startIsoCacheIlat == start.ilat
         && startIsoCacheRadius == searchRadius) {
       return startIsoCache;
