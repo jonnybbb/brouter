@@ -120,12 +120,14 @@ public abstract class LoopQualityTestBase {
     // (deterministically mimics the legacy Math.random()*360 draw); suffix R.
     // Default: the N/E/S/W cross-product.
     String directionsMode = System.getProperty("loop.directions", "").trim();
+    // The filter may name profiles outside the calibrated three (e.g. trekking):
+    // those run MEASUREMENT-ONLY — rows are built, the regional quality bands
+    // are logged instead of asserted (see measurementOnlyProfile).
+    String[] profiles = profileFilter.isEmpty() ? PROFILES : profileFilter.split(",");
     for (int i = 0; i < TARGET_DISTANCES.length; i++) {
-      for (String profile : PROFILES) {
-        if (!profileFilter.isEmpty()
-            && !java.util.Arrays.asList(profileFilter.split("\\s*,\\s*")).contains(profile)) {
-          continue;
-        }
+      for (String rawProfile : profiles) {
+        String profile = rawProfile.trim();
+        if (profile.isEmpty()) continue;
         if ("none".equals(directionsMode) || "random".equals(directionsMode)) {
           boolean none = "none".equals(directionsMode);
           String label = String.format("%s_%dkm_%s_%s",
@@ -172,7 +174,10 @@ public abstract class LoopQualityTestBase {
     Assume.assumeTrue(
       "Profile " + profileName + " is not a supported profile for " + region.name()
         + " (no plausible route exists for this terrain × profile combination)",
-      region.supportedProfiles.contains(profileName));
+      region.supportedProfiles.contains(profileName)
+        // Measurement-only profiles (outside the calibrated PROFILES set, e.g.
+        // trekking) ride wherever gravel does — the same terrain envelope.
+        || (measurementOnlyProfile() && region.supportedProfiles.contains("gravel")));
     // Distance-scoped support (2026-07): some region × profile combos are
     // healthy only above a minimum loop size — small-radius geometry walls
     // them in (valley floors, coastal half-planes, massif faces) while the
@@ -245,13 +250,14 @@ public abstract class LoopQualityTestBase {
     }
     List<String> failures = new ArrayList<>();
     boolean anyTrack = false;
+    boolean measurementOnly = measurementOnlyProfile();
     if (greedyResult != null && greedyResult.metrics != null) {
       anyTrack = true;
-      checkVariantQuality("greedy", greedyResult.metrics, failures);
+      if (!measurementOnly) checkVariantQuality("greedy", greedyResult.metrics, failures);
     }
     if (isoGreedyResult != null && isoGreedyResult.metrics != null) {
       anyTrack = true;
-      checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
+      if (!measurementOnly) checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
     }
     // Gate the PRODUCTION surface (full matrix): the shipped AUTO route is
     // held to the same regional quality bands as a forced planner — unless the
@@ -293,6 +299,16 @@ public abstract class LoopQualityTestBase {
    * the composite floor catches loops that are mediocre on several dimensions
    * at once without grossly violating any single threshold.
    */
+  /** True when the running profile is outside the calibrated {@link #PROFILES} set
+   *  (named via -Dloop.profiles, e.g. trekking): results are persisted for
+   *  measurement, the regional quality bands are not asserted. */
+  private boolean measurementOnlyProfile() {
+    for (String p : PROFILES) {
+      if (p.equalsIgnoreCase(profileName)) return false;
+    }
+    return true;
+  }
+
   private void checkVariantQuality(String variant, LoopQualityMetrics m, List<String> failures) {
     String tag = testLabel + " [" + variant + "]";
     double maxReuse = region.maxReusePercent;
