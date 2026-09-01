@@ -361,9 +361,10 @@ public class CandidateScorerTest {
     // ... while a sector twice as expensive as its baseline is penalised exactly
     // like a paved sector at 2× its baseline.
     assertEquals(scorer.isoHostilityPenalty(13000, 5000), gravel.isoHostilityPenalty(26000, 5000), 1e-9);
-    // Non-positive baselines are ignored.
+    // Non-positive baselines are ignored — the previous scale stays in force.
+    double before = gravel.isoHostilityPenalty(26000, 5000);
     gravel.setHostilityBaseline(0);
-    assertEquals(scorer.isoHostilityPenalty(26000, 5000) > 0, gravel.isoHostilityPenalty(26000, 5000) > 0);
+    assertEquals(before, gravel.isoHostilityPenalty(26000, 5000), 1e-9);
   }
 
   @Test

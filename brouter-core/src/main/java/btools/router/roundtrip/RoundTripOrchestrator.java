@@ -351,9 +351,15 @@ public final class RoundTripOrchestrator {
       double direction = (ops.routingContext().startDirection == null ? -1 :ops.routingContext().startDirection);
       double directionAdd = (ops.routingContext().roundTripDirectionAdd == null ? ROUNDTRIP_DEFAULT_DIRECTIONADD :ops.routingContext().roundTripDirectionAdd);
       if (direction == -1) {
-        // Prefer the profile-aware pick over the legacy random draw.
+        // Prefer the profile-aware pick over the legacy random draw. An
+        // explicitly set roundTripDirectionAdd offsets either auto bearing;
+        // the 45° legacy default applies only to the random draw.
         direction = profileAwareDefaultDirection(searchRadius);
-        if (direction < 0) {
+        if (direction >= 0) {
+          if (ops.routingContext().roundTripDirectionAdd != null) {
+            direction += directionAdd;
+          }
+        } else {
           direction = ops.getRandomDirectionFromData(ops.waypoints().get(0), searchRadius);
           direction += directionAdd;
         }

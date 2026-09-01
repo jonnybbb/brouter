@@ -19,6 +19,7 @@ import java.util.Map;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import btools.router.roundtrip.CandidateScorer;
+import btools.router.OsmPathElement;
 import btools.router.roundtrip.LoopQualityMetrics;
 import btools.router.roundtrip.RoundTripAlgorithm;
 import btools.router.roundtrip.RouteChoiceScore;
@@ -284,6 +285,15 @@ public abstract class LoopQualityTestBase {
       failures.isEmpty());
   }
 
+  /** True for a profile outside {@link #PROFILES} (via -Dloop.profiles):
+   *  results persist, the quality bands are not asserted. */
+  private boolean measurementOnlyProfile() {
+    for (String p : PROFILES) {
+      if (p.equalsIgnoreCase(profileName)) return false;
+    }
+    return true;
+  }
+
   /**
    * Soft-assert every production quality bar the variant misses — road reuse,
    * distance-ratio band, direction delta, profile cost/m ceiling, composite
@@ -294,15 +304,6 @@ public abstract class LoopQualityTestBase {
    * the composite floor catches loops that are mediocre on several dimensions
    * at once without grossly violating any single threshold.
    */
-  /** True for a profile outside {@link #PROFILES} (via -Dloop.profiles):
-   *  results persist, the quality bands are not asserted. */
-  private boolean measurementOnlyProfile() {
-    for (String p : PROFILES) {
-      if (p.equalsIgnoreCase(profileName)) return false;
-    }
-    return true;
-  }
-
   private void checkVariantQuality(String variant, LoopQualityMetrics m, List<String> failures) {
     String tag = testLabel + " [" + variant + "]";
     double maxReuse = region.maxReusePercent;
@@ -762,7 +763,7 @@ public abstract class LoopQualityTestBase {
     double pos = 0;
     double headEnd = track.distance * 0.15, tailStart = track.distance * 0.85;
     for (int i = 1; i < track.nodes.size(); i++) {
-      btools.router.OsmPathElement p = track.nodes.get(i - 1), q = track.nodes.get(i);
+      OsmPathElement p = track.nodes.get(i - 1), q = track.nodes.get(i);
       int seg = p.calcDistance(q);
       if (seg <= 0) continue;
       String tags = q.message != null ? q.message.getWayKeyValues() : null;

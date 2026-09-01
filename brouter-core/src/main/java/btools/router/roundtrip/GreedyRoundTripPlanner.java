@@ -742,18 +742,13 @@ public class GreedyRoundTripPlanner {
   }
 
   /**
-   * Undo a tentatively committed leg — the shared tail of all four rejection
-   * sites. Removes the leg and its via, reverses the attribution counters, and
-   * fires the iso-rejection health hook. Sites past {@code addVisitedEdges} call
-   * {@code removeVisitedEdges} first (order-independent). Returns the restored
-   * total distance; the caller re-reads the anchor and restores prev coordinates.
+   * Undo a tentatively committed leg: removes the leg and its via and reverses
+   * the attribution counters. {@code rejected=false} marks a bookkeeping undo
+   * (parked leg, runner-up pricing) — the leg was not found wanting, so no
+   * pool-health rejection is recorded. Sites past {@code addVisitedEdges} call
+   * {@code removeVisitedEdges} first (order-independent).
    */
-  private void undoTentativeLeg(GreedyPlanSession s, ScoredRoute accepted) {
-    undoTentativeLeg(s, accepted, true);
-  }
-
-  /** {@code countRejection=false}: a parked (not rejected) leg — no pool-health evidence. */
-  private void undoTentativeLeg(GreedyPlanSession s, ScoredRoute accepted, boolean countRejection) {
+  private void undoTentativeLeg(GreedyPlanSession s, ScoredRoute accepted, boolean rejected) {
     s.segments.remove(s.segments.size() - 1);
     if (accepted.fromIsoCandidate) {
       s.acceptedIsoLegs--;
@@ -763,9 +758,18 @@ public class GreedyRoundTripPlanner {
     if (accepted.fromQuotaInjection) {
       s.acceptedQuotaInjectedLegs--;
     }
-    if (countRejection) recordIsoTrialRejection(accepted);
+    if (rejected) recordIsoTrialRejection(accepted);
     s.waypointStack.remove(s.waypointStack.size() - 1);
     s.totalDistance -= accepted.routeDistance;
+  }
+
+  /** Undo one trial's tentative commit and restore the step anchors. */
+  private void restoreTrialState(GreedyPlanSession s, ScoredRoute accepted,
+                                 int savedPrevIlon, int savedPrevIlat, boolean rejected) {
+    undoTentativeLeg(s, accepted, rejected);
+    s.currentMwp = s.waypointStack.get(s.waypointStack.size() - 1);
+    s.prevIlon = savedPrevIlon;
+    s.prevIlat = savedPrevIlat;
   }
 
   /** Health hook for an undone trial: an iso-sourced rejection is pool-loss evidence. */
@@ -1700,10 +1704,7 @@ public class GreedyRoundTripPlanner {
             + (int) (s.totalDistance + returnTrack.distance)
             + "m exceeds desired " + (int) desiredDistance + "m, trying next candidate");
           tooLongSeen = true;
-          undoTentativeLeg(s, accepted);
-          s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-          s.prevIlon = savedPrevIlon;
-          s.prevIlat = savedPrevIlat;
+          restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ true);
           continue;
         }
       }
@@ -1740,10 +1741,7 @@ public class GreedyRoundTripPlanner {
       }
       if (detailReject != null) {
         result.addDiagnostic("step " + step + ": " + detailReject + ", trying next candidate");
-        undoTentativeLeg(s, accepted);
-        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-        s.prevIlon = savedPrevIlon;
-        s.prevIlat = savedPrevIlat;
+        restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ true);
         continue;
       }
 
@@ -1786,10 +1784,7 @@ public class GreedyRoundTripPlanner {
         // (legacy behaviour) — unless a closure or parked leg is already in hand.
         if (bestClosure != null || deferredShort != null) {
           removeVisitedEdges(accepted.track, visitedEdges);
-          undoTentativeLeg(s, accepted);
-          s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-          s.prevIlon = savedPrevIlon;
-          s.prevIlat = savedPrevIlat;
+          restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ false);
           continue;
         }
         recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,
@@ -1808,10 +1803,7 @@ public class GreedyRoundTripPlanner {
           + "m exceeds desired " + (int) desiredDistance + "m after detailing, trying next candidate");
         tooLongSeen = true;
         removeVisitedEdges(accepted.track, visitedEdges);
-        undoTentativeLeg(s, accepted);
-        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-        s.prevIlon = savedPrevIlon;
-        s.prevIlat = savedPrevIlat;
+        restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ true);
         continue;
       }
 
@@ -1876,10 +1868,7 @@ public class GreedyRoundTripPlanner {
           s.closureRejections++;
           if (poolHealth != null) poolHealth.recordClosureRejection();
           removeVisitedEdges(accepted.track, visitedEdges);
-          undoTentativeLeg(s, accepted);
-          s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-          s.prevIlon = savedPrevIlon;
-          s.prevIlat = savedPrevIlat;
+          restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ true);
           continue;
         }
 
@@ -1901,10 +1890,7 @@ public class GreedyRoundTripPlanner {
         }
         // Undo the tentative leg and price the next ranked closure.
         removeVisitedEdges(accepted.track, visitedEdges);
-        undoTentativeLeg(s, accepted);
-        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-        s.prevIlon = savedPrevIlon;
-        s.prevIlat = savedPrevIlat;
+        restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ false);
         continue;
       }
 
@@ -1919,10 +1905,7 @@ public class GreedyRoundTripPlanner {
             + (int) closedDistance + "m — parked, pricing the remaining candidates");
         }
         removeVisitedEdges(accepted.track, visitedEdges);
-        undoTentativeLeg(s, accepted, /*countRejection*/ false);
-        s.currentMwp = waypointStack.get(waypointStack.size() - 1);
-        s.prevIlon = savedPrevIlon;
-        s.prevIlat = savedPrevIlat;
+        restoreTrialState(s, accepted, savedPrevIlon, savedPrevIlat, /*rejected*/ false);
         continue;
       }
       recordAcceptedLegAttribution(result, accepted, step, trial, mixedSourceRouting,

@@ -58,7 +58,7 @@ public class GreedyPlannerParityTest {
     GOLDENS.put("GREEDY|gravel|90|1000|0", "err=-;n=194;d=5583;h=33b63e41ba389b47;pd=6085;tol=true;fb=-;wp=f93285ddeb12ec6f;cg=89;cr=13;rk=11;ri=0;rn=13;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     GOLDENS.put("GREEDY|gravel|180|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     GOLDENS.put("GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("ISO_GREEDY|gravel|90|1000|0", "err=-;n=244;d=6432;h=cda577fb4518a5b2;pd=6552;tol=true;fb=-;wp=d3715b6d4fa88959;cg=135;cr=13;rk=13;ri=3;rn=10;ai=1;an=2;aq=0;ps=-1;ph=0.7000;fc=false;gc=true");
+    GOLDENS.put("ISO_GREEDY|gravel|90|1000|0", "err=-;n=244;d=6432;h=cda577fb4518a5b2;pd=6552;tol=true;fb=-;wp=d3715b6d4fa88959;cg=135;cr=13;rk=13;ri=3;rn=10;ai=1;an=2;aq=0;ps=-1;ph=0.7400;fc=false;gc=true");
     GOLDENS.put("ISO_GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=85;cr=8;rk=7;ri=1;rn=7;ai=0;an=2;aq=0;ps=-1;ph=0.7500;fc=false;gc=false");
     GOLDENS.put("GREEDY|trekking|90|1000|0", "err=-;n=175;d=4165;h=b144da87588d8287;pd=6166;tol=true;fb=-;wp=c4281fef53473ff0;cg=120;cr=18;rk=15;ri=0;rn=18;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     // Recaptured 2026-07-25 (scorer shape terms + mtb cost band). The SHIPPED
