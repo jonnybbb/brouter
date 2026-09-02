@@ -19,7 +19,6 @@ import java.util.Map;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import btools.router.roundtrip.CandidateScorer;
-import btools.router.OsmPathElement;
 import btools.router.roundtrip.LoopQualityMetrics;
 import btools.router.roundtrip.RoundTripAlgorithm;
 import btools.router.roundtrip.RouteChoiceScore;
