@@ -49,16 +49,18 @@ public class GreedyPlannerParityTest {
   private static final Map<String, String> GOLDENS = new LinkedHashMap<>();
 
   static {
+    // Recaptured 2026-08-29 (closure-phase levers + phase-1 cost for non-paved
+    // profiles; the fastbike rows are unchanged).
     // Captured on the pre-refactor baseline (2026-07-18, branch
     // roundtrip-upstream-v2 after review findings #1/#3/#4). See class doc
     // for the recapture procedure.
-    GOLDENS.put("GREEDY|gravel|0|1000|0", "err=-;n=116;d=5545;h=b5ee02c7dbcf55a9;pd=6017;tol=true;fb=-;wp=bcb54cfbad2e2db;cg=85;cr=13;rk=2;ri=0;rn=13;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("GREEDY|gravel|90|1000|0", "err=-;n=228;d=5998;h=92632646657e97df;pd=6098;tol=true;fb=-;wp=920a7b18e83e455;cg=97;cr=13;rk=3;ri=0;rn=13;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("GREEDY|gravel|180|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=2;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=2;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("ISO_GREEDY|gravel|90|1000|0", "err=-;n=206;d=6005;h=167f4cfe7584deb6;pd=6339;tol=true;fb=-;wp=1fbb9c544f82d68c;cg=132;cr=13;rk=3;ri=2;rn=11;ai=0;an=3;aq=0;ps=-1;ph=0.6900;fc=false;gc=true");
-    GOLDENS.put("ISO_GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=85;cr=8;rk=2;ri=1;rn=7;ai=0;an=2;aq=0;ps=-1;ph=0.7500;fc=false;gc=false");
-    GOLDENS.put("GREEDY|trekking|90|1000|0", "err=-;n=200;d=4955;h=2ea525ab57e7f0f;pd=5989;tol=true;fb=-;wp=4318eefcaebea881;cg=139;cr=18;rk=8;ri=0;rn=18;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
+    GOLDENS.put("GREEDY|gravel|0|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
+    GOLDENS.put("GREEDY|gravel|90|1000|0", "err=-;n=194;d=5583;h=33b63e41ba389b47;pd=6085;tol=true;fb=-;wp=f93285ddeb12ec6f;cg=89;cr=13;rk=11;ri=0;rn=13;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
+    GOLDENS.put("GREEDY|gravel|180|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
+    GOLDENS.put("GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
+    GOLDENS.put("ISO_GREEDY|gravel|90|1000|0", "err=-;n=244;d=6432;h=cda577fb4518a5b2;pd=6552;tol=true;fb=-;wp=d3715b6d4fa88959;cg=135;cr=13;rk=13;ri=3;rn=10;ai=1;an=2;aq=0;ps=-1;ph=0.7400;fc=false;gc=true");
+    GOLDENS.put("ISO_GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=85;cr=8;rk=7;ri=1;rn=7;ai=0;an=2;aq=0;ps=-1;ph=0.7500;fc=false;gc=false");
+    GOLDENS.put("GREEDY|trekking|90|1000|0", "err=-;n=175;d=4165;h=b144da87588d8287;pd=6166;tol=true;fb=-;wp=c4281fef53473ff0;cg=120;cr=18;rk=15;ri=0;rn=18;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     // Recaptured 2026-07-25 (scorer shape terms + mtb cost band). The SHIPPED
     // ROUTE is unchanged — same node count, same distance, same polyline hash
     // f7042709e1b6e3d — only the planner's internal selection moved, and it
@@ -66,11 +68,11 @@ public class GreedyPlannerParityTest {
     // "best error=6.3%" fallback, off a different via set, having routed 13
     // candidates instead of 18. RouteChoiceScore drives the greedy planner's
     // own top-K, so a scorer change is expected to show up here.
-    GOLDENS.put("ISO_GREEDY|trekking|270|1000|0", "err=-;n=149;d=3752;h=f7042709e1b6e3d;pd=6148;tol=true;fb=-;wp=7e73fe43ddf1d365;cg=135;cr=13;rk=3;ri=3;rn=10;ai=1;an=2;aq=0;ps=-1;ph=0.8100;fc=false;gc=true");
+    GOLDENS.put("ISO_GREEDY|trekking|270|1000|0", "err=-;n=175;d=4165;h=b144da87588d8287;pd=5464;tol=false;fb=best error=13.2%;wp=44deb0089a17cafd;cg=173;cr=18;rk=14;ri=2;rn=16;ai=0;an=2;aq=0;ps=-1;ph=0.7200;fc=false;gc=true");
     GOLDENS.put("GREEDY|fastbike|90|1000|0", "err=greedy round trip planner produced no acceptable loop: could not build any loop;track=-;pd=0;tol=false;fb=could not build any loop;wp=0;cg=0;cr=0;rk=0;ri=0;rn=0;ai=0;an=0;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     GOLDENS.put("ISO_GREEDY|fastbike|90|1000|0", "err=greedy round trip planner produced no acceptable loop: could not build any loop;track=-;pd=0;tol=false;fb=could not build any loop;wp=0;cg=0;cr=0;rk=0;ri=0;rn=0;ai=0;an=0;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("GREEDY|gravel|90|1000|7", "err=-;n=201;d=5486;h=cf5189b49eed314a;pd=5489;tol=false;fb=best error=10.1%;wp=73013f946df5dc1d;cg=97;cr=13;rk=4;ri=0;rn=13;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
-    GOLDENS.put("ISO_GREEDY|gravel|90|1000|7", "err=-;n=206;d=6005;h=167f4cfe7584deb6;pd=6339;tol=true;fb=-;wp=1fbb9c544f82d68c;cg=132;cr=13;rk=3;ri=2;rn=11;ai=0;an=3;aq=0;ps=-1;ph=0.5300;fc=false;gc=true");
+    GOLDENS.put("GREEDY|gravel|90|1000|7", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
+    GOLDENS.put("ISO_GREEDY|gravel|90|1000|7", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=84;cr=8;rk=7;ri=1;rn=7;ai=0;an=2;aq=0;ps=-1;ph=0.7400;fc=false;gc=true");
   }
 
   @Test

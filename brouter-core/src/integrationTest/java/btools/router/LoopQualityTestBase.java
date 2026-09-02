@@ -111,8 +111,32 @@ public abstract class LoopQualityTestBase {
    */
   protected static Collection<Object[]> dataForRegion(LoopTestRegion region) {
     List<Object[]> params = new ArrayList<>();
+    // -Dloop.profiles=gravel[,mtb] narrows the matrix to the listed profiles
+    // (same switch LoopGoldStandardTest honours); empty/unset = all.
+    String profileFilter = System.getProperty("loop.profiles", "").trim();
+    // -Dloop.directions=none: one row per cell without a heading (suffix X);
+    // 'random': a seeded uniform heading per cell (suffix R); default: N/E/S/W.
+    String directionsMode = System.getProperty("loop.directions", "").trim();
+    // Profiles outside the calibrated set (e.g. trekking) run measurement-only:
+    // rows are built, the quality bands are logged, not asserted.
+    String[] profiles = profileFilter.isEmpty() ? PROFILES : profileFilter.split(",");
     for (int i = 0; i < TARGET_DISTANCES.length; i++) {
-      for (String profile : PROFILES) {
+      for (String rawProfile : profiles) {
+        String profile = rawProfile.trim();
+        if (profile.isEmpty()) continue;
+        if ("none".equals(directionsMode) || "random".equals(directionsMode)) {
+          boolean none = "none".equals(directionsMode);
+          String label = String.format("%s_%dkm_%s_%s",
+            region.name().toLowerCase(), TARGET_DISTANCES[i] / 1000, profile, none ? "X" : "R");
+          // splitmix-style hash of the cell label → uniform [0, 360).
+          long h = 0x9E3779B97F4A7C15L;
+          for (int c = 0; c < label.length(); c++) {
+            h = (h ^ label.charAt(c)) * 0xBF58476D1CE4E5B9L;
+          }
+          double dir = none ? -1 : ((h >>> 11) % 360000) / 1000.0;
+          params.add(new Object[]{region, TARGET_DISTANCES[i], SEARCH_RADII[i], profile, dir, label});
+          continue;
+        }
         for (int d = 0; d < DIRECTIONS.length; d++) {
           // Skip directions blocked by open sea — you cannot cycle into the
           // water, so requesting that heading is degenerate (the loop can only
@@ -146,7 +170,9 @@ public abstract class LoopQualityTestBase {
     Assume.assumeTrue(
       "Profile " + profileName + " is not a supported profile for " + region.name()
         + " (no plausible route exists for this terrain × profile combination)",
-      region.supportedProfiles.contains(profileName));
+      region.supportedProfiles.contains(profileName)
+        // Measurement-only profiles ride wherever gravel does.
+        || (measurementOnlyProfile() && region.supportedProfiles.contains("gravel")));
     // Distance-scoped support (2026-07): some region × profile combos are
     // healthy only above a minimum loop size — small-radius geometry walls
     // them in (valley floors, coastal half-planes, massif faces) while the
@@ -219,13 +245,14 @@ public abstract class LoopQualityTestBase {
     }
     List<String> failures = new ArrayList<>();
     boolean anyTrack = false;
+    boolean measurementOnly = measurementOnlyProfile();
     if (greedyResult != null && greedyResult.metrics != null) {
       anyTrack = true;
-      checkVariantQuality("greedy", greedyResult.metrics, failures);
+      if (!measurementOnly) checkVariantQuality("greedy", greedyResult.metrics, failures);
     }
     if (isoGreedyResult != null && isoGreedyResult.metrics != null) {
       anyTrack = true;
-      checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
+      if (!measurementOnly) checkVariantQuality("iso_greedy", isoGreedyResult.metrics, failures);
     }
     // Gate the PRODUCTION surface (full matrix): the shipped AUTO route is
     // held to the same regional quality bands as a forced planner — unless the
@@ -255,6 +282,15 @@ public abstract class LoopQualityTestBase {
     }
     assertTrue("quality-gate failures for " + testLabel + ":\n  " + String.join("\n  ", failures),
       failures.isEmpty());
+  }
+
+  /** True for a profile outside {@link #PROFILES} (via -Dloop.profiles):
+   *  results persist, the quality bands are not asserted. */
+  private boolean measurementOnlyProfile() {
+    for (String p : PROFILES) {
+      if (p.equalsIgnoreCase(profileName)) return false;
+    }
+    return true;
   }
 
   /**
@@ -510,7 +546,18 @@ public abstract class LoopQualityTestBase {
 
       RoutingContext rctx = new RoutingContext();
       rctx.localFunction = profileFile.getAbsolutePath();
-      rctx.startDirection = (int) direction;
+      // -Dloop.profileParams=key=value[,...] injects profile parameters.
+      String profileParams = System.getProperty("loop.profileParams", "").trim();
+      if (!profileParams.isEmpty()) {
+        rctx.keyValues = new HashMap<>();
+        for (String kv : profileParams.split(",")) {
+          int eq = kv.indexOf('=');
+          if (eq > 0) rctx.keyValues.put(kv.substring(0, eq).trim(), kv.substring(eq + 1).trim());
+        }
+      }
+      if (direction >= 0) {
+        rctx.startDirection = (int) direction;
+      }
       rctx.roundTripDistance = searchRadius;
       rctx.roundTripAlgorithm = algorithm;
       // Quality-measurement matrix: grade only gate-accepted clean loops. The
@@ -542,6 +589,7 @@ public abstract class LoopQualityTestBase {
       }
 
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
+      double[] character = roadCharacter(track);
       // Stash the production-selector score for the quality gate (see checkVariantQuality).
       // null gateVerdict scores on geometry — the track already passed the strict
       // production gate (roundTripStrictQuality=true), so this measures its real
@@ -569,6 +617,7 @@ public abstract class LoopQualityTestBase {
       LoopQualityResult ok = new LoopQualityResult(testLabel, region, targetDistanceMeters,
         profileName, direction, metrics, null, coords, variant);
       ok.disclosed = track.message != null && track.message.contains("Warning:");
+      ok.character = character;
       return ok;
     } catch (Exception e) {
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,
@@ -700,5 +749,43 @@ public abstract class LoopQualityTestBase {
     // The published segment tiles and misc/profiles2 are now the same lookup
     // version (v11), so route with the shipped profiles directly.
     return new File(projectDir, "misc/profiles2/" + name + ".brf");
+  }
+
+  /**
+   * Length-weighted road-character fractions from {@code highway=} tags:
+   * {residential family, track family, first-15 % residential, last-15 %
+   * residential}. Test-side so baseline revisions can persist it too.
+   */
+  static double[] roadCharacter(OsmTrack track) {
+    if (track == null || track.nodes == null || track.nodes.size() < 2 || track.distance <= 0) return null;
+    double total = 0, resid = 0, trk = 0, headLen = 0, headResid = 0, tailLen = 0, tailResid = 0;
+    double pos = 0;
+    double headEnd = track.distance * 0.15, tailStart = track.distance * 0.85;
+    for (int i = 1; i < track.nodes.size(); i++) {
+      OsmPathElement p = track.nodes.get(i - 1), q = track.nodes.get(i);
+      int seg = p.calcDistance(q);
+      if (seg <= 0) continue;
+      String tags = q.message != null ? q.message.getWayKeyValues() : null;
+      String h = null;
+      if (tags != null) {
+        int k = tags.indexOf("highway=");
+        if (k >= 0) {
+          int e = tags.indexOf(' ', k);
+          h = tags.substring(k + 8, e < 0 ? tags.length() : e);
+        }
+      }
+      boolean isResid = "residential".equals(h) || "living_street".equals(h) || "service".equals(h);
+      boolean isTrack = "track".equals(h) || "path".equals(h) || "cycleway".equals(h)
+        || "bridleway".equals(h) || "footway".equals(h);
+      total += seg;
+      if (isResid) resid += seg;
+      if (isTrack) trk += seg;
+      if (pos < headEnd) { headLen += seg; if (isResid) headResid += seg; }
+      if (pos >= tailStart) { tailLen += seg; if (isResid) tailResid += seg; }
+      pos += seg;
+    }
+    if (total <= 0) return null;
+    return new double[]{resid / total, trk / total,
+      headLen > 0 ? headResid / headLen : 0, tailLen > 0 ? tailResid / tailLen : 0};
   }
 }
