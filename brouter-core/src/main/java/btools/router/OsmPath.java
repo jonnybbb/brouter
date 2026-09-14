@@ -346,6 +346,10 @@ abstract class OsmPath implements OsmLinkHolder {
           originElement = OsmPathElement.create(rc.ilonshortest, rc.ilatshortest, originEle2, originElement);
           originElement.cost = cost;
           if (message != null) {
+            // This message already contains the clipped distance and the
+            // traversed way's tags; its endpoint must match the clipped node.
+            message.lon = rc.ilonshortest;
+            message.lat = rc.ilatshortest;
             originElement.message = message;
           }
         }
