@@ -59,6 +59,7 @@ public class RoundTripResult {
   private int acceptedQuotaInjectedLegs;
   private int poolDemotedAtStep = -1;
   private double isoPoolHealthScore = Double.NaN;
+  private double internalBlendedScore = Double.NaN;
   private boolean internalGraphNativeCompared;
   private boolean graphNativeOnlyStart;
 
@@ -238,6 +239,12 @@ public class RoundTripResult {
    *  so AUTO can skip a duplicate plain-GREEDY child for this request. */
   public boolean isInternalGraphNativeCompared() { return internalGraphNativeCompared; }
   void setInternalGraphNativeCompared(boolean v) { this.internalGraphNativeCompared = v; }
+
+  /** Blended ISO_GREEDY {@link RouteChoiceScore} from the internal-comparison
+   *  decision; {@code NaN} when not evaluated. A score at or above
+   *  {@code CLEAR_ACCEPT_THRESHOLD} explains a skipped comparison branch. */
+  public double getInternalBlendedScore() { return internalBlendedScore; }
+  void setInternalBlendedScore(double v) { this.internalBlendedScore = v; }
 
   /** The engine's explicit start-policy decision: this plan ran on graph-native
    *  candidates only (iso pool unadmitted or statically unhealthy). AUTO's

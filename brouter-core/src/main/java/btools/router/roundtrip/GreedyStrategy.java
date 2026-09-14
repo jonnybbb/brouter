@@ -304,6 +304,9 @@ final class GreedyStrategy implements RoundTripStrategy {
       // Evaluate the blended verdict ONCE; the selection below reuses it.
       blendedInternalVerdict = scoreInternalGreedyResult(request, result, desiredDistance, src.effectiveDirection);
       runInternalBranch = internalBranchNeeded(blendedInternalVerdict);
+      if (blendedInternalVerdict != null && result != null) {
+        result.setInternalBlendedScore(blendedInternalVerdict.score());
+      }
     }
     if (runInternalBranch) {
       ops.logInfo("ISO_GREEDY: running internal graph-native-only comparison branch");
@@ -586,7 +589,16 @@ final class GreedyStrategy implements RoundTripStrategy {
       ops.logInfo("greedy round trip: subRouteCount=" + subRouteCount + ", direction=" + (int) tryDirection);
       GreedyRoundTripPlanner planner = new GreedyRoundTripPlanner(ops, provider,
         new CandidateScorer(), subRouteCount, 0.05, 8);
-      planner.setHostilityActive(request.pavedProfile);
+      // Hostility: paved on the calibrated absolute scale; non-paved relative
+      // to the oracle's measured κ when available.
+      if (request.pavedProfile) {
+        planner.setHostilityActive(true);
+      } else if (returnOracle != null) {
+        planner.setHostilityBaseline(returnOracle.kappa());
+        planner.setHostilityActive(true);
+      } else {
+        planner.setHostilityActive(false);
+      }
       // The planner's paved verdict feeds only its hostility checks and its
       // internal gate calls; it comes from the request-owned classification
       // probed once at request entry.

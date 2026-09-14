@@ -9,6 +9,7 @@ import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripOrchestrator;
 import btools.router.roundtrip.RoundTripQualityGate;
 import btools.router.roundtrip.RoundTripQualityResult;
 import btools.router.roundtrip.RoundTripResult;
@@ -131,8 +132,13 @@ public class RoutingEngineAutoCompetitionIntegrationTest {
     Assert.assertNotNull("track produced", re.getFoundTrack());
     RoundTripResult plannerResult = re.getLastRoundTripResult();
     Assert.assertNotNull("ISO_GREEDY records planner telemetry", plannerResult);
-    Assert.assertTrue("ISO_GREEDY compared its internal graph-native branch",
-      plannerResult.isInternalGraphNativeCompared());
+    // Contract: a blended verdict below the clear-accept bar runs the internal
+    // comparison; a strong one may skip it, justified by the recorded score.
+    if (!plannerResult.isInternalGraphNativeCompared()) {
+      Assert.assertTrue("ISO_GREEDY skipped the internal comparison without a strong blended verdict: "
+          + plannerResult.getInternalBlendedScore(),
+        plannerResult.getInternalBlendedScore() >= RoundTripOrchestrator.CLEAR_ACCEPT_THRESHOLD);
+    }
   }
 
   @Test
