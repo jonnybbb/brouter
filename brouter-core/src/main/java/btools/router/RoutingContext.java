@@ -287,6 +287,7 @@ public final class RoutingContext {
   public Integer startDirection;
   public boolean startDirectionValid;
   public boolean forceUseStartDirection;
+  public Integer roundTripStartDirection;
   public Integer roundTripDistance;
   /** Desired total loop distance in meters. Takes precedence over roundTripDistance. */
   public Integer roundTripLength;
