@@ -1971,6 +1971,8 @@ SELECT
 
 CREATE INDEX nodes_idx ON nodes (osm_id) WITH (fillfactor = '100');
 
+CREATE INDEX nodes_geom_idx ON nodes USING gist (geom) WITH (fillfactor = '100');
+
 SELECT
     now();
 
