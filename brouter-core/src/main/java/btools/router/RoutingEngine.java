@@ -37,6 +37,7 @@ public class RoutingEngine extends Thread {
 
   // A loop whose start/end gap exceeds this never returned to the origin.
   private static final int MAX_ROUNDTRIP_CLOSURE_METERS = 400;
+  private static final int SEAM_WINDOW = 3;
   /** searchRadius for a 30km loop (=30km/2π); maxNodes baseline scales relative to this. */
   private static final double REFERENCE_LOOP_RADIUS_M = 30_000.0 / (2 * Math.PI);
   /** Per-area base maxNodes for isochrone Dijkstra at the reference radius. */
@@ -1210,7 +1211,9 @@ public class RoutingEngine extends Thread {
 
       @Override
       public void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance) {
-        resetCache(false);
+        if (nodesCache == null) {
+          resetCache(false);
+        }
         nodesCache.matchWaypointsToNodes(waypoints, maxDistance, islandNodePairs);
       }
 
@@ -3529,7 +3532,7 @@ public class RoutingEngine extends Thread {
 
       int startIdx = 0;
       if (fromWp != null && fromWp.crosspoint != null) {
-        for (int j = 0; j < Math.min(3, leg.nodes.size()); j++) {
+        for (int j = 0; j < Math.min(SEAM_WINDOW, leg.nodes.size()); j++) {
           OsmPathElement p = leg.nodes.get(j);
           if (p.getILon() == fromWp.crosspoint.ilon && p.getILat() == fromWp.crosspoint.ilat) {
             startIdx = j;
@@ -3540,7 +3543,7 @@ public class RoutingEngine extends Thread {
 
       int endIdx = leg.nodes.size() - 1;
       if (toWp != null && toWp.crosspoint != null) {
-        for (int j = leg.nodes.size() - 1; j >= Math.max(0, leg.nodes.size() - 3); j--) {
+        for (int j = leg.nodes.size() - 1; j >= Math.max(0, leg.nodes.size() - SEAM_WINDOW); j--) {
           OsmPathElement p = leg.nodes.get(j);
           if (p.getILon() == toWp.crosspoint.ilon && p.getILat() == toWp.crosspoint.ilat) {
             endIdx = j;

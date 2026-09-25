@@ -262,17 +262,17 @@ public final class RefineStage {
       diag.refineReason = "exception: " + e.getMessage();
       diag.elapsedMs = System.currentTimeMillis() - stageStart;
       publishDiagnostics(ops, request, diag);
-      ops.logInfo("RefineStage caught exception, shipping baseline unchanged: " + e.getMessage());
-    } catch (Exception e) {
-      if ((ops != null && ops.isTerminated())
-          || (e.getMessage() != null && e.getMessage().contains("thread-priority-watchdog"))) {
-        throw new RuntimeException(e);
+      if (ops != null) {
+        ops.logInfo("RefineStage caught exception, shipping baseline unchanged: " + e.getMessage());
       }
+    } catch (Exception e) {
       diag.refineApplied = false;
       diag.refineReason = "exception: " + e.getMessage();
       diag.elapsedMs = System.currentTimeMillis() - stageStart;
       publishDiagnostics(ops, request, diag);
-      ops.logInfo("RefineStage caught exception, shipping baseline unchanged: " + e.getMessage());
+      if (ops != null) {
+        ops.logInfo("RefineStage caught exception, shipping baseline unchanged: " + e.getMessage());
+      }
     }
   }
 

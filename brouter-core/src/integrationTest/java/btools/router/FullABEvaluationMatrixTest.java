@@ -193,14 +193,8 @@ public class FullABEvaluationMatrixTest {
     }
 
     double baseCost = -1.0;
-    if (baseRt != null && baseRt.getLegTracks() != null && !baseRt.getLegTracks().isEmpty()) {
-      baseCost = LoopCostOracle.price(baseEngine.roundTripOps(), baseRt.getLegTracks(), baseWps);
-    }
-    if (baseCost <= 0 && baseTrack != null) {
+    if (baseTrack != null) {
       baseCost = LoopCostOracle.price(baseEngine.roundTripOps(), baseTrack, baseWps);
-    }
-    if (baseCost <= 0 && baseTrack != null && baseTrack.distance > 0) {
-      baseCost = (double) baseTrack.cost / baseTrack.distance;
     }
     if (baseCost <= 0) {
       ev.eligible = false;
@@ -214,7 +208,7 @@ public class FullABEvaluationMatrixTest {
     ev.baseLengthError = Math.abs((double) baseTrack.distance / spec.targetDistanceMeters - 1.0);
     LoopQualityMetrics baseMetrics = LoopQualityMetrics.compute(baseTrack, spec.targetDistanceMeters, spec.direction);
     ev.baseCrossings = baseMetrics != null ? baseMetrics.getSelfIntersections() : 0;
-    ev.baseRcs = RouteChoiceScore.score(baseTrack, spec.targetDistanceMeters, spec.profileName, null, spec.direction).qualityScore();
+    ev.baseRcs = RouteChoiceScore.score(baseTrack, spec.targetDistanceMeters, spec.profileName, baseQual, spec.direction).qualityScore();
     ev.baseGateVerdict = "ACCEPTED";
 
     // 2. Run Refined (refine on: local, 16 evals, 3000ms max)
@@ -228,8 +222,8 @@ public class FullABEvaluationMatrixTest {
       ev.refLengthError = Math.abs((double) refTrack.distance / spec.targetDistanceMeters - 1.0);
       LoopQualityMetrics refMetrics = LoopQualityMetrics.compute(refTrack, spec.targetDistanceMeters, spec.direction);
       ev.refCrossings = refMetrics != null ? refMetrics.getSelfIntersections() : 0;
-      ev.refRcs = RouteChoiceScore.score(refTrack, spec.targetDistanceMeters, spec.profileName, null, spec.direction).qualityScore();
       RoundTripQualityResult refQual = refEngine.getLastRoundTripQuality();
+      ev.refRcs = RouteChoiceScore.score(refTrack, spec.targetDistanceMeters, spec.profileName, refQual, spec.direction).qualityScore();
       ev.refGateVerdict = refQual != null && refQual.isAccepted() ? "ACCEPTED" : "REJECTED";
 
       RefineDiagnostics diag = refEngine.getLastRefineDiagnostics();
@@ -295,6 +289,7 @@ public class FullABEvaluationMatrixTest {
     List<Double> gravelImprovements = new ArrayList<>();
     List<Long> addedLatencies = new ArrayList<>();
 
+    List<String> failedCells = new ArrayList<>();
     for (CellEvaluation ev : evaluations) {
       if (!ev.spec.isGravel()) {
         continue;
@@ -313,20 +308,18 @@ public class FullABEvaluationMatrixTest {
       // Bar 5: Gate rejections: 0 new and no lost routes
       if ("ACCEPTED".equals(ev.baseGateVerdict) && !"ACCEPTED".equals(ev.refGateVerdict)) {
         newGateRejections++;
-        Assert.fail("Regression: Baseline produced an ACCEPTED route, but refined route failed/rejected ("
-          + ev.refGateVerdict + ", reason: " + ev.refineReason + ") for " + ev.spec);
+        failedCells.add("Regression: Baseline ACCEPTED but refined " + ev.refGateVerdict
+          + " (reason: " + ev.refineReason + ") for " + ev.spec);
       }
 
       // Bar 2: Absolute length error: not worse
-      if (ev.refineApplied) {
-        Assert.assertTrue("Length error must not be worse: ref=" + ev.refLengthError + " base=" + ev.baseLengthError,
-          ev.refLengthError <= ev.baseLengthError + 1e-4);
+      if (ev.refineApplied && ev.refLengthError > ev.baseLengthError + 1e-4) {
+        failedCells.add("Length error worse: ref=" + ev.refLengthError + " base=" + ev.baseLengthError + " for " + ev.spec);
       }
 
       // Bar 3: Self-crossings: not worse
-      if (ev.refineApplied) {
-        Assert.assertTrue("Self crossings must not be worse: ref=" + ev.refCrossings + " base=" + ev.baseCrossings,
-          ev.refCrossings <= ev.baseCrossings);
+      if (ev.refineApplied && ev.refCrossings > ev.baseCrossings) {
+        failedCells.add("Self crossings worse: ref=" + ev.refCrossings + " base=" + ev.baseCrossings + " for " + ev.spec);
       }
 
       if (ev.truncated) {
@@ -347,11 +340,11 @@ public class FullABEvaluationMatrixTest {
 
     double truncationRate = totalGravel > 0 ? (double) truncatedGravel / totalGravel * 100.0 : 0.0;
 
+    Assert.assertTrue("Regressions detected:\n" + String.join("\n", failedCells), failedCells.isEmpty());
     Assert.assertEquals("Cells worse under ship predicate must be 0", 0, worseGravel);
     Assert.assertEquals("New gate rejections must be 0", 0, newGateRejections);
     Assert.assertTrue("Truncation rate must be <= 5%", truncationRate <= 5.0);
-    Assert.assertTrue("Paired added latency p90 must be <= 3050ms (stage budget 3000ms + measurement jitter)",
-      p90Latency <= 3050L);
+    Assert.assertTrue("Paired added latency p90 must be <= 3000ms", p90Latency <= 3000L);
     Assert.assertTrue("Quality statistic (median relative improvement) must be >= 2%",
       medianImprovement >= 2.0);
   }

@@ -395,7 +395,7 @@ public final class MoveProposalOperator {
     if (m < 1) {
       return MoveProposal.invalid("INSERT", "too_few_vias_to_insert");
     }
-    if (m >= 16) {
+    if (m >= RefineConfig.MAX_VIAS) {
       return MoveProposal.invalid("INSERT", "max_vias_exceeded");
     }
 

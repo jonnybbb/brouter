@@ -1,9 +1,14 @@
 package btools.router.roundtrip;
 
+import java.util.Locale;
+
 /**
  * Configuration for post-tier round-trip refinement stage (§9).
  */
 public class RefineConfig {
+  /** Maximum number of skeleton vias allowed during proposal operations. */
+  public static final int MAX_VIAS = 16;
+
   /** Maximum number of candidate evaluations to perform (default 16). */
   public int evaluations = 16;
 
@@ -64,7 +69,7 @@ public class RefineConfig {
 
   public static Mode parseMode(String s) {
     if (s == null) return Mode.NONE;
-    String clean = s.trim().toLowerCase(java.util.Locale.ROOT);
+    String clean = s.trim().toLowerCase(Locale.ROOT);
     if ("best_of_n".equals(clean) || "bestofn".equals(clean) || "bon".equals(clean)) {
       return Mode.BEST_OF_N;
     }
