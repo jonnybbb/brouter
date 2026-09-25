@@ -1210,9 +1210,7 @@ public class RoutingEngine extends Thread {
 
       @Override
       public void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance) {
-        if (nodesCache == null) {
-          resetCache(false);
-        }
+        resetCache(false);
         nodesCache.matchWaypointsToNodes(waypoints, maxDistance, islandNodePairs);
       }
 
@@ -3427,6 +3425,9 @@ public class RoutingEngine extends Thread {
       int trackIdx = startRes.advance;
 
       while (trackIdx < track.nodes.size() - 1) {
+        if (isTerminated() || (roundTripRequestDeadline > 0 && System.currentTimeMillis() >= roundTripRequestDeadline)) {
+          return -1;
+        }
         if (!nodesCache.obtainNonHollowNode(currentNode)) {
           return -1;
         }
@@ -3523,16 +3524,40 @@ public class RoutingEngine extends Thread {
     for (int i = 0; i < legs.size(); i++) {
       OsmTrack leg = legs.get(i);
       concatenated.distance += leg.distance;
+      MatchedWaypoint fromWp = (i < waypoints.size()) ? waypoints.get(i) : null;
+      MatchedWaypoint toWp = (i + 1 < waypoints.size()) ? waypoints.get(i + 1) : null;
+
       int startIdx = 0;
-      if (i > 0 && !concatenated.nodes.isEmpty() && !leg.nodes.isEmpty()) {
-        OsmPathElement lastNode = concatenated.nodes.get(concatenated.nodes.size() - 1);
-        OsmPathElement firstNode = leg.nodes.get(0);
-        if (lastNode.getILon() == firstNode.getILon() && lastNode.getILat() == firstNode.getILat()) {
-          startIdx = 1; // avoid duplicating identical seam node
+      if (fromWp != null && fromWp.crosspoint != null) {
+        for (int j = 0; j < Math.min(3, leg.nodes.size()); j++) {
+          OsmPathElement p = leg.nodes.get(j);
+          if (p.getILon() == fromWp.crosspoint.ilon && p.getILat() == fromWp.crosspoint.ilat) {
+            startIdx = j;
+            break;
+          }
         }
       }
-      for (int j = startIdx; j < leg.nodes.size(); j++) {
-        concatenated.nodes.add(leg.nodes.get(j));
+
+      int endIdx = leg.nodes.size() - 1;
+      if (toWp != null && toWp.crosspoint != null) {
+        for (int j = leg.nodes.size() - 1; j >= Math.max(0, leg.nodes.size() - 3); j--) {
+          OsmPathElement p = leg.nodes.get(j);
+          if (p.getILon() == toWp.crosspoint.ilon && p.getILat() == toWp.crosspoint.ilat) {
+            endIdx = j;
+            break;
+          }
+        }
+      }
+
+      for (int j = startIdx; j <= endIdx; j++) {
+        OsmPathElement node = leg.nodes.get(j);
+        if (!concatenated.nodes.isEmpty()) {
+          OsmPathElement last = concatenated.nodes.get(concatenated.nodes.size() - 1);
+          if (last.getILon() == node.getILon() && last.getILat() == node.getILat()) {
+            continue; // avoid duplicate identical consecutive seam node
+          }
+        }
+        concatenated.nodes.add(node);
       }
     }
 

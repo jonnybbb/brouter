@@ -204,13 +204,27 @@ public final class RefineSearch {
               break;
             }
             diag.legsRouted++;
-            leg = evaluator.route(from, to, remaining);
+            try {
+              leg = evaluator.route(from, to, remaining);
+            } catch (IllegalArgumentException e) {
+              if (e.getMessage() != null && e.getMessage().contains("timeout")) {
+                diag.refineTruncated = true;
+                diag.timeoutOperation = "search_evaluation";
+                routeFailed = true;
+                break;
+              }
+              throw e;
+            }
             if (leg != null) {
               legCache.put(from, to, leg);
             }
           }
 
           if (leg == null || leg.nodes == null || leg.nodes.size() < 2) {
+            if (deadlineMs > 0 && System.currentTimeMillis() >= deadlineMs) {
+              diag.refineTruncated = true;
+              diag.timeoutOperation = "search_evaluation";
+            }
             routeFailed = true;
             break;
           }
@@ -341,6 +355,7 @@ public final class RefineSearch {
 
   private static String candidateSignature(SearchCandidate cand) {
     StringBuilder sb = new StringBuilder();
+    sb.append(cand.getSkeleton().getVias().size()).append(':');
     for (MatchedWaypoint mwp : cand.getSkeleton().getVias()) {
       if (mwp.crosspoint != null) {
         sb.append(mwp.crosspoint.ilon).append(',').append(mwp.crosspoint.ilat).append(';');

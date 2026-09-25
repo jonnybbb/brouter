@@ -177,7 +177,6 @@ public class LoopCostOracleTest {
     }
 
     int continuousCost = LoopCostOracle.priceCost(re.roundTripOps(), freshRawLegs, mwps);
-    System.out.println("Turn cost test: sum of separate leg costs=" + sumSeparateCosts + " vs continuous=" + continuousCost);
     assertTrue("Continuous loop cost should reflect turn penalties across vias", continuousCost >= sumSeparateCosts);
   }
 

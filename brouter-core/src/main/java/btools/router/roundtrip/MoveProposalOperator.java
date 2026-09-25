@@ -395,6 +395,9 @@ public final class MoveProposalOperator {
     if (m < 1) {
       return MoveProposal.invalid("INSERT", "too_few_vias_to_insert");
     }
+    if (m >= 16) {
+      return MoveProposal.invalid("INSERT", "max_vias_exceeded");
+    }
 
     // Rule (§4.4, ADR-0002): NEVER insert on the closing leg!
     // The closing leg is from final via (currentVias.get(m - 1)) to endWp.
@@ -564,7 +567,9 @@ public final class MoveProposalOperator {
     long snapKey = (((long) (ilon / 1000)) << 32) | ((ilat / 1000) & 0xffffffffL);
     MatchedWaypoint cached = snapCache.get(snapKey);
     if (cached != null) {
-      return RefineSkeleton.copyWaypoint(cached);
+      MatchedWaypoint cp = RefineSkeleton.copyWaypoint(cached);
+      cp.name = name != null ? name : "refine_via";
+      return cp;
     }
 
     MatchedWaypoint mwp = new MatchedWaypoint();

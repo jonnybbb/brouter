@@ -26,7 +26,8 @@ public final class DefaultLegEvaluator implements LegEvaluator {
     try {
       return ops.findTrackTimed(operationPrefix, from, to, null, timeoutMs);
     } catch (IllegalArgumentException | RoutingIslandException e) {
-      if (ops.isTerminated()) {
+      if (ops.isTerminated() || (e.getMessage() != null
+          && (e.getMessage().contains("timeout") || e.getMessage().contains("thread-priority-watchdog")))) {
         throw e;
       }
       return null;

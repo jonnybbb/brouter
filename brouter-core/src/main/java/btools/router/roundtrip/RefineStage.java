@@ -145,7 +145,8 @@ public final class RefineStage {
         baseOracleCost = LoopCostOracle.price(ops, request.track, skeleton.getWaypoints());
       }
 
-      RouteChoiceScore.Verdict baseRcsVerdict = RouteChoiceScore.score(request.track, requestedDistance, profileName, null, direction);
+      RouteChoiceScore.Verdict baseRcsVerdict = RouteChoiceScore.score(
+        request.track, requestedDistance, profileName, baselineQuality, direction);
       double baseRcs = (baseRcsVerdict != null) ? baseRcsVerdict.score() : 0.0;
 
       diag.oracleCostPerMeterBefore = baseOracleCost;
@@ -166,9 +167,13 @@ public final class RefineStage {
       // 3. Search proposals on raw legs
       MoveProposalOperator moveOp = new MoveProposalOperator(ops, config);
       int varietySeed = Math.max(0, ops.routingContext().alternativeIdx);
+      double rawBaselineEnergy = LoopCostOracle.price(ops, initResult.getRawLegs(), skeleton.getWaypoints());
+      if (rawBaselineEnergy <= 0 || Double.isNaN(rawBaselineEnergy)) {
+        rawBaselineEnergy = baseOracleCost;
+      }
       RefineSearch search = new RefineSearch(
         ops, legEvaluator, initResult.getLegCache(), config, skeleton,
-        initResult.getRawLegs(), baseOracleCost, moveOp,
+        initResult.getRawLegs(), rawBaselineEnergy, moveOp,
         searchRadius, requestedDistance, varietySeed, stageDeadline);
 
       RefineSearch.SearchResult searchResult = search.search(diag);
@@ -186,6 +191,13 @@ public final class RefineStage {
       // 4. Finalize top-k candidates and evaluate ship predicate
       FinishedCandidate bestPassingCandidate = null;
       for (int i = 0; i < finalists.size(); i++) {
+        if (ops != null && ops.isTerminated()) {
+          diag.refineApplied = false;
+          diag.refineReason = "cancelled";
+          diag.elapsedMs = System.currentTimeMillis() - stageStart;
+          publishDiagnostics(ops, request, diag);
+          throw new IllegalArgumentException("operation killed by thread-priority-watchdog");
+        }
         if (stageDeadline > 0 && System.currentTimeMillis() >= stageDeadline) {
           diag.refineTruncated = true;
           diag.timeoutOperation = "finalization";
@@ -213,6 +225,12 @@ public final class RefineStage {
               diag.refineReason = shipResult.getReason();
             }
           }
+        } else if (candidate.getOutcome() == FinalizationOutcome.CANCELLED) {
+          diag.refineApplied = false;
+          diag.refineReason = "cancelled";
+          diag.elapsedMs = System.currentTimeMillis() - stageStart;
+          publishDiagnostics(ops, request, diag);
+          throw new IllegalArgumentException("operation killed by thread-priority-watchdog");
         } else if (candidate.getOutcome() == FinalizationOutcome.TIMEOUT) {
           diag.refineTruncated = true;
           diag.timeoutOperation = "finalization";
@@ -235,7 +253,21 @@ public final class RefineStage {
         diag.elapsedMs = System.currentTimeMillis() - stageStart;
         publishDiagnostics(ops, request, diag);
       }
+    } catch (RuntimeException e) {
+      if ((ops != null && ops.isTerminated())
+          || (e.getMessage() != null && e.getMessage().contains("thread-priority-watchdog"))) {
+        throw e;
+      }
+      diag.refineApplied = false;
+      diag.refineReason = "exception: " + e.getMessage();
+      diag.elapsedMs = System.currentTimeMillis() - stageStart;
+      publishDiagnostics(ops, request, diag);
+      ops.logInfo("RefineStage caught exception, shipping baseline unchanged: " + e.getMessage());
     } catch (Exception e) {
+      if ((ops != null && ops.isTerminated())
+          || (e.getMessage() != null && e.getMessage().contains("thread-priority-watchdog"))) {
+        throw new RuntimeException(e);
+      }
       diag.refineApplied = false;
       diag.refineReason = "exception: " + e.getMessage();
       diag.elapsedMs = System.currentTimeMillis() - stageStart;

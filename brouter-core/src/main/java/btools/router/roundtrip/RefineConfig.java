@@ -64,7 +64,7 @@ public class RefineConfig {
 
   public static Mode parseMode(String s) {
     if (s == null) return Mode.NONE;
-    String clean = s.trim().toLowerCase();
+    String clean = s.trim().toLowerCase(java.util.Locale.ROOT);
     if ("best_of_n".equals(clean) || "bestofn".equals(clean) || "bon".equals(clean)) {
       return Mode.BEST_OF_N;
     }

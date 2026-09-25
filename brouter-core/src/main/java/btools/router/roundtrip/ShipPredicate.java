@@ -81,8 +81,12 @@ public final class ShipPredicate {
     }
 
     // 5. Scatter reuse <= baseline
-    int refScatter = LoopQualityMetrics.reuseStemSplit(candidate.getTrack().nodes)[1];
-    int baseScatter = LoopQualityMetrics.reuseStemSplit(baseline.getTrack().nodes)[1];
+    int[] refStemSplit = (candidate.getTrack() != null && candidate.getTrack().nodes != null)
+        ? LoopQualityMetrics.reuseStemSplit(candidate.getTrack().nodes) : null;
+    int[] baseStemSplit = (baseline.getTrack() != null && baseline.getTrack().nodes != null)
+        ? LoopQualityMetrics.reuseStemSplit(baseline.getTrack().nodes) : null;
+    int refScatter = (refStemSplit != null && refStemSplit.length > 1) ? refStemSplit[1] : 0;
+    int baseScatter = (baseStemSplit != null && baseStemSplit.length > 1) ? baseStemSplit[1] : 0;
     if (refScatter > baseScatter) {
       return new Result(false, String.format(Locale.US, "scatter_reuse_worse: ref=%dm > base=%dm",
         refScatter, baseScatter));

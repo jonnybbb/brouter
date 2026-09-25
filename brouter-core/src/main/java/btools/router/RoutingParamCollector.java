@@ -286,7 +286,7 @@ public class RoutingParamCollector {
           if (value == null) {
             rctx.roundTripRefine = "none";
           } else {
-            String v = value.trim().toLowerCase();
+            String v = value.trim().toLowerCase(Locale.ROOT);
             if ("local".equals(v) || "anneal".equals(v) || "best_of_n".equals(v) || "none".equals(v)) {
               rctx.roundTripRefine = v;
             } else {

@@ -84,8 +84,23 @@ public final class RefineInitializer {
       MatchedWaypoint to = waypoints.get(i + 1);
 
       long remaining = deadlineMs > 0 ? (deadlineMs - System.currentTimeMillis()) : 10000L;
-      OsmTrack leg = evaluator.route(from, to, remaining);
+      OsmTrack leg;
+      try {
+        leg = evaluator.route(from, to, remaining);
+      } catch (IllegalArgumentException e) {
+        if (e.getMessage() != null && e.getMessage().contains("timeout")) {
+          return RefineInitResult.failure("init_timeout_during_leg_" + i,
+            System.currentTimeMillis() - startMs,
+            ops != null ? ops.getLinksProcessed() - startLinks : 0);
+        }
+        throw e;
+      }
       if (leg == null || leg.nodes == null || leg.nodes.size() < 2) {
+        if (deadlineMs > 0 && System.currentTimeMillis() >= deadlineMs) {
+          return RefineInitResult.failure("init_timeout_during_leg_" + i,
+            System.currentTimeMillis() - startMs,
+            ops != null ? ops.getLinksProcessed() - startLinks : 0);
+        }
         return RefineInitResult.failure("init_leg_failed_" + i,
           System.currentTimeMillis() - startMs,
           ops != null ? ops.getLinksProcessed() - startLinks : 0);
