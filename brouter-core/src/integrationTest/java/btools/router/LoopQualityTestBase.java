@@ -19,8 +19,10 @@ import java.util.Map;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import btools.router.roundtrip.CandidateScorer;
+import btools.router.roundtrip.LoopCostOracle;
 import btools.router.roundtrip.LoopQualityMetrics;
 import btools.router.roundtrip.RoundTripAlgorithm;
+import btools.router.roundtrip.RoundTripQualityResult;
 import btools.router.roundtrip.RouteChoiceScore;
 
 /**
@@ -572,7 +574,9 @@ public abstract class LoopQualityTestBase {
       RoutingEngine re = new RoutingEngine(
         outPath, outPath, segDir, wplist, rctx,
         RoutingEngine.BROUTER_ENGINEMODE_ROUNDTRIP);
+      long startTime = System.currentTimeMillis();
       re.doRun(0);
+      long reqMs = System.currentTimeMillis() - startTime;
 
       String error = re.getErrorMessage();
       OsmTrack track = re.getFoundTrack();
@@ -584,8 +588,13 @@ public abstract class LoopQualityTestBase {
         // this to draw the actual offending route on the map.
         OsmTrack rejected = track != null ? track : re.getLastRejectedTrack();
         double[][] failCoords = rejected != null ? extractCoordinates(rejected) : null;
-        return new LoopQualityResult(testLabel, region, targetDistanceMeters,
+        LoopQualityResult fail = new LoopQualityResult(testLabel, region, targetDistanceMeters,
           profileName, direction, null, error != null ? error : "no track", failCoords, variant);
+        fail.requestMs = reqMs;
+        RoundTripQualityResult q = re.getLastRoundTripQuality();
+        fail.gateVerdict = q != null ? (q.isAccepted() ? "ACCEPTED" : q.getRejectionReason()) : "NO_ROUTE";
+        fail.refineDiagnostics = re.getLastRefineDiagnostics();
+        return fail;
       }
 
       LoopQualityMetrics metrics = LoopQualityMetrics.compute(track, targetDistanceMeters, direction);
@@ -598,9 +607,10 @@ public abstract class LoopQualityTestBase {
       // MIN_RCS_PASS floor must not double-count crossings (already hard-gated by
       // RoundTripQualityGate ≤ MAX_SELF_INTERSECTIONS). AUTO ranking still uses the
       // penalised score() so it prefers the cleaner of two comparable candidates.
-      variantRcs.put(variant,
-        RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).qualityScore());
-      variantGateCostPerM.put(variant, surfaceCostPerMeter(track, profileName));
+      double rcs = RouteChoiceScore.score(track, targetDistanceMeters, profileName, null, direction).qualityScore();
+      variantRcs.put(variant, rcs);
+      double gateCost = surfaceCostPerMeter(track, profileName);
+      variantGateCostPerM.put(variant, gateCost);
       // Shape-metrics-v2 disclosure (2026-07-20): computed on the FULL-resolution
       // track (never on the simplified report coordinates — DP simplification
       // fabricates crossings on retraces). Parsed from the run log for corpus
@@ -618,6 +628,24 @@ public abstract class LoopQualityTestBase {
         profileName, direction, metrics, null, coords, variant);
       ok.disclosed = track.message != null && track.message.contains("Warning:");
       ok.character = character;
+      ok.requestMs = reqMs;
+      RoundTripQualityResult q = re.getLastRoundTripQuality();
+      ok.gateVerdict = q != null ? (q.isAccepted() ? "ACCEPTED" : q.getRejectionReason()) : "ACCEPTED";
+      ok.rcs = rcs;
+      ok.gateCostPerM = gateCost;
+      ok.refineDiagnostics = re.getLastRefineDiagnostics();
+      try {
+        List<btools.mapaccess.MatchedWaypoint> mwps = track.getMatchedWaypoints() != null
+          ? track.getMatchedWaypoints()
+          : re.roundTripOps().matchedWaypoints();
+        if (mwps != null && mwps.size() >= 2) {
+          ok.oracleCostPerM = LoopCostOracle.price(re.roundTripOps(), track, mwps);
+        } else {
+          ok.oracleCostPerM = -1.0;
+        }
+      } catch (Exception ignore) {
+        ok.oracleCostPerM = -1.0;
+      }
       return ok;
     } catch (Exception e) {
       return new LoopQualityResult(testLabel, region, targetDistanceMeters,

@@ -80,4 +80,9 @@ public interface RoundTripRequestState {
 
   /** Add a child engine's link expansions to this engine's work counter. */
   void addLinksProcessed(long links);
+
+  /** Publish post-tier refinement diagnostics. */
+  void setLastRefineDiagnostics(RefineDiagnostics diag);
+
+  RefineDiagnostics lastRefineDiagnostics();
 }

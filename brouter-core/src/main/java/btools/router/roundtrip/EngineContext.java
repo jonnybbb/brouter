@@ -55,4 +55,7 @@ public interface EngineContext {
 
   /** Milliseconds left of the request budget; Long.MAX_VALUE when untimed. */
   long remainingRequestBudgetMs();
+
+  /** Total links processed by the engine so far. */
+  int getLinksProcessed();
 }

@@ -25,12 +25,20 @@ class LoopQualityResult {
    *  the production gate already named the quality miss, so the band gate
    *  logs instead of failing. Set by runVariant. */
   boolean disclosed;
-  /**
-   * Length-weighted road-character fractions from {@code highway=} tags:
-   * {residential family, track family, residential share of the first 15 % of
-   * the loop, of the last 15 %}; null when unavailable.
-   */
+  /** Length-weighted road-character fractions from {@code highway=} tags. */
   double[] character;
+  /** Wall-clock time spent on the routing request in milliseconds. */
+  long requestMs;
+  /** Production gate verdict string (ACCEPTED or rejection reason). */
+  String gateVerdict;
+  /** RouteChoiceScore quality score (-1.0 if not computed). */
+  double rcs = -1.0;
+  /** Surface cost per meter from track / profile (-1.0 if not computed). */
+  double gateCostPerM = -1.0;
+  /** Continuous path oracle cost per meter (-1.0 if not computed). */
+  double oracleCostPerM = -1.0;
+  /** Telemetry from the post-tier refinement stage (§7), null if refine did not run. */
+  btools.router.roundtrip.RefineDiagnostics refineDiagnostics;
 
   LoopQualityResult(String label, LoopTestRegion region, int distanceMeters,
                     String profileName, double direction,

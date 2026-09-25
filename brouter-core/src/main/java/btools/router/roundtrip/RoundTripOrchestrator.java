@@ -483,6 +483,11 @@ public final class RoundTripOrchestrator {
       // (getLastRoundTripQuality) — set for accept, lenient-keep, AND the
       // hard-reject below (where it describes the lastRejectedTrack).
       request.qualityVerdict = quality;
+
+      // Post-tier refinement stage hook (§4.6)
+      RefineStage.refine(ops, this, request, quality, searchRadius, direction, ops.routingContext().roundTripAlgorithm);
+      quality = request.qualityVerdict;
+
       // Child engines of the AUTO competition skip ALL user-facing track
       // decoration below (advisories, lenient Warning, info-message sync):
       // the parent decorates the adopted winner exactly once. Gate policy

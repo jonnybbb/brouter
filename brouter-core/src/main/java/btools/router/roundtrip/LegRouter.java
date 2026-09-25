@@ -33,6 +33,12 @@ public interface LegRouter {
   OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp,
                             OsmTrack refTrack);
 
+  /** Re-run a raw track at full detail between its endpoints bounded by budgetMs. */
+  default OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp,
+                                    OsmTrack refTrack, long budgetMs) {
+    return retrackForDetail(rawTrack, startWp, endWp, refTrack);
+  }
+
   /** Profile-aware road snap for a single point. */
   MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist);
 
@@ -74,4 +80,14 @@ public interface LegRouter {
    * immediately.
    */
   void addTerminationHook(Runnable hook);
+
+  /** Linear path walker: exact cost of a single leg. */
+  default int walkPathCost(OsmTrack track, MatchedWaypoint startWp, MatchedWaypoint endWp) {
+    return -1;
+  }
+
+  /** Continuous loop walker: prices a closed loop across vias as a single path. */
+  default int walkLoopCost(List<OsmTrack> legs, List<MatchedWaypoint> waypoints) {
+    return -1;
+  }
 }

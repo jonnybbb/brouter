@@ -153,6 +153,7 @@ final class FastStrategy implements RoundTripStrategy {
     // stale vias.
     ops.setMatchedWaypoints(null);
     orchestrator.doRoutingIntoRequest(request.routingBudgetMs);
+    request.producingTier = algo;
 
     // Post-routing ring retry: the directional lobe heads the loop toward the
     // requested bearing, but in sparse terrain routing between forward-arc

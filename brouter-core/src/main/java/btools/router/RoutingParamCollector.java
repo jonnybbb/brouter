@@ -282,6 +282,18 @@ public class RoutingParamCollector {
         } else if (key.startsWith("profile:")) {
           if (rctx.keyValues == null) rctx.keyValues = new HashMap<>();
           rctx.keyValues.put(key.substring(8), value);
+        } else if (key.equals("roundTripRefine")) {
+          rctx.roundTripRefine = value;
+        } else if (key.equals("roundTripRefineEvals")) {
+          try {
+            rctx.roundTripRefineEvals = Integer.valueOf(value);
+          } catch (NumberFormatException ignore) {
+          }
+        } else if (key.equals("roundTripRefineMaxMs")) {
+          try {
+            rctx.roundTripRefineMaxMs = Long.valueOf(value);
+          } catch (NumberFormatException ignore) {
+          }
         }
         // ignore other params
       }

@@ -84,6 +84,16 @@ public class RoundTripResult {
   private double  phase21AxisStrength = 0.0;
   private double  phase21RetryDirectionDegrees = Double.NaN;
 
+  private RefineDiagnostics refineDiagnostics;
+
+  public RefineDiagnostics getRefineDiagnostics() {
+    return refineDiagnostics;
+  }
+
+  public void setRefineDiagnostics(RefineDiagnostics refineDiagnostics) {
+    this.refineDiagnostics = refineDiagnostics;
+  }
+
   public OsmTrack getTrack() {
     return track;
   }

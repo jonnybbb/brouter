@@ -34,13 +34,13 @@ public final class RoundTripEffortPolicy {
   static final long CONSTRAINED_BUDGET_MAX_MS = 10_000;
   /** BALANCED tier / constrained-resources AUTO: reduced top-K, hard per-slice budget, no retry ladders. */
   public static final RoundTripEffortPolicy BOUNDED_PRESET = new RoundTripEffortPolicy(
-    Preset.BOUNDED, 2, 3, 1.0, 8_000, true, false, "BALANCED tier preset");
+    Preset.BOUNDED, 2, 3, 1.0, 8_000, true, false, false, "BALANCED tier preset");
   /** Today's AUTO effort. */
   public static final RoundTripEffortPolicy STANDARD_PRESET = new RoundTripEffortPolicy(
-    Preset.STANDARD, 3, 5, 1.0, 0, false, false, "standard AUTO effort");
+    Preset.STANDARD, 3, 5, 1.0, 0, false, false, true, "standard AUTO effort");
   /** QUALITY tier: both planners always compete, wider routed top-K, doubled plan budget. */
   public static final RoundTripEffortPolicy MAX_PRESET = new RoundTripEffortPolicy(
-    Preset.MAX, 4, 6, 2.0, 0, false, true, "QUALITY tier preset");
+    Preset.MAX, 4, 6, 2.0, 0, false, true, true, "QUALITY tier preset");
   public final Preset preset;
   /** Routed candidates per planner step (each is a full Dijkstra leg). */
   public final int topKNormal;
@@ -54,6 +54,8 @@ public final class RoundTripEffortPolicy {
   public final boolean skipRetryLayers;
   /** Run the plain-GREEDY competitor unconditionally (not health-gated). */
   public final boolean runGreedyAlways;
+  /** Whether round-trip refinement is allowed under this effort policy (false for BOUNDED). */
+  public final boolean refineAllowed;
   /** Human-readable resolution reason; logged once per request. */
   public final String rationale;
 
@@ -100,6 +102,7 @@ public final class RoundTripEffortPolicy {
   private RoundTripEffortPolicy(Preset preset, int topKNormal, int topKLate,
                                 double planBudgetScale, long tierBudgetMs,
                                 boolean skipRetryLayers, boolean runGreedyAlways,
+                                boolean refineAllowed,
                                 String rationale) {
     this.preset = preset;
     this.topKNormal = topKNormal;
@@ -108,12 +111,13 @@ public final class RoundTripEffortPolicy {
     this.tierBudgetMs = tierBudgetMs;
     this.skipRetryLayers = skipRetryLayers;
     this.runGreedyAlways = runGreedyAlways;
+    this.refineAllowed = refineAllowed;
     this.rationale = rationale;
   }
 
   private RoundTripEffortPolicy withRationale(String newRationale) {
     return new RoundTripEffortPolicy(preset, topKNormal, topKLate, planBudgetScale,
-      tierBudgetMs, skipRetryLayers, runGreedyAlways, newRationale);
+      tierBudgetMs, skipRetryLayers, runGreedyAlways, refineAllowed, newRationale);
   }
 
   public enum Preset {BOUNDED, STANDARD, MAX}
