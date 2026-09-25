@@ -14,11 +14,10 @@ import java.util.List;
  * actually uses, not on the cost that profile assigned — otherwise the comparison
  * is circular.
  *
- * <p>{@link RouteChoiceScore} (RCS) measures loop GEOMETRY (distance ratio, reuse,
- * self-crossings, closure) and is blind to road character; this class fills that
- * gap with a per-family, length-weighted desirability per {@code highway} class
- * (for gravel: tracks/paths/quiet lanes high, busy arterials and
- * residential-interior touring low).
+ * <p>{@link RouteChoiceScore} (RCS) evaluates loop geometry and surface cost;
+ * this class fills the tag-based road character evaluation with a per-family,
+ * length-weighted desirability per {@code highway} class (for gravel: tracks/paths/quiet lanes high,
+ * busy arterials and residential-interior touring low).
  */
 final class RoadCharacterScore {
 

@@ -66,3 +66,34 @@ _Avoid_: gravel area, desirable area, appeal, heatmap (the heatmap is the data s
 **Loop cost**:
 The active profile's cost per metre of the shipped loop — the objective a loop is optimised for. Tag-based road character is an evaluation lens, never a planning input.
 _Avoid_: appeal, desirability score, quality (quality is the gate's pass/fail vocabulary)
+
+### Refinement
+
+**Refinement**:
+The post-tier stage that searches for lower-cost variants of a shipped loop skeleton without changing its direction focus, final via, or closing leg.
+_Avoid_: post-processing, polishing, loop optimization
+
+**Mutation / proposal**:
+One proposed change to the skeleton (MOVE, REPLACE, 2-OPT, or INSERT), evaluated for feasibility before routing.
+_Avoid_: perturbation, modification, tweak
+
+**Evaluation**:
+Routing and scoring one proposal on raw legs with the cost oracle.
+_Avoid_: candidate routing, trial
+
+**Raw leg**:
+A leg routed between consecutive vias without `refTrack` penalty.
+_Avoid_: unclamped leg, unpenalized leg
+
+**Finalist**:
+A top-k candidate skeleton that undergoes full finalization (detail retracking, cleanup, gate checks, and oracle pricing).
+_Avoid_: winner, top candidate
+
+**Cost oracle**:
+The continuous path walker re-pricing of a finished or candidate route under the active profile's cost model, without artificial resets at vias or refTrack penalties.
+_Avoid_: cost checker, pricing oracle
+
+**Chain**:
+One independent search trajectory initialized with a distinct pseudo-random variety seed.
+_Avoid_: run, attempt, search thread
+

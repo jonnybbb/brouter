@@ -562,13 +562,26 @@ public abstract class LoopQualityTestBase {
       }
       rctx.roundTripDistance = searchRadius;
       rctx.roundTripAlgorithm = algorithm;
-      // Quality-measurement matrix: grade only gate-accepted clean loops. The
-      // engine now defaults to lenient (return quality-failed routes with a
-      // warning); strict keeps the gate hard so a quality-rejected best-effort
-      // doesn't appear here as a graded (failing) track. The "auto" variant
-      // routes lenient (strictQuality=false) so the report draws exactly the
-      // loop production AUTO would ship, not a strict-rejected blank.
       rctx.roundTripStrictQuality = strictQuality;
+
+      String refineMode = System.getProperty("loop.refine");
+      if (refineMode != null && !refineMode.trim().isEmpty()) {
+        rctx.roundTripRefine = refineMode.trim();
+      }
+      String refineEvals = System.getProperty("loop.refineEvals");
+      if (refineEvals != null && !refineEvals.trim().isEmpty()) {
+        try {
+          rctx.roundTripRefineEvals = Integer.parseInt(refineEvals.trim());
+        } catch (NumberFormatException ignored) {
+        }
+      }
+      String refineMaxMs = System.getProperty("loop.refineMaxMs");
+      if (refineMaxMs != null && !refineMaxMs.trim().isEmpty()) {
+        try {
+          rctx.roundTripRefineMaxMs = Long.parseLong(refineMaxMs.trim());
+        } catch (NumberFormatException ignored) {
+        }
+      }
 
       String outPath = new File(outputDir.getRoot(), testLabel + "_" + variant).getAbsolutePath();
       RoutingEngine re = new RoutingEngine(
