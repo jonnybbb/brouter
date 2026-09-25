@@ -4,8 +4,8 @@ package btools.router.roundtrip;
  * Configuration for post-tier round-trip refinement stage (§9).
  */
 public class RefineConfig {
-  /** Maximum number of candidate evaluations to perform. */
-  public int evaluations = 4;
+  /** Maximum number of candidate evaluations to perform (default 16). */
+  public int evaluations = 16;
 
   /** Maximum candidate proposals to generate (default 4 × evaluations). */
   public int maxProposals = -1;

@@ -1210,6 +1210,9 @@ public class RoutingEngine extends Thread {
 
       @Override
       public void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance) {
+        if (nodesCache == null) {
+          resetCache(false);
+        }
         nodesCache.matchWaypointsToNodes(waypoints, maxDistance, islandNodePairs);
       }
 

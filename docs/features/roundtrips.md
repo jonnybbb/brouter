@@ -29,6 +29,9 @@ You control the loop with a few request parameters:
 | `roundTripAlgorithm` | the speed/quality ladder `FAST` (the default: one placement, one routing pass — the historic round-trip speed), `BALANCED` (~8 s per slice, worst case two slices — the recommended interactive/mobile quality tier), `AUTO` (effort resolved from request context), `QUALITY` (max effort — both planners always, wider search, doubled budget); the internal engine names `WAYPOINT`, `GREEDY`, `ISO_GREEDY`, `ISOCHRONE` are also accepted for forced selection — see below. Deployments change the default with the system property `roundtrip.default.algorithm`; the request parameter always wins |
 | `roundTripStrictQuality` | `1` hard-rejects loops that fail the quality checks; default `0` is lenient — a failing loop is still returned, tagged with a `Warning:` advisory (see [Loop quality](#loop-quality)) |
 | `allowSamewayback` | `1` lets the return leg reuse ways from the outward leg; default `0` keeps the way out and the way back distinct |
+| `roundTripRefine` | post-tier refinement search mode: `none` (default), `local` (first-improvement local search), or `anneal` (simulated annealing) |
+| `roundTripRefineEvals` | candidate evaluation budget for refinement (1–64; default 16) |
+| `roundTripRefineMaxMs` | wall-clock safety cap for refinement in milliseconds (500–8000; default 3000) |
 
 If you instead supply more than one waypoint, BRouter treats those as explicit
 [via-points](vianogo.md) the loop must pass through in order, and the generated

@@ -168,7 +168,7 @@ public final class RefineSearch {
         chainProposals++;
         diag.proposals++;
 
-        MoveProposalOperator.MoveProposal prop = moveOperator.proposeMove(
+        MoveProposalOperator.MoveProposal prop = moveOperator.propose(
           currentSkeleton, originalSkeleton, rng, searchRadius, requestedDistance);
 
         if (!prop.isFeasible()) {
@@ -180,70 +180,50 @@ public final class RefineSearch {
         chainEvaluations++;
         diag.evaluations++;
 
-        int movedViaIdx = prop.getMovedViaIndex();
         RefineSkeleton mutatedSkeleton = prop.getMutatedSkeleton();
-        MatchedWaypoint snappedWp = prop.getSnappedWaypoint();
         List<MatchedWaypoint> waypoints = mutatedSkeleton.getWaypoints();
+        int legCount = waypoints.size() - 1;
 
-        MatchedWaypoint prevWp = waypoints.get(movedViaIdx);
-        MatchedWaypoint nextWp = waypoints.get(movedViaIdx + 2);
+        // Assemble candidate raw legs using legCache
+        List<OsmTrack> candidateRawLegs = new ArrayList<>(legCount);
+        boolean routeFailed = false;
 
-        // Route incoming leg: prevWp -> snappedWp
-        long remaining = deadlineMs > 0 ? (deadlineMs - System.currentTimeMillis()) : 5000L;
-        if (deadlineMs > 0 && remaining <= 0) {
-          diag.refineTruncated = true;
-          diag.timeoutOperation = "search_evaluation";
-          break;
-        }
+        for (int l = 0; l < legCount; l++) {
+          MatchedWaypoint from = waypoints.get(l);
+          MatchedWaypoint to = waypoints.get(l + 1);
 
-        OsmTrack inLeg = legCache.get(prevWp, snappedWp);
-        if (inLeg != null) {
-          diag.cacheHits++;
-        } else {
-          diag.legsRouted++;
-          inLeg = evaluator.route(prevWp, snappedWp, remaining);
-          if (inLeg != null) {
-            legCache.put(prevWp, snappedWp, inLeg);
-          }
-        }
-        if (inLeg == null || inLeg.nodes == null || inLeg.nodes.size() < 2) {
-          diag.addTrace(diag.evaluations, "MOVE", -1.0, false, false);
-          continue;
-        }
-
-        remaining = deadlineMs > 0 ? (deadlineMs - System.currentTimeMillis()) : 5000L;
-        if (deadlineMs > 0 && remaining <= 0) {
-          diag.refineTruncated = true;
-          diag.timeoutOperation = "search_evaluation";
-          break;
-        }
-
-        // Route outgoing leg: snappedWp -> nextWp
-        OsmTrack outLeg = legCache.get(snappedWp, nextWp);
-        if (outLeg != null) {
-          diag.cacheHits++;
-        } else {
-          diag.legsRouted++;
-          outLeg = evaluator.route(snappedWp, nextWp, remaining);
-          if (outLeg != null) {
-            legCache.put(snappedWp, nextWp, outLeg);
-          }
-        }
-        if (outLeg == null || outLeg.nodes == null || outLeg.nodes.size() < 2) {
-          diag.addTrace(diag.evaluations, "MOVE", -1.0, false, false);
-          continue;
-        }
-
-        // Assemble candidate raw legs
-        List<OsmTrack> candidateRawLegs = new ArrayList<>(currentRawLegs.size());
-        for (int l = 0; l < currentRawLegs.size(); l++) {
-          if (l == movedViaIdx) {
-            candidateRawLegs.add(inLeg);
-          } else if (l == movedViaIdx + 1) {
-            candidateRawLegs.add(outLeg);
+          OsmTrack leg = legCache.get(from, to);
+          if (leg != null) {
+            diag.cacheHits++;
           } else {
-            candidateRawLegs.add(currentRawLegs.get(l));
+            long remaining = deadlineMs > 0 ? (deadlineMs - System.currentTimeMillis()) : 5000L;
+            if (deadlineMs > 0 && remaining <= 0) {
+              diag.refineTruncated = true;
+              diag.timeoutOperation = "search_evaluation";
+              routeFailed = true;
+              break;
+            }
+            diag.legsRouted++;
+            leg = evaluator.route(from, to, remaining);
+            if (leg != null) {
+              legCache.put(from, to, leg);
+            }
           }
+
+          if (leg == null || leg.nodes == null || leg.nodes.size() < 2) {
+            routeFailed = true;
+            break;
+          }
+          candidateRawLegs.add(leg);
+        }
+
+        if (diag.refineTruncated) {
+          break;
+        }
+
+        if (routeFailed || candidateRawLegs.size() != legCount) {
+          diag.addTrace(diag.evaluations, prop.getOperator(), -1.0, false, false);
+          continue;
         }
 
         // Validate seams between adjacent legs
@@ -259,14 +239,14 @@ public final class RefineSearch {
           }
         }
         if (!seamsOk) {
-          diag.addTrace(diag.evaluations, "MOVE", -1.0, false, false);
+          diag.addTrace(diag.evaluations, prop.getOperator(), -1.0, false, false);
           continue;
         }
 
         // Price continuous loop energy
         double energy = LoopCostOracle.price(router, candidateRawLegs, waypoints);
         if (energy <= 0 || Double.isNaN(energy)) {
-          diag.addTrace(diag.evaluations, "MOVE", -1.0, false, false);
+          diag.addTrace(diag.evaluations, prop.getOperator(), -1.0, false, false);
           continue;
         }
 
@@ -296,7 +276,7 @@ public final class RefineSearch {
           // BEST_OF_N
           accepted = energy < currentEnergy;
         }
-        diag.addTrace(diag.evaluations, "MOVE", energy, accepted, true);
+        diag.addTrace(diag.evaluations, prop.getOperator(), energy, accepted, true);
       }
     }
 
