@@ -1969,7 +1969,9 @@ SELECT
 -- version 22.02.2026
 
 
-CREATE INDEX nodes_idx ON nodes (osm_id) WITH (fillfactor = '100');
+CREATE INDEX IF NOT EXISTS nodes_idx ON nodes (osm_id) WITH (fillfactor = '100');
+
+-- the GiST index on nodes.geom (nodes_geom_idx) is created by osm2pgsql, see brouter_cfg.lua
 
 SELECT
     now();
