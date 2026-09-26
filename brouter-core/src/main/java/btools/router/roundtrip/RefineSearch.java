@@ -72,6 +72,7 @@ public final class RefineSearch {
   private final RefineSkeleton originalSkeleton;
   private final List<OsmTrack> baselineRawLegs;
   private final double baselineEnergy;
+  private final int baselineDistance;
   private final MoveProposalOperator moveOperator;
   private final double searchRadius;
   private final double requestedDistance;
@@ -84,7 +85,7 @@ public final class RefineSearch {
                       RefineConfig config,
                       RefineSkeleton originalSkeleton,
                       List<OsmTrack> baselineRawLegs,
-                      double baselineEnergy,
+                      LoopPrice baselinePrice,
                       MoveProposalOperator moveOperator,
                       double searchRadius,
                       double requestedDistance,
@@ -96,7 +97,8 @@ public final class RefineSearch {
     this.config = config != null ? config : new RefineConfig();
     this.originalSkeleton = originalSkeleton;
     this.baselineRawLegs = baselineRawLegs != null ? baselineRawLegs : Collections.<OsmTrack>emptyList();
-    this.baselineEnergy = baselineEnergy;
+    this.baselineEnergy = baselinePrice.costPerMeter();
+    this.baselineDistance = baselinePrice.distance;
     this.moveOperator = moveOperator;
     this.searchRadius = searchRadius;
     this.requestedDistance = requestedDistance;
@@ -118,7 +120,8 @@ public final class RefineSearch {
          baselineInit != null ? baselineInit.getLegCache() : new LegCache(),
          config, originalSkeleton,
          baselineInit != null ? baselineInit.getRawLegs() : Collections.<OsmTrack>emptyList(),
-         baselineInit != null ? baselineInit.getBaselineOracleCostPerMeter() : -1.0,
+         baselineInit != null ? LoopCostOracle.evaluate(router, baselineInit.getRawLegs(), originalSkeleton.getWaypoints(), deadlineMs)
+           : LoopPrice.failure(FinalizationOutcome.FAILURE),
          moveOperator, searchRadius, requestedDistance, varietySeed, deadlineMs);
   }
 
@@ -292,8 +295,10 @@ public final class RefineSearch {
         // Price continuous loop energy
         long priceStart = System.currentTimeMillis();
         double energy;
+        LoopPrice candidatePrice;
         try {
-          energy = LoopCostOracle.evaluate(router, candidateRawLegs, waypoints, deadlineMs).costPerMeter();
+          candidatePrice = LoopCostOracle.evaluate(router, candidateRawLegs, waypoints, deadlineMs);
+          energy = candidatePrice.costPerMeter();
         } finally {
           diag.pricingMs += System.currentTimeMillis() - priceStart;
         }
@@ -303,18 +308,10 @@ public final class RefineSearch {
           continue;
         }
 
-        // Check raw candidate length against requestedDistance
+        // Use the distance of the continuously priced geometry on both sides.
         if (requestedDistance > 0) {
-          double candDist = 0;
-          for (int l = 0; l < candidateRawLegs.size(); l++) {
-            candDist += candidateRawLegs.get(l).distance;
-          }
-          double baseDist = 0;
-          for (int l = 0; l < baselineRawLegs.size(); l++) {
-            baseDist += baselineRawLegs.get(l).distance;
-          }
-          double candErr = Math.abs(candDist / requestedDistance - 1.0);
-          double baseErr = Math.abs(baseDist / requestedDistance - 1.0);
+          double candErr = Math.abs((double) candidatePrice.distance / requestedDistance - 1.0);
+          double baseErr = Math.abs((double) baselineDistance / requestedDistance - 1.0);
           if (candErr > baseErr) {
             diag.reject("raw_length_error_worse");
             diag.addTrace(diag.evaluations, prop.getOperator(), energy, false, true);

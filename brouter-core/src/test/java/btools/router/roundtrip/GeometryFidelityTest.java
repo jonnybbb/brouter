@@ -36,13 +36,15 @@ public class GeometryFidelityTest {
 
     OsmTrack leg1 = ops.findTrackTimed("midedge-leg1", startWp, viaWp, null, 5000L);
     Assert.assertNotNull("Leg 1 must route", leg1);
-    int cost1 = LoopCostOracle.priceCost(ops, leg1, startWp, viaWp);
-    Assert.assertEquals("Leg 1 cost matches", leg1.cost, cost1);
+    int cost1 = LoopCostOracle.priceCost(ops, java.util.Collections.singletonList(leg1), java.util.Arrays.asList(startWp, viaWp));
+    Assert.assertEquals("Leg 1 clips to detailed geometry",
+      LoopCostOracle.priceCost(ops, ops.retrackForDetail(leg1, startWp, viaWp, null), startWp, viaWp), cost1);
 
     OsmTrack leg2 = ops.findTrackTimed("midedge-leg2", viaWp, nextWp, null, 5000L);
     Assert.assertNotNull("Leg 2 must route", leg2);
-    int cost2 = LoopCostOracle.priceCost(ops, leg2, viaWp, nextWp);
-    Assert.assertEquals("Leg 2 cost matches", leg2.cost, cost2);
+    int cost2 = LoopCostOracle.priceCost(ops, java.util.Collections.singletonList(leg2), java.util.Arrays.asList(viaWp, nextWp));
+    Assert.assertEquals("Leg 2 clips to detailed geometry",
+      LoopCostOracle.priceCost(ops, ops.retrackForDetail(leg2, viaWp, nextWp, null), viaWp, nextWp), cost2);
 
     List<OsmTrack> twoLegs = new ArrayList<>();
     twoLegs.add(leg1);
@@ -99,7 +101,7 @@ public class GeometryFidelityTest {
     Assert.assertNotNull("Same-edge leg routing should find track", sameEdgeTrack);
     Assert.assertTrue("Same-edge leg cost should be positive", sameEdgeTrack.cost > 0);
 
-    int walkedCost = LoopCostOracle.priceCost(ops, sameEdgeTrack, fromWp, toWp);
+    int walkedCost = LoopCostOracle.priceCost(ops, java.util.Collections.singletonList(sameEdgeTrack), java.util.Arrays.asList(fromWp, toWp));
     Assert.assertEquals("Single same-edge segment price should equal routed cost",
       sameEdgeTrack.cost, walkedCost);
   }
@@ -158,9 +160,9 @@ public class GeometryFidelityTest {
       OsmTrack det = ops.retrackForDetail(rawCopy, from, to, null);
       if (det != null && det.nodes.size() > raw.nodes.size()) {
         foundCurvedLeg = true;
-        int rawPrice = LoopCostOracle.priceCost(ops, raw, from, to);
+        int rawPrice = LoopCostOracle.priceCost(ops, java.util.Collections.singletonList(raw), java.util.Arrays.asList(from, to));
         int detPrice = LoopCostOracle.priceCost(ops, det, from, to);
-        Assert.assertEquals("Raw leg price equals routed cost", raw.cost, rawPrice);
+        Assert.assertEquals("Raw leg preparation equals exact detailed pricing", detPrice, rawPrice);
         Assert.assertEquals("Detailed curved leg price matches raw within 1", raw.cost, detPrice, 1.0);
         break;
       }

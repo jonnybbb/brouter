@@ -595,6 +595,8 @@ public final class MoveProposalOperator {
           }
         }
       }
+      mwp.generated = true;
+      mwp.waypoint = new OsmNode(mwp.crosspoint.ilon, mwp.crosspoint.ilat);
       snapCache.put(snapKey, RefineSkeleton.copyWaypoint(mwp));
       return mwp;
     }

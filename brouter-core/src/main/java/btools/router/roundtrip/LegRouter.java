@@ -92,7 +92,12 @@ public interface LegRouter {
    */
   void addTerminationHook(Runnable hook);
 
-  /** Linear path walker: exact cost of a single leg. */
+  /** Price explicitly raw legs after clipping/detail preparation, with one continuous state. */
+  default LoopPrice priceRawLoop(List<OsmTrack> legs, List<MatchedWaypoint> waypoints) {
+    return LoopPrice.failure(FinalizationOutcome.FAILURE);
+  }
+
+  /** Linear path walker: validates the complete finished geometry, regardless of metadata. */
   default int walkPathCost(OsmTrack track, MatchedWaypoint startWp, MatchedWaypoint endWp) {
     return -1;
   }
