@@ -51,7 +51,9 @@ public class GreedyPlannerParityTest {
   static {
     // Recaptured 2026-08-29 (closure-phase levers + phase-1 cost for non-paved
     // profiles). Fastbike rows include PR #47 air-band budget recalibration:
-    // the planner builds a candidate, which the existing quality gate rejects.
+    // the planner builds a candidate. Since the roundtrip-refine merge the
+    // finished route keeps its disclosed 0.6 km out-and-back spur (5137 m), so
+    // the unchanged hostile tracks fall under the 10% gate limit and it ships.
     // Captured on the pre-refactor baseline (2026-07-18, branch
     // roundtrip-upstream-v2 after review findings #1/#3/#4). See class doc
     // for the recapture procedure.
@@ -63,8 +65,8 @@ public class GreedyPlannerParityTest {
     GOLDENS.put("ISO_GREEDY|gravel|270|1000|0", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=85;cr=8;rk=7;ri=1;rn=7;ai=0;an=2;aq=0;ps=-1;ph=0.7500;fc=false;gc=false");
     GOLDENS.put("GREEDY|trekking|90|1000|0", "err=-;n=175;d=4165;h=b144da87588d8287;pd=6166;tol=true;fb=-;wp=c4281fef53473ff0;cg=120;cr=18;rk=15;ri=0;rn=18;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     GOLDENS.put("ISO_GREEDY|trekking|270|1000|0", "err=-;n=175;d=4165;h=b144da87588d8287;pd=5464;tol=false;fb=best error=13.2%;wp=44deb0089a17cafd;cg=173;cr=18;rk=14;ri=2;rn=16;ai=0;an=2;aq=0;ps=-1;ph=0.7200;fc=false;gc=true");
-    GOLDENS.put("GREEDY|fastbike|90|1000|0", "err=round-trip rejected by quality gate (direction 90, radius 1000m, shape=INVALID_RETRACE): 11% of distance on profile-hostile ways (max 10%) — route uses path/track/unpaved that a road bike should avoid;track=-;pd=5411;tol=false;fb=forced corridor (no clean alternative): route is 21% retraced same-way-back to extremity — allowSamewayback=0; best error=10.9%;wp=d0c9ff1874a32226;cg=175;cr=21;rk=10;ri=0;rn=21;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=true;gc=false");
-    GOLDENS.put("ISO_GREEDY|fastbike|90|1000|0", "err=round-trip rejected by quality gate (direction 90, radius 1000m, shape=INVALID_RETRACE): 11% of distance on profile-hostile ways (max 10%) — route uses path/track/unpaved that a road bike should avoid;track=-;pd=5411;tol=false;fb=forced corridor (no clean alternative): route is 21% retraced same-way-back to extremity — allowSamewayback=0; best error=10.9%;wp=d0c9ff1874a32226;cg=248;cr=21;rk=7;ri=5;rn=16;ai=0;an=3;aq=0;ps=-1;ph=0.4800;fc=true;gc=true");
+    GOLDENS.put("GREEDY|fastbike|90|1000|0", "err=-;n=187;d=5137;h=dffe8ba031408593;pd=5411;tol=false;fb=forced corridor (no clean alternative): route is 21% retraced same-way-back to extremity — allowSamewayback=0; best error=10.9%;wp=d0c9ff1874a32226;cg=175;cr=21;rk=10;ri=0;rn=21;ai=0;an=3;aq=0;ps=-1;ph=NaN;fc=true;gc=false");
+    GOLDENS.put("ISO_GREEDY|fastbike|90|1000|0", "err=-;n=187;d=5137;h=dffe8ba031408593;pd=5411;tol=false;fb=forced corridor (no clean alternative): route is 21% retraced same-way-back to extremity — allowSamewayback=0; best error=10.9%;wp=d0c9ff1874a32226;cg=248;cr=21;rk=7;ri=5;rn=16;ai=0;an=3;aq=0;ps=-1;ph=0.4800;fc=true;gc=true");
     GOLDENS.put("GREEDY|gravel|90|1000|7", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=57;cr=8;rk=6;ri=0;rn=8;ai=0;an=2;aq=0;ps=-1;ph=NaN;fc=false;gc=false");
     GOLDENS.put("ISO_GREEDY|gravel|90|1000|7", "err=-;n=230;d=6242;h=283c9ac6933f4b7;pd=6335;tol=true;fb=-;wp=3b95d653a8945793;cg=84;cr=8;rk=7;ri=1;rn=7;ai=0;an=2;aq=0;ps=-1;ph=0.7400;fc=false;gc=true");
   }
