@@ -38,6 +38,11 @@ public class ChildVerdictTransportEquivalenceTest {
 
   private static RoutingEngine runChildLike(String profile, RoundTripAlgorithm algo,
                                             int direction) {
+    return runChildLike(profile, algo, direction, RADIUS);
+  }
+
+  private static RoutingEngine runChildLike(String profile, RoundTripAlgorithm algo,
+                                            int direction, int radius) {
     List<OsmNodeNamed> wps = new ArrayList<>();
     OsmNodeNamed start = new OsmNodeNamed();
     start.name = "from";
@@ -48,7 +53,7 @@ public class ChildVerdictTransportEquivalenceTest {
     rc.localFunction = new java.io.File(RoundTripFixture.projectDir(),
       "misc/profiles2/" + profile + ".brf").getAbsolutePath();
     rc.startDirection = direction;
-    rc.roundTripDistance = RADIUS;
+    rc.roundTripDistance = radius;
     rc.roundTripAlgorithm = algo;
     rc.roundTripStrictQuality = false;
     rc.roundTripSuppressDecoration = true; // exactly how AUTO builds children
@@ -107,10 +112,14 @@ public class ChildVerdictTransportEquivalenceTest {
 
   @Test
   public void ungatedRequestPublishesNullVerdict() {
-    // fastbike GREEDY on this fixture cannot build a loop: the request errors
-    // before the gate runs, so the publication must be null — the consumer's
-    // signal to fall back to its own evaluation (defensive path only).
-    RoutingEngine child = runChildLike("fastbike", RoundTripAlgorithm.GREEDY, 90);
+    // fastbike GREEDY eastward at a 20 km radius cannot build a loop on this
+    // fixture (the Dreieich data ends within a few km to the east): the request
+    // errors before the gate runs, so the publication must be null — the
+    // consumer's signal to fall back to its own evaluation (defensive path only).
+    // The fixture radius used to be enough, but only because the per-step
+    // isochrone starved on fastbike's forest-track costs; the air-band
+    // recalibration now lets that request build a loop and reach the gate.
+    RoutingEngine child = runChildLike("fastbike", RoundTripAlgorithm.GREEDY, 90, 20000);
     Assert.assertNull("no track for fastbike GREEDY on the fixture", child.getFoundTrack());
     Assert.assertNull("a request that never reached the gate publishes no verdict",
       child.getLastRoundTripQuality());

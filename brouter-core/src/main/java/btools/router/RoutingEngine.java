@@ -66,6 +66,21 @@ public class RoutingEngine extends Thread {
   static final double ISO_CALIBRATION_SAMPLE_LO = 0.7;
   /** Below this many band samples the calibration is skipped (sparse graph → keep the floor). */
   static final int ISO_CALIBRATION_MIN_SAMPLES = 30;
+  /*
+   * Starvation recalibration. The calibration band above is defined in COST units
+   * ([0.7, 1.0] x searchRadius as a cost). On a high-penalty profile starting in
+   * town (javik gravel: 25-120 cost per air-metre measured) that band lies within
+   * a few dozen metres of the start, under the 50 m sample floor, so calibration
+   * never fires and the 4x floor stops the expansion a few hundred metres out -
+   * both greedy planners then fail with "could not build any loop". When the
+   * budget runs out before any pop reached ISO_CALIBRATION_SAMPLE_LO x searchRadius
+   * in AIR distance, the expansion keeps going (geo cutoff, maxNodes and the
+   * deadline still bound it), samples cost-per-air-metre in the air band
+   * [SAMPLE_LO, 1.0] x searchRadius and sizes the budget with the same reach
+   * formula. An expansion that reaches the band within its budget never takes
+   * this path, so bike and foot profiles on ordinary cost scales are unchanged;
+   * the fast-motor probe path (preset budget) is excluded.
+   */
   /**
    * Fast-motorized profiles (car, motorbike) bypass the in-flight calibration
    * entirely: at motor cost
@@ -1247,6 +1262,33 @@ public class RoutingEngine extends Thread {
     return (int) Math.min(cap, Math.max(floor, budget));
   }
 
+  /** Whether a budget that ran out left the expansion short of the air band: the starvation signal. */
+  static boolean isoBudgetStarved(double maxAirDistSeen, double searchRadius) {
+    return maxAirDistSeen < searchRadius * ISO_CALIBRATION_SAMPLE_LO;
+  }
+
+  /**
+   * Cost at which the air band closes: {@code 1 / ISO_CALIBRATION_SAMPLE_LO} times the cost of
+   * the first pop into the band, mirroring the cost band's [SAMPLE_LO, 1.0] shape.
+   */
+  static int airBandCloseCost(int firstBandCost) {
+    return (int) Math.min(Integer.MAX_VALUE / 2.0, firstBandCost / ISO_CALIBRATION_SAMPLE_LO);
+  }
+
+  /**
+   * Budget from the air-band samples: {@code ISO_TARGET_REACH_FACTOR x searchRadius x median
+   * cost-per-air-metre}, never below {@code currentBudget}, clamped against int overflow. No
+   * bike-unit cap - the geo cutoff, maxNodes and the deadline bound the work. Returns
+   * {@code currentBudget} when the band is too sparse to trust.
+   */
+  static int airBandBudget(double[] samples, int sampleCount, double searchRadius, int currentBudget) {
+    if (sampleCount < ISO_CALIBRATION_MIN_SAMPLES) return currentBudget;
+    double[] band = Arrays.copyOf(samples, sampleCount);
+    Arrays.sort(band);
+    double target = ISO_TARGET_REACH_FACTOR * searchRadius * band[sampleCount / 2];
+    return (int) Math.min(Integer.MAX_VALUE / 2.0, Math.max(currentBudget, target));
+  }
+
   /** {@code clamp(dist / searchRadius, 0, 1)}; 0 when searchRadius is non-positive (avoids a 0/0 NaN). */
   static double clampedAirReachBonus(double dist, double searchRadius) {
     if (searchRadius <= 0.0) {
@@ -1467,6 +1509,13 @@ public class RoutingEngine extends Thread {
     boolean isoBudgetCalibrated = !calibrateBudget;
     double[] costEffSamples = calibrateBudget ? new double[256] : null;
     int costEffSampleCount = 0;
+    // Starvation recalibration state (see the comment after ISO_CALIBRATION_MIN_SAMPLES).
+    boolean airBandCalibrating = false;
+    boolean airBandDone = presetBudget > 0;
+    double maxAirDistSeen = 0;
+    double[] airBandSamples = null;
+    int airBandSampleCount = 0;
+    int airBandCloseAt = -1;
     // Geographic cutoff: don't expand beyond 1.5× searchRadius (prevents runaway)
     double geoRadiusCutoff = searchRadius * 1.5;
     // Scale maxNodes with search area so dense regions (Berlin) reach the cost
@@ -1585,8 +1634,39 @@ public class RoutingEngine extends Thread {
         }
       }
 
-      // Cost cutoff — Dijkstra: once popped cost exceeds budget, all remaining do too
-      if (path.cost > costBudget) break;
+      // Starvation recalibration: close the air band and size the budget from it.
+      if (airBandCalibrating && airBandCloseAt > 0 && path.cost > airBandCloseAt
+          && airBandSampleCount >= ISO_CALIBRATION_MIN_SAMPLES) {
+        airBandCalibrating = false;
+        airBandDone = true;
+        int recalibrated = airBandBudget(airBandSamples, airBandSampleCount, searchRadius, costBudget);
+        logInfo("isochrone: starved cost budget " + costBudget + " -> " + recalibrated
+          + " (air-band recalibration, " + airBandSampleCount + " samples)");
+        if (recalibrated > costBudget) {
+          costBudget = recalibrated;
+          for (int k = 0; k < contourCount; k++) {
+            contourCosts[k] = (int) (contourLabels[k] * 0.01 * costBudget);
+          }
+          Arrays.fill(bucketBestScore, Double.POSITIVE_INFINITY);
+          for (double[] row : bucketContourBestScore) {
+            Arrays.fill(row, Double.POSITIVE_INFINITY);
+          }
+        }
+      }
+
+      // Cost cutoff — Dijkstra: once popped cost exceeds budget, all remaining do too.
+      // A budget that runs out short of the air band starts the starvation
+      // recalibration instead of stopping the expansion.
+      if (path.cost > costBudget) {
+        if (!airBandDone && !airBandCalibrating && isoBudgetStarved(maxAirDistSeen, searchRadius)) {
+          airBandCalibrating = true;
+          airBandSamples = new double[256];
+          logInfo("isochrone: cost budget " + costBudget + " exhausted at " + (int) maxAirDistSeen
+            + " m of " + (int) searchRadius + " m, recalibrating by air band");
+        } else if (!airBandCalibrating) {
+          break;
+        }
+      }
 
       OsmLink currentLink = path.getLink();
       OsmNode sourceNode = path.getSourceNode();
@@ -1608,6 +1688,14 @@ public class RoutingEngine extends Thread {
         cellMinCost.put(cmcKey, path.cost);
       }
       double dist = CheapRuler.distance(start.ilon, start.ilat, curIlon, curIlat);
+      if (dist > maxAirDistSeen) maxAirDistSeen = dist;
+      if (airBandCalibrating && dist >= searchRadius * ISO_CALIBRATION_SAMPLE_LO && dist <= searchRadius) {
+        if (airBandCloseAt < 0) airBandCloseAt = airBandCloseCost(path.cost);
+        if (airBandSampleCount == airBandSamples.length) {
+          airBandSamples = Arrays.copyOf(airBandSamples, airBandSamples.length * 2);
+        }
+        airBandSamples[airBandSampleCount++] = path.cost / dist;
+      }
       if (dist > 50) { // skip very close nodes (noisy bearings)
         int pcost = path.cost;
         // Calibration band sample: cost-per-air-meter of frontier-band pops.
