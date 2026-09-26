@@ -25,7 +25,11 @@ class LoopQualityResult {
    *  the production gate already named the quality miss, so the band gate
    *  logs instead of failing. Set by runVariant. */
   boolean disclosed;
-  /** Length-weighted road-character fractions from {@code highway=} tags. */
+  /**
+   * Length-weighted road-character fractions from {@code highway=} tags:
+   * {residential family, track family, residential share of the first 15 % of
+   * the loop, of the last 15 %}; null when unavailable.
+   */
   double[] character;
   /** Wall-clock time spent on the routing request in milliseconds. */
   long requestMs;
