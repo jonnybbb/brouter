@@ -6,10 +6,10 @@ import org.junit.Test;
 public class MessageDataTest {
 
   @Test
-  public void gradientDefaultsToZero() {
+  public void gradientDefaultsToUnknown() {
     MessageData md = new MessageData();
-    Assert.assertEquals(0f, md.gradient, 0.001f);
-    Assert.assertEquals(0.0, md.deltaH, 0.001);
+    Assert.assertTrue(Float.isNaN(md.gradient));
+    Assert.assertTrue(Double.isNaN(md.deltaH));
   }
 
   @Test
@@ -116,7 +116,7 @@ public class MessageDataTest {
   }
 
   @Test
-  public void addWithZeroDistanceLeavesGradientUnchanged() {
+  public void addWithZeroDistanceHasUnknownGradient() {
     MessageData a = new MessageData();
     a.linkdist = 0;
     a.deltaH = 0;
@@ -130,7 +130,7 @@ public class MessageDataTest {
     b.add(a);
 
     Assert.assertEquals(0, b.linkdist);
-    Assert.assertEquals(0f, b.gradient, 0.001f);
+    Assert.assertTrue(Float.isNaN(b.gradient));
   }
 
   @Test
@@ -172,6 +172,24 @@ public class MessageDataTest {
   /**
    * Helper to create a MessageData with given distance, elevation change, and way tags.
    */
+  @Test
+  public void mergingUnknownElevationDoesNotInventAFlatSegment() {
+    MessageData known = createMessage(100, 10, "highway=track");
+    MessageData unknown = new MessageData();
+    unknown.linkdist = 100;
+    unknown.wayKeyValues = "highway=track";
+    known.add(unknown);
+    Assert.assertTrue(Float.isNaN(known.gradient));
+    Assert.assertEquals("", known.toMessage().split("\t", -1)[13]);
+  }
+
+  @Test
+  public void emptyStartingMessageDoesNotHideKnownGradient() {
+    MessageData known = createMessage(100, 10, "highway=track");
+    known.add(new MessageData());
+    Assert.assertEquals(10f, known.gradient, 0.001f);
+  }
+
   private MessageData createMessage(int distMeters, double deltaH, String wayKeyValues) {
     MessageData md = new MessageData();
     md.linkdist = distMeters;

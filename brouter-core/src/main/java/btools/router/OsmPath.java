@@ -305,6 +305,10 @@ abstract class OsmPath implements OsmLinkHolder {
       double angle = rc.anglemeter.calcAngle(lon0, lat0, lon1, lat1, lon2, lat2);
       double cosangle = rc.anglemeter.getCosAngle();
 
+      // Capture reporting elevations before the cost model fills missing data.
+      short gradientEndElevation = ele2;
+      if (message != null) message.updateGradient(ele1, ele2);
+
       // *** elevation stuff
       double delta_h = 0.;
       if (ele2 == Short.MIN_VALUE) ele2 = ele1;
@@ -312,14 +316,6 @@ abstract class OsmPath implements OsmLinkHolder {
         delta_h = (ele2 - ele1) / 4.;
         if (rc.inverseDirection) {
           delta_h = -delta_h;
-        }
-      }
-
-      // compute gradient (slope percent) for this section
-      if (message != null) {
-        message.deltaH += delta_h;
-        if (message.linkdist > 0) {
-          message.gradient = (float) (message.deltaH / message.linkdist * 100.);
         }
       }
 
@@ -374,6 +370,7 @@ abstract class OsmPath implements OsmLinkHolder {
             message.lon = rc.ilonshortest;
             message.lat = rc.ilatshortest;
             originElement.message = message;
+            message.recordClippedGradientEndpoint(originElement, gradientEndElevation);
           }
         }
         if (rc.nogoCost < 0) {

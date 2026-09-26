@@ -88,8 +88,37 @@ public final class MessageData implements Cloneable {
   int priorityclassifier;
   int classifiermask;
   float turnangle;
-  float gradient; // slope in percent (rise/run * 100)
-  double deltaH; // elevation change in meters for this section
+  float gradient = Float.NaN; // slope in percent; NaN when elevation is unavailable
+  double deltaH = Double.NaN; // elevation change in meters for this section
+  // A clipped endpoint retains its historic exported height. Keep the interpolated
+  // reporting height tied to that exact point, and defer to later elevation repairs.
+  private boolean clippedGradientEndpoint;
+  private long clippedGradientPosition;
+  private short clippedExportElevation;
+  private short clippedGradientElevation;
+
+  void recordClippedGradientEndpoint(OsmPathElement point, short elevation) {
+    clippedGradientEndpoint = true;
+    clippedGradientPosition = point.getIdFromPos();
+    clippedExportElevation = point.getSElev();
+    clippedGradientElevation = elevation;
+  }
+
+  static short gradientElevation(OsmPathElement point) {
+    MessageData data = point.message;
+    if (data != null && data.clippedGradientEndpoint
+        && data.clippedGradientPosition == point.getIdFromPos()
+        && data.clippedExportElevation == point.getSElev()) {
+      return data.clippedGradientElevation;
+    }
+    return point.getSElev();
+  }
+
+  void updateGradient(short from, short to) {
+    deltaH = from == Short.MIN_VALUE || to == Short.MIN_VALUE ? Double.NaN : (to - from) / 4.;
+    gradient = linkdist > 0 ? (float) (deltaH / linkdist * 100.) : Float.NaN;
+  }
+
   String wayKeyValues;
   String nodeKeyValues;
 
@@ -114,7 +143,8 @@ public final class MessageData implements Cloneable {
     }
 
     int iCost = (int) (costfactor * 1000 + 0.5f);
-    int iGradient = (int) (gradient * 10 + (gradient >= 0 ? 0.5f : -0.5f));
+    String gradientText = Float.isNaN(gradient) ? ""
+      : Integer.toString((int) (gradient * 10 + (gradient >= 0 ? 0.5f : -0.5f)));
     return (lon - 180000000) + "\t"
       + (lat - 90000000) + "\t"
       + ele / 4 + "\t"
@@ -128,16 +158,14 @@ public final class MessageData implements Cloneable {
       + "\t" + (nodeKeyValues == null ? "" : nodeKeyValues)
       + "\t" + ((int) time)
       + "\t" + ((int) energy)
-      + "\t" + iGradient;
+      + "\t" + gradientText;
   }
 
   void add(MessageData d) {
     // recompute gradient as weighted average by distance
-    deltaH += d.deltaH;
+    deltaH = (linkdist > 0 ? deltaH : 0) + (d.linkdist > 0 ? d.deltaH : 0);
     int totalDist = linkdist + d.linkdist;
-    if (totalDist > 0) {
-      gradient = (float) (deltaH / totalDist * 100.);
-    }
+    gradient = totalDist > 0 ? (float) (deltaH / totalDist * 100.) : Float.NaN;
     linkdist = totalDist;
     linkelevationcost += d.linkelevationcost;
     linkturncost += d.linkturncost;

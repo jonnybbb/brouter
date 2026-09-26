@@ -35,8 +35,8 @@ import btools.server.ServiceContext;
  * straight = idx1,idx2,.. (optional, minimum one value, index of a direct routing point in the waypoint list)
  * minLength = meters (optional, filter segments with minimum length)
  * maxLength = meters (optional, filter segments with maximum length)
- * minGradient = percent (optional, filter segments with minimum absolute gradient)
- * maxGradient = percent (optional, filter segments with maximum absolute gradient)
+ * minGradient = percent (optional, filter segments with minimum absolute gradient; output Gradient is tenths of percent)
+ * maxGradient = percent (optional, filter segments with maximum absolute gradient; unknown gradients do not match)
  * <p>
  * Example URLs:
  * {@code http://localhost:17777/brouter?lonlats=8.799297,49.565883|8.811764,49.563606&nogos=&profile=trekking&alternativeidx=0&format=gpx}

@@ -208,23 +208,7 @@ public final class OsmTrack {
 
   public List<String> aggregateMessages() {
     List<String> res = new ArrayList<>();
-    MessageData current = null;
-    for (OsmPathElement n : nodes) {
-      if (n.message != null && n.message.wayKeyValues != null) {
-        MessageData md = n.message.copy();
-        if (current != null) {
-          if (current.nodeKeyValues != null || !current.wayKeyValues.equals(md.wayKeyValues)) {
-            res.add(current.toMessage());
-          } else {
-            md.add(current);
-          }
-        }
-        current = md;
-      }
-    }
-    if (current != null) {
-      res.add(current.toMessage());
-    }
+    for (MessageData data : aggregateMessageData()) res.add(data.toMessage());
     return res;
   }
 
@@ -267,6 +251,7 @@ public final class OsmTrack {
     for (MessageData md : aggregateMessageData()) {
       if (minLength >= 0 && md.linkdist < minLength) continue;
       if (maxLength >= 0 && md.linkdist > maxLength) continue;
+      if ((minGradient >= 0 || maxGradient >= 0) && Float.isNaN(md.gradient)) continue;
       float absGradient = Math.abs(md.gradient);
       if (minGradient >= 0 && absGradient < minGradient) continue;
       if (maxGradient >= 0 && absGradient > maxGradient) continue;
@@ -279,8 +264,7 @@ public final class OsmTrack {
    * Returns aggregated messages, optionally filtered by segment filter parameters.
    */
   public List<String> getFilteredMessages() {
-    if (segmentFilterMinLength >= 0 || segmentFilterMaxLength >= 0
-      || segmentFilterMinGradient >= 0 || segmentFilterMaxGradient >= 0) {
+    if (hasSegmentFilter()) {
       return filterSegments(segmentFilterMinLength, segmentFilterMaxLength,
         segmentFilterMinGradient, segmentFilterMaxGradient);
     }

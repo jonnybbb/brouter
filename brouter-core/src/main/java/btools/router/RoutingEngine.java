@@ -2252,7 +2252,7 @@ public class RoutingEngine extends Thread {
 
 
 
-  private void postElevationCheck(OsmTrack track) {
+  void postElevationCheck(OsmTrack track) {
     OsmPathElement lastPt = null;
     OsmPathElement startPt = null;
     short lastElev = Short.MIN_VALUE;
@@ -3193,7 +3193,12 @@ public class RoutingEngine extends Thread {
         nLast = t.nodes.get(i - 1);
         dist = nLast.calcDistance(n);
       }
-      n.message.linkdist = dist;
+      // Inverse compilation leaves way messages on the segment's start node.
+      OsmPathElement messageFrom = routingContext.inverseRouting ? n : nLast;
+      OsmPathElement messageTo = routingContext.inverseRouting ? (i + 1 < ourSize ? t.nodes.get(i + 1) : null) : n;
+      n.message.linkdist = messageFrom == null || messageTo == null ? 0 : messageFrom.calcDistance(messageTo);
+      n.message.updateGradient(messageFrom == null ? Short.MIN_VALUE : MessageData.gradientElevation(messageFrom),
+        messageTo == null ? Short.MIN_VALUE : MessageData.gradientElevation(messageTo));
       n.message.turnangle = (float) angle;
       totaldist += dist;
       totaltime += n.getTime();

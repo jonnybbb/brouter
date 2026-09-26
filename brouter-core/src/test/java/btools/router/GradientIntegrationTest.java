@@ -3,9 +3,12 @@ package btools.router;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.Rule;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.net.URL;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,6 +19,9 @@ import java.util.List;
 public class GradientIntegrationTest {
   private static final String PROFILE_PATH = "/../../../../misc/profiles2/trekking.brf";
   private static final String SEGMENTS_PATH = "/../../../../brouter-map-creator/build/resources/test/tmp/segments";
+
+  @Rule
+  public TemporaryFolder profiles = new TemporaryFolder();
 
   private String workingDir;
 
@@ -152,7 +158,36 @@ public class GradientIntegrationTest {
     }
   }
 
+  @Test
+  public void routedInverseGradientUsesItsOwnSegment() throws Exception {
+    File profile = profiles.newFile("inverse.brf");
+    String base = Files.readString(new File(workingDir + PROFILE_PATH).toPath());
+    Files.writeString(profile.toPath(), base.replace("---context:way", "assign inverseRouting = true\n---context:way"));
+    Files.copy(new File(workingDir + PROFILE_PATH).toPath().getParent().resolve("lookups.dat"),
+      profiles.getRoot().toPath().resolve("lookups.dat"));
+    OsmTrack track = calcRoute(8.720897, 50.002515, 8.723658, 49.997510, profile.getAbsolutePath());
+    int checked = 0;
+    // Interior endpoints have native heights, so expected slopes are independent of message metadata.
+    for (int i = 1; i < track.nodes.size() - 2; i++) {
+      OsmPathElement from = track.nodes.get(i);
+      OsmPathElement to = track.nodes.get(i + 1);
+      if (from.message == null || from.message.wayKeyValues == null
+          || from.getSElev() == Short.MIN_VALUE || to.getSElev() == Short.MIN_VALUE) continue;
+      int distance = from.calcDistance(to);
+      if (distance == 0) continue;
+      double expected = (to.getSElev() - from.getSElev()) / 4.0 / distance * 100;
+      Assert.assertEquals(expected, from.message.gradient, 0.001);
+      Assert.assertEquals(distance, from.message.linkdist);
+      checked++;
+    }
+    Assert.assertTrue("Must check real routed segments", checked > 5);
+  }
+
   private OsmTrack calcRoute(double flon, double flat, double tlon, double tlat) {
+    return calcRoute(flon, flat, tlon, tlat, workingDir + PROFILE_PATH);
+  }
+
+  private OsmTrack calcRoute(double flon, double flat, double tlon, double tlat, String profile) {
     List<OsmNodeNamed> wplist = new ArrayList<>();
     OsmNodeNamed from = new OsmNodeNamed();
     from.name = "from";
@@ -167,7 +202,7 @@ public class GradientIntegrationTest {
     wplist.add(to);
 
     RoutingContext rctx = new RoutingContext();
-    rctx.localFunction = workingDir + PROFILE_PATH;
+    rctx.localFunction = profile;
 
     RoutingEngine re = new RoutingEngine(
       null, null,
