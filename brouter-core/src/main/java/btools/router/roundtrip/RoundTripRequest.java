@@ -61,10 +61,17 @@ final class RoundTripRequest {
     publishHints();
   }
 
+  boolean isExplicitVia() {
+    return explicitVia;
+  }
+
   void setExplicitVia(boolean explicitVia) {
     this.explicitVia = explicitVia;
     publishHints();
   }
+
+  /** The producing tier / algorithm that generated the working track. */
+  RoundTripAlgorithm producingTier;
 
   void setGreedyLegTracks(OsmTrack[] greedyLegTracks) {
     this.greedyLegTracks = greedyLegTracks;

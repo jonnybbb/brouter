@@ -31,6 +31,18 @@ class LoopQualityResult {
    * the loop, of the last 15 %}; null when unavailable.
    */
   double[] character;
+  /** Wall-clock time spent on the routing request in milliseconds. */
+  long requestMs;
+  /** Production gate verdict string (ACCEPTED or rejection reason). */
+  String gateVerdict;
+  /** RouteChoiceScore quality score (-1.0 if not computed). */
+  double rcs = -1.0;
+  /** Surface cost per meter from track / profile (-1.0 if not computed). */
+  double gateCostPerM = -1.0;
+  /** Continuous path oracle cost per meter (-1.0 if not computed). */
+  double oracleCostPerM = -1.0;
+  /** Telemetry from the post-tier refinement stage (§7), null if refine did not run. */
+  btools.router.roundtrip.RefineDiagnostics refineDiagnostics;
 
   LoopQualityResult(String label, LoopTestRegion region, int distanceMeters,
                     String profileName, double direction,

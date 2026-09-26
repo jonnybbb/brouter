@@ -1720,6 +1720,7 @@ public class GreedyRoundTripPlanner {
       String detailReject = null;
       if (detailedAccepted == null || detailedAccepted.distance == 0) {
         detailReject = "accepted leg could not be detailed";
+
       } else if (detailFidelityTooLow(detailedAccepted)) {
         detailReject = "accepted leg still lacks metadata after retrack ("
           + formatPct(RoundTripQualityGate.missingMetadataFraction(detailedAccepted)) + ")";
@@ -1754,28 +1755,18 @@ public class GreedyRoundTripPlanner {
       s.totalDistance += detailedAccepted.distance - rawLegDistance;
       addVisitedEdges(accepted.track, visitedEdges, s.totalDistance - accepted.routeDistance);
 
-      // Endpoint re-anchor: detailWithFallback's fidelity fallback can
-      // REROUTE the leg (toward accepted.toMwp), so the committed leg may
-      // end at a different node than the raw leg the step was anchored on.
-      // The pre-trial-loop code derived s.currentMwp from the DETAILED
-      // track's endpoint, so match that: re-derive the step anchor and,
-      // when a return was already routed from the stale anchor, redo the
-      // return check from the corrected one (rare path — pays one extra
-      // Dijkstra only when a fidelity reroute actually moved the endpoint;
-      // without this, the next leg and the return would start at a point
-      // the committed track never reaches, shipping a seam gap).
-      OsmPathElement detailedEnd = detailedAccepted.nodes.get(detailedAccepted.nodes.size() - 1);
-      if (detailedEnd.getILon() != lastNode.getILon()
-          || detailedEnd.getILat() != lastNode.getILat()) {
-        MatchedWaypoint reanchored = matchPoint(detailedEnd.getILon(), detailedEnd.getILat(), "greedy_next");
-        s.currentMwp = (reanchored != null) ? reanchored : accepted.toMwp;
-        waypointStack.set(waypointStack.size() - 1, s.currentMwp);
-        if (returnChecked) {
-          returnRef = buildRefTrack(segments);
-          returnTrack = routeReturnWithVariants(segments, returnRef,
-            s.currentMwp, startMwp, stepDeadline, result, s.totalDistance, desiredDistance, step);
-          s.returnChecksPerformed++;
-        }
+      // The detailed leg clips to the requested matched edge, while a raw
+      // search leg can extend to the next graph node. Preserve that exact
+      // match for the continuation: rematching can choose a different road
+      // and leave a gap between individually valid legs.
+      boolean anchorMoved = s.currentMwp.crosspoint.getIdFromPos() != accepted.toMwp.crosspoint.getIdFromPos();
+      s.currentMwp = RefineSkeleton.copyWaypoint(accepted.toMwp);
+      waypointStack.set(waypointStack.size() - 1, s.currentMwp);
+      if (returnChecked && anchorMoved) {
+        returnRef = buildRefTrack(segments);
+        returnTrack = routeReturnWithVariants(segments, returnRef,
+          s.currentMwp, startMwp, stepDeadline, result, s.totalDistance, desiredDistance, step);
+        s.returnChecksPerformed++;
       }
 
       if (!returnChecked || returnTrack == null || returnTrack.distance == 0) {
@@ -2747,6 +2738,7 @@ public class GreedyRoundTripPlanner {
     // routing reaches the nearest node, not the interpolated position.
     OsmNode snapped = snapToNearest(src.crosspoint, copy.node1, copy.node2);
     copy.crosspoint = new OsmNode(snapped.ilon, snapped.ilat);
+    copy.originalCrosspoint = new OsmNode(src.crosspoint.ilon, src.crosspoint.ilat);
     // waypoint == crosspoint keeps RoutingEngine#matchWaypointsToNodes from
     // taking the dynamic beeline-insertion path (gated on snap > catchingRange).
     copy.waypoint = new OsmNode(snapped.ilon, snapped.ilat);

@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import btools.router.roundtrip.LoopQualityMetrics;
+import btools.router.roundtrip.RefineDiagnostics;
 
 /**
  * Persistence + report generation for the loop-quality matrix, decoupled from
@@ -242,6 +243,38 @@ final class LoopQualityReport {
         "\"character\":{\"resid\":%.4f,\"track\":%.4f,\"headResid\":%.4f,\"tailResid\":%.4f},",
         r.character[0], r.character[1], r.character[2], r.character[3]));
     }
+    sb.append(String.format(Locale.US, "\"requestMs\":%d,", r.requestMs));
+    if (r.gateVerdict != null) {
+      sb.append("\"gateVerdict\":\"").append(r.gateVerdict.replace("\\", "\\\\").replace("\"", "\\\"")).append("\",");
+    }
+    sb.append(String.format(Locale.US, "\"rcs\":%.4f,", r.rcs));
+    sb.append(String.format(Locale.US, "\"gateCostPerM\":%.4f,", r.gateCostPerM));
+    sb.append(String.format(Locale.US, "\"oracleCostPerM\":%.4f,", r.oracleCostPerM));
+    if (r.refineDiagnostics != null) {
+      RefineDiagnostics d = r.refineDiagnostics;
+      sb.append("\"refineDiagnostics\":{");
+      sb.append("\"refineApplied\":").append(d.refineApplied).append(",");
+      if (d.refineReason != null) {
+        sb.append("\"refineReason\":\"").append(d.refineReason.replace("\\", "\\\\").replace("\"", "\\\"")).append("\",");
+      }
+      sb.append(String.format(Locale.US, "\"oracleCostBefore\":%.4f,", d.oracleCostPerMeterBefore));
+      sb.append(String.format(Locale.US, "\"oracleCostAfter\":%.4f,", d.oracleCostPerMeterAfter));
+      sb.append(String.format(Locale.US, "\"rcsBefore\":%.4f,", d.rcsBefore));
+      sb.append(String.format(Locale.US, "\"rcsAfter\":%.4f,", d.rcsAfter));
+      sb.append(String.format(Locale.US, "\"proposals\":%d,", d.proposals));
+      sb.append(String.format(Locale.US, "\"invalidProposals\":%d,", d.invalidProposals));
+      sb.append(String.format(Locale.US, "\"evaluations\":%d,", d.evaluations));
+      sb.append(String.format(Locale.US, "\"legsRouted\":%d,", d.legsRouted));
+      sb.append(String.format(Locale.US, "\"cacheHits\":%d,", d.cacheHits));
+      sb.append(String.format(Locale.US, "\"finalizations\":%d,", d.finalizations));
+      sb.append(String.format(Locale.US, "\"chains\":%d,", d.chains));
+      sb.append("\"refineTruncated\":").append(d.refineTruncated).append(",");
+      if (d.timeoutOperation != null) {
+        sb.append("\"timeoutOperation\":\"").append(d.timeoutOperation.replace("\\", "\\\\").replace("\"", "\\\"")).append("\",");
+      }
+      sb.append(String.format(Locale.US, "\"elapsedMs\":%d", d.elapsedMs));
+      sb.append("},");
+    }
     if (r.coordinates != null) {
       sb.append("\"coordinates\":[");
       for (int i = 0; i < r.coordinates.length; i++) {
@@ -278,8 +311,42 @@ final class LoopQualityReport {
     String error = strField(json, "error");
     LoopQualityMetrics metrics = parseMetricsBlock(json);
     double[][] coords = parseCoords(json);
-    return new LoopQualityResult(label, region, distanceMeters, profileName, direction,
+    LoopQualityResult res = new LoopQualityResult(label, region, distanceMeters, profileName, direction,
       metrics, error, coords, variant);
+    res.requestMs = (long) Math.round(numField(json, "requestMs"));
+    res.gateVerdict = strField(json, "gateVerdict");
+    res.rcs = numField(json, "rcs");
+    res.gateCostPerM = numField(json, "gateCostPerM");
+    res.oracleCostPerM = numField(json, "oracleCostPerM");
+    res.refineDiagnostics = parseRefineDiagnostics(json);
+    return res;
+  }
+
+  private static RefineDiagnostics parseRefineDiagnostics(String json) {
+    int i = json.indexOf("\"refineDiagnostics\":{");
+    if (i < 0) return null;
+    int start = i + "\"refineDiagnostics\":{".length();
+    int end = json.indexOf('}', start);
+    if (end < 0) return null;
+    String block = json.substring(start, end);
+    RefineDiagnostics d = new RefineDiagnostics();
+    d.refineApplied = block.contains("\"refineApplied\":true");
+    d.refineReason = strField(block, "refineReason");
+    d.oracleCostPerMeterBefore = numField(block, "oracleCostBefore");
+    d.oracleCostPerMeterAfter = numField(block, "oracleCostAfter");
+    d.rcsBefore = numField(block, "rcsBefore");
+    d.rcsAfter = numField(block, "rcsAfter");
+    d.proposals = (int) Math.round(numField(block, "proposals"));
+    d.invalidProposals = (int) Math.round(numField(block, "invalidProposals"));
+    d.evaluations = (int) Math.round(numField(block, "evaluations"));
+    d.legsRouted = (int) Math.round(numField(block, "legsRouted"));
+    d.cacheHits = (int) Math.round(numField(block, "cacheHits"));
+    d.finalizations = (int) Math.round(numField(block, "finalizations"));
+    d.chains = (int) Math.round(numField(block, "chains"));
+    d.refineTruncated = block.contains("\"refineTruncated\":true");
+    d.timeoutOperation = strField(block, "timeoutOperation");
+    d.elapsedMs = (long) Math.round(numField(block, "elapsedMs"));
+    return d;
   }
 
   private static String strField(String json, String key) {

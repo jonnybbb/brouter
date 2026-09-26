@@ -30,7 +30,7 @@ test {
 sourceSets {
     integrationTest {
         java.srcDir 'src/integrationTest/java'
-        resources.srcDir 'src/integrationTest/resources'
+        resources.setSrcDirs(['src/integrationTest/resources'])
         // Reuse the production classes and the shared test helpers (RoundTripFixture,
         // etc.) from src/test rather than duplicating them.
         compileClasspath += sourceSets.main.output + sourceSets.test.output
@@ -112,6 +112,12 @@ tasks.register('integrationTest', Test) {
     ['mtb.sweep', 'roundtrip.fast.optimized', 'loop.absorption.matrix', 'loop.smoke'].each { k ->
         if (System.getProperty(k) != null) systemProperty k, System.getProperty(k)
     }
+    // Refinement harness toggles forwarded to test forks (§6 M1).
+    System.getProperties().each { k, v ->
+        if (k.toString().startsWith('loop.refine')) {
+            systemProperty k.toString(), v
+        }
+    }
 
     testLogging {
         // 'started' surfaces which case is in flight (so a wedged/slow routing
@@ -159,6 +165,11 @@ tasks.register('integrationSmoke', Test) {
     systemProperty 'loop.smoke', 'true'
     systemProperty 'loop.segments.noupdate', System.getProperty('loop.segments.noupdate', 'true')
     systemProperty 'loop.segments.nodownload', System.getProperty('loop.segments.nodownload', 'false')
+    System.getProperties().each { k, v ->
+        if (k.toString().startsWith('loop.refine')) {
+            systemProperty k.toString(), v
+        }
+    }
 
     inputs.dir(rootProject.file('misc/profiles2'))
         .withPathSensitivity(PathSensitivity.RELATIVE)

@@ -28,6 +28,7 @@ public final class RoundTripTrackCleanup {
   private final RoundTripRequestState state;
   private final EngineIO io;
   private final EngineContext ctx;
+  private Runnable checkBudget = () -> { };
 
   public RoundTripTrackCleanup(WaypointSnapper snapper, RoundTripRequestState state,
                                EngineIO io, EngineContext ctx) {
@@ -72,6 +73,18 @@ public final class RoundTripTrackCleanup {
    * {@code doRouting} provides: matched waypoints attached, indices filled,
    * origin chain coherent for voice hints, speed/profile fields, POIs, and export flags.
    */
+  public void finalizeAdoptedRoundTripTrack(OsmTrack track, List<MatchedWaypoint> mwps, Runnable budgetCheck) {
+    Runnable previous = checkBudget;
+    checkBudget = budgetCheck;
+    try {
+      checkBudget.run();
+      finalizeAdoptedRoundTripTrack(track, mwps);
+      checkBudget.run();
+    } finally {
+      checkBudget = previous;
+    }
+  }
+
   public void finalizeAdoptedRoundTripTrack(OsmTrack track, List<MatchedWaypoint> mwps) {
     if (track == null || track.nodes == null || track.nodes.isEmpty()) return;
     boolean haveMwps = mwps != null && !mwps.isEmpty();
@@ -90,7 +103,9 @@ public final class RoundTripTrackCleanup {
         assignMatchedWaypointIndexes(track, mwps);
         removeBackAndForthSegments(track, mwps);
         removeMicroDetours(track, 1500, mwps);
+        checkBudget.run();
         snapper.repairViaPinnedBulges(track, mwps);
+        checkBudget.run();
         removeArtifactSpurSpans(track, mwps);
       }
     }
@@ -116,7 +131,7 @@ public final class RoundTripTrackCleanup {
     track.exportCorrectedWaypoints = ctx.routingContext().exportCorrectedWaypoints;
   }
 
-  private static void assignMatchedWaypointIndexes(OsmTrack track, List<MatchedWaypoint> mwps) {
+  private void assignMatchedWaypointIndexes(OsmTrack track, List<MatchedWaypoint> mwps) {
     if (track == null || track.nodes == null || track.nodes.isEmpty()
         || mwps == null || mwps.isEmpty()) {
       return;
@@ -124,6 +139,7 @@ public final class RoundTripTrackCleanup {
     int lastNodeIndex = track.nodes.size() - 1;
     int searchFrom = 0;
     for (int i = 0; i < mwps.size(); i++) {
+      checkBudget.run();
       MatchedWaypoint mwp = mwps.get(i);
       if (i == 0) {
         mwp.indexInTrack = 0;
@@ -141,6 +157,7 @@ public final class RoundTripTrackCleanup {
       int bestIndex = searchFrom;
       int bestDistance = Integer.MAX_VALUE;
       for (int n = searchFrom; n <= lastNodeIndex; n++) {
+        checkBudget.run();
         int d = track.nodes.get(n).calcDistance(target);
         if (d < bestDistance) {
           bestDistance = d;
@@ -174,6 +191,7 @@ public final class RoundTripTrackCleanup {
     List<OsmPathElement> nodes = track.nodes;
 
     for (int wi = 1; wi < waypoints.size() - 1; wi++) {
+      checkBudget.run();
       if (onlyGenerated && !waypoints.get(wi).generated) {
         continue;
       }
@@ -181,13 +199,12 @@ public final class RoundTripTrackCleanup {
       if (wptIdx <= 0 || wptIdx >= nodes.size() - 1) continue;
 
       int overlapCount = 0;
-      int proximityThreshold = 30; // meters — catch near-overlaps (dual carriageways, parallel roads)
       int maxSteps = Math.min(wptIdx, nodes.size() - 1 - wptIdx);
       for (int step = 1; step <= maxSteps; step++) {
+        checkBudget.run();
         OsmPathElement before = nodes.get(wptIdx - step);
         OsmPathElement after = nodes.get(wptIdx + step);
-        if (before.getIdFromPos() == after.getIdFromPos()
-            || before.calcDistance(after) <= proximityThreshold) {
+        if (before.getIdFromPos() == after.getIdFromPos()) {
           overlapCount = step;
         } else {
           break;
@@ -199,6 +216,7 @@ public final class RoundTripTrackCleanup {
         int removeTo = wptIdx + overlapCount + 1;
         int removeCount = removeTo - removeFrom;
         int branchIdx = removeFrom - 1;
+        if (!permitsJoin(nodes, branchIdx, removeTo)) continue;
 
         io.logInfo("removeBackAndForth: at waypoint " + waypoints.get(wi).name
           + " removing " + removeCount + " spur nodes");
@@ -210,6 +228,7 @@ public final class RoundTripTrackCleanup {
         // and export indices stay inside the surviving track.
         waypoints.get(wi).indexInTrack = branchIdx;
         for (int wj = wi + 1; wj < waypoints.size(); wj++) {
+          checkBudget.run();
           waypoints.get(wj).indexInTrack -= removeCount;
         }
       }
@@ -218,8 +237,8 @@ public final class RoundTripTrackCleanup {
 
   /**
    * Remove micro-detours: small loops where the route returns to the same area
-   * within a short distance. Uses proximity matching (not just node identity) to
-   * catch returns through parallel roads or dual carriageways.
+   * at the same point. Proximity alone cannot establish a traversable connection
+   * between roads; those spans require an explicitly routed connector.
    *
    * <p>Spans pinned at a generated round-trip via get an extended cap
    * ({@link WaypointSnapper#VIA_TEARDROP_MAX_ARC_M}, fraction-bounded) but must
@@ -231,7 +250,6 @@ public final class RoundTripTrackCleanup {
    */
   public void removeMicroDetours(OsmTrack track, int maxLoopDistance, List<MatchedWaypoint> waypoints) {
     List<OsmPathElement> nodes = track.nodes;
-    int proximityThreshold = 50; // meters — catch returns to nearby (not just identical) nodes
     // Grid cell size in internal coords: ~35-55m depending on latitude.
     // Checking the 9-cell neighborhood covers up to ~100-160m, well above the proximity threshold.
     int cellSize = 500;
@@ -239,9 +257,11 @@ public final class RoundTripTrackCleanup {
     boolean changed = true;
 
     while (changed) {
+      checkBudget.run();
       changed = false;
       long totalDist = 0;
       for (int k = 1; k < nodes.size(); k++) {
+        checkBudget.run();
         totalDist += nodes.get(k - 1).calcDistance(nodes.get(k));
       }
       int viaTeardropCap = (int) Math.min(WaypointSnapper.VIA_TEARDROP_MAX_ARC_M,
@@ -249,6 +269,7 @@ public final class RoundTripTrackCleanup {
       Map<Long, List<Integer>> grid = new HashMap<>();
 
       for (int i = 0; i < nodes.size(); i++) {
+        checkBudget.run();
         int ilon = nodes.get(i).getILon();
         int ilat = nodes.get(i).getILat();
         int cx = ilon / cellSize;
@@ -259,13 +280,17 @@ public final class RoundTripTrackCleanup {
         int matchIdx = -1;
         int matchDist = Integer.MAX_VALUE;
         for (int dx = -1; dx <= 1; dx++) {
+          checkBudget.run();
           for (int dy = -1; dy <= 1; dy++) {
+            checkBudget.run();
             long neighborCell = ((long) (cx + dx)) << 32 | ((cy + dy) & 0xFFFFFFFFL);
             List<Integer> entries = grid.get(neighborCell);
             if (entries != null) {
               for (int idx : entries) {
+                checkBudget.run();
                 int dist = nodes.get(idx).calcDistance(nodes.get(i));
-                if (dist <= proximityThreshold && (dist < matchDist || (dist == matchDist && idx > matchIdx))) {
+                if (nodes.get(idx).getIdFromPos() == nodes.get(i).getIdFromPos()
+                    && (dist < matchDist || (dist == matchDist && idx > matchIdx))) {
                   matchIdx = idx;
                   matchDist = dist;
                 }
@@ -281,6 +306,7 @@ public final class RoundTripTrackCleanup {
             nodes.get(i).getILon(), nodes.get(i).getILat());
           int loopDist = 0;
           for (int j = matchIdx + 1; j <= i; j++) {
+            checkBudget.run();
             loopDist += nodes.get(j).calcDistance(nodes.get(j - 1));
           }
 
@@ -303,7 +329,7 @@ public final class RoundTripTrackCleanup {
           // A genuine detour has route distance much larger than crow-fly distance
           // (the route went elsewhere and came back). Normal forward progression
           // has route distance ≈ crow-fly distance.
-          if (removable && loopDist > crowFly * ratioThreshold) {
+          if (removable && loopDist > crowFly * ratioThreshold && permitsJoin(nodes, matchIdx, i + 1)) {
             io.logInfo("removeMicroDetours: removing " + (i - matchIdx) + " nodes (loop of " + loopDist + "m, crow-fly " + (int) crowFly + "m, ratio " + String.format("%.1f", ratioThreshold) + "x at index " + matchIdx + ")");
             int removeCount = i - matchIdx;
             nodes.subList(matchIdx + 1, i + 1).clear();
@@ -345,6 +371,7 @@ public final class RoundTripTrackCleanup {
     if (nodes == null || nodes.size() < 10) return;
     long totalDist = 0;
     for (int k = 1; k < nodes.size(); k++) {
+      checkBudget.run();
       totalDist += nodes.get(k - 1).calcDistance(nodes.get(k));
     }
     double expected = roundTripExpectedDistance();
@@ -353,6 +380,7 @@ public final class RoundTripTrackCleanup {
 
     boolean changed = true;
     while (changed) {
+      checkBudget.run();
       changed = false;
       int maxArc = (int) Math.min(SPUR_REPAIR_MAX_ARC_M, WaypointSnapper.VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
       List<int[]> spans = new ArrayList<>(LoopQualityMetrics.nearRevisitSpans(
@@ -362,8 +390,11 @@ public final class RoundTripTrackCleanup {
       // total, so spend that budget on the worst offender, not scan order.
       Collections.sort(spans, (a, b) -> Double.compare(cum[b[1]] - cum[b[0]], cum[a[1]] - cum[a[0]]));
       for (int[] s : spans) {
+        checkBudget.run();
         int i = s[0];
         int j = s[1];
+        // Removing an arc is safe only at a shared point. Nearby roads may be disconnected.
+        if (nodes.get(i).getIdFromPos() != nodes.get(j).getIdFromPos() || !permitsJoin(nodes, i, j + 1)) continue;
         double arc = cum[j] - cum[i];
         double jump = nodes.get(i).calcDistance(nodes.get(j));
         if (totalDist - (arc - jump) < minTotal) continue;
@@ -373,13 +404,13 @@ public final class RoundTripTrackCleanup {
           && WaypointSnapper.spanCostPerMeter(nodes, i, j) >= SPUR_ARTIFACT_MIN_COST_FACTOR * trackCpm;
         if (!thin && !overpriced) continue; // scenic petal — keep
         int crossingsBefore = RoundTripQualityGate.countSelfIntersections(track);
-        List<OsmPathElement> oldInterior = new ArrayList<>(nodes.subList(i + 1, j));
-        nodes.subList(i + 1, j).clear();
+        List<OsmPathElement> oldInterior = new ArrayList<>(nodes.subList(i + 1, j + 1));
+        nodes.subList(i + 1, j + 1).clear();
         if (RoundTripQualityGate.countSelfIntersections(track) > crossingsBefore) {
           nodes.addAll(i + 1, oldInterior);
           continue;
         }
-        WaypointSnapper.adjustWaypointIndices(waypoints, i, j - 1, oldInterior.size());
+        WaypointSnapper.adjustWaypointIndices(waypoints, i, j, oldInterior.size());
         totalDist -= (long) (arc - jump);
         io.logInfo(String.format(Locale.US,
           "removeArtifactSpurSpans: removed %.0fm spur span [%d..%d] (%s)",
@@ -388,6 +419,15 @@ public final class RoundTripTrackCleanup {
         break; // indices shifted — rescan
       }
     }
+  }
+
+  private boolean permitsJoin(List<OsmPathElement> nodes, int mouth, int next) {
+    if (mouth == 0 || next >= nodes.size()) return true;
+    OsmPathElement point = nodes.get(mouth);
+    // Geometry-only synthetic tracks have no recorded restrictions. Detailed routes
+    // carry snapshots bound to each point, including unrestricted transfer points.
+    return point.message == null || point.message.permitsCleanupTurn(nodes.get(mouth - 1), point,
+      nodes.get(next), ctx.routingContext());
   }
 
   /**
@@ -452,9 +492,11 @@ public final class RoundTripTrackCleanup {
     // Check both endpoints and midpoint of the loop for proximity to waypoints
     int midIdx = (matchIdx + currentIdx) / 2;
     for (int checkIdx : new int[]{matchIdx, midIdx, currentIdx}) {
+      checkBudget.run();
       if (checkIdx < 0 || checkIdx >= nodes.size()) continue;
       OsmPathElement refNode = nodes.get(checkIdx);
       for (MatchedWaypoint mwp : waypoints) {
+        checkBudget.run();
         if (!mwp.generated && (mwp.name == null || !mwp.name.startsWith("rt"))) continue;
         if (mwp.crosspoint == null) continue;
         if (refNode.calcDistance(mwp.crosspoint) <= proximityMeters) return true;

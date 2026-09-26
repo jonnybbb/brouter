@@ -157,10 +157,14 @@ public class RoundTripQualityFixtureTest {
    * Profile policy: a paved-only road-bike profile must reject the fixture's
    * unpaved path/track terrain through the quality gate — a clear error and no
    * degenerate track, never a silently-bad loop on hostile ways.
+   * Runs at 2 km: at {@code RADIUS} the finished greedy loop keeps its
+   * disclosed out-and-back spur, which dilutes the fixture's hostile tracks
+   * under the 10% limit, so it ships; at 2 km both greedy planners still hit
+   * that limit (16%).
    */
   @Test
   public void pavedOnlyProfileRejectsHostileFixtureCleanly() {
-    RoutingEngine re = RoundTripFixture.engine("fastbike", EAST, RADIUS,
+    RoutingEngine re = RoundTripFixture.engine("fastbike", EAST, 2 * RADIUS,
       rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.AUTO);
     Assert.assertNotNull("paved-only profile must fail on the unpaved fixture",
       re.getErrorMessage());

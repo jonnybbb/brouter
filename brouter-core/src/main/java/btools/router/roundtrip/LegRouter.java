@@ -12,6 +12,17 @@ import btools.router.OsmTrack;
  */
 public interface LegRouter {
 
+  default long refinementDeadline() {
+    return 0;
+  }
+
+  default void setRefinementDeadline(long deadline) {
+  }
+
+  default void checkRefinementBudget() {
+    RefineBudget.check(this, refinementDeadline());
+  }
+
   /** One leg search — the engine's findTrack primitive. */
   OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
                      OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc);
@@ -32,6 +43,12 @@ public interface LegRouter {
   /** Re-run a raw track at full detail between its endpoints. */
   OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp,
                             OsmTrack refTrack);
+
+  /** Re-run a raw track at full detail between its endpoints bounded by budgetMs. */
+  default OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp,
+                                    OsmTrack refTrack, long budgetMs) {
+    return retrackForDetail(rawTrack, startWp, endWp, refTrack);
+  }
 
   /** Profile-aware road snap for a single point. */
   MatchedWaypoint profileAwareMatchPoint(int ilon, int ilat, String name, double maxSnapDist);
@@ -74,4 +91,23 @@ public interface LegRouter {
    * immediately.
    */
   void addTerminationHook(Runnable hook);
+
+  /** Linear path walker: exact cost of a single leg. */
+  default int walkPathCost(OsmTrack track, MatchedWaypoint startWp, MatchedWaypoint endWp) {
+    return -1;
+  }
+
+  /** Continuous loop walker: prices a closed loop across vias as a single path. */
+  default int walkLoopCost(List<OsmTrack> legs, List<MatchedWaypoint> waypoints) {
+    return -1;
+  }
+
+  /** Method used for the last path/loop cost walk ("continuous", "per_leg", "single_track", or "none"). */
+  default String getLastPricingMethod() {
+    return "none";
+  }
+  default String getLastPricingFailure() {
+    return "unavailable";
+  }
+
 }

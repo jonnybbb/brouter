@@ -316,6 +316,7 @@ final class AutoCompetitionStrategy implements RoundTripStrategy {
     orchestrator.request.forcedCorridorAccepted = winner.forcedCorridorAccepted();
     orchestrator.request.candidateFloorsEnforced = true;
     orchestrator.request.deferredOutputWrite = true;
+    orchestrator.request.producingTier = winner.algorithm;
   }
 
   /**

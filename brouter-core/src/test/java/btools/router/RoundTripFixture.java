@@ -78,7 +78,7 @@ public final class RoundTripFixture {
     return re;
   }
 
-  static File projectDir() {
+  public static File projectDir() {
     return PROJECT_DIR;
   }
 
@@ -91,7 +91,7 @@ public final class RoundTripFixture {
   }
 
   /** A round-trip start/via node at the given lon/lat. */
-  static OsmNodeNamed node(String name, double lon, double lat) {
+  public static OsmNodeNamed node(String name, double lon, double lat) {
     OsmNodeNamed n = new OsmNodeNamed();
     n.name = name;
     n.ilon = 180000000 + (int) (lon * 1000000 + 0.5);
@@ -99,7 +99,7 @@ public final class RoundTripFixture {
     return n;
   }
 
-  static RoutingEngine engine(String profile, int direction, int radius) {
+  public static RoutingEngine engine(String profile, int direction, int radius) {
     return engine(profile, direction, radius, rc -> { });
   }
 
@@ -107,7 +107,7 @@ public final class RoundTripFixture {
    * Build and run a round-trip engine from the Dreieich origin, applying {@code tweak}
    * to the context and appending any {@code vias} as intermediate waypoints.
    */
-  static RoutingEngine engine(String profile, int direction, int radius,
+  public static RoutingEngine engine(String profile, int direction, int radius,
                               Consumer<RoutingContext> tweak, OsmNodeNamed... vias) {
     List<OsmNodeNamed> wps = new ArrayList<>();
     wps.add(node("from", 8.72, 50.0));

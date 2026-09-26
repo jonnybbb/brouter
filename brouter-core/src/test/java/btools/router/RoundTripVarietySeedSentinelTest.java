@@ -11,7 +11,7 @@ import java.util.Set;
 import btools.router.roundtrip.RoundTripAlgorithm;
 
 /**
- * CI sentinel for the round-trip variety seed (ADR-0001) on the bundled
+ * CI sentinel for the round-trip variety seed (variety-seed contract, CONTEXT.md) on the bundled
  * Dreieich fixture. Guards the two contracts a refactor could silently break:
  * <ol>
  *   <li><b>Determinism</b> — the same request + the same seed must reproduce
@@ -88,6 +88,6 @@ public class RoundTripVarietySeedSentinelTest {
       }
     }
     Assert.fail(algo + ": seeds 1-4 all produced the identical node set as seed 0 — "
-      + "the variety-seed wiring is broken (ADR-0001)");
+      + "the variety-seed wiring is broken (variety-seed contract, CONTEXT.md)");
   }
 }

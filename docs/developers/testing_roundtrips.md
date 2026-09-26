@@ -33,7 +33,7 @@ variants are skipped.
 ./gradlew :brouter-core:integrationTest
 ```
 
-All 16 regions × profiles × radii × directions (~930 cells). Per cell the
+All 16 regions × profiles × radii × directions (gravel 230, fastbike 230, mtb 88 cells; 548 total cells). Per cell the
 SHIPPED route is gated: the AUTO competition runs lenient (production
 default) and its result is held to the regional quality bands — except a
 disclosed best-effort (a "Warning:" the production gate itself attached),

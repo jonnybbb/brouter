@@ -73,7 +73,7 @@ final class GreedyStrategy implements RoundTripStrategy {
     if (!degradedFallback
         && result != null && result.getLoopWaypoints() != null
         && result.getLoopWaypoints().size() >= 4) {
-      adoptPlannedLoop(request, result, searchRadius);
+      adoptPlannedLoop(request, result, searchRadius, algo);
     } else {
       handleNoAcceptableLoop(request, result, algo, searchRadius, direction);
     }
@@ -386,7 +386,7 @@ final class GreedyStrategy implements RoundTripStrategy {
    * doRouting re-route when the bypass fails.
    */
   private void adoptPlannedLoop(RoundTripRequest request, RoundTripResult result,
-                                double searchRadius) {
+                                double searchRadius, RoundTripAlgorithm algo) {
     for (String diag : result.getDiagnostics()) {
       ops.logInfo("greedy: " + diag);
     }
@@ -440,6 +440,7 @@ final class GreedyStrategy implements RoundTripStrategy {
     if (useDetailedPlannerTrack) {
       try {
         orchestrator.setTrack(result.getTrack());
+        request.producingTier = algo;
         if (result.getMatchedWaypoints() != null) {
           ops.setMatchedWaypoints(result.getMatchedWaypoints());
         }
@@ -523,6 +524,7 @@ final class GreedyStrategy implements RoundTripStrategy {
         ops.logInfo("greedy: adopting best-effort loop for the quality gate to grade ("
           + (result.getFallbackReason() == null ? "?" : result.getFallbackReason()) + ")");
         orchestrator.setTrack(bestEffort);
+        request.producingTier = algo;
         if (result.getMatchedWaypoints() != null) {
           ops.setMatchedWaypoints(result.getMatchedWaypoints());
         }

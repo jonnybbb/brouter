@@ -294,6 +294,9 @@ public final class RoutingContext {
   public Integer roundTripPoints;
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.defaultAlgorithm();
+  public String roundTripRefine;
+  public Integer roundTripRefineEvals;
+  public Long roundTripRefineMaxMs;
   /**
    * Quality-gate strictness for generated round-trips. When {@code false}
    * (the default), a route that fails only a QUALITY check
