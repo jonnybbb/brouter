@@ -17,6 +17,7 @@ abstract class OsmPath implements OsmLinkHolder {
    * The cost of that path (a modified distance)
    */
   public int cost = 0;
+  String rejectionReason;
 
   // the elevation assumed for that path can have a value
   // if the corresponding node has not
@@ -159,6 +160,7 @@ abstract class OsmPath implements OsmLinkHolder {
     if (newClassifier != 0. && lastClassifier != 0. && (classifierDiff > 0.0005 || classifierDiff < -0.0005)) {
       float initialcost = rc.inverseDirection ? lastInitialCost : newInitialCost;
       if (initialcost >= 1000000.) {
+        rejectionReason = "initial_cost";
         cost = -1;
         return;
       }
@@ -185,6 +187,7 @@ abstract class OsmPath implements OsmLinkHolder {
         if (getBit(CAN_LEAVE_DESTINATION_BIT)) {
           setBit(CAN_LEAVE_DESTINATION_BIT, false);
         } else {
+          rejectionReason = "destination_access";
           cost = -1;
           return;
         }
@@ -195,6 +198,12 @@ abstract class OsmPath implements OsmLinkHolder {
 
     OsmTransferNode transferNode = link.geometry == null ? null
       : rc.geometryDecoder.decodeGeometry(link.geometry, sourceNode, targetNode, isReverse);
+
+    // Anti-reuse edge membership: accumulated over the sub-segment walk below
+    // (a detailed refTrack records transfer-point pairs, so the link counts as
+    // traveled only when every sub-segment matches). The junction-pair test at
+    // the penalty site covers raw refTracks, whose node list has no transfers.
+    boolean refTrackSegMissing = false;
 
     for (int nsection = 0; ; nsection++) {
 
@@ -224,6 +233,7 @@ abstract class OsmPath implements OsmLinkHolder {
         if (rc.inverseDirection
           ? TurnRestriction.isTurnForbidden(sourceNode.firstRestriction, lon2, lat2, lon0, lat0, rc.bikeMode || rc.footMode, rc.carMode)
           : TurnRestriction.isTurnForbidden(sourceNode.firstRestriction, lon0, lat0, lon2, lat2, rc.bikeMode || rc.footMode, rc.carMode)) {
+          rejectionReason = "turn_restriction";
           cost = -1;
           return;
         }
@@ -274,6 +284,12 @@ abstract class OsmPath implements OsmLinkHolder {
       }
       linkdisttotal += dist;
 
+      if (rc.roundTrip && refTrack != null && !refTrackSegMissing
+          && !refTrack.containsTraveledSegment(
+            ((long) lon1) << 32 | lat1, ((long) lon2) << 32 | lat2)) {
+        refTrackSegMissing = true;
+      }
+
       // apply a start-direction if appropriate (by faking the origin position)
       if (isStartpoint) {
         if (rc.startDirectionValid) {
@@ -311,6 +327,7 @@ abstract class OsmPath implements OsmLinkHolder {
 
       double sectionCost = processWaySection(rc, dist, delta_h, elevation, angle, cosangle, isStartpoint, nsection, lastpriorityclassifier);
       if ((sectionCost < 0. || costfactor > 9998. && !detailMode) || sectionCost + cost >= 2000000000.) {
+        rejectionReason = costfactor > 9998. ? "forbidden_way" : "section_cost";
         cost = -1;
         return;
       }
@@ -321,6 +338,8 @@ abstract class OsmPath implements OsmLinkHolder {
 
       cost += (int) sectionCost;
 
+      // Preserve segment-local model time; cumulative times can survive removed detours.
+      double timeBeforeSection = message != null ? getTotalTime() : 0;
       // compute kinematic
       computeKinematic(rc, dist, delta_h, detailMode);
 
@@ -334,6 +353,15 @@ abstract class OsmPath implements OsmLinkHolder {
         message.lat = lat2;
         message.ele = originEle2;
         message.wayKeyValues = rc.expctxWay.getKeyValueDescription(isReverse, description);
+        if (recordTransferNodes && originElement != null) {
+          int measuredLon = stopAtEndpoint ? rc.ilonshortest : lon2;
+          int measuredLat = stopAtEndpoint ? rc.ilatshortest : lat2;
+          message.recordSegment(originElement.getIdFromPos(), ((long) measuredLon << 32) | measuredLat,
+            (float) (getTotalTime() - timeBeforeSection));
+          message.recordTurnRestrictions(((long) measuredLon << 32) | measuredLat,
+            measuredLon == targetNode.ilon && measuredLat == targetNode.ilat ? targetNode.firstRestriction : null,
+            measuredLon == targetNode.ilon && measuredLat == targetNode.ilat);
+        }
       }
 
       if (stopAtEndpoint) {
@@ -341,6 +369,10 @@ abstract class OsmPath implements OsmLinkHolder {
           originElement = OsmPathElement.create(rc.ilonshortest, rc.ilatshortest, originEle2, originElement);
           originElement.cost = cost;
           if (message != null) {
+            // This message already contains the clipped distance and the
+            // traversed way's tags; its endpoint must match the clipped node.
+            message.lon = rc.ilonshortest;
+            message.lat = rc.ilatshortest;
             originElement.message = message;
           }
         }
@@ -354,8 +386,21 @@ abstract class OsmPath implements OsmLinkHolder {
 
       if (transferNode == null) {
         // *** penalty for being part of the reference track
-        if (refTrack != null && refTrack.containsNode(targetNode) && refTrack.containsNode(sourceNode)) {
-          int reftrackcost = linkdisttotal;
+        // Round-trip uses EDGE membership, not both-endpoints node membership:
+        // the historic containsNode(target) && containsNode(source) test also
+        // taxed fresh connector roads between two separately-visited nodes —
+        // roads the reference track never traveled. A link is reused when every
+        // walked sub-segment matched (detailed refTrack) or its junction pair is
+        // a recorded edge (raw refTrack). General routing (incl. alternativeidx
+        // alternatives) keeps the historic node-membership test so its output is
+        // unchanged; refTrackCostFactor is 1.0 there (exact integer math, historic
+        // cost) and only the round-trip return-variant search lowers it.
+        boolean reusedRefTrackEdge = refTrack != null && (rc.roundTrip
+          ? (!refTrackSegMissing
+             || refTrack.containsTraveledSegment(sourceNode.getIdFromPos(), targetNode.getIdFromPos()))
+          : (refTrack.containsNode(targetNode) && refTrack.containsNode(sourceNode)));
+        if (reusedRefTrackEdge) {
+          int reftrackcost = (int) (linkdisttotal * rc.refTrackCostFactor + 0.5);
           cost += reftrackcost;
         }
         selev = ele2;
@@ -385,6 +430,7 @@ abstract class OsmPath implements OsmLinkHolder {
     // add target-node costs
     double targetCost = processTargetNode(rc);
     if (targetCost < 0. || targetCost + cost >= 2000000000.) {
+      rejectionReason = "node_cost";
       cost = -1;
       return;
     }

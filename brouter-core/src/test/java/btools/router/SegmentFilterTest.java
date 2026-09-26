@@ -106,7 +106,9 @@ public class SegmentFilterTest {
   @Test
   public void filterByMinAndMaxLength() {
     List<String> filtered = track.filterSegments(500, 1500, -1, -1);
-    Assert.assertEquals("segments 500-1500m: track(500), primary(1500)", 2, filtered.size());
+    Assert.assertEquals("segments 500-1500m: track(500), primary(1500), secondary(800)", 3, filtered.size());
+    Assert.assertArrayEquals(new int[]{500, 1500, 800},
+      filtered.stream().mapToInt(row -> Integer.parseInt(row.split("\\t")[3])).toArray());
   }
 
   @Test

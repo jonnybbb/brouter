@@ -268,15 +268,15 @@ public class RouteServerTest {
     Assert.assertTrue("messages header should contain Gradient", headerStr.contains("Gradient"));
 
     // Check that message rows have 14 columns (the last being Gradient)
-    org.json.JSONArray messages = geoJson.getJSONArray("features")
+    JSONArray messages = geoJson.getJSONArray("features")
       .getJSONObject(0).getJSONObject("properties").getJSONArray("messages");
     Assert.assertTrue("should have header + at least one data row", messages.length() >= 2);
     // Header row
-    org.json.JSONArray headerRow = messages.getJSONArray(0);
+    JSONArray headerRow = messages.getJSONArray(0);
     Assert.assertEquals("header should have 14 columns", 14, headerRow.length());
     Assert.assertEquals("Gradient", headerRow.getString(13));
     // Data row
-    org.json.JSONArray dataRow = messages.getJSONArray(1);
+    JSONArray dataRow = messages.getJSONArray(1);
     Assert.assertEquals("data row should have 14 columns", 14, dataRow.length());
   }
 

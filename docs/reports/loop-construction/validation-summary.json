@@ -1,0 +1,23 @@
+{
+  "core": {
+    "tests": 896,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 18,
+    "passed": 878
+  },
+  "integration": {
+    "tests": 30,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 30
+  },
+  "paired_evidence": "brouter-core/build/refine-evaluation-2675540930182886791",
+  "static_checks": [
+    "checkstyleMain",
+    "checkstyleTest",
+    "pmdMain",
+    "pmdTest"
+  ]
+}

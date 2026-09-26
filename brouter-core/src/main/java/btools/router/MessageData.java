@@ -6,7 +6,78 @@
 package btools.router;
 
 
-final class MessageData implements Cloneable {
+public final class MessageData implements Cloneable {
+  private btools.mapaccess.TurnRestriction cleanupRestrictions;
+  private long restrictionNode;
+  private boolean restrictionsRecorded;
+  private boolean restrictionAtJunction;
+
+  void recordTurnRestrictions(long node, btools.mapaccess.TurnRestriction restrictions, boolean atJunction) {
+    cleanupRestrictions = null;
+    restrictionNode = node;
+    restrictionsRecorded = true;
+    restrictionAtJunction = atJunction;
+    btools.mapaccess.TurnRestriction tail = null;
+    for (btools.mapaccess.TurnRestriction source = restrictions; source != null; source = source.next) {
+      btools.mapaccess.TurnRestriction copy = new btools.mapaccess.TurnRestriction();
+      copy.fromLon = source.fromLon;
+      copy.fromLat = source.fromLat;
+      copy.toLon = source.toLon;
+      copy.toLat = source.toLat;
+      copy.isPositive = source.isPositive;
+      copy.exceptions = source.exceptions;
+      if (tail == null) cleanupRestrictions = copy;
+      else tail.next = copy;
+      tail = copy;
+    }
+  }
+
+  /** Restriction snapshot stays tied to its detailed point after origin-pointer repair. */
+  public boolean permitsCleanupTurn(OsmPathElement before, OsmPathElement node, OsmPathElement after, RoutingContext rc) {
+    return restrictionsRecorded && restrictionAtJunction && restrictionNode == node.getIdFromPos()
+      && (!rc.considerTurnRestrictions || !btools.mapaccess.TurnRestriction.isTurnForbidden(cleanupRestrictions,
+        rc.inverseDirection ? after.getILon() : before.getILon(),
+        rc.inverseDirection ? after.getILat() : before.getILat(),
+        rc.inverseDirection ? before.getILon() : after.getILon(),
+        rc.inverseDirection ? before.getILat() : after.getILat(), rc.bikeMode || rc.footMode, rc.carMode));
+  }
+
+
+  /**
+   * Way-tag key/value dump of the matched way (read-only round-trip seam).
+   */
+  public String getWayKeyValues() {
+    return wayKeyValues;
+  }
+
+  /**
+   * Profile costfactor recorded for this edge (read-only round-trip seam).
+   */
+  public float getCostfactor() {
+    return costfactor;
+  }
+
+  // Original detailed segment, preserved through cleanup and cloning. Analysis only.
+  private long measuredFrom;
+  private long measuredTo;
+  private float measuredMovingSeconds = Float.NaN;
+  private boolean measuredSegment;
+
+  void recordSegment(long from, long to, float movingSeconds) {
+    measuredFrom = from;
+    measuredTo = to;
+    measuredMovingSeconds = movingSeconds;
+    measuredSegment = true;
+  }
+
+  boolean describesSegment(long from, long to) {
+    return measuredSegment && measuredFrom == from && measuredTo == to;
+  }
+
+  float measuredMovingSeconds() {
+    return measuredMovingSeconds;
+  }
+
   int linkdist = 0;
   int linkelevationcost = 0;
   int linkturncost = 0;

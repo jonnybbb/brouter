@@ -20,11 +20,22 @@ public final class MatchedWaypoint {
   public OsmNode node1;
   public OsmNode node2;
   public OsmNode crosspoint;
+  /** Original clipped match retained when generated waypoint metadata is snapped to a junction. */
+  public OsmNode originalCrosspoint;
   public OsmNode waypoint;
   public OsmNode correctedpoint;
   public String name;  // waypoint name used in error messages
   public double radius;  // distance in meter between waypoint and crosspoint
   public byte wpttype = WAYPOINT_TYPE_SHAPING;
+  // True when this match corresponds to an engine-generated waypoint (e.g. a
+  // round-trip arc-densification bulge), propagated from OsmNodeNamed.generated.
+  // Lets spur cleanup strip generated detours without matching on the name.
+  // Not part of writeToStream/readFromStream (rebuilt, like name/wpttype).
+  public boolean generated = false;
+  // Tag-value description bitmap of the matched way, captured by the waypoint
+  // matcher so snap scoring can evaluate the way's profile cost factor without
+  // re-reading the graph. Not part of writeToStream/readFromStream.
+  public byte[] wayDescription;
   public int indexInTrack = 0;
   public double directionToNext = -1;
   public double directionDiff = 361;
@@ -42,6 +53,9 @@ public final class MatchedWaypoint {
     dos.writeInt(waypoint.ilat);
     dos.writeInt(waypoint.ilon);
     dos.writeDouble(radius);
+    dos.writeByte(wpttype);
+    dos.writeShort(name.length());
+    dos.writeBytes(name);
   }
 
   public static MatchedWaypoint readFromStream(DataInput dis) throws IOException {
@@ -60,6 +74,11 @@ public final class MatchedWaypoint {
     mwp.waypoint.ilat = dis.readInt();
     mwp.waypoint.ilon = dis.readInt();
     mwp.radius = dis.readDouble();
+    mwp.wpttype = dis.readByte();
+    int len = dis.readShort();
+    byte[] bytes = new byte[len];
+    dis.readFully(bytes);
+    mwp.name = new String(bytes);
     return mwp;
   }
 

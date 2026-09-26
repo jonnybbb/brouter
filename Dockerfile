@@ -3,7 +3,10 @@
 # Builds BRouter from source using Gradle, runs the standalone HTTP server.
 # Uses Bellsoft Liberica to share base layers with the Spring Boot app image.
 # =============================================================================
-FROM bellsoft/liberica-openjdk-alpine:21@sha256:d939f0118532acc680d10dd0c0438cbffab5f028eaa0537ebb2bd97537329c74 AS build
+# glibc + JDK 17: the daemon JVM is pinned to 17 (gradle-daemon-jvm.properties)
+# and Gradle 9's native services do not run on musl, so an Alpine build stage
+# cannot work on either axis. The runtime stage below stays Alpine.
+FROM bellsoft/liberica-openjdk-debian:17@sha256:9a38411cf122f56caed5b6e28462a0cdf1d4525aa904544028ffb4418ba691ad AS build
 
 WORKDIR /tmp/brouter
 COPY . .
@@ -29,13 +32,19 @@ RUN mkdir -p /brouter/segments4 /brouter/customprofiles && chown -R brouter:brou
 
 VOLUME ["/brouter/segments4"]
 
+# Runtime configuration — override via environment variables
+ENV JAVA_OPTS="-Xmx512m -Xms256m" \
+    BROUTER_PORT=17777 \
+    BROUTER_MAX_THREADS=4
+
 USER brouter
 
-# BRouter server listens on port 17777 by default
 EXPOSE 17777
 
-ENTRYPOINT ["java"]
-CMD ["-Xmx512m", "-Xms256m", "-cp", "/brouter/brouter-server.jar", \
-     "btools.server.RouteServer", "/brouter/segments4", "/brouter/profiles2", \
-     "customprofiles", "17777", "1"]
+# Shell form so env vars are expanded at runtime
+ENTRYPOINT exec java $JAVA_OPTS \
+    -cp /brouter/brouter-server.jar \
+    btools.server.RouteServer \
+    /brouter/segments4 /brouter/profiles2 customprofiles \
+    $BROUTER_PORT $BROUTER_MAX_THREADS
 

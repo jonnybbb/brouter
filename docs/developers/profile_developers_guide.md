@@ -92,6 +92,15 @@ Some variable names are pre-defined and accessed by the routing engine:
     - `validForFoot`
     - `validForCars`
 
+    These flags do more than label the profile. They select which turn
+    restrictions apply (car-type vs bicycle-type), pick the travel-time model
+    (Tobler's hiking function for foot, the bike-power model for bikes), set
+    the `maxSpeed` default (6 km/h for foot, 45 km/h otherwise), choose the
+    voice-hint transport mode, and classify the profile for round-trip effort
+    resolution (fast-motorized profiles — car, motorbike — resolve `AUTO` to
+    the `FAST` tier — see `docs/features/roundtrips.md`). A profile that
+    declares none of them gets none of these adaptions.
+
   - 2 variables to change the heuristic coefficients for the 2 routing passes (
     <0 disables a routing pass )
 
@@ -121,7 +130,7 @@ Some variable names are pre-defined and accessed by the routing engine:
        To find the start / end points for a route, BRouter normally uses for all
        waypoint matches the dynamic range logic instead of the variable
        `waypointCatchingRange` with a default value of 250 m. In some
-       situations, adding a few meters here is not enough to find a point.
+       situations, adding a few metres here is not enough to find a point.
        With this new variable, it goes deeper and could reach a radius of about 50 km.
 
     - `add_beeline` default=false
@@ -145,14 +154,14 @@ Some variable names are pre-defined and accessed by the routing engine:
        New is an additional block with information on the excluded ways, a list with
        name `noStartWay` and `name,value;...` entries.
 
-    - `correctMisplacedViaPoints`  default = true
+    - `correctMisplacedViaPoints`  default = false
 
        Removes detours (going back and forth using the same ways) that would be used to reach via points. 
        With the parameter `exportCorrectedWaypoints` adds these points to the output formats.
 
-    - `correctMisplacedViaPointsDistance`  default=0
+    - `correctMisplacedViaPointsDistance`  default=400
 
-       The default setting 0 removes the entire path (detour). Above 0, BRouter only removes detours shorter than this distance (in meters).
+       The default setting 0 removes the entire path (detour). Above 0, BRouter only removes detours shorter than this distance (in metres).
 
     - `continueStraight` default = false
 

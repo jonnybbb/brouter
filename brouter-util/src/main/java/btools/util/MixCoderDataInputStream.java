@@ -11,12 +11,21 @@ import java.io.InputStream;
 
 
 public final class MixCoderDataInputStream extends DataInputStream {
+
+  /**
+   * The encoder's final flush pads with at most a few bytes, so a well-formed stream
+   * never reads far past EOF. Without a bound, EOF turns into unlimited zero bits and
+   * a truncated stream loops forever inside {@link #decodeVarBits2()}.
+   */
+  private static final int MAX_EOF_BYTES = 64;
+
   private int lastValue;
   private int repCount;
   private int diffshift;
 
   private int bits; // bits left in buffer
   private int b; // buffer word
+  private int eofBytes; // padding bytes synthesized after end of stream
 
   private static final int[] vl_values = BitCoderContext.vl_values;
   private static final int[] vl_length = BitCoderContext.vl_length;
@@ -117,6 +126,8 @@ public final class MixCoderDataInputStream extends DataInputStream {
 
       if (nextByte != -1) {
         b |= (nextByte & 0xff) << bits;
+      } else if (++eofBytes > MAX_EOF_BYTES) {
+        throw new IOException("unexpected end of MixCoder stream (truncated input)");
       }
       bits += 8;
     }

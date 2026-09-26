@@ -1,0 +1,229 @@
+{
+  "builtUtc": "2026-09-26T13:18:58.328524+00:00",
+  "scope": "All 23 targeted cases; historical originals versus independent post-fix regeneration. Not a controlled quality A/B.",
+  "offline": true,
+  "sourceHashes": {
+    "brouter-core/build/refine-evaluation-12687333987490758169/ride-review-data.js": "7949aa0556cade2706105d431f3f442561c4a8e56ead525706845bee8a39eb67",
+    "brouter-core/build/construction-diagnosis/final-case-results.csv": "9640477342d19e4c8ad4d758feac7309bd13f7d60638b2efbd40f63b93d21f72",
+    "brouter-core/build/construction-diagnosis/validation-summary.json": "dc3432f6a18b0d55d85d07ada9fa2711c89e5233472791dc27b179d779ca4af2",
+    "docs/loop-construction-defects.md": "3c6e51fe49530694d664cb41121bdd566e98e80004d1d0d8b5fe30df71e7be0a",
+    "misc/scripts/construction-report/CaptureConstructionRoutes.java": "be07f92a6fbe9e6bb602fe4a9f9cf704aff2b1d928f1e48c595f12244a3daa59",
+    "brouter-core/build/construction-diagnosis/CaptureConstructionRoutes.java": "3f840d34336993f36d478b419a1553635496b29d67daa22800b2674133e57aed",
+    "brouter-core/build/construction-diagnosis/report-capture/dreieich_75km_gravel_N.json": "a810bfb58d9b12d80d04fd18f44fce4a011ca5b49a6aa8821c7d9ab0c1a9338d",
+    "brouter-core/build/construction-diagnosis/report-capture/dreieich_100km_fastbike_W.json": "5a7c0894f4af349556c040c81b7818de17c2d9f78970035de450ed7be92bd788",
+    "brouter-core/build/construction-diagnosis/report-capture/urban_berlin_80km_fastbike_N.json": "e040c522e2720fe1fac7a130f3d608d3200431fde4596e9e0dd395500af229b5",
+    "brouter-core/build/construction-diagnosis/report-capture/rural_lozere_80km_gravel_E.json": "da6e929467ac7818a1f8cec52b9176764f75c557926d4d66d73a68966a4e8960",
+    "brouter-core/build/construction-diagnosis/report-capture/rural_lozere_50km_fastbike_S.json": "ba634b488d8fcd7f86a4874dbe72b1ac8f002d96efe621f6c1bb8e5b17cd243e",
+    "brouter-core/build/construction-diagnosis/report-capture/mallorca_100km_fastbike_E.json": "6e5ed4b55d479e888c1198611919fe915f0cf1b8391b96e689f442b8058465a0",
+    "brouter-core/build/construction-diagnosis/report-capture/basel_80km_gravel_W.json": "2a074737bb0c93e6abe15098729df5cacc889ec38afa26710c3e62982975b1f6",
+    "brouter-core/build/construction-diagnosis/report-capture/basel_30km_fastbike_S.json": "848b3c6a76aba05ad726896e2fb743687d472bd3c73e240694a91d737300acb2",
+    "brouter-core/build/construction-diagnosis/report-capture/grenoble_30km_fastbike_S.json": "4392cdfe94be2c62d9eb5bb0290c05b00bd426d0983651c57405b2ad54897787",
+    "brouter-core/build/construction-diagnosis/report-capture/grenoble_75km_fastbike_N.json": "2de44b91e0c27dc9a8c4066f31be261cf9d99b2ca897b6defba8d9702f5ddbf8",
+    "brouter-core/build/construction-diagnosis/report-capture/garmisch_30km_fastbike_N.json": "1bd72725d497fe9dcb015d7373bd8859b49933323483ea2f12382c58f8c7836a",
+    "brouter-core/build/construction-diagnosis/report-capture/girona_75km_gravel_W.json": "bf1246395ef1ed1f201768714c5feb1b424e6de50b481f9dcf7c869b473ed359",
+    "brouter-core/build/construction-diagnosis/report-capture/crete_senesi_100km_gravel_W.json": "d518b83eb38aa92f628ee0c0d2340474d0d188f3c27329df383cac915f1f68e5",
+    "brouter-core/build/construction-diagnosis/report-capture/crete_senesi_75km_fastbike_S.json": "62816badd7f9d3a3cd5cd2cce48668ffb19c421065c01e53c79f728a387f8152",
+    "brouter-core/build/construction-diagnosis/report-capture/dreieich_30km_gravel_E.json": "3ac4e78103597152b0787b2f4d51562de1e6faa38b0e00969252a805879b2d06",
+    "brouter-core/build/construction-diagnosis/report-capture/dreieich_30km_fastbike_E.json": "66a6ad61cc01c26a61681a7ddbb56fc921b5034afbd6c29d251bcffc3c843295",
+    "brouter-core/build/construction-diagnosis/report-capture/mallorca_30km_gravel_N.json": "515f1b851b56b8e02849a2c1f565f8f02f5db74bf7c07c40a566383e4f930c57",
+    "brouter-core/build/construction-diagnosis/report-capture/mallorca_30km_fastbike_N.json": "644c00f9930a2b2b48ad7825dce5f852107b340bcbee020c18cbdbbf6b68a467",
+    "brouter-core/build/construction-diagnosis/report-capture/basel_30km_gravel_N.json": "f8200cde0228b86516a2168a4ab65b120bd012dfc3790450dc10b221fa416d92",
+    "brouter-core/build/construction-diagnosis/report-capture/basel_30km_fastbike_N.json": "0a087f5937f72ead758b35c1a31369ab705b02ec51a7fc562c176dc0bc8ae9c7",
+    "brouter-core/build/construction-diagnosis/report-capture/urban_berlin_50km_fastbike_E.json": "65b77ce52faf0bce3d2f446c875a77d215899605c05aa15a9205ea35e5a90f29",
+    "brouter-core/build/construction-diagnosis/report-capture/freiburg_30km_fastbike_W.json": "dc75081a6cb870dec5625a938f90cfb10f4b79cb9fd0eeada877ebaa993f9600",
+    "brouter-core/build/construction-diagnosis/report-capture/grenoble_80km_fastbike_E.json": "c4497deac2dc0eb81b00cafc72a5cc048fbd90b26e5375220fc48dc61d8b6078"
+  },
+  "cases": [
+    {
+      "label": "dreieich_75km_gravel_N",
+      "status": "PRICED",
+      "historicalPoints": 1757,
+      "regeneratedPoints": 1647,
+      "auditedGpxPoints": 3404,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "dreieich_100km_fastbike_W",
+      "status": "PRICED",
+      "historicalPoints": 2780,
+      "regeneratedPoints": 2789,
+      "auditedGpxPoints": 5569,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "urban_berlin_80km_fastbike_N",
+      "status": "PRICED",
+      "historicalPoints": 3333,
+      "regeneratedPoints": 3155,
+      "auditedGpxPoints": 6488,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "rural_lozere_80km_gravel_E",
+      "status": "PRICED",
+      "historicalPoints": 2241,
+      "regeneratedPoints": 2254,
+      "auditedGpxPoints": 4495,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "rural_lozere_50km_fastbike_S",
+      "status": "PRICED",
+      "historicalPoints": 1212,
+      "regeneratedPoints": 1225,
+      "auditedGpxPoints": 2437,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "mallorca_100km_fastbike_E",
+      "status": "PRICED",
+      "historicalPoints": 1898,
+      "regeneratedPoints": 1898,
+      "auditedGpxPoints": 3796,
+      "literalGeometryIdentical": true
+    },
+    {
+      "label": "basel_80km_gravel_W",
+      "status": "PRICED",
+      "historicalPoints": 2094,
+      "regeneratedPoints": 2076,
+      "auditedGpxPoints": 4170,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "basel_30km_fastbike_S",
+      "status": "PRICED",
+      "historicalPoints": 1235,
+      "regeneratedPoints": 1225,
+      "auditedGpxPoints": 2460,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "grenoble_30km_fastbike_S",
+      "status": "PRICED",
+      "historicalPoints": 1130,
+      "regeneratedPoints": 1140,
+      "auditedGpxPoints": 2270,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "grenoble_75km_fastbike_N",
+      "status": "PRICED",
+      "historicalPoints": 2273,
+      "regeneratedPoints": 2105,
+      "auditedGpxPoints": 4378,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "garmisch_30km_fastbike_N",
+      "status": "PRICED",
+      "historicalPoints": 555,
+      "regeneratedPoints": 1379,
+      "auditedGpxPoints": 1934,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "girona_75km_gravel_W",
+      "status": "PRICED",
+      "historicalPoints": 2113,
+      "regeneratedPoints": 2147,
+      "auditedGpxPoints": 4260,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "crete_senesi_100km_gravel_W",
+      "status": "PRICED",
+      "historicalPoints": 3995,
+      "regeneratedPoints": 4144,
+      "auditedGpxPoints": 8139,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "crete_senesi_75km_fastbike_S",
+      "status": "PRICED",
+      "historicalPoints": 2286,
+      "regeneratedPoints": 2286,
+      "auditedGpxPoints": 4572,
+      "literalGeometryIdentical": true
+    },
+    {
+      "label": "dreieich_30km_gravel_E",
+      "status": "PRICED",
+      "historicalPoints": 502,
+      "regeneratedPoints": 522,
+      "auditedGpxPoints": 1024,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "dreieich_30km_fastbike_E",
+      "status": "PRICED",
+      "historicalPoints": 799,
+      "regeneratedPoints": 799,
+      "auditedGpxPoints": 1598,
+      "literalGeometryIdentical": true
+    },
+    {
+      "label": "mallorca_30km_gravel_N",
+      "status": "PRICED",
+      "historicalPoints": 793,
+      "regeneratedPoints": 793,
+      "auditedGpxPoints": 1586,
+      "literalGeometryIdentical": true
+    },
+    {
+      "label": "mallorca_30km_fastbike_N",
+      "status": "PRICED",
+      "historicalPoints": 1111,
+      "regeneratedPoints": 1110,
+      "auditedGpxPoints": 2221,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "basel_30km_gravel_N",
+      "status": "PRICED",
+      "historicalPoints": 907,
+      "regeneratedPoints": 906,
+      "auditedGpxPoints": 1813,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "basel_30km_fastbike_N",
+      "status": "PRICED",
+      "historicalPoints": 961,
+      "regeneratedPoints": 961,
+      "auditedGpxPoints": 1922,
+      "literalGeometryIdentical": true
+    },
+    {
+      "label": "urban_berlin_50km_fastbike_E",
+      "status": "PRICED",
+      "historicalPoints": 2058,
+      "regeneratedPoints": 2058,
+      "auditedGpxPoints": 4116,
+      "literalGeometryIdentical": true
+    },
+    {
+      "label": "freiburg_30km_fastbike_W",
+      "status": "PRICED",
+      "historicalPoints": 1153,
+      "regeneratedPoints": 1097,
+      "auditedGpxPoints": 2250,
+      "literalGeometryIdentical": false
+    },
+    {
+      "label": "grenoble_80km_fastbike_E",
+      "status": "PRICED",
+      "historicalPoints": 3161,
+      "regeneratedPoints": 3161,
+      "auditedGpxPoints": 6322,
+      "literalGeometryIdentical": true
+    }
+  ],
+  "geometryAudit": {
+    "cases": 23,
+    "pricedCaptures": 23,
+    "gpxPointsVerified": 81224,
+    "gpxFilesVerified": 46,
+    "basis": "Every GPX coordinate checked against the plotted integer coordinates; no geometry substitution or simplification."
+  }
+}
