@@ -207,9 +207,11 @@ public final class RefineStage {
       int varietySeed = Math.max(0, ops.routingContext().alternativeIdx);
       diag.timeoutOperation = "baseline_pricing";
       long priceStart = System.currentTimeMillis();
+      LoopPrice rawBaselinePrice;
       double rawBaselineEnergy;
       try {
-        rawBaselineEnergy = LoopCostOracle.evaluate(ops, initResult.getRawLegs(), skeleton.getWaypoints(), stageDeadline).costPerMeter();
+        rawBaselinePrice = LoopCostOracle.evaluate(ops, initResult.getRawLegs(), skeleton.getWaypoints(), stageDeadline);
+        rawBaselineEnergy = rawBaselinePrice.costPerMeter();
         diag.rawBaselinePricingFailure = ops.getLastPricingFailure();
       } finally {
         diag.pricingMs += System.currentTimeMillis() - priceStart;
@@ -222,7 +224,7 @@ public final class RefineStage {
       }
       RefineSearch search = new RefineSearch(
         ops, legEvaluator, initResult.getLegCache(), config, skeleton,
-        initResult.getRawLegs(), rawBaselineEnergy, moveOp,
+        initResult.getRawLegs(), rawBaselinePrice, moveOp,
         searchRadius, requestedDistance, varietySeed, stageDeadline);
 
       diag.timeoutOperation = "search_evaluation";
@@ -372,11 +374,7 @@ public final class RefineStage {
       request.qualityVerdict = winner.getQualityVerdict();
       request.deferredOutputWrite = true;
       if (request.lastResult != null) {
-        request.lastResult.setTrack(track);
-        if (waypointsCopy != null) {
-          request.lastResult.setMatchedWaypoints(waypointsCopy);
-        }
-        request.lastResult.setTotalDistanceMeters((int) track.distance);
+        request.lastResult.adoptRefinedTrack(track, waypointsCopy);
         request.lastResult.setRefineDiagnostics(diag);
       }
     }

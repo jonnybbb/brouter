@@ -672,6 +672,7 @@ public class GreedyRoundTripPlanner {
     MatchedWaypoint startMwp, List<OsmTrack> segments,
     double desiredDistance, double startDirection) {
     result.setTrack(track);
+    result.setDistanceContract(desiredDistance, tolerance);
     result.setLoopWaypoints(buildLoopWaypoints(waypointStack));
     result.setMatchedWaypoints(buildMatchedWaypoints(waypointStack, startMwp));
     result.setLegTracks(new ArrayList<>(segments));

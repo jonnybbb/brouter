@@ -16,7 +16,7 @@ import static org.junit.Assert.*;
 
 public class RefineOperationContractTest {
   private static RoutingEngine fixture() {
-    return RoundTripFixture.engine("gravel", 90, 1000, rc -> {
+    return RoundTripFixture.engine("trekking", 90, 1000, rc -> {
       rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
       rc.roundTripStrictQuality = false;
     });
@@ -145,7 +145,7 @@ public class RefineOperationContractTest {
     String previous = System.getProperty("loop.refine.measure");
     try {
       System.setProperty("loop.refine.measure", "true");
-      RoutingEngine refined = RoundTripFixture.engine("gravel", 90, 1000, rc -> {
+      RoutingEngine refined = RoundTripFixture.engine("trekking", 90, 1000, rc -> {
         rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
         rc.roundTripStrictQuality = false;
         rc.roundTripRefine = "local";

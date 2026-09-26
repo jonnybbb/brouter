@@ -95,6 +95,7 @@ public class RefineDirectionAndOperatorTest {
       if (prop.isFeasible()) {
         currentSkeleton = prop.getMutatedSkeleton();
         acceptedMoves++;
+        assertGenerated(prop);
         // Check that every via in currentSkeleton is within maxDisp from origSkeleton
         for (int v = 0; v < currentSkeleton.getVias().size(); v++) {
           MatchedWaypoint cur = currentSkeleton.getVias().get(v);
@@ -139,6 +140,7 @@ public class RefineDirectionAndOperatorTest {
     Assert.assertNotNull(replaceProp);
     Assert.assertTrue("REPLACE must produce feasible proposal", replaceProp.isFeasible());
     Assert.assertEquals("REPLACE", replaceProp.getOperator());
+    assertGenerated(replaceProp);
     // Frozen final via must be identical
     int lastIdx = origSkeleton.getVias().size() - 1;
     Assert.assertEquals(origSkeleton.getVias().get(lastIdx).crosspoint.ilon,
@@ -166,6 +168,7 @@ public class RefineDirectionAndOperatorTest {
     }
     if (insertProp != null && insertProp.isFeasible()) {
       Assert.assertEquals("INSERT", insertProp.getOperator());
+      assertGenerated(insertProp);
       // Inserted skeleton must have m + 1 vias
       Assert.assertEquals(origSkeleton.getVias().size() + 1, insertProp.getMutatedSkeleton().getVias().size());
       // Final via must still match original final via (closing leg NEVER touched!)
@@ -284,7 +287,7 @@ public class RefineDirectionAndOperatorTest {
 
     RefineSearch search = new RefineSearch(
       ops, evaluator, init.getLegCache(), searchCfg, origSkeleton,
-      init.getRawLegs(), init.getBaselineOracleCostPerMeter(),
+      init.getRawLegs(), LoopCostOracle.evaluate(ops, init.getRawLegs(), origSkeleton.getWaypoints(), deadline),
       mover, radius, reqDist, 42, deadline);
 
     RefineDiagnostics diag = new RefineDiagnostics();
@@ -302,4 +305,12 @@ public class RefineDirectionAndOperatorTest {
         origFinalVia.crosspoint.ilat, finVia.crosspoint.ilat);
     }
   }
+  private static void assertGenerated(MoveProposalOperator.MoveProposal proposal) {
+    MatchedWaypoint wp = proposal.getSnappedWaypoint();
+    Assert.assertTrue("Optimizer vias must remain generated", wp.generated);
+    Assert.assertTrue(WaypointSnapper.isGeneratedRoundTripWaypoint(wp));
+    Assert.assertEquals(wp.crosspoint.getIdFromPos(), wp.waypoint.getIdFromPos());
+    Assert.assertEquals(MatchedWaypoint.WAYPOINT_TYPE_SHAPING, wp.wpttype);
+  }
+
 }

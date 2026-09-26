@@ -33,17 +33,9 @@ public final class LoopCostOracle {
     }
     try (RefineBudget budget = new RefineBudget(router, deadline)) {
       budget.check();
-      int distance = 0;
-      long signature = 1;
-      for (OsmTrack leg : legs) {
-        budget.check();
-        if (leg == null) return LoopPrice.failure(FinalizationOutcome.FAILURE);
-        distance += leg.distance;
-        signature = 31 * signature + geometrySignature(leg);
-      }
-      int cost = router.walkLoopCost(legs, waypoints);
+      LoopPrice price = router.priceRawLoop(legs, waypoints);
       budget.check();
-      return LoopPrice.success(cost, distance, signature);
+      return price;
     } catch (RefineBudget.Exceeded e) {
       return LoopPrice.failure(e.outcome);
     }

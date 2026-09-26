@@ -44,7 +44,7 @@ public class RefineSearchTest {
     MoveProposalOperator moveOp = new MoveProposalOperator(ops, config);
     RefineSearch search = new RefineSearch(
       ops, evaluator, init.getLegCache(), config, skeleton,
-      init.getRawLegs(), init.getBaselineOracleCostPerMeter(),
+      init.getRawLegs(), LoopCostOracle.evaluate(ops, init.getRawLegs(), skeleton.getWaypoints(), deadline),
       moveOp, radius, reqDist, 42, deadline);
 
     RefineDiagnostics diag = new RefineDiagnostics();
@@ -94,7 +94,7 @@ public class RefineSearchTest {
     MoveProposalOperator moveOp = new MoveProposalOperator(ops, config);
     RefineSearch search = new RefineSearch(
       ops, evaluator, init.getLegCache(), config, skeleton,
-      init.getRawLegs(), init.getBaselineOracleCostPerMeter(),
+      init.getRawLegs(), LoopCostOracle.evaluate(ops, init.getRawLegs(), skeleton.getWaypoints(), deadline),
       moveOp, radius, reqDist, 42, deadline);
 
     RefineDiagnostics diag = new RefineDiagnostics();
@@ -135,7 +135,7 @@ public class RefineSearchTest {
     MoveProposalOperator moveOp = new MoveProposalOperator(ops, config);
     RefineSearch search = new RefineSearch(
       ops, evaluator, init.getLegCache(), config, skeleton,
-      init.getRawLegs(), init.getBaselineOracleCostPerMeter(),
+      init.getRawLegs(), LoopCostOracle.evaluate(ops, init.getRawLegs(), skeleton.getWaypoints(), deadline),
       moveOp, radius, reqDist, 42, deadline);
 
     RefineDiagnostics diag = new RefineDiagnostics();
@@ -170,7 +170,7 @@ public class RefineSearchTest {
 
     RefineSearch search = new RefineSearch(
       ops, evaluator, new LegCache(), config, skeleton,
-      Collections.singletonList(res.getTrack()), 1.0,
+      Collections.singletonList(res.getTrack()), LoopPrice.success(1, 1, 0),
       moveOp, radius, reqDist, 42, deadline);
 
     RefineDiagnostics diag = new RefineDiagnostics();
@@ -186,7 +186,7 @@ public class RefineSearchTest {
     RefineConfig config = new RefineConfig();
     RefineSearch search = new RefineSearch(
       null, null, new LegCache(), config, null,
-      Collections.<OsmTrack>emptyList(), 1.0,
+      Collections.<OsmTrack>emptyList(), LoopPrice.success(1, 1, 0),
       null, 1000.0, 6000.0, 42, 0L);
 
     RefineDiagnostics diag = new RefineDiagnostics();
