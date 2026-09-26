@@ -357,7 +357,8 @@ public class GeometryFidelityTest {
 
     Assert.assertTrue("Should collect >= 30 loops for fidelity report", rows.size() >= 30);
 
-    File reportFile = new File(RoundTripFixture.projectDir(), "docs/m0_2_geometry_fidelity_report.md");
+    File reportFile = new File(RoundTripFixture.projectDir(), "brouter-core/build/reports/refinement/m0_2_geometry_fidelity_report.md");
+    reportFile.getParentFile().mkdirs();
     StringBuilder sb = new StringBuilder();
     sb.append("# M0.2 Geometry Fidelity Report\n\n");
     sb.append("This report compares the raw search representation (concatenated junction-level legs) ");

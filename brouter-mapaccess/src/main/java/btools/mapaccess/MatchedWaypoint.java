@@ -20,6 +20,8 @@ public final class MatchedWaypoint {
   public OsmNode node1;
   public OsmNode node2;
   public OsmNode crosspoint;
+  /** Original clipped match retained when generated waypoint metadata is snapped to a junction. */
+  public OsmNode originalCrosspoint;
   public OsmNode waypoint;
   public OsmNode correctedpoint;
   public String name;  // waypoint name used in error messages

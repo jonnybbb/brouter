@@ -22,21 +22,58 @@ public final class LoopCostOracle {
     if (router == null || legs == null || legs.isEmpty() || waypoints == null || waypoints.size() < 2) {
       return -1.0;
     }
-    int totalCost = router.walkLoopCost(legs, waypoints);
-    if (totalCost < 0) {
-      return -1.0;
+    return evaluate(router, legs, waypoints, router.refinementDeadline()).costPerMeter();
+  }
+
+  public static LoopPrice evaluate(LegRouter router, List<OsmTrack> legs,
+                                   List<MatchedWaypoint> waypoints, long deadline) {
+    if (router == null || legs == null || legs.isEmpty() || waypoints == null
+        || waypoints.size() != legs.size() + 1) {
+      return LoopPrice.failure(FinalizationOutcome.FAILURE);
     }
-    int totalDistance = 0;
-    for (int i = 0; i < legs.size(); i++) {
-      OsmTrack leg = legs.get(i);
-      if (leg != null) {
-        totalDistance += leg.distance;
+    try (RefineBudget budget = new RefineBudget(router, deadline)) {
+      budget.check();
+      int distance = 0;
+      long signature = 1;
+      for (OsmTrack leg : legs) {
+        budget.check();
+        if (leg == null) return LoopPrice.failure(FinalizationOutcome.FAILURE);
+        distance += leg.distance;
+        signature = 31 * signature + geometrySignature(leg);
+      }
+      int cost = router.walkLoopCost(legs, waypoints);
+      budget.check();
+      return LoopPrice.success(cost, distance, signature);
+    } catch (RefineBudget.Exceeded e) {
+      return LoopPrice.failure(e.outcome);
+    }
+  }
+
+  public static LoopPrice evaluate(LegRouter router, OsmTrack track,
+                                   List<MatchedWaypoint> waypoints, long deadline) {
+    if (router == null || track == null || waypoints == null || waypoints.size() < 2) {
+      return LoopPrice.failure(FinalizationOutcome.FAILURE);
+    }
+    try (RefineBudget budget = new RefineBudget(router, deadline)) {
+      budget.check();
+      int cost = router.walkPathCost(track, waypoints.get(0), waypoints.get(waypoints.size() - 1));
+      budget.check();
+      return LoopPrice.success(cost, track.distance, geometrySignature(track));
+    } catch (RefineBudget.Exceeded e) {
+      return LoopPrice.failure(e.outcome);
+    }
+  }
+
+  public static long geometrySignature(OsmTrack track) {
+    long hash = 1;
+    if (track != null && track.nodes != null) {
+      for (btools.router.OsmPathElement node : track.nodes) {
+        hash = 31 * hash + node.getILon();
+        hash = 31 * hash + node.getILat();
+        hash = 31 * hash + node.getSElev();
       }
     }
-    if (totalDistance <= 0) {
-      return -1.0;
-    }
-    return (double) totalCost / totalDistance;
+    return hash;
   }
 
   /**
@@ -92,5 +129,12 @@ public final class LoopCostOracle {
       return -1;
     }
     return priceCost(router, track, waypoints.get(0), waypoints.get(waypoints.size() - 1));
+  }
+
+  /**
+   * Returns the pricing method used by the router for the last calculation.
+   */
+  public static String getLastPricingMethod(LegRouter router) {
+    return (router != null) ? router.getLastPricingMethod() : "unknown";
   }
 }

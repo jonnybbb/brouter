@@ -17,6 +17,7 @@ abstract class OsmPath implements OsmLinkHolder {
    * The cost of that path (a modified distance)
    */
   public int cost = 0;
+  String rejectionReason;
 
   // the elevation assumed for that path can have a value
   // if the corresponding node has not
@@ -159,6 +160,7 @@ abstract class OsmPath implements OsmLinkHolder {
     if (newClassifier != 0. && lastClassifier != 0. && (classifierDiff > 0.0005 || classifierDiff < -0.0005)) {
       float initialcost = rc.inverseDirection ? lastInitialCost : newInitialCost;
       if (initialcost >= 1000000.) {
+        rejectionReason = "initial_cost";
         cost = -1;
         return;
       }
@@ -185,6 +187,7 @@ abstract class OsmPath implements OsmLinkHolder {
         if (getBit(CAN_LEAVE_DESTINATION_BIT)) {
           setBit(CAN_LEAVE_DESTINATION_BIT, false);
         } else {
+          rejectionReason = "destination_access";
           cost = -1;
           return;
         }
@@ -230,6 +233,7 @@ abstract class OsmPath implements OsmLinkHolder {
         if (rc.inverseDirection
           ? TurnRestriction.isTurnForbidden(sourceNode.firstRestriction, lon2, lat2, lon0, lat0, rc.bikeMode || rc.footMode, rc.carMode)
           : TurnRestriction.isTurnForbidden(sourceNode.firstRestriction, lon0, lat0, lon2, lat2, rc.bikeMode || rc.footMode, rc.carMode)) {
+          rejectionReason = "turn_restriction";
           cost = -1;
           return;
         }
@@ -316,6 +320,7 @@ abstract class OsmPath implements OsmLinkHolder {
 
       double sectionCost = processWaySection(rc, dist, delta_h, elevation, angle, cosangle, isStartpoint, nsection, lastpriorityclassifier);
       if ((sectionCost < 0. || costfactor > 9998. && !detailMode) || sectionCost + cost >= 2000000000.) {
+        rejectionReason = costfactor > 9998. ? "forbidden_way" : "section_cost";
         cost = -1;
         return;
       }
@@ -326,6 +331,8 @@ abstract class OsmPath implements OsmLinkHolder {
 
       cost += (int) sectionCost;
 
+      // Preserve segment-local model time; cumulative times can survive removed detours.
+      double timeBeforeSection = message != null ? getTotalTime() : 0;
       // compute kinematic
       computeKinematic(rc, dist, delta_h, detailMode);
 
@@ -339,6 +346,15 @@ abstract class OsmPath implements OsmLinkHolder {
         message.lat = lat2;
         message.ele = originEle2;
         message.wayKeyValues = rc.expctxWay.getKeyValueDescription(isReverse, description);
+        if (recordTransferNodes && originElement != null) {
+          int measuredLon = stopAtEndpoint ? rc.ilonshortest : lon2;
+          int measuredLat = stopAtEndpoint ? rc.ilatshortest : lat2;
+          message.recordSegment(originElement.getIdFromPos(), ((long) measuredLon << 32) | measuredLat,
+            (float) (getTotalTime() - timeBeforeSection));
+          message.recordTurnRestrictions(((long) measuredLon << 32) | measuredLat,
+            measuredLon == targetNode.ilon && measuredLat == targetNode.ilat ? targetNode.firstRestriction : null,
+            measuredLon == targetNode.ilon && measuredLat == targetNode.ilat);
+        }
       }
 
       if (stopAtEndpoint) {
@@ -403,6 +419,7 @@ abstract class OsmPath implements OsmLinkHolder {
     // add target-node costs
     double targetCost = processTargetNode(rc);
     if (targetCost < 0. || targetCost + cost >= 2000000000.) {
+      rejectionReason = "node_cost";
       cost = -1;
       return;
     }

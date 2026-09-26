@@ -1214,7 +1214,8 @@ public class RoutingEngine extends Thread {
         if (nodesCache == null) {
           resetCache(false);
         }
-        nodesCache.matchWaypointsToNodes(waypoints, maxDistance, islandNodePairs);
+        nodesCache.matchWaypointsToNodes(waypoints, maxDistance, islandNodePairs,
+          RoutingEngine.this::checkRefinementBudget);
       }
 
       @Override
@@ -1231,6 +1232,27 @@ public class RoutingEngine extends Thread {
       @Override
       public int walkLoopCost(List<OsmTrack> legs, List<MatchedWaypoint> waypoints) {
         return RoutingEngine.this.walkLoopCost(legs, waypoints);
+      }
+
+      @Override
+      public long refinementDeadline() {
+        return refinementDeadline;
+      }
+
+      @Override
+      public void setRefinementDeadline(long deadline) {
+        refinementDeadline = deadline <= 0 ? 0
+          : RefineBudget.earlier(deadline, roundTripRequestDeadline);
+      }
+
+      @Override
+      public String getLastPricingMethod() {
+        return RoutingEngine.this.getLastPricingMethod();
+      }
+
+      @Override
+      public String getLastPricingFailure() {
+        return RoutingEngine.this.getLastPricingFailure();
       }
     };
   }
@@ -3365,13 +3387,57 @@ public class RoutingEngine extends Thread {
     }
   }
 
+  private String lastPricingMethod = "none";
+  private String lastPricingFailure = "none";
+  private long refinementDeadline;
+
+  private void checkRefinementBudget() {
+    if (refinementDeadline > 0) {
+      if (isTerminated()) {
+        throw new RefineBudget.Exceeded(FinalizationOutcome.CANCELLED);
+      }
+      if (System.currentTimeMillis() >= refinementDeadline) {
+        throw new RefineBudget.Exceeded(FinalizationOutcome.TIMEOUT);
+      }
+    }
+  }
+
+  public String getLastPricingMethod() {
+    return lastPricingMethod;
+  }
+
+  public String getLastPricingFailure() {
+    return lastPricingFailure;
+  }
+
   /**
    * Linear path walker: follows a track's nodes link-by-link through routingContext.createPath,
    * returning the exact cost without running an open set search.
    */
   int walkPathCost(OsmTrack track, MatchedWaypoint startWp, MatchedWaypoint endWp) {
+    lastPricingMethod = "none";
+    lastPricingFailure = "invalid_arguments";
+    checkRefinementBudget();
     if (track == null || track.nodes == null || track.nodes.size() < 2 || startWp == null || endWp == null) {
       return -1;
+    }
+    // Detailed output can retain the actual clipped endpoints after waypoint metadata
+    // was moved to graph junctions. Price the displayed endpoints, not those metadata positions.
+    boolean detailed = false;
+    for (OsmPathElement node : track.nodes) {
+      checkRefinementBudget();
+      if (node.message != null) {
+        detailed = true;
+        break;
+      }
+    }
+    if (detailed) {
+      startWp = RefineSkeleton.copyWaypoint(startWp);
+      endWp = RefineSkeleton.copyWaypoint(endWp);
+      OsmPathElement first = track.nodes.get(0);
+      OsmPathElement last = track.nodes.get(track.nodes.size() - 1);
+      startWp.crosspoint = new OsmNode(first.getILon(), first.getILat());
+      endWp.crosspoint = new OsmNode(last.getILon(), last.getILat());
     }
     List<OsmNode> wpts2 = new ArrayList<>();
     if (startWp.waypoint != null) {
@@ -3382,9 +3448,12 @@ public class RoutingEngine extends Thread {
     }
     routingContext.cleanNogoList(wpts2);
 
+    boolean savedStartDirectionValid = routingContext.startDirectionValid;
+    routingContext.startDirectionValid = routingContext.forceUseStartDirection
+      && routingContext.startDirection != null && !routingContext.inverseDirection;
     try {
       resetCache(false);
-      nodesCache.nodesMap.cleanupMode = routingContext.considerTurnRestrictions ? 2 : 1;
+      nodesCache.nodesMap.cleanupMode = 0;
 
       OsmNode start1 = nodesCache.getGraphNode(startWp.node1);
       OsmNode start2 = nodesCache.getGraphNode(startWp.node2);
@@ -3393,11 +3462,13 @@ public class RoutingEngine extends Thread {
       nodesCache.nodesMap.endNode1 = end1;
       nodesCache.nodesMap.endNode2 = end2;
       if (!nodesCache.obtainNonHollowNode(start1) || !nodesCache.obtainNonHollowNode(start2)) {
+        lastPricingFailure = "opening_graph_node_unavailable";
         return -1;
       }
       nodesCache.expandHollowLinkTargets(start1);
       nodesCache.expandHollowLinkTargets(start2);
 
+      lastPricingFailure = "opening_geometry_mismatch";
       StartLinkResult startRes = findStartLink(start1, start2, startWp, endWp, track.nodes);
       if (startRes == null) {
         return -1;
@@ -3416,22 +3487,26 @@ public class RoutingEngine extends Thread {
       OsmPath currentPath = routingContext.createPath(startPathBase, startRes.startLink, null, false);
       routingContext.unsetWaypoint();
       if (currentPath == null || currentPath.cost < 0) {
+        lastPricingFailure = currentPath == null ? "opening_path_null" : "opening_" + currentPath.rejectionReason;
         return -1;
       }
 
       if (isSingleSegment) {
+        lastPricingMethod = "continuous";
+        lastPricingFailure = "none";
         return currentPath.cost;
       }
 
       OsmNode currentNode = startRes.depTarget;
       OsmNode previousNode = startRes.depSource;
       int trackIdx = startRes.advance;
+      long restrictionFrom = ExactLinkGeometry.nativeNeighbor(startRes.startLink,
+        startRes.depSource, startRes.depTarget, false, routingContext.geometryDecoder);
 
       while (trackIdx < track.nodes.size() - 1) {
-        if (isTerminated() || (roundTripRequestDeadline > 0 && System.currentTimeMillis() >= roundTripRequestDeadline)) {
-          return -1;
-        }
+        checkRefinementBudget();
         if (!nodesCache.obtainNonHollowNode(currentNode)) {
+          lastPricingFailure = "graph_node_unavailable:index=" + trackIdx;
           return -1;
         }
         nodesCache.expandHollowLinkTargets(currentNode);
@@ -3442,19 +3517,34 @@ public class RoutingEngine extends Thread {
         OsmNode nextNode = null;
         int bestAdvance = -1;
         OsmPath bestNextPath = null;
+        String rejectedPath = "geometry_mismatch";
 
         for (OsmLink l = currentNode.firstlink; l != null; l = l.getNext(currentNode)) {
           OsmNode target = l.getTarget(currentNode);
           int adv = matchLink(l, currentNode, target, track.nodes, trackIdx, endWp);
+          ExactLinkGeometry exact = adv < 0 ? ExactLinkGeometry.match(l, currentNode, target,
+            track, trackIdx, routingContext.geometryDecoder, this::checkRefinementBudget) : null;
+          if (exact != null) {
+            adv = exact.advance;
+          }
           if (adv > trackIdx) {
+            long restrictionTo = ExactLinkGeometry.nativeNeighbor(l, currentNode, target, true, routingContext.geometryDecoder);
+            if (!ExactLinkGeometry.permitsTurn(currentNode, restrictionFrom, restrictionTo, routingContext)) {
+              rejectedPath = "profile_turn_restriction";
+              continue;
+            }
             boolean finishingThisLink = (adv >= track.nodes.size() - 1);
             OsmPath candPath;
+            byte[] originalGeometry = l.geometry;
             try {
+              if (exact != null) l.geometry = exact.geometry;
               if (finishingThisLink) {
                 routingContext.setWaypoint(endPos, true);
               }
               candPath = routingContext.createPath(currentPath, l, null, false);
+              if (candPath != null && candPath.cost < 0) rejectedPath = "profile_" + candPath.rejectionReason;
             } finally {
+              l.geometry = originalGeometry;
               if (finishingThisLink) {
                 routingContext.unsetWaypoint();
               }
@@ -3471,22 +3561,28 @@ public class RoutingEngine extends Thread {
         }
 
         if (bestLink == null || bestAdvance <= trackIdx) {
+          lastPricingFailure = rejectedPath + ":index=" + trackIdx + ":node=" + currentNode.getIdFromPos();
           return -1;
         }
 
         if (!nodesCache.obtainNonHollowNode(nextNode)) {
+          lastPricingFailure = "next_graph_node_unavailable:index=" + bestAdvance;
           return -1;
         }
         nodesCache.expandHollowLinkTargets(nextNode);
 
         currentPath = bestNextPath;
+        restrictionFrom = ExactLinkGeometry.nativeNeighbor(bestLink, currentNode, nextNode, false, routingContext.geometryDecoder);
         previousNode = currentNode;
         currentNode = nextNode;
         trackIdx = bestAdvance;
       }
 
+      lastPricingMethod = "continuous";
+      lastPricingFailure = "none";
       return currentPath.cost;
     } finally {
+      routingContext.startDirectionValid = savedStartDirectionValid;
       routingContext.firstPrePath = null;
       routingContext.restoreNogoList();
       if (nodesCache != null) {
@@ -3500,7 +3596,9 @@ public class RoutingEngine extends Thread {
    * path without turn-cost or elevation-hysteresis resets at intermediate vias.
    */
   int walkLoopCost(List<OsmTrack> legs, List<MatchedWaypoint> waypoints) {
+    lastPricingFailure = "invalid_loop_arguments";
     if (legs == null || legs.isEmpty() || waypoints == null || waypoints.size() < 2) {
+      lastPricingMethod = "none";
       return -1;
     }
     if (legs.size() == 1) {
@@ -3513,12 +3611,15 @@ public class RoutingEngine extends Thread {
       OsmTrack l2 = legs.get(i + 1);
       if (l1 == null || l1.nodes == null || l1.nodes.isEmpty()
           || l2 == null || l2.nodes == null || l2.nodes.isEmpty()) {
+        lastPricingMethod = "none";
         return -1;
       }
       OsmPathElement endL1 = l1.nodes.get(l1.nodes.size() - 1);
       OsmPathElement startL2 = l2.nodes.get(0);
       MatchedWaypoint wp = (i + 1 < waypoints.size()) ? waypoints.get(i + 1) : null;
       if (!isMatchingSeam(endL1, startL2, wp)) {
+        lastPricingMethod = "none";
+        lastPricingFailure = "seam_mismatch:leg=" + i;
         return -1; // Seam mismatch: infeasible candidate
       }
     }
@@ -3568,20 +3669,12 @@ public class RoutingEngine extends Thread {
     MatchedWaypoint finalWp = waypoints.get(waypoints.size() - 1);
     int res = walkPathCost(concatenated, startWp, finalWp);
     if (res > 0) {
+      lastPricingMethod = "continuous";
       return res;
     }
 
-    // Fallback to exact per-leg pricing (§4.3, ADR-0004) when concatenated track
-    // cannot be resolved as a single continuous path
-    int sumCost = 0;
-    for (int i = 0; i < legs.size(); i++) {
-      int legCost = walkPathCost(legs.get(i), waypoints.get(i), waypoints.get(i + 1));
-      if (legCost < 0) {
-        return -1;
-      }
-      sumCost += legCost;
-    }
-    return sumCost;
+    lastPricingMethod = "none";
+    return -1; // Never reset turn or elevation state at intermediate vias.
   }
 
   private static boolean isMatchingSeam(OsmPathElement endL1, OsmPathElement startL2, MatchedWaypoint wp) {
@@ -3708,6 +3801,12 @@ public class RoutingEngine extends Thread {
         } else {
           break;
         }
+      }
+      if (idx == nodes.size() - 1 && endWp != null
+          && nodes.get(idx).getIdFromPos() == endWp.crosspoint.getIdFromPos()
+          && ((source.getIdFromPos() == endWp.node1.getIdFromPos() && targetId == endWp.node2.getIdFromPos())
+          || (source.getIdFromPos() == endWp.node2.getIdFromPos() && targetId == endWp.node1.getIdFromPos()))) {
+        return idx;
       }
       if (curr == null && idx + 1 < nodes.size() && nodes.get(idx + 1).getIdFromPos() == targetId) {
         return idx + 1;
@@ -3849,6 +3948,7 @@ public class RoutingEngine extends Thread {
   }
 
   private OsmTrack _findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp, OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc) {
+    checkRefinementBudget();
     boolean verbose = guideTrack != null;
 
     int maxTotalCost = guideTrack != null ? guideTrack.cost + 5000 : 1000000000;
@@ -3933,6 +4033,7 @@ public class RoutingEngine extends Thread {
     boolean needNonPanicProcessing = false;
 
     for (; ; ) {
+      checkRefinementBudget();
       if (terminated) {
         throw new IllegalArgumentException("operation killed by thread-priority-watchdog after " + (System.currentTimeMillis() - startTime) / 1000 + " seconds");
       }

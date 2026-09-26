@@ -63,6 +63,8 @@ public class RefineInitializerTest {
       FinalizationOutcome.SUCCESS, rebuilt.getOutcome());
     Assert.assertTrue("Baseline oracle cost positive", initResult.getBaselineOracleCostPerMeter() > 0);
     Assert.assertTrue("Rebuilt oracle cost positive", initResult.getRebuiltOracleCostPerMeter() > 0);
+    Assert.assertEquals("Baseline and rebuilt candidate must price identically",
+      initResult.getBaselineOracleCostPerMeter(), initResult.getRebuiltOracleCostPerMeter(), 1e-6);
   }
 
   @Test
@@ -205,7 +207,8 @@ public class RefineInitializerTest {
       md.append("- **Fidelity:** Re-routing raw legs without `refTrack` followed by `retrackForDetail` and cleanup reconstructs the loop with high fidelity (cost and distance within minor path-selection differences).\n");
     }
 
-    File reportFile = new File(RoundTripFixture.projectDir(), "docs/m0_4_initialization_report.md");
+    File reportFile = new File(RoundTripFixture.projectDir(), "brouter-core/build/reports/refinement/m0_4_initialization_report.md");
+    reportFile.getParentFile().mkdirs();
     try (FileWriter writer = new FileWriter(reportFile)) {
       writer.write(md.toString());
     }

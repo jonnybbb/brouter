@@ -584,6 +584,17 @@ public final class MoveProposalOperator {
     ops.matchWaypointsToNodes(list, 2000.0);
 
     if (mwp.crosspoint != null && mwp.crosspoint.ilon != 0) {
+      if (mwp.node1 != null && mwp.node2 != null && mwp.node1.ilon != 0 && mwp.node2.ilon != 0) {
+        int segLen = mwp.node1.calcDistance(mwp.node2);
+        if (segLen <= 1500) {
+          int distToNode1 = mwp.crosspoint.calcDistance(mwp.node1);
+          int distToNode2 = mwp.crosspoint.calcDistance(mwp.node2);
+          if (Math.min(distToNode1, distToNode2) <= 30) {
+            OsmNode closerNode = distToNode1 <= distToNode2 ? mwp.node1 : mwp.node2;
+            mwp.crosspoint = new OsmNode(closerNode.ilon, closerNode.ilat);
+          }
+        }
+      }
       snapCache.put(snapKey, RefineSkeleton.copyWaypoint(mwp));
       return mwp;
     }

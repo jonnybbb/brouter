@@ -54,6 +54,13 @@ public final class RefineFinalizer {
       double requestedDistance,
       long deadlineMs) {
 
+    return finalizeCandidate(rawLegs, skeleton, ops, cleanup, searchRadius, profileName,
+      requestedDirection, requestedDistance, deadlineMs, null);
+  }
+
+  public static FinishedCandidate finalizeCandidate(List<OsmTrack> rawLegs, RefineSkeleton skeleton,
+      RoundTripEngineOps ops, RoundTripTrackCleanup cleanup, double searchRadius, String profileName,
+      double requestedDirection, double requestedDistance, long deadlineMs, RefineDiagnostics diag) {
     if (ops != null && ops.isTerminated()) {
       return new FinishedCandidate(FinalizationOutcome.CANCELLED, "terminated", null, null, null, -1.0, -1.0);
     }
@@ -77,7 +84,8 @@ public final class RefineFinalizer {
         ? new ArrayList<>(ops.matchedWaypoints())
         : null;
 
-    try {
+    try (RefineBudget budget = new RefineBudget(ops, deadlineMs)) {
+      budget.check();
       // Step 1: Retrack for detail
       if (failureInjectionStep == FinalizationStep.RETRACK) {
         if (failureInjectionTimeout) {
@@ -103,15 +111,25 @@ public final class RefineFinalizer {
         MatchedWaypoint to = waypoints.get(l + 1);
 
         OsmTrack det;
-        try {
+        try (RefineHeading heading = new RefineHeading(ops.routingContext(), l == 0)) {
           long legBudget = (deadlineMs > 0) ? (deadlineMs - System.currentTimeMillis()) : -1L;
-          det = ops.retrackForDetail(rawCopy, from, to, null, legBudget);
+          long routeStart = System.currentTimeMillis();
+          try {
+            det = ops.retrackForDetail(rawCopy, from, to, null, legBudget);
+          } finally {
+            if (diag != null) diag.routingMs += System.currentTimeMillis() - routeStart;
+          }
+        } catch (RefineBudget.Exceeded e) {
+          throw e;
         } catch (IllegalArgumentException e) {
           if (ops != null && ops.isTerminated()) {
             throw e;
           }
           if (e.getMessage() != null && e.getMessage().contains("thread-priority-watchdog")) {
             throw e; // propagation of watchdog cancellation
+          }
+          if (e.getMessage() != null && e.getMessage().contains("timeout")) {
+            return new FinishedCandidate(FinalizationOutcome.TIMEOUT, "retrack_timeout", null, null, null, -1.0, -1.0);
           }
           return new FinishedCandidate(FinalizationOutcome.FAILURE, "retrack_exception: " + e.getMessage(), null, null, null, -1.0, -1.0);
         }
@@ -160,7 +178,14 @@ public final class RefineFinalizer {
       }
 
       try {
-        cleanup.finalizeAdoptedRoundTripTrack(merged, waypointsCopy);
+        long cleanupStart = System.currentTimeMillis();
+        try {
+          cleanup.finalizeAdoptedRoundTripTrack(merged, waypointsCopy, budget::check);
+        } finally {
+          if (diag != null) diag.cleanupMs += System.currentTimeMillis() - cleanupStart;
+        }
+      } catch (RefineBudget.Exceeded e) {
+        throw e;
       } catch (IllegalArgumentException e) {
         if (ops != null && ops.isTerminated()) {
           throw e;
@@ -188,10 +213,13 @@ public final class RefineFinalizer {
         double targetDistance = 2 * Math.PI * searchRadius;
         quality = RoundTripQualityGate.evaluate(merged, targetDistance,
           pavedProfile, allowSamewayback, explicitViaMode, ferriesAllowed);
+      } catch (RefineBudget.Exceeded e) {
+        throw e;
       } catch (Exception e) {
         return new FinishedCandidate(FinalizationOutcome.FAILURE, "gate_exception: " + e.getMessage(), null, null, null, -1.0, -1.0);
       }
 
+      budget.check();
       if (quality == null || !quality.isAccepted()) {
         return new FinishedCandidate(FinalizationOutcome.FAILURE,
           "gate_rejected: " + (quality != null ? quality.getRejectionReason() : "null"),
@@ -209,7 +237,10 @@ public final class RefineFinalizer {
         return new FinishedCandidate(FinalizationOutcome.TIMEOUT, "pricing_timeout", null, null, null, -1.0, -1.0);
       }
 
-      double oracleCost = LoopCostOracle.price(ops, merged, waypointsCopy);
+      long priceStart = System.currentTimeMillis();
+      LoopPrice price = LoopCostOracle.evaluate(ops, merged, waypointsCopy, deadlineMs);
+      if (diag != null) diag.pricingMs += System.currentTimeMillis() - priceStart;
+      double oracleCost = price.costPerMeter();
 
       if (ops != null && ops.isTerminated()) {
         return new FinishedCandidate(FinalizationOutcome.CANCELLED, "terminated", null, null, null, -1.0, -1.0);
@@ -233,6 +264,8 @@ public final class RefineFinalizer {
         if (rcsVerdict != null) {
           rcsScore = rcsVerdict.score();
         }
+      } catch (RefineBudget.Exceeded e) {
+        throw e;
       } catch (Exception e) {
         rcsScore = 0.0;
       }
@@ -240,11 +273,15 @@ public final class RefineFinalizer {
         rcsScore = 0.0;
       }
 
+      budget.check();
+      String pricingMethod = price.method();
       return new FinishedCandidate(FinalizationOutcome.SUCCESS, "ok", merged, waypointsCopy,
-        quality, oracleCost, rcsScore);
+        quality, oracleCost, rcsScore, pricingMethod);
+    } catch (RefineBudget.Exceeded e) {
+      return new FinishedCandidate(e.outcome, e.getMessage(), null, null, null, -1.0, -1.0);
     } finally {
       // Restore engine's original matched waypoints: speculative candidate evaluation never mutates engine state!
-      if (ops != null && originalWps != null) {
+      if (ops != null) {
         ops.setMatchedWaypoints(originalWps);
       }
     }

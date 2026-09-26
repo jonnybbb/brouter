@@ -27,6 +27,7 @@ public final class RefineInitResult {
   private final int rebuiltCrossings;
   private final int baselineScatterReuse;
   private final int rebuiltScatterReuse;
+  private final String baselinePricingMethod;
 
   public RefineInitResult(
       boolean success,
@@ -44,6 +45,28 @@ public final class RefineInitResult {
       int rebuiltCrossings,
       int baselineScatterReuse,
       int rebuiltScatterReuse) {
+    this(success, failureReason, rawLegs, legCache, elapsedMs, linksProcessed, rebuiltCandidate,
+      baselineOracleCostPerMeter, rebuiltOracleCostPerMeter, baselineDistance, rebuiltDistance,
+      baselineCrossings, rebuiltCrossings, baselineScatterReuse, rebuiltScatterReuse, "unknown");
+  }
+
+  public RefineInitResult(
+      boolean success,
+      String failureReason,
+      List<OsmTrack> rawLegs,
+      LegCache legCache,
+      long elapsedMs,
+      int linksProcessed,
+      FinishedCandidate rebuiltCandidate,
+      double baselineOracleCostPerMeter,
+      double rebuiltOracleCostPerMeter,
+      double baselineDistance,
+      double rebuiltDistance,
+      int baselineCrossings,
+      int rebuiltCrossings,
+      int baselineScatterReuse,
+      int rebuiltScatterReuse,
+      String baselinePricingMethod) {
     this.success = success;
     this.failureReason = failureReason;
     this.rawLegs = rawLegs != null ? rawLegs : Collections.<OsmTrack>emptyList();
@@ -59,11 +82,12 @@ public final class RefineInitResult {
     this.rebuiltCrossings = rebuiltCrossings;
     this.baselineScatterReuse = baselineScatterReuse;
     this.rebuiltScatterReuse = rebuiltScatterReuse;
+    this.baselinePricingMethod = baselinePricingMethod != null ? baselinePricingMethod : "unknown";
   }
 
   public static RefineInitResult failure(String reason, long elapsedMs, int linksProcessed) {
     return new RefineInitResult(false, reason, null, null, elapsedMs, linksProcessed, null,
-      -1.0, -1.0, -1.0, -1.0, -1, -1, -1, -1);
+      -1.0, -1.0, -1.0, -1.0, -1, -1, -1, -1, "none");
   }
 
   public boolean isSuccess() {
@@ -124,5 +148,9 @@ public final class RefineInitResult {
 
   public int getRebuiltScatterReuse() {
     return rebuiltScatterReuse;
+  }
+
+  public String getBaselinePricingMethod() {
+    return baselinePricingMethod;
   }
 }

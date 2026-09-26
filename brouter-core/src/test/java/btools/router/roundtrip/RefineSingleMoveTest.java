@@ -17,7 +17,7 @@ import btools.router.RoutingEngine;
 public class RefineSingleMoveTest {
 
   @Test
-  public void testSingleMoveEndToEndAcceptPath() {
+  public void testSingleMoveFinalizationAndSyntheticPublication() {
     RoutingEngine re = RoundTripFixture.engine("trekking", 90, 1000, rc -> {
       rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
     });
@@ -39,7 +39,7 @@ public class RefineSingleMoveTest {
       re.getLastRoundTripQuality(), 90).score();
     FinishedCandidate baseline = FinishedCandidate.fromBaseline(
       res.getTrack(), res.getMatchedWaypoints(), re.getLastRoundTripQuality(),
-      baseOracleCost, baseRcs);
+      baseOracleCost, baseRcs, "continuous");
     Assert.assertTrue("Baseline must be success", baseline.isSuccess());
 
     // 2. Initialize leg cache
@@ -100,7 +100,7 @@ public class RefineSingleMoveTest {
       finalist.getMatchedWaypoints(),
       finalist.getQualityVerdict(),
       baseline.getOracleCostPerMeter() * 0.98, // 2% lower cost per meter
-      baseline.getRcs() + 0.01 // higher RCS
+      baseline.getRcs() + 0.01, "continuous" // synthetic predicate input
     );
 
     ShipPredicate.Result predResult = ShipPredicate.evaluate(winningCandidate, baseline, config, reqDist);
@@ -163,7 +163,7 @@ public class RefineSingleMoveTest {
       re.getLastRoundTripQuality(), 90).score();
     FinishedCandidate baseline = FinishedCandidate.fromBaseline(
       res.getTrack(), res.getMatchedWaypoints(), re.getLastRoundTripQuality(),
-      baseOracleCost, baseRcs);
+      baseOracleCost, baseRcs, "continuous");
 
     // 2. Initialize
     RefineInitResult initResult = RefineInitializer.initialize(
@@ -206,7 +206,7 @@ public class RefineSingleMoveTest {
       baseline.getMatchedWaypoints(),
       baseline.getQualityVerdict(),
       baseline.getOracleCostPerMeter() * 1.5, // 50% higher cost
-      baseline.getRcs()
+      baseline.getRcs(), "continuous"
     );
 
     RefineConfig config = new RefineConfig();

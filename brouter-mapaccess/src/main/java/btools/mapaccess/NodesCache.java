@@ -290,14 +290,20 @@ public final class NodesCache {
   }
 
   public boolean matchWaypointsToNodes(List<MatchedWaypoint> unmatchedWaypoints, double maxDistance, OsmNodePairSet islandNodePairs) {
+    return matchWaypointsToNodes(unmatchedWaypoints, maxDistance, islandNodePairs, () -> { });
+  }
+
+  public boolean matchWaypointsToNodes(List<MatchedWaypoint> unmatchedWaypoints, double maxDistance,
+                                       OsmNodePairSet islandNodePairs, Runnable checkBudget) {
+    checkBudget.run();
     waypointMatcher = new WaypointMatcherImpl(unmatchedWaypoints, maxDistance, islandNodePairs);
     for (MatchedWaypoint mwp : unmatchedWaypoints) {
       int cellsize = 12500;
-      preloadPosition(mwp.waypoint, cellsize, 1, false);
+      preloadPosition(mwp.waypoint, cellsize, 1, false, checkBudget);
       // get a second chance
       if (mwp.crosspoint == null || mwp.radius > RETRY_RANGE) {
         cellsize = 1000000 / 32;
-        preloadPosition(mwp.waypoint, cellsize, maxDistance < 0 ? MAX_DYNAMIC_CATCHES : 2, maxDistance < 0);
+        preloadPosition(mwp.waypoint, cellsize, maxDistance < 0 ? MAX_DYNAMIC_CATCHES : 2, maxDistance < 0, checkBudget);
       }
     }
 
@@ -324,10 +330,12 @@ public final class NodesCache {
     return true;
   }
 
-  private void preloadPosition(OsmNode n, int d, int maxscale, boolean bUseDynamicRange) {
+  private void preloadPosition(OsmNode n, int d, int maxscale, boolean bUseDynamicRange, Runnable checkBudget) {
+    checkBudget.run();
     first_file_access_failed = false;
     first_file_access_name = null;
     loadSegmentFor(n.ilon, n.ilat);
+    checkBudget.run();
     if (first_file_access_failed) {
       throw new IllegalArgumentException("datafile " + first_file_access_name + " not found");
     }
@@ -335,6 +343,7 @@ public final class NodesCache {
     while (scale < maxscale) {
       for (int idxLat = -scale; idxLat <= scale; idxLat++)
         for (int idxLon = -scale; idxLon <= scale; idxLon++) {
+          checkBudget.run();
           if (idxLon != 0 || idxLat != 0) {
             loadSegmentFor(n.ilon + d * idxLon, n.ilat + d * idxLat);
           }

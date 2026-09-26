@@ -82,6 +82,31 @@ public class RoundTripTrackCleanupTest {
     Assert.assertEquals("end waypoint index should be adjusted", 3, endWp.indexInTrack);
   }
 
+  @Test
+  public void backAndForthDoesNotJoinNearbyRoads() {
+    OsmTrack track = new OsmTrack();
+    int[][] points = {{0, 0}, {1000, 0}, {2000, 0}, {1000, 50}, {0, 1000}};
+    for (int[] point : points) {
+      track.nodes.add(OsmPathElement.create(START_ILON + point[0], START_ILAT + point[1], (short) 0, null));
+    }
+    List<MatchedWaypoint> vias = new ArrayList<>();
+    for (int index : new int[]{0, 2, 4}) {
+      OsmPathElement node = track.nodes.get(index);
+      MatchedWaypoint wp = createMatchedWaypoint("rt" + index, node.getILon(), node.getILat(), node.getILon(), node.getILat());
+      wp.indexInTrack = index;
+      vias.add(wp);
+    }
+    cleanup(5000).removeBackAndForthSegments(track, vias);
+    Assert.assertEquals("Parallel branches must remain connected by their original geometry", 5, track.nodes.size());
+  }
+
+  @Test
+  public void artifactRemovalDoesNotJoinNearbyRoads() {
+    OsmTrack track = buildViaTeardropTrack();
+    cleanup(5000).removeArtifactSpurSpans(track, new ArrayList<>());
+    Assert.assertEquals("Thinness does not prove a connection exists", 11, track.nodes.size());
+  }
+
   // removeBackAndForthSegments does nothing when there's no overlap
   @Test
   public void removeBackAndForthNoOverlap() {
@@ -152,9 +177,9 @@ public class RoundTripTrackCleanupTest {
     Assert.assertSame("node 2 should be E", nodeE, track.nodes.get(2));
   }
 
-  // removeMicroDetours catches loops returning to a nearby (but not identical) node
+  // Nearby points do not prove that a graph connection exists.
   @Test
-  public void removeMicroDetoursProximityMatch() {
+  public void removeMicroDetoursPreservesUnconnectedNearbyPoints() {
     RoundTripTrackCleanup cleanup = cleanup(5000);
 
     // At ~50N: 1 ilon unit ≈ 0.072m, 1 ilat unit ≈ 0.111m
@@ -179,11 +204,9 @@ public class RoundTripTrackCleanupTest {
 
     cleanup.removeMicroDetours(track, 350, new ArrayList<>());
 
-    // Loop B→C→D→B2 (~56m total) should be removed via proximity match
-    Assert.assertEquals("should have 3 nodes after proximity detour removal", 3, track.nodes.size());
-    Assert.assertSame(nodeA, track.nodes.get(0));
-    Assert.assertSame(nodeB, track.nodes.get(1));
-    Assert.assertSame(nodeE, track.nodes.get(2));
+    Assert.assertEquals("Proximity must not fabricate a B-to-E connection", 6, track.nodes.size());
+    Assert.assertSame(nodeB2, track.nodes.get(4));
+    Assert.assertSame(nodeE, track.nodes.get(5));
   }
 
   // removeMicroDetours does NOT remove loops that are too large
@@ -278,6 +301,7 @@ public class RoundTripTrackCleanupTest {
     RoundTripTrackCleanup cleanup = cleanup(5000);
     OsmTrack track = buildViaTeardropTrack();
     OsmPathElement pinchOut = track.nodes.get(3);
+    track.nodes.set(8, OsmPathElement.create(pinchOut.getILon(), pinchOut.getILat(), (short) 0, null));
     OsmPathElement afterSpur = track.nodes.get(9);
 
     List<MatchedWaypoint> wpts = new ArrayList<>();
@@ -359,13 +383,13 @@ public class RoundTripTrackCleanupTest {
       new RoundTripTrackCleanup(new WaypointSnapper(ops, ops, ops), ops, ops, ops);
     OsmTrack track = buildViaTeardropTrack();
     OsmPathElement pinchOut = track.nodes.get(3);
+    track.nodes.set(8, OsmPathElement.create(pinchOut.getILon(), pinchOut.getILat(), (short) 0, null));
 
     cleanup.removeArtifactSpurSpans(track, new ArrayList<>());
 
-    // Interior removed, both span endpoints kept (pinch-out + rejoin node,
-    // ~24m apart): 11 - 4 interior nodes = 7.
+    // Remove the returning copy too, leaving one exact shared point.
     Assert.assertEquals("thin 2.5km spur removed without any via pinning it",
-      7, track.nodes.size());
+      6, track.nodes.size());
     Assert.assertSame("pinch-out node survives", pinchOut, track.nodes.get(3));
   }
 

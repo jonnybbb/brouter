@@ -12,6 +12,17 @@ import btools.router.OsmTrack;
  */
 public interface LegRouter {
 
+  default long refinementDeadline() {
+    return 0;
+  }
+
+  default void setRefinementDeadline(long deadline) {
+  }
+
+  default void checkRefinementBudget() {
+    RefineBudget.check(this, refinementDeadline());
+  }
+
   /** One leg search — the engine's findTrack primitive. */
   OsmTrack findTrack(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp,
                      OsmTrack costCuttingTrack, OsmTrack refTrack, boolean fastPartialRecalc);
@@ -90,4 +101,13 @@ public interface LegRouter {
   default int walkLoopCost(List<OsmTrack> legs, List<MatchedWaypoint> waypoints) {
     return -1;
   }
+
+  /** Method used for the last path/loop cost walk ("continuous", "per_leg", "single_track", or "none"). */
+  default String getLastPricingMethod() {
+    return "none";
+  }
+  default String getLastPricingFailure() {
+    return "unavailable";
+  }
+
 }

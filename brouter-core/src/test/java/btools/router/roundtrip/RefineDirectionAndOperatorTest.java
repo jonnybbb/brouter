@@ -51,7 +51,7 @@ public class RefineDirectionAndOperatorTest {
     baseTrack.nodes.add(OsmPathElement.create(0, 0, (short) 0, null));
 
     RoundTripQualityResult accepted = RoundTripQualityResult.builder().accepted(true).build();
-    FinishedCandidate base = FinishedCandidate.fromBaseline(baseTrack, new ArrayList<>(), accepted, 1.0, 0.8);
+    FinishedCandidate base = FinishedCandidate.fromBaseline(baseTrack, new ArrayList<>(), accepted, 1.0, 0.8, "continuous");
 
     // Candidate with same farthest point bearing (North-East)
     OsmTrack candTrack = new OsmTrack();
@@ -60,7 +60,7 @@ public class RefineDirectionAndOperatorTest {
     candTrack.nodes.add(OsmPathElement.create(0, 0, (short) 0, null));
     candTrack.nodes.add(OsmPathElement.create(20000, 20000, (short) 0, null));
     candTrack.nodes.add(OsmPathElement.create(0, 0, (short) 0, null));
-    FinishedCandidate cand = FinishedCandidate.fromBaseline(candTrack, new ArrayList<>(), accepted, 0.9, 0.8);
+    FinishedCandidate cand = FinishedCandidate.fromBaseline(candTrack, new ArrayList<>(), accepted, 0.9, 0.8, "continuous");
 
     RefineConfig cfg = new RefineConfig();
     ShipPredicate.Result res = ShipPredicate.evaluate(cand, base, cfg, 10000.0);

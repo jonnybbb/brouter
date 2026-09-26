@@ -62,100 +62,129 @@ public final class RefineInitializer {
       long deadlineMs,
       boolean finalizeRebuilt) {
 
-    long startMs = System.currentTimeMillis();
-    int startLinks = ops != null ? ops.getLinksProcessed() : 0;
+    return initialize(ops, evaluator, skeleton, cleanup, baselineTrack, searchRadius, profileName,
+      requestedDirection, requestedDistance, deadlineMs, finalizeRebuilt, null);
+  }
 
-    if (skeleton == null || skeleton.getWaypoints() == null || skeleton.getWaypoints().size() < 2) {
-      return RefineInitResult.failure("too_few_waypoints", 0, 0);
-    }
+  public static RefineInitResult initialize(RoundTripEngineOps ops, LegEvaluator evaluator,
+      RefineSkeleton skeleton, RoundTripTrackCleanup cleanup, OsmTrack baselineTrack,
+      double searchRadius, String profileName, double requestedDirection, double requestedDistance,
+      long deadlineMs, boolean finalizeRebuilt, RefineDiagnostics diag) {
+    long started = System.currentTimeMillis();
+    try (RefineBudget budget = new RefineBudget(ops, deadlineMs)) {
+      budget.check();
+      long startMs = System.currentTimeMillis();
+      int startLinks = ops != null ? ops.getLinksProcessed() : 0;
 
-    List<MatchedWaypoint> waypoints = skeleton.getWaypoints();
-    int numLegs = waypoints.size() - 1;
-    List<OsmTrack> rawLegs = new ArrayList<>(numLegs);
-    LegCache legCache = new LegCache();
-
-    for (int i = 0; i < numLegs; i++) {
-      if (deadlineMs > 0 && System.currentTimeMillis() >= deadlineMs) {
-        return RefineInitResult.failure("init_timeout_before_leg_" + i,
-          System.currentTimeMillis() - startMs,
-          ops != null ? ops.getLinksProcessed() - startLinks : 0);
+      if (skeleton == null || skeleton.getWaypoints() == null || skeleton.getWaypoints().size() < 2) {
+        return RefineInitResult.failure("too_few_waypoints", 0, 0);
       }
-      MatchedWaypoint from = waypoints.get(i);
-      MatchedWaypoint to = waypoints.get(i + 1);
 
-      long remaining = deadlineMs > 0 ? (deadlineMs - System.currentTimeMillis()) : 10000L;
-      OsmTrack leg;
-      try {
-        leg = evaluator.route(from, to, remaining);
-      } catch (IllegalArgumentException e) {
-        if (e.getMessage() != null && e.getMessage().contains("timeout")) {
-          return RefineInitResult.failure("init_timeout_during_leg_" + i,
-            System.currentTimeMillis() - startMs,
-            ops != null ? ops.getLinksProcessed() - startLinks : 0);
-        }
-        throw e;
-      }
-      if (leg == null || leg.nodes == null || leg.nodes.size() < 2) {
+      List<MatchedWaypoint> waypoints = skeleton.getWaypoints();
+      int numLegs = waypoints.size() - 1;
+      List<OsmTrack> rawLegs = new ArrayList<>(numLegs);
+      LegCache legCache = new LegCache();
+
+      for (int i = 0; i < numLegs; i++) {
         if (deadlineMs > 0 && System.currentTimeMillis() >= deadlineMs) {
-          return RefineInitResult.failure("init_timeout_during_leg_" + i,
+          return RefineInitResult.failure("init_timeout_before_leg_" + i,
             System.currentTimeMillis() - startMs,
             ops != null ? ops.getLinksProcessed() - startLinks : 0);
         }
-        return RefineInitResult.failure("init_leg_failed_" + i,
-          System.currentTimeMillis() - startMs,
-          ops != null ? ops.getLinksProcessed() - startLinks : 0);
-      }
-      legCache.put(from, to, leg);
-      rawLegs.add(leg);
-    }
+        MatchedWaypoint from = waypoints.get(i);
+        MatchedWaypoint to = waypoints.get(i + 1);
 
-    long elapsedMs = System.currentTimeMillis() - startMs;
-    int linksProcessed = ops != null ? ops.getLinksProcessed() - startLinks : 0;
-
-    // Price baseline track
-    double baselineCostPerMeter = -1.0;
-    int baselineCrossings = -1;
-    int baselineScatterReuse = -1;
-    double baselineDistance = -1.0;
-
-    if (baselineTrack != null && baselineTrack.nodes != null && !baselineTrack.nodes.isEmpty()) {
-      baselineDistance = baselineTrack.distance;
-      baselineCostPerMeter = LoopCostOracle.price(ops, baselineTrack, waypoints);
-      baselineCrossings = RoundTripQualityGate.countSelfIntersections(baselineTrack);
-      int[] stemSplit = LoopQualityMetrics.reuseStemSplit(baselineTrack.nodes);
-      baselineScatterReuse = (stemSplit != null && stemSplit.length > 1) ? stemSplit[1] : 0;
-    }
-
-    // Finalize rebuilt loop from raw legs only when explicitly requested (e.g. M0.4 tests)
-    FinishedCandidate rebuilt = null;
-    double rebuiltCostPerMeter = -1.0;
-    int rebuiltCrossings = -1;
-    int rebuiltScatterReuse = -1;
-    double rebuiltDistance = -1.0;
-
-    if (finalizeRebuilt) {
-      List<OsmTrack> copyOfLegs = new ArrayList<>(rawLegs.size());
-      for (OsmTrack l : rawLegs) {
-        copyOfLegs.add(LegCache.copyTrack(l));
+        long remaining = deadlineMs > 0 ? (deadlineMs - System.currentTimeMillis()) : 10000L;
+        OsmTrack leg;
+        try {
+          long routeStart = System.currentTimeMillis();
+          try {
+            if (diag != null) diag.legsRouted++;
+            leg = evaluator.route(from, to, remaining);
+          } finally {
+            if (diag != null) diag.routingMs += System.currentTimeMillis() - routeStart;
+          }
+        } catch (IllegalArgumentException e) {
+          if (e.getMessage() != null && e.getMessage().contains("timeout")) {
+            return RefineInitResult.failure("init_timeout_during_leg_" + i,
+              System.currentTimeMillis() - startMs,
+              ops != null ? ops.getLinksProcessed() - startLinks : 0);
+          }
+          throw e;
+        }
+        if (leg == null || leg.nodes == null || leg.nodes.size() < 2) {
+          if (deadlineMs > 0 && System.currentTimeMillis() >= deadlineMs) {
+            return RefineInitResult.failure("init_timeout_during_leg_" + i,
+              System.currentTimeMillis() - startMs,
+              ops != null ? ops.getLinksProcessed() - startLinks : 0);
+          }
+          return RefineInitResult.failure("init_leg_failed_" + i,
+            System.currentTimeMillis() - startMs,
+            ops != null ? ops.getLinksProcessed() - startLinks : 0);
+        }
+        legCache.put(from, to, leg);
+        rawLegs.add(leg);
       }
 
-      rebuilt = RefineFinalizer.finalizeCandidate(
-        copyOfLegs, skeleton, ops, cleanup, searchRadius, profileName,
-        requestedDirection, requestedDistance, deadlineMs);
+      long elapsedMs = System.currentTimeMillis() - startMs;
+      int linksProcessed = ops != null ? ops.getLinksProcessed() - startLinks : 0;
 
-      if (rebuilt.isSuccess() && rebuilt.getTrack() != null) {
-        OsmTrack rt = rebuilt.getTrack();
-        rebuiltDistance = rt.distance;
-        rebuiltCostPerMeter = rebuilt.getOracleCostPerMeter();
-        rebuiltCrossings = RoundTripQualityGate.countSelfIntersections(rt);
-        int[] stemSplit = LoopQualityMetrics.reuseStemSplit(rt.nodes);
-        rebuiltScatterReuse = (stemSplit != null && stemSplit.length > 1) ? stemSplit[1] : 0;
+      // Price baseline track
+      double baselineCostPerMeter = -1.0;
+      int baselineCrossings = -1;
+      int baselineScatterReuse = -1;
+      double baselineDistance = -1.0;
+
+      String baselinePricingMethod = "unknown";
+      if (baselineTrack != null && baselineTrack.nodes != null && !baselineTrack.nodes.isEmpty()) {
+        baselineDistance = baselineTrack.distance;
+        long priceStart = System.currentTimeMillis();
+        LoopPrice price = LoopCostOracle.evaluate(ops, baselineTrack, waypoints, deadlineMs);
+        if (diag != null) diag.pricingMs += System.currentTimeMillis() - priceStart;
+        baselineCostPerMeter = price.costPerMeter();
+        if (diag != null) diag.baselinePricingFailure = ops.getLastPricingFailure();
+        baselinePricingMethod = price.method();
+        baselineCrossings = RoundTripQualityGate.countSelfIntersections(baselineTrack);
+        int[] stemSplit = LoopQualityMetrics.reuseStemSplit(baselineTrack.nodes);
+        baselineScatterReuse = (stemSplit != null && stemSplit.length > 1) ? stemSplit[1] : 0;
       }
-    }
 
-    return new RefineInitResult(
-      true, null, rawLegs, legCache, elapsedMs, linksProcessed, rebuilt,
-      baselineCostPerMeter, rebuiltCostPerMeter, baselineDistance, rebuiltDistance,
-      baselineCrossings, rebuiltCrossings, baselineScatterReuse, rebuiltScatterReuse);
+      // Finalize rebuilt loop from raw legs only when explicitly requested (e.g. M0.4 tests)
+      FinishedCandidate rebuilt = null;
+      double rebuiltCostPerMeter = -1.0;
+      int rebuiltCrossings = -1;
+      int rebuiltScatterReuse = -1;
+      double rebuiltDistance = -1.0;
+
+      if (finalizeRebuilt) {
+        List<OsmTrack> copyOfLegs = new ArrayList<>(rawLegs.size());
+        for (OsmTrack l : rawLegs) {
+          copyOfLegs.add(LegCache.copyTrack(l));
+        }
+
+        rebuilt = RefineFinalizer.finalizeCandidate(
+          copyOfLegs, skeleton, ops, cleanup, searchRadius, profileName,
+          requestedDirection, requestedDistance, deadlineMs);
+
+        if (rebuilt.isSuccess() && rebuilt.getTrack() != null) {
+          OsmTrack rt = rebuilt.getTrack();
+          rebuiltDistance = rt.distance;
+          rebuiltCostPerMeter = rebuilt.getOracleCostPerMeter();
+          rebuiltCrossings = RoundTripQualityGate.countSelfIntersections(rt);
+          int[] stemSplit = LoopQualityMetrics.reuseStemSplit(rt.nodes);
+          rebuiltScatterReuse = (stemSplit != null && stemSplit.length > 1) ? stemSplit[1] : 0;
+        }
+      }
+
+      budget.check();
+      return new RefineInitResult(
+        true, null, rawLegs, legCache, elapsedMs, linksProcessed, rebuilt,
+        baselineCostPerMeter, rebuiltCostPerMeter, baselineDistance, rebuiltDistance,
+        baselineCrossings, rebuiltCrossings, baselineScatterReuse, rebuiltScatterReuse,
+        baselinePricingMethod);
+    } catch (RefineBudget.Exceeded e) {
+      if (e.outcome == FinalizationOutcome.CANCELLED) throw e;
+      return RefineInitResult.failure("initialization_timeout", System.currentTimeMillis() - started, 0);
+    }
   }
 }

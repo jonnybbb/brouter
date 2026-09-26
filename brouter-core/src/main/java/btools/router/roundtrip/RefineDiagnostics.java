@@ -4,6 +4,26 @@ package btools.router.roundtrip;
  * Diagnostics and telemetry for the round-trip refinement stage (§7).
  */
 public class RefineDiagnostics {
+  /** Populated only by explicitly enabled measurement runs. */
+  public RefineRouteSnapshot baseline;
+  public RefineRouteSnapshot result;
+  public double resolvedDirection;
+  public double requestedDistance;
+  public String producingTier;
+  public long measurementMs;
+  public boolean eligible;
+  public long initializationMs;
+  public long routingMs;
+  public long pricingMs;
+  public long snappingMs;
+  public long cleanupMs;
+  public long finalizationMs;
+  public final java.util.Map<String, Integer> rejectionCounts = new java.util.TreeMap<>();
+
+  public void reject(String reason) {
+    rejectionCounts.put(reason, rejectionCounts.getOrDefault(reason, 0) + 1);
+  }
+
   /** Whether a refined candidate was accepted and published. */
   public boolean refineApplied;
 
@@ -15,6 +35,14 @@ public class RefineDiagnostics {
 
   /** Final replacement oracle cost per meter (-1 if not refined). */
   public double oracleCostPerMeterAfter = -1.0;
+
+  /** Pricing method used for baseline ("continuous" or "none"). */
+  public String baselinePricingMethod = "unknown";
+  public String baselinePricingFailure = "not_attempted";
+  public String rawBaselinePricingFailure = "not_attempted";
+
+  /** Pricing method used for accepted candidate ("continuous" or "none"). */
+  public String candidatePricingMethod = "unknown";
 
   /** Baseline RoadCharacterScore (-1 if uncalculated). */
   public double rcsBefore = -1.0;

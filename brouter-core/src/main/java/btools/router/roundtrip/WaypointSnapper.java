@@ -96,6 +96,8 @@ public final class WaypointSnapper {
     }
     try {
       router.matchWaypointsToNodes(mwps, maxSnapDist);
+    } catch (RefineBudget.Exceeded e) {
+      throw e;
     } catch (Exception e) {
       return null;
     }
@@ -279,6 +281,7 @@ public final class WaypointSnapper {
 
       io.logInfo("snapToIntersection: " + mwp.name + " moved crosspoint "
         + (distToNode1 <= distToNode2 ? distToNode1 : distToNode2) + "m to nearest intersection");
+      if (mwp.originalCrosspoint == null) mwp.originalCrosspoint = new OsmNode(mwp.crosspoint.ilon, mwp.crosspoint.ilat);
       mwp.crosspoint = new OsmNode(closerNode.ilon, closerNode.ilat);
     }
   }
@@ -372,6 +375,8 @@ public final class WaypointSnapper {
 
     try {
       router.matchWaypointsToNodes(allProbes, maxSnapDist);
+    } catch (RefineBudget.Exceeded e) {
+      throw e;
     } catch (Exception e) {
       io.logInfo("reachability probe failed: " + e.getMessage());
       return null;
@@ -481,6 +486,8 @@ public final class WaypointSnapper {
     }
     try {
       router.matchWaypointsToNodes(mwpList, maxSnapDist);
+    } catch (RefineBudget.Exceeded e) {
+      throw e;
     } catch (Exception e) {
       io.logInfo(logTag + ": match failed, leaving " + wps.size() + " waypoint(s) unsnapped: " + e.getMessage());
       List<Boolean> all = new ArrayList<>(wps.size());
@@ -525,25 +532,45 @@ public final class WaypointSnapper {
    * bulge was network-forced and stays.
    */
   public void repairViaPinnedBulges(OsmTrack track, List<MatchedWaypoint> waypoints) {
+    long previousDeadline = router.refinementDeadline();
+    long remaining = ctx.remainingRequestBudgetMs();
+    long deadline = remaining == Long.MAX_VALUE ? 0 : System.currentTimeMillis() + remaining;
+    try (RefineBudget budget = new RefineBudget(router, deadline)) {
+      budget.check();
+      repairBulgesWithinBudget(track, waypoints);
+      budget.check();
+    } catch (RefineBudget.Exceeded e) {
+      // Ordinary generation can adopt its first candidate under the minimum
+      // child budget after the parent deadline. Skip this optional repair,
+      // preserving that route. Refinement has its own active scope: propagate
+      // its timeout so the candidate is discarded and truncation is reported.
+      if (e.outcome != FinalizationOutcome.TIMEOUT || previousDeadline > 0) throw e;
+      io.logInfo("repairViaPinnedBulges: request budget exhausted, retaining current track");
+    }
+  }
+
+  private void repairBulgesWithinBudget(OsmTrack track, List<MatchedWaypoint> waypoints) {
     List<OsmPathElement> nodes = track.nodes;
     if (nodes == null || nodes.size() < 10 || waypoints == null || waypoints.size() < 3) {
       return;
     }
     long totalDist = 0;
     for (int k = 1; k < nodes.size(); k++) {
+      router.checkRefinementBudget();
       totalDist += nodes.get(k - 1).calcDistance(nodes.get(k));
     }
     int arcCap = (int) Math.min(VIA_TEARDROP_MAX_ARC_M, VIA_TEARDROP_MAX_ARC_FRAC * totalDist);
     double trackCostPerM = spanCostPerMeter(nodes, 0, nodes.size() - 1);
 
     for (int wi = 1; wi < waypoints.size() - 1; wi++) {
+      router.checkRefinementBudget();
       MatchedWaypoint via = waypoints.get(wi);
       if (!isGeneratedRoundTripWaypoint(via)) continue;
       int v = via.indexInTrack;
       if (v <= 0 || v >= nodes.size() - 1) continue;
       int lo = Math.max(0, waypoints.get(wi - 1).indexInTrack + 1);
       int hi = Math.min(nodes.size() - 1, waypoints.get(wi + 1).indexInTrack - 1);
-      int[] span = findViaPinnedBulgeSpan(nodes, v, lo, hi, arcCap);
+      int[] span = findViaPinnedBulgeSpan(nodes, v, lo, hi, arcCap, router::checkRefinementBudget);
       if (span == null) continue;
       double spanCpm = spanCostPerMeter(nodes, span[0], span[1]);
       if (trackCostPerM > 0 && spanCpm < BULGE_MIN_COST_FACTOR * trackCostPerM) {
@@ -555,6 +582,7 @@ public final class WaypointSnapper {
       OsmPathElement nj = nodes.get(span[1]);
       double arc = 0;
       for (int k = span[0] + 1; k <= span[1]; k++) {
+        router.checkRefinementBudget();
         arc += nodes.get(k - 1).calcDistance(nodes.get(k));
       }
       double crowFly = CheapRuler.distance(ni.getILon(), ni.getILat(), nj.getILon(), nj.getILat());
@@ -569,13 +597,26 @@ public final class WaypointSnapper {
       }
 
       OsmTrack connector = null;
-      try {
+      try (RefineHeading heading = new RefineHeading(ctx.routingContext(), false)) {
         connector = router.findTrackUnguided("bulge-repair", mouth.get(0), mouth.get(1));
+        router.checkRefinementBudget();
+        if (connector != null && connector.nodes != null && connector.nodes.size() >= 2) {
+          // Search tracks contain only graph junctions and can overshoot clipped
+          // endpoints. Only the detailed route is suitable for a geometry splice.
+          connector = router.retrackForDetail(connector, mouth.get(0), mouth.get(1), null);
+          router.checkRefinementBudget();
+        }
+      } catch (RefineBudget.Exceeded e) {
+        throw e;
       } catch (RuntimeException e) {
         io.logInfo("repairViaPinnedBulges: connector routing failed (" + e.getMessage() + ")");
       }
       if (connector == null || connector.nodes == null || connector.nodes.size() < 2) {
         io.logInfo("repairViaPinnedBulges: " + via.name + " no connector route");
+        continue;
+      }
+      if (!isDetailedConnector(connector, ni, nj)) {
+        io.logInfo("repairViaPinnedBulges: connector lacks detail or exact mouth endpoints");
         continue;
       }
       double connCpm = connector.distance > 0
@@ -589,39 +630,52 @@ public final class WaypointSnapper {
         continue;
       }
 
-      // Splice: replace the span interior with the connector's nodes, trimming
-      // connector endpoints that duplicate the mouth nodes.
-      List<OsmPathElement> conn = connector.nodes;
-      int cs = 0;
-      int ce = conn.size();
-      while (cs < ce && conn.get(cs).calcDistance(ni) <= 2) cs++;
-      while (ce > cs && conn.get(ce - 1).calcDistance(nj) <= 2) ce--;
-      List<OsmPathElement> interior = new ArrayList<>(conn.subList(cs, ce));
+      // Build a separate candidate. A failed walk or an interrupted validation
+      // must leave the original geometry and waypoint indices untouched.
+      OsmTrack candidate = new OsmTrack();
+      candidate.nodes.addAll(nodes.subList(0, span[0] + 1));
+      candidate.nodes.addAll(connector.nodes.subList(1, connector.nodes.size()));
+      candidate.nodes.addAll(nodes.subList(span[1] + 1, nodes.size()));
+      candidate.setMatchedWaypoints(waypoints);
       int removedNodes = span[1] - span[0] - 1;
-      // Crossing guard: the connector is routed without sight of the rest of
-      // the loop, so it can cut transversely across the outbound or return —
-      // trading a fat bulge for a user-visible self-crossing (measured: AUTO
-      // fastbike crossings +49% before this guard). Splice the node list
-      // first, compare self-intersections, and revert if the count rose;
-      // waypoint indices are only adjusted after acceptance.
+      int insertedNodes = connector.nodes.size() - 2;
       int crossingsBefore = RoundTripQualityGate.countSelfIntersections(track);
-      List<OsmPathElement> oldInterior = new ArrayList<>(nodes.subList(span[0] + 1, span[1]));
-      nodes.subList(span[0] + 1, span[1]).clear();
-      nodes.addAll(span[0] + 1, interior);
-      int crossingsAfter = RoundTripQualityGate.countSelfIntersections(track);
+      int crossingsAfter = RoundTripQualityGate.countSelfIntersections(candidate);
       if (crossingsAfter > crossingsBefore) {
-        nodes.subList(span[0] + 1, span[0] + 1 + interior.size()).clear();
-        nodes.addAll(span[0] + 1, oldInterior);
         io.logInfo("repairViaPinnedBulges: " + via.name + " connector rejected (would add "
           + (crossingsAfter - crossingsBefore) + " self-crossing(s))");
         continue;
       }
-      adjustWaypointIndices(waypoints, span[0], span[1] - 1, removedNodes - interior.size());
+      // Validate the exact full route, carrying turn and elevation state across
+      // both splice seams. Independently valid legs do not establish legal joins.
+      router.checkRefinementBudget();
+      int continuousCost = router.walkPathCost(candidate, waypoints.get(0), waypoints.get(waypoints.size() - 1));
+      router.checkRefinementBudget();
+      if (continuousCost < 0) {
+        io.logInfo("repairViaPinnedBulges: connector rejected (full route is unpriceable)");
+        continue;
+      }
+      nodes.clear();
+      nodes.addAll(candidate.nodes);
+      adjustWaypointIndices(waypoints, span[0], span[1] - 1, removedNodes - insertedNodes);
 
       io.logInfo(String.format(Locale.US,
         "repairViaPinnedBulges: at %s replaced %.0fm bulge (mouth %.0fm, span %.2f cost/m vs track %.2f) with %dm connector (%.2f cost/m)",
         via.name, arc, crowFly, spanCpm, trackCostPerM, connector.distance, connCpm));
     }
+  }
+
+  private boolean isDetailedConnector(OsmTrack connector, OsmPathElement start, OsmPathElement end) {
+    List<OsmPathElement> nodes = connector.nodes;
+    if (nodes.get(0).getIdFromPos() != start.getIdFromPos()
+        || nodes.get(nodes.size() - 1).getIdFromPos() != end.getIdFromPos()) {
+      return false;
+    }
+    for (int i = 1; i < nodes.size(); i++) {
+      router.checkRefinementBudget();
+      if (nodes.get(i).message == null) return false;
+    }
+    return true;
   }
 
   /**
@@ -684,6 +738,8 @@ public final class WaypointSnapper {
     // into doRoundTrip's catch and failing the request outright.
     try {
       router.matchWaypointsToNodes(allCandidates, maxSnapDist);
+    } catch (RefineBudget.Exceeded e) {
+      throw e;
     } catch (Exception e) {
       io.logInfo("validateAndAdjustWaypoints: candidate match failed ("
         + e.getClass().getSimpleName() + "), keeping generated waypoint positions");
@@ -957,6 +1013,11 @@ public final class WaypointSnapper {
    */
   static int[] findViaPinnedBulgeSpan(List<OsmPathElement> nodes, int viaIdx,
                                       int loIdx, int hiIdx, int maxArcM) {
+    return findViaPinnedBulgeSpan(nodes, viaIdx, loIdx, hiIdx, maxArcM, () -> { });
+  }
+
+  private static int[] findViaPinnedBulgeSpan(List<OsmPathElement> nodes, int viaIdx,
+                                             int loIdx, int hiIdx, int maxArcM, Runnable checkBudget) {
     if (nodes == null || loIdx < 0 || hiIdx >= nodes.size()
         || viaIdx <= loIdx || viaIdx >= hiIdx) {
       return null;
@@ -969,6 +1030,7 @@ public final class WaypointSnapper {
     int bi = -1;
     int bj = -1;
     for (int i = viaIdx - 1; i >= loIdx; i--) {
+      checkBudget.run();
       if (cum[viaIdx - loIdx] - cum[i - loIdx] > maxArcM) break;
       for (int j = viaIdx + 1; j <= hiIdx; j++) {
         double arc = cum[j - loIdx] - cum[i - loIdx];

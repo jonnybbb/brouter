@@ -74,6 +74,7 @@ public final class RefineSkeleton {
     c.node1 = copyNode(src.node1);
     c.node2 = copyNode(src.node2);
     c.crosspoint = copyNode(src.crosspoint);
+    c.originalCrosspoint = copyNode(src.originalCrosspoint);
     c.waypoint = copyNode(src.waypoint);
     c.correctedpoint = copyNode(src.correctedpoint);
     c.radius = src.radius;

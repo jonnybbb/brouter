@@ -18,10 +18,17 @@ public final class FinishedCandidate {
   private final RoundTripQualityResult qualityVerdict;
   private final double oracleCostPerMeter;
   private final double rcs;
+  private final String pricingMethod;
 
   public FinishedCandidate(FinalizationOutcome outcome, String reason, OsmTrack track,
                            List<MatchedWaypoint> matchedWaypoints, RoundTripQualityResult qualityVerdict,
                            double oracleCostPerMeter, double rcs) {
+    this(outcome, reason, track, matchedWaypoints, qualityVerdict, oracleCostPerMeter, rcs, "unknown");
+  }
+
+  public FinishedCandidate(FinalizationOutcome outcome, String reason, OsmTrack track,
+                           List<MatchedWaypoint> matchedWaypoints, RoundTripQualityResult qualityVerdict,
+                           double oracleCostPerMeter, double rcs, String pricingMethod) {
     this.outcome = outcome;
     this.reason = reason;
     this.track = track;
@@ -37,6 +44,7 @@ public final class FinishedCandidate {
     this.qualityVerdict = qualityVerdict;
     this.oracleCostPerMeter = oracleCostPerMeter;
     this.rcs = rcs;
+    this.pricingMethod = pricingMethod != null ? pricingMethod : "unknown";
   }
 
   public FinalizationOutcome getOutcome() {
@@ -71,11 +79,22 @@ public final class FinishedCandidate {
     return rcs;
   }
 
+  public String getPricingMethod() {
+    return pricingMethod;
+  }
+
   /** Create a FinishedCandidate representing the original tier baseline loop (§4.5). */
   public static FinishedCandidate fromBaseline(OsmTrack track, List<MatchedWaypoint> matchedWaypoints,
                                                 RoundTripQualityResult qualityVerdict,
                                                 double oracleCostPerMeter, double rcs) {
+    return fromBaseline(track, matchedWaypoints, qualityVerdict, oracleCostPerMeter, rcs, "unknown");
+  }
+
+  /** Create a FinishedCandidate representing the original tier baseline loop (§4.5) with pricing method. */
+  public static FinishedCandidate fromBaseline(OsmTrack track, List<MatchedWaypoint> matchedWaypoints,
+                                                RoundTripQualityResult qualityVerdict,
+                                                double oracleCostPerMeter, double rcs, String pricingMethod) {
     return new FinishedCandidate(FinalizationOutcome.SUCCESS, "baseline", track,
-      matchedWaypoints, qualityVerdict, oracleCostPerMeter, rcs);
+      matchedWaypoints, qualityVerdict, oracleCostPerMeter, rcs, pricingMethod);
   }
 }

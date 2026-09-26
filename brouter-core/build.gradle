@@ -30,7 +30,7 @@ test {
 sourceSets {
     integrationTest {
         java.srcDir 'src/integrationTest/java'
-        resources.srcDir 'src/integrationTest/resources'
+        resources.setSrcDirs(['src/integrationTest/resources'])
         // Reuse the production classes and the shared test helpers (RoundTripFixture,
         // etc.) from src/test rather than duplicating them.
         compileClasspath += sourceSets.main.output + sourceSets.test.output

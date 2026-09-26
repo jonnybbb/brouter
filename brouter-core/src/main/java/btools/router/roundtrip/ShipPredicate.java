@@ -49,9 +49,20 @@ public final class ShipPredicate {
       return new Result(false, "gate_rejected");
     }
 
-    // 2. Oracle cost/m: C_ref <= (1 - costMargin) * C_base
+    // 2. Symmetric pricing method check (§4.3, ADR-0004)
+    String baseMethod = baseline.getPricingMethod();
+    String candMethod = candidate.getPricingMethod();
+    if (baseMethod == null || candMethod == null
+        || !"continuous".equals(baseMethod) || !"continuous".equals(candMethod)
+        || !baseMethod.equals(candMethod)) {
+      return new Result(false, String.format(Locale.US, "pricing_method_mismatch: ref=%s != base=%s",
+        candMethod, baseMethod));
+    }
+
+    // 3. Oracle cost/m: C_ref <= (1 - costMargin) * C_base
     double costThreshold = (1.0 - config.costMargin) * baseline.getOracleCostPerMeter();
-    if (Double.isNaN(candidate.getOracleCostPerMeter()) || Double.isNaN(costThreshold)
+    if (!Double.isFinite(candidate.getOracleCostPerMeter()) || !Double.isFinite(costThreshold)
+        || candidate.getOracleCostPerMeter() <= 0 || costThreshold <= 0
         || candidate.getOracleCostPerMeter() > costThreshold) {
       return new Result(false, String.format(Locale.US, "cost_not_improved: ref=%.4f > thr=%.4f (base=%.4f)",
         candidate.getOracleCostPerMeter(), costThreshold, baseline.getOracleCostPerMeter()));

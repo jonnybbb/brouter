@@ -27,6 +27,33 @@ public final class RefineStage {
     if (ops == null || orchestrator == null || request == null) {
       return;
     }
+    boolean measure = Boolean.getBoolean("loop.refine.measure")
+      && !ops.routingContext().roundTripSuppressDecoration;
+    long measurementStart = System.currentTimeMillis();
+    RefineRouteSnapshot before = measure ? RefineRouteSnapshot.capture(request.track, 2 * Math.PI * searchRadius,
+      ops.routingContext().getProfileName(), direction, baselineQuality) : null;
+    long measurementMs = System.currentTimeMillis() - measurementStart;
+    try {
+      refineWithinRequest(ops, orchestrator, request, baselineQuality, searchRadius, direction, requestedAlgorithm);
+    } finally {
+      RefineDiagnostics diagnostics = ops.lastRefineDiagnostics();
+      if (measure && diagnostics != null) {
+        long afterStart = System.currentTimeMillis();
+        diagnostics.baseline = before;
+        diagnostics.result = RefineRouteSnapshot.capture(request.track, 2 * Math.PI * searchRadius,
+          ops.routingContext().getProfileName(), direction, request.qualityVerdict);
+        diagnostics.resolvedDirection = direction;
+        diagnostics.requestedDistance = 2 * Math.PI * searchRadius;
+        diagnostics.producingTier = String.valueOf(request.producingTier);
+        diagnostics.measurementMs = measurementMs + System.currentTimeMillis() - afterStart;
+      }
+    }
+  }
+
+  private static void refineWithinRequest(RoundTripEngineOps ops, RoundTripOrchestrator orchestrator,
+                                           RoundTripRequest request, RoundTripQualityResult baselineQuality,
+                                           double searchRadius, double direction,
+                                           RoundTripAlgorithm requestedAlgorithm) {
     RefineDiagnostics diag = new RefineDiagnostics();
     long stageStart = System.currentTimeMillis();
 
@@ -113,8 +140,10 @@ public final class RefineStage {
     }
 
     // Catch any unexpected exception to preserve baseline route integrity
-    try {
-      long requestDeadline = request.requestDeadline();
+    long requestDeadline = request.requestDeadline();
+    try (RefineBudget budget = new RefineBudget(ops,
+        RefineBudget.earlier(requestDeadline, stageStart + config.maxMs))) {
+      budget.check();
       long stageDeadline = (requestDeadline > 0)
           ? Math.min(requestDeadline, stageStart + config.maxMs)
           : stageStart + config.maxMs;
@@ -123,9 +152,16 @@ public final class RefineStage {
       String profileName = ops.routingContext().getProfileName();
       double requestedDistance = 2 * Math.PI * searchRadius;
       LegEvaluator legEvaluator = new DefaultLegEvaluator(ops, "refine-leg");
-      RefineInitResult initResult = RefineInitializer.initialize(
-        ops, legEvaluator, skeleton, orchestrator.cleanup, request.track,
-        searchRadius, profileName, direction, requestedDistance, stageDeadline);
+      diag.timeoutOperation = "initialization";
+      long initStart = System.currentTimeMillis();
+      RefineInitResult initResult;
+      try {
+        initResult = RefineInitializer.initialize(
+          ops, legEvaluator, skeleton, orchestrator.cleanup, request.track,
+          searchRadius, profileName, direction, requestedDistance, stageDeadline, false, diag);
+      } finally {
+        diag.initializationMs = System.currentTimeMillis() - initStart;
+      }
 
       if (!initResult.isSuccess()) {
         String reason = initResult.getFailureReason();
@@ -141,16 +177,18 @@ public final class RefineStage {
 
       // Price baseline under oracle & calculate baseline RCS
       double baseOracleCost = initResult.getBaselineOracleCostPerMeter();
-      if (baseOracleCost <= 0 || Double.isNaN(baseOracleCost)) {
-        baseOracleCost = LoopCostOracle.price(ops, request.track, skeleton.getWaypoints());
-      }
+
 
       RouteChoiceScore.Verdict baseRcsVerdict = RouteChoiceScore.score(
         request.track, requestedDistance, profileName, baselineQuality, direction);
       double baseRcs = (baseRcsVerdict != null) ? baseRcsVerdict.score() : 0.0;
 
+      String basePricingMethod = initResult.getBaselinePricingMethod();
+      diag.baselinePricingMethod = basePricingMethod;
       diag.oracleCostPerMeterBefore = baseOracleCost;
+      diag.oracleCostPerMeterAfter = baseOracleCost;
       diag.rcsBefore = baseRcs;
+      diag.rcsAfter = baseRcs;
       diag.chains = config.chains;
 
       if (baseOracleCost <= 0 || Double.isNaN(baseOracleCost)) {
@@ -160,22 +198,34 @@ public final class RefineStage {
         return;
       }
 
-      FinishedCandidate baselineFinished = new FinishedCandidate(
-        FinalizationOutcome.SUCCESS, "baseline", request.track,
-        skeleton.getWaypoints(), baselineQuality, baseOracleCost, baseRcs);
+      diag.eligible = true;
+      FinishedCandidate baselineFinished = FinishedCandidate.fromBaseline(
+        request.track, skeleton.getWaypoints(), baselineQuality, baseOracleCost, baseRcs, basePricingMethod);
 
       // 3. Search proposals on raw legs
       MoveProposalOperator moveOp = new MoveProposalOperator(ops, config);
       int varietySeed = Math.max(0, ops.routingContext().alternativeIdx);
-      double rawBaselineEnergy = LoopCostOracle.price(ops, initResult.getRawLegs(), skeleton.getWaypoints());
+      diag.timeoutOperation = "baseline_pricing";
+      long priceStart = System.currentTimeMillis();
+      double rawBaselineEnergy;
+      try {
+        rawBaselineEnergy = LoopCostOracle.evaluate(ops, initResult.getRawLegs(), skeleton.getWaypoints(), stageDeadline).costPerMeter();
+        diag.rawBaselinePricingFailure = ops.getLastPricingFailure();
+      } finally {
+        diag.pricingMs += System.currentTimeMillis() - priceStart;
+      }
       if (rawBaselineEnergy <= 0 || Double.isNaN(rawBaselineEnergy)) {
-        rawBaselineEnergy = baseOracleCost;
+        diag.refineReason = "raw_baseline_unpriceable";
+        diag.elapsedMs = System.currentTimeMillis() - stageStart;
+        publishDiagnostics(ops, request, diag);
+        return;
       }
       RefineSearch search = new RefineSearch(
         ops, legEvaluator, initResult.getLegCache(), config, skeleton,
         initResult.getRawLegs(), rawBaselineEnergy, moveOp,
         searchRadius, requestedDistance, varietySeed, stageDeadline);
 
+      diag.timeoutOperation = "search_evaluation";
       RefineSearch.SearchResult searchResult = search.search(diag);
       List<RefineSearch.SearchCandidate> finalists = searchResult.getFinalists();
 
@@ -207,10 +257,14 @@ public final class RefineStage {
         RefineSearch.SearchCandidate rawCandidate = finalists.get(i);
         diag.finalizations++;
 
+        diag.timeoutOperation = "finalization";
+        long finalizeStart = System.currentTimeMillis();
         FinishedCandidate candidate = RefineFinalizer.finalizeCandidate(
           rawCandidate.getRawLegs(), rawCandidate.getSkeleton(), ops,
           orchestrator.cleanup, searchRadius, profileName, direction,
-          requestedDistance, stageDeadline);
+          requestedDistance, stageDeadline, diag);
+        diag.finalizationMs += System.currentTimeMillis() - finalizeStart;
+        if (!candidate.isSuccess()) diag.reject(candidate.getReason().split(":", 2)[0]);
 
         if (candidate.getOutcome() == FinalizationOutcome.SUCCESS) {
           ShipPredicate.Result shipResult = ShipPredicate.evaluate(
@@ -221,6 +275,7 @@ public final class RefineStage {
               bestPassingCandidate = candidate;
             }
           } else {
+            diag.reject(shipResult.getReason().split(":", 2)[0]);
             if (diag.refineReason == null) {
               diag.refineReason = shipResult.getReason();
             }
@@ -238,11 +293,13 @@ public final class RefineStage {
       }
 
       // 5. Publish winner atomically or leave baseline intact
+      budget.check();
       if (bestPassingCandidate != null) {
         diag.refineApplied = true;
         diag.refineReason = "accepted";
         diag.oracleCostPerMeterAfter = bestPassingCandidate.getOracleCostPerMeter();
         diag.rcsAfter = bestPassingCandidate.getRcs();
+        diag.candidatePricingMethod = bestPassingCandidate.getPricingMethod();
         diag.elapsedMs = System.currentTimeMillis() - stageStart;
         publish(ops, request, bestPassingCandidate, diag);
       } else {
@@ -253,6 +310,14 @@ public final class RefineStage {
         diag.elapsedMs = System.currentTimeMillis() - stageStart;
         publishDiagnostics(ops, request, diag);
       }
+    } catch (RefineBudget.Exceeded e) {
+      diag.refineApplied = false;
+      diag.refineReason = e.outcome == FinalizationOutcome.TIMEOUT ? "timeout" : "cancelled";
+      diag.refineTruncated = e.outcome == FinalizationOutcome.TIMEOUT;
+      diag.timeoutOperation = diag.timeoutOperation == null ? "refinement" : diag.timeoutOperation;
+      diag.elapsedMs = System.currentTimeMillis() - stageStart;
+      publishDiagnostics(ops, request, diag);
+      if (e.outcome == FinalizationOutcome.CANCELLED) throw e;
     } catch (RuntimeException e) {
       if ((ops != null && ops.isTerminated())
           || (e.getMessage() != null && e.getMessage().contains("thread-priority-watchdog"))) {
@@ -288,6 +353,7 @@ public final class RefineStage {
    */
   public static void publish(RoundTripEngineOps ops, RoundTripRequest request,
                              FinishedCandidate winner, RefineDiagnostics diag) {
+    if (!diag.refineTruncated) diag.timeoutOperation = null;
     if (ops != null) {
       ops.setLastRefineDiagnostics(diag);
     }
@@ -336,6 +402,7 @@ public final class RefineStage {
    * Publish diagnostics to both ops and request on rejection, skip, or failure (§4.5).
    */
   public static void publishDiagnostics(RoundTripEngineOps ops, RoundTripRequest request, RefineDiagnostics diag) {
+    if (!diag.refineTruncated) diag.timeoutOperation = null;
     if (ops != null) {
       ops.setLastRefineDiagnostics(diag);
     }

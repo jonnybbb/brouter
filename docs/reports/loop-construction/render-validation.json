@@ -1,0 +1,8 @@
+{
+  "casesRendered": 23,
+  "svgElementsConstructed": 63,
+  "nonemptyPathsConstructed": 1391,
+  "invalidSvgNumbers": 0,
+  "baselFilterMatches": 4,
+  "browserVisualCheck": "Blocked: browser URL policy rejects local file URLs. DOM construction and data audit do not substitute for a browser screenshot."
+}

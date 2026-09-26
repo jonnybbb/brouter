@@ -126,6 +126,24 @@ public final class RefineSearch {
    * Run the search over proposals up to the evaluation budget (§5).
    */
   public SearchResult search(RefineDiagnostics diag) {
+    if (diag == null) diag = new RefineDiagnostics();
+    if (router == null || originalSkeleton == null || baselineRawLegs.isEmpty()) {
+      return new SearchResult(Collections.<SearchCandidate>emptyList(), diag);
+    }
+    try (RefineBudget budget = new RefineBudget(router, deadlineMs)) {
+      budget.check();
+      SearchResult result = searchWithinBudget(diag);
+      budget.check();
+      return result;
+    } catch (RefineBudget.Exceeded e) {
+      if (e.outcome == FinalizationOutcome.CANCELLED) throw e;
+      diag.refineTruncated = true;
+      diag.timeoutOperation = "search_evaluation";
+      return new SearchResult(Collections.<SearchCandidate>emptyList(), diag);
+    }
+  }
+
+  private SearchResult searchWithinBudget(RefineDiagnostics diag) {
     if (diag == null) {
       diag = new RefineDiagnostics();
     }
@@ -168,14 +186,21 @@ public final class RefineSearch {
         chainProposals++;
         diag.proposals++;
 
-        MoveProposalOperator.MoveProposal prop = moveOperator.propose(
-          currentSkeleton, originalSkeleton, rng, searchRadius, requestedDistance);
+        long snapStart = System.currentTimeMillis();
+        MoveProposalOperator.MoveProposal prop;
+        try {
+          prop = moveOperator.propose(currentSkeleton, originalSkeleton, rng, searchRadius, requestedDistance);
+        } finally {
+          diag.snappingMs += System.currentTimeMillis() - snapStart;
+        }
 
         if (!prop.isFeasible()) {
           diag.invalidProposals++;
+          diag.reject("proposal_" + prop.getReason());
           continue;
         }
 
+        RefineBudget.check(router, deadlineMs);
         // Proposal passed pre-routing validation -> counts as evaluation
         chainEvaluations++;
         diag.evaluations++;
@@ -205,7 +230,12 @@ public final class RefineSearch {
             }
             diag.legsRouted++;
             try {
-              leg = evaluator.route(from, to, remaining);
+              long routeStart = System.currentTimeMillis();
+              try {
+                leg = evaluator.route(from, to, remaining);
+              } finally {
+                diag.routingMs += System.currentTimeMillis() - routeStart;
+              }
             } catch (IllegalArgumentException e) {
               if (e.getMessage() != null && e.getMessage().contains("timeout")) {
                 diag.refineTruncated = true;
@@ -236,6 +266,7 @@ public final class RefineSearch {
         }
 
         if (routeFailed || candidateRawLegs.size() != legCount) {
+          diag.reject("leg_routing_failed");
           diag.addTrace(diag.evaluations, prop.getOperator(), -1.0, false, false);
           continue;
         }
@@ -253,15 +284,42 @@ public final class RefineSearch {
           }
         }
         if (!seamsOk) {
+          diag.reject("seam_mismatch");
           diag.addTrace(diag.evaluations, prop.getOperator(), -1.0, false, false);
           continue;
         }
 
         // Price continuous loop energy
-        double energy = LoopCostOracle.price(router, candidateRawLegs, waypoints);
+        long priceStart = System.currentTimeMillis();
+        double energy;
+        try {
+          energy = LoopCostOracle.evaluate(router, candidateRawLegs, waypoints, deadlineMs).costPerMeter();
+        } finally {
+          diag.pricingMs += System.currentTimeMillis() - priceStart;
+        }
         if (energy <= 0 || Double.isNaN(energy)) {
+          diag.reject("candidate_unpriceable");
           diag.addTrace(diag.evaluations, prop.getOperator(), -1.0, false, false);
           continue;
+        }
+
+        // Check raw candidate length against requestedDistance
+        if (requestedDistance > 0) {
+          double candDist = 0;
+          for (int l = 0; l < candidateRawLegs.size(); l++) {
+            candDist += candidateRawLegs.get(l).distance;
+          }
+          double baseDist = 0;
+          for (int l = 0; l < baselineRawLegs.size(); l++) {
+            baseDist += baselineRawLegs.get(l).distance;
+          }
+          double candErr = Math.abs(candDist / requestedDistance - 1.0);
+          double baseErr = Math.abs(baseDist / requestedDistance - 1.0);
+          if (candErr > baseErr) {
+            diag.reject("raw_length_error_worse");
+            diag.addTrace(diag.evaluations, prop.getOperator(), energy, false, true);
+            continue;
+          }
         }
 
         SearchCandidate cand = new SearchCandidate(mutatedSkeleton, candidateRawLegs, energy);

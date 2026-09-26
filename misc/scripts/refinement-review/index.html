@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What changed in the cycling routes?</title><link rel="stylesheet" href="review.css"></head>
+<body><main>
+<h1>What actually changed?</h1>
+<p class="lead">The repairs made the comparison more trustworthy. The current refinement changed only <strong>34 of 460 routes</strong>. The other <strong>426 pairs are identical</strong>. Better rides for most requests have not been demonstrated.</p>
+<div class="cards"><section><b>34 / 460</b><span>accepted route changes, 7.4%</span></section><section><b>426 / 460</b><span>original route retained, 92.6%</span></section><section><b>0%</b><span>median cost improvement across all requests</span></section><section><b>77 / 460</b><span>searches reached their time limit</span></section></div>
+<details><summary>My expectations, what improved, and what this experiment cannot tell us</summary>
+<p>I expected the correctness repairs to let the optimizer search and compare real routes again. That happened. I also hoped enough requests would get a useful change within three seconds to justify enabling refinement. That did not happen.</p>
+<table><thead><tr><th>Question</th><th>Evidence</th><th>My assessment</th></tr></thead><tbody>
+<tr><td>Did correctness improve?</td><td>All six original production pricing regressions now pass. Pricing retains continuous turn and elevation state; unsafe nearby-road splices were removed.</td><td>Yes. The tests support these specific repairs.</td></tr>
+<tr><td>Did the optimizer change real routes?</td><td>34 accepted routes have different geometry and at least 0.5% lower continuous profile cost per metre.</td><td>Yes, for a small minority. Orange and blue sections below show where.</td></tr>
+<tr><td>Are the rides more appealing?</td><td>Distance fit improved for all 34 accepted changes. Surface, traffic, climbing and interruptions have mixed changes and incomplete data.</td><td>Plausible for some riders and cases. No human preference evidence yet.</td></tr>
+<tr><td>Did routes improve compared with the code before the repairs?</td><td>This experiment compares refinement off/on after the correctness repairs. It does not contain a complete before-fix quality comparison.</td><td>Unknown. Do not attribute the 34 refinement wins to the cleanup repairs.</td></tr>
+<tr><td>Is it ready to enable?</td><td>Zero median gain; 16.7% truncation; 14 additional finished-route and three raw-search pricing failures.</td><td>No. Keep it off by default.</td></tr>
+</tbody></table>
+<p>A lower profile cost is the algorithm's criterion. It is not a cyclist happiness score. My expectation for a useful product improvement is a visible benefit on many requests, acceptable response time, and riders choosing the new routes in a blind comparison. This result falls short.</p>
+</details>
+<nav><button id="paired" aria-pressed="true">Corrected experiment: all 460 pairs</button><button id="archive" aria-pressed="false">Other saved algorithm variants</button><a href="../ride-review.html">Original blind A/B review</a> · <a href="../summary.md">Experiment summary</a> · <a href="report-manifest.json">Report provenance</a></nav>
+<p id="scopeNote"></p>
+<div class="filters"><label>Search <input id="search" type="search" placeholder="Region, distance, direction…"></label><label>Profile <select id="profile"><option value="">All profiles</option></select></label><label>Outcome <select id="outcome"><option value="">All outcomes</option><option value="accepted">Changed: accepted</option><option value="identical">Identical: original retained</option><option value="truncated">Time limit</option><option value="unpriceable">Pricing failure</option><option value="unchanged">Unchanged, other reasons</option></select></label><button id="changedOnly">Show all 34 changed pairs</button><button id="reset">Reset filters</button></div>
+<p id="count" aria-live="polite"></p>
+<div class="workspace"><aside><div id="routeList"></div></aside><article id="detail"><p>Select a route.</p></article></div>
+<footer><p>All maps work offline. They display captured route geometry, not a background street map. Drag to pan, scroll to zoom. Geometry differences use a 10 m corridor and samples at most 25 m apart; shared geometry can have different direction or repetition. The catalogue labels exact identity separately.</p><p>The experiment contains original and published-result geometry for every request. Candidate score traces are included where recorded. Rejected search candidates were not saved as route geometry, so they cannot be mapped retrospectively. Historical recordings are separate evidence with different inputs and dates.</p></footer>
+</main><script src="catalog.js"></script><script src="review.js"></script></body></html>
