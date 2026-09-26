@@ -17,6 +17,10 @@ tables.nodes = osm2pgsql.define_table{
     columns = {
         { column = 'tags',  type = 'jsonb' },
         { column = 'geom',  type = 'point', projection = srid }
+    },
+    -- GiST index on geom (named nodes_geom_idx) for the ST_DWithin joins in brouter.sql
+    indexes = {
+        { column = 'geom', method = 'gist' }
     }
 }
 
