@@ -233,14 +233,15 @@ public final class RouteRideAnalysis {
 
   private static Map<String, String> tags(String raw, Map<String, Map<String, String>> cache) {
     if (raw == null || raw.isEmpty()) return Collections.emptyMap();
-    return cache.computeIfAbsent(raw, value -> {
-      Map<String, String> result = new HashMap<>();
-      for (String token : value.split("\\s+")) {
-        int separator = token.indexOf('=');
-        if (separator > 0 && separator < token.length() - 1) result.put(token.substring(0, separator), token.substring(separator + 1));
-      }
-      return result;
-    });
+    Map<String, String> result = cache.get(raw);
+    if (result != null) return result;
+    result = new HashMap<>();
+    for (String token : raw.split("\\s+")) {
+      int separator = token.indexOf('=');
+      if (separator > 0 && separator < token.length() - 1) result.put(token.substring(0, separator), token.substring(separator + 1));
+    }
+    cache.put(raw, result);
+    return result;
   }
 
   private static boolean oneOf(String value, String... options) {

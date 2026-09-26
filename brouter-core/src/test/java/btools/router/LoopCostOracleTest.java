@@ -67,18 +67,13 @@ public class LoopCostOracleTest {
             if (rawLeg == null || rawLeg.nodes == null || rawLeg.nodes.size() < 2) {
               continue;
             }
-            int walked = LoopCostOracle.priceCost(re.roundTripOps(), rawLeg, fromWp, toWp);
-            if (walked < 0) {
-              System.out.println("DEBUG FAILED LEG " + totalVerifiedLegs + ": " + profile + " dir=" + direction + " r=" + radius + " l=" + l + " rawLeg.cost=" + rawLeg.cost);
-              System.out.println("  fromWp: cp=" + fromWp.crosspoint.getIdFromPos() + " n1=" + fromWp.node1.getIdFromPos() + " n2=" + fromWp.node2.getIdFromPos());
-              System.out.println("  toWp:   cp=" + toWp.crosspoint.getIdFromPos() + " n1=" + toWp.node1.getIdFromPos() + " n2=" + toWp.node2.getIdFromPos());
-              System.out.println("  rawLeg nodes: " + rawLeg.nodes.size());
-              for (int k = 0; k < rawLeg.nodes.size(); k++) {
-                System.out.println("    node " + k + ": " + rawLeg.nodes.get(k).getIdFromPos() + " cost=" + rawLeg.nodes.get(k).cost);
-              }
-            }
-            assertEquals("Exact cost match for leg " + totalVerifiedLegs + " (" + profile + ", dir=" + direction + ")",
-              rawLeg.cost, walked);
+            int walked = LoopCostOracle.priceCost(re.roundTripOps(), java.util.Collections.singletonList(rawLeg), java.util.Arrays.asList(fromWp, toWp));
+            OsmTrack detailed = re.roundTripOps().retrackForDetail(rawLeg, fromWp, toWp, null);
+            assertNotSame("Reference must be detailed", rawLeg, detailed);
+            int exact = LoopCostOracle.priceCost(re.roundTripOps(), detailed, fromWp, toWp);
+            assertTrue("Detailed reference must be priceable: " + re.getLastPricingFailure(), exact > 0);
+            assertEquals("Raw preparation must price the same clipped geometry on leg " + totalVerifiedLegs,
+              exact, walked);
             totalVerifiedLegs++;
           }
         }
@@ -132,18 +127,10 @@ public class LoopCostOracleTest {
     MatchedWaypoint splitWp = re.roundTripOps().profileAwareMatchPoint(splitElem.getILon(), splitElem.getILat(), "split", 50.0);
     assertNotNull("Split point must be matched for this regression to run", splitWp);
     if (splitWp != null) {
-      OsmTrack leg0a = new OsmTrack();
-      leg0a.cost = leg0.nodes.get(splitIdx).cost;
-      leg0a.distance = 500;
-      for (int i = 0; i <= splitIdx; i++) {
-        leg0a.nodes.add(leg0.nodes.get(i));
-      }
-      OsmTrack leg0b = new OsmTrack();
-      leg0b.cost = leg0.cost - leg0a.cost;
-      leg0b.distance = leg0.distance - leg0a.distance;
-      for (int i = splitIdx; i < leg0.nodes.size(); i++) {
-        leg0b.nodes.add(leg0.nodes.get(i));
-      }
+      OsmTrack leg0a = re.roundTripOps().findTrackTimed("split-a", wp0, splitWp, null, 5000L);
+      OsmTrack leg0b = re.roundTripOps().findTrackTimed("split-b", splitWp, wp1, null, 5000L);
+      assertNotNull(leg0a);
+      assertNotNull(leg0b);
       List<OsmTrack> splitLegs = new ArrayList<>();
       splitLegs.add(leg0a);
       splitLegs.add(leg0b);
@@ -153,7 +140,7 @@ public class LoopCostOracleTest {
       splitWaypoints.add(wp1);
 
       int splitWalkedCost = LoopCostOracle.priceCost(re.roundTripOps(), splitLegs, splitWaypoints);
-      int singleWalkedCost = LoopCostOracle.priceCost(re.roundTripOps(), leg0, wp0, wp1);
+      int singleWalkedCost = LoopCostOracle.priceCost(re.roundTripOps(), java.util.Collections.singletonList(leg0), java.util.Arrays.asList(wp0, wp1));
       System.out.println("Segmentation invariance: single leg=" + singleWalkedCost + " vs 2 sub-legs=" + splitWalkedCost);
       assertEquals("Segmentation invariance: split sub-legs equal single leg cost within tolerance",
         (double) singleWalkedCost, (double) splitWalkedCost, 1.0);
@@ -235,8 +222,11 @@ public class LoopCostOracleTest {
 
     OsmTrack rawLeg = re.roundTripOps().findTrackTimed("raw-clipped", from, to, null, 5000L);
     assertNotNull(rawLeg);
-    int walkedCost = LoopCostOracle.priceCost(re.roundTripOps(), rawLeg, from, to);
-    assertEquals("Endpoint clipping correctly reproduces routed cost", rawLeg.cost, walkedCost);
+    int walkedCost = LoopCostOracle.priceCost(re.roundTripOps(), java.util.Collections.singletonList(rawLeg), java.util.Arrays.asList(from, to));
+    OsmTrack detailed = re.roundTripOps().retrackForDetail(rawLeg, from, to, null);
+    assertNotSame(rawLeg, detailed);
+    assertEquals("Endpoint clipping prices the exact detailed route",
+      LoopCostOracle.priceCost(re.roundTripOps(), detailed, from, to), walkedCost);
   }
 
   @Test

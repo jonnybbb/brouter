@@ -35,6 +35,8 @@ public class RoundTripResult {
   private List<MatchedWaypoint> matchedWaypoints;
   private int totalDistanceMeters;
   private boolean withinTolerance;
+  private double requestedDistance;
+  private double distanceTolerance;
   private final List<String> diagnostics = new ArrayList<>();
   private String fallbackReason;
   private List<OsmTrack> legTracks; // per-leg sub-route tracks from greedy planner
@@ -100,6 +102,33 @@ public class RoundTripResult {
 
   void setTrack(OsmTrack track) {
     this.track = track;
+  }
+
+  void setDistanceContract(double requestedDistance, double tolerance) {
+    this.requestedDistance = requestedDistance;
+    this.distanceTolerance = tolerance;
+  }
+
+  /** Replace route-dependent metadata; planner telemetry still describes the original search. */
+  void adoptRefinedTrack(OsmTrack replacement, List<MatchedWaypoint> points) {
+    List<OsmNodeNamed> named = new ArrayList<>();
+    if (points != null) {
+      for (MatchedWaypoint point : points) {
+        OsmNodeNamed node = new OsmNodeNamed(point.crosspoint);
+        node.name = point.name;
+        node.generated = point.generated;
+        node.wpttype = point.wpttype;
+        named.add(node);
+      }
+    }
+    track = replacement;
+    totalDistanceMeters = replacement.distance;
+    matchedWaypoints = points;
+    loopWaypoints = named;
+    // Whole-route cleanup can remove or relocate vias, so the original leg list is obsolete.
+    legTracks = null;
+    withinTolerance = requestedDistance > 0
+      && Math.abs(replacement.distance / requestedDistance - 1) <= distanceTolerance;
   }
 
   public List<OsmNodeNamed> getLoopWaypoints() {
@@ -168,6 +197,7 @@ public class RoundTripResult {
     this.forcedCorridorAccepted = forcedCorridorAccepted;
   }
 
+  /** Original planner legs; null after whole-route refinement invalidates their partition. */
   public List<OsmTrack> getLegTracks() {
     return legTracks == null ? null : Collections.unmodifiableList(legTracks);
   }

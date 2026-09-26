@@ -21,7 +21,8 @@ public class RefineDiagnostics {
   public final java.util.Map<String, Integer> rejectionCounts = new java.util.TreeMap<>();
 
   public void reject(String reason) {
-    rejectionCounts.put(reason, rejectionCounts.getOrDefault(reason, 0) + 1);
+    Integer previous = rejectionCounts.get(reason);
+    rejectionCounts.put(reason, previous == null ? 1 : previous + 1);
   }
 
   /** Whether a refined candidate was accepted and published. */

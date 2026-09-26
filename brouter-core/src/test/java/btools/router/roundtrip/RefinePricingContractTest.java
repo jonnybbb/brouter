@@ -11,7 +11,7 @@ import static org.junit.Assert.assertTrue;
 public class RefinePricingContractTest {
   @Test
   public void pricesOriginalAndCleanedGeometryInsteadOfReconstructedRawLegs() {
-    RoutingEngine engine = RoundTripFixture.engine("gravel", 90, 1000, rc -> {
+    RoutingEngine engine = RoundTripFixture.engine("gravel", 0, 1000, rc -> {
       rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
       rc.roundTripStrictQuality = false;
     });
@@ -22,7 +22,7 @@ public class RefinePricingContractTest {
     assertTrue(originalCost > 0);
     RoundTripTrackCleanup cleanup = new RoundTripTrackCleanup(new WaypointSnapper(ops, ops, ops), ops, ops, ops);
     RefineInitResult init = RefineInitializer.initialize(ops, new DefaultLegEvaluator(ops), skeleton,
-      cleanup, baseline.getTrack(), 1000, "gravel", 90, 2 * Math.PI * 1000,
+      cleanup, baseline.getTrack(), 1000, "gravel", 0, 2 * Math.PI * 1000,
       System.currentTimeMillis() + 10000, true);
     assertTrue(init.isSuccess());
     assertEquals("Baseline must price the original tier track", originalCost,
@@ -37,9 +37,9 @@ public class RefinePricingContractTest {
       "gravel", engine.getLastRoundTripQuality(), 90).score();
     FinishedCandidate original = FinishedCandidate.fromBaseline(baseline.getTrack(), baseline.getMatchedWaypoints(),
       engine.getLastRoundTripQuality(), originalCost, baselineRcs, "continuous");
-    ShipPredicate.Result decision = ShipPredicate.evaluate(candidate, original, new RefineConfig(), 2 * Math.PI * 1000);
     assertTrue("This real reconstruction costs more than the original", finishedCost > originalCost);
-    assertTrue(decision.getReason().startsWith("cost_not_improved"));
+    assertTrue(ShipPredicate.evaluate(candidate, original, new RefineConfig(), 2 * Math.PI * 1000)
+      .getReason().startsWith("cost_not_improved"));
     for (String unsafeMethod : new String[]{"per_leg", "unknown"}) {
       FinishedCandidate unsafe = new FinishedCandidate(FinalizationOutcome.SUCCESS, "test", candidate.getTrack(),
         candidate.getMatchedWaypoints(), candidate.getQualityVerdict(), candidate.getOracleCostPerMeter(),
@@ -48,4 +48,19 @@ public class RefinePricingContractTest {
         .getReason().startsWith("pricing_method_mismatch"));
     }
   }
+  @Test
+  public void rejectsExistingMixedGeometryBaselineWithoutReconstructingIt() {
+    RoutingEngine engine = RoundTripFixture.engine("gravel", 90, 1000, rc -> {
+      rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY;
+      rc.roundTripStrictQuality = false;
+      rc.roundTripRefine = "local";
+    });
+    RoundTripResult result = engine.getLastRoundTripResult();
+    long signature = LoopCostOracle.geometrySignature(result.getTrack());
+    assertTrue(LoopCostOracle.price(engine.roundTripOps(), result.getTrack(), result.getMatchedWaypoints()) < 0);
+    assertTrue(engine.getLastPricingFailure().startsWith("geometry_mismatch"));
+    org.junit.Assert.assertFalse(engine.getLastRefineDiagnostics().refineApplied);
+    assertEquals(signature, LoopCostOracle.geometrySignature(result.getTrack()));
+  }
+
 }

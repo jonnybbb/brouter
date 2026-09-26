@@ -325,6 +325,35 @@ public class RefineFinalizerTest {
     Assert.assertTrue("lastResult refineDiagnostics applied", res.getRefineDiagnostics().refineApplied);
   }
 
+  @Test
+  public void publishRefreshesWaypointCountAndClearsObsoleteLegs() {
+    RoundTripResult result = new RoundTripResult();
+    result.setLegTracks(Arrays.asList(new OsmTrack()));
+    result.setLoopWaypoints(Arrays.asList(new OsmNodeNamed()));
+    result.setWithinTolerance(true);
+    result.setDistanceContract(1000, 0.05);
+    OsmTrack track = new OsmTrack();
+    track.distance = 1200;
+    List<MatchedWaypoint> points = new ArrayList<>();
+    for (int i = 0; i < 4; i++) {
+      MatchedWaypoint point = new MatchedWaypoint();
+      point.crosspoint = new btools.mapaccess.OsmNode(180000000 + i * 100, 140000000);
+      point.name = "via" + i;
+      points.add(point);
+    }
+    RefineDiagnostics diagnostics = new RefineDiagnostics();
+    diagnostics.requestedDistance = 1000;
+    RoundTripRequest request = new RoundTripRequest(null);
+    request.lastResult = result;
+    FinishedCandidate winner = FinishedCandidate.fromBaseline(track, points,
+      RoundTripQualityResult.builder().accepted(true).build(), 1, 1, "continuous");
+    RefineStage.publish(null, request, winner, diagnostics);
+    Assert.assertEquals(4, result.getLoopWaypoints().size());
+    Assert.assertEquals(4, result.getMatchedWaypoints().size());
+    Assert.assertNull("Original raw legs must not describe a refined, cleaned route", result.getLegTracks());
+    Assert.assertFalse("Tolerance must describe the new distance", result.isWithinTolerance());
+  }
+
   private static OsmTrack copyTrack(OsmTrack track) {
     OsmTrack copy = new OsmTrack();
     copy.cost = track.cost;

@@ -133,6 +133,27 @@ public class ExactLinkGeometryTest {
     assertNull(ExactLinkGeometry.match(link, from, to, track, 0, new GeometryDecoder(), () -> { }));
   }
 
+  @Test
+  public void clippedOpeningAndClosingStillRequireEveryNativeTransfer() {
+    OsmLink link = new OsmLink(source, target);
+    ByteDataWriter writer = new ByteDataWriter(new byte[30]);
+    writer.writeVarLengthSigned(1000);
+    writer.writeVarLengthSigned(0);
+    writer.writeVarLengthSigned(200);
+    link.geometry = writer.toByteArray();
+    MatchedWaypoint endpoint = new MatchedWaypoint();
+    endpoint.node1 = source;
+    endpoint.node2 = target;
+    assertNotNull(ExactLinkGeometry.match(link, source, target, track(500, 1000, 1500), 0,
+      endpoint, endpoint, new GeometryDecoder(), () -> { }));
+    assertNull(ExactLinkGeometry.match(link, source, target, track(500, 1500), 0,
+      endpoint, endpoint, new GeometryDecoder(), () -> { }));
+    assertNull(ExactLinkGeometry.match(link, source, target, track(0, 1500), 0,
+      endpoint, endpoint, new GeometryDecoder(), () -> { }));
+    assertNull(ExactLinkGeometry.match(link, source, target, track(500, 2000), 0,
+      endpoint, endpoint, new GeometryDecoder(), () -> { }));
+  }
+
   @Test(expected = IllegalStateException.class)
   public void observesBudgetDuringMatching() {
     ExactLinkGeometry.match(new OsmLink(source, target), source, target, track(0, 500, 2000), 0,
