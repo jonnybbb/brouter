@@ -70,7 +70,7 @@ public class FormatJson extends Formatter {
     {
       sb.append("        \"messages\": [\n");
       sb.append("          [\"").append(MESSAGES_HEADER.replaceAll("\t", "\", \"")).append("\"],\n");
-      for (String m : t.aggregateMessages()) {
+      for (String m : t.getFilteredMessages()) {
         sb.append("          [\"").append(m.replaceAll("\t", "\", \"")).append("\"],\n");
       }
       sb.deleteCharAt(sb.lastIndexOf(","));
