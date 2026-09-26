@@ -23,9 +23,9 @@ You control the loop with a few request parameters:
 | `roundTripLength` | desired total loop length in meters (takes precedence over `roundTripDistance`) |
 | `roundTripDistance` | search radius in meters; the loop length is roughly `2π × radius` |
 | `roundTripPoints` | waypoint count for the geometric placements (`FAST`/`WAYPOINT`/`ISOCHRONE`, and the `BALANCED` fallback); accepted range 3–20 (out-of-range values fall back to 5). When absent, the engine uses 5 points (4 generated vias) at every radius — a few good vias with point-to-point routing doing the rest; more vias overconstrain the route into fan-like shapes. The greedy planners derive their own count and ignore it |
-| `direction` / `heading` | compass bearing the loop heads out toward (`heading` additionally forces it for the opening leg); without it the start bearing is drawn randomly, so fix it whenever the loop should be reproducible. Same keys as upstream point-to-point routing |
+| `direction` / `heading` | compass bearing the loop heads out toward (`heading` additionally forces it for the opening leg). Without it the planner tiers (`BALANCED`/`AUTO`/`QUALITY` and the forced planners) head into the sector the *profile's* preferred roads reach farthest into — measured from a start-centered isochrone expansion, so a gravel loop from a suburb leaves toward the track network instead of the town centre; `FAST` keeps the random draw. Fix the direction whenever the loop should be reproducible. Same keys as upstream point-to-point routing |
 | `alternativeidx` | deterministic loop variety seed (`0` = default loop, any value ≥ 0 gives a reproducible variant — see [note below](#loop-quality)) |
-| `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing |
+| `roundTripDirectionAdd` | angle offset added to an auto-detected start bearing (profile-aware or random); when unset, a legacy 45° default applies to the random draw only |
 | `roundTripAlgorithm` | the speed/quality ladder `FAST` (the default: one placement, one routing pass — the historic round-trip speed), `BALANCED` (~8 s per slice, worst case two slices — the recommended interactive/mobile quality tier), `AUTO` (effort resolved from request context), `QUALITY` (max effort — both planners always, wider search, doubled budget); the internal engine names `WAYPOINT`, `GREEDY`, `ISO_GREEDY`, `ISOCHRONE` are also accepted for forced selection — see below. Deployments change the default with the system property `roundtrip.default.algorithm`; the request parameter always wins |
 | `roundTripStrictQuality` | `1` hard-rejects loops that fail the quality checks; default `0` is lenient — a failing loop is still returned, tagged with a `Warning:` advisory (see [Loop quality](#loop-quality)) |
 | `allowSamewayback` | `1` lets the return leg reuse ways from the outward leg; default `0` keeps the way out and the way back distinct |
@@ -249,6 +249,28 @@ A couple of decisions are worth recording for anyone tuning the planner:
   retiring `AUTO`'s separate plain-`GREEDY` comparison run once attribution
   shows it no longer wins — can be decided from measurements rather than
   guesswork ([issue #26](https://github.com/jonnybbb/brouter/issues/26)).
+
+- **Closure phase: exact length beats "come home early".** In the last two
+  steps the planner's loop-feasibility term is judged against the *leg* target
+  instead of the whole loop length (a 4 km miss on a 50 km loop is 8 % of the
+  loop but 40 % of a leg), a fitting closure is no longer taken on sight — the
+  remaining routed candidates are closed too and the loop with the best
+  `RouteChoiceScore` (geometry + road character + cost/m, AUTO's yardstick)
+  ships — and a too-short late leg is parked while those candidates are priced
+  rather than committed straight away. Without this the planner turned home a
+  few kilometres early and padded the missing length with a short filler leg
+  through the start's residential streets. Non-paved profiles additionally rank
+  phase-1 candidates on the compiled leg's cost per metre (paved profiles have
+  the hostility term for that), and the hostility ramp is judged relative to the
+  profile's own cost-per-air-metre scale (the return oracle's κ) instead of the
+  road-bike absolute. Measured on the 230-cell gravel matrix (2026-08):
+  cost/m −2.4 %, distance ratio 0.921 → 0.943, residential share 22.5 → 22.0 %
+  (first 15 % of the loop 24.9 → 23.8 %, last 15 % 30.8 → 29.8 %), track share
+  55.1 → 56.2 %; six constrained coastal/alpine cells where a *forced* planner
+  used to close now ship a retrace and are gate-rejected (`AUTO` still forms a
+  loop there). A "dynamic step target" (redistributing the remaining budget over
+  the remaining legs) was measured in the same run and reverted — alone it raised
+  self-crossings 0.21 → 0.28 per loop with no road-character gain.
 
 - **The near-revisit (teardrop) detectors have no sub-600 m floor.** The
   teardrop/near-revisit detectors share a 600 m minimum-arc floor

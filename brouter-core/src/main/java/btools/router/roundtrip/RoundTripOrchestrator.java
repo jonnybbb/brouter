@@ -282,6 +282,33 @@ public final class RoundTripOrchestrator {
       request.forcedCorridorAccepted);
   }
 
+  /**
+   * Default bearing when the user gave none: the frontier sector with the lowest
+   * cost per air-metre ({@link GeometricWaypointPlacer#computeIsoAsymmetryBearing})
+   * — where this profile's preferred roads reach farthest. The expansion is
+   * memoized on the engine. Returns {@code -1} (caller falls back to the random
+   * draw) for explicit vias, samewayback, the FAST tier, or no qualifying sector.
+   */
+  double profileAwareDefaultDirection(double searchRadius) {
+    if (ops.waypoints().size() > 1 || ops.routingContext().allowSamewayback) return -1;
+    RoundTripAlgorithm algo = ops.routingContext().roundTripAlgorithm;
+    if (algo == RoundTripAlgorithm.WAYPOINT) return -1;
+    try {
+      IsochroneExpansionResult iso = ops.runIsochroneExpansion(ops.waypoints().get(0), searchRadius);
+      if (iso == null) return -1;
+      IsoAsymmetryBias bias = GeometricWaypointPlacer.computeIsoAsymmetryBearing(iso.frontier, searchRadius);
+      if (!bias.applied) return -1;
+      ops.logInfo("round trip: no direction given, profile-aware default bearing="
+        + (int) bias.bearingDegrees + "° (cost/airDist=" + String.format(Locale.US, "%.2f", bias.indirectness)
+        + ", hits=" + bias.hits + ", airDist=" + bias.airDistMeters + "m)");
+      return bias.bearingDegrees;
+    } catch (RuntimeException e) {
+      ops.logInfo("round trip: profile-aware direction probe failed (" + e.getMessage()
+        + "), using the random default");
+      return -1;
+    }
+  }
+
   public void doRoundTrip() {
     request = new RoundTripRequest(ops);
     request.effortPolicy = ops.roundTripEffortPolicy();
@@ -324,8 +351,18 @@ public final class RoundTripOrchestrator {
       double direction = (ops.routingContext().startDirection == null ? -1 :ops.routingContext().startDirection);
       double directionAdd = (ops.routingContext().roundTripDirectionAdd == null ? ROUNDTRIP_DEFAULT_DIRECTIONADD :ops.routingContext().roundTripDirectionAdd);
       if (direction == -1) {
-        direction = ops.getRandomDirectionFromData(ops.waypoints().get(0), searchRadius);
-        direction += directionAdd;
+        // Prefer the profile-aware pick over the legacy random draw. An
+        // explicitly set roundTripDirectionAdd offsets either auto bearing;
+        // the 45° legacy default applies only to the random draw.
+        direction = profileAwareDefaultDirection(searchRadius);
+        if (direction >= 0) {
+          if (ops.routingContext().roundTripDirectionAdd != null) {
+            direction += directionAdd;
+          }
+        } else {
+          direction = ops.getRandomDirectionFromData(ops.waypoints().get(0), searchRadius);
+          direction += directionAdd;
+        }
       }
       // Normalize to a [0,360) compass bearing: ops.getRandomDirectionFromData()+directionAdd
       // can exceed 360 (e.g. 332+45=377), and a user-supplied startDirection may be out of
@@ -773,7 +810,7 @@ public final class RoundTripOrchestrator {
    * {@code quotaAccepted}/{@code poolHealth}/{@code demotedAtStep} suffix
    * ({@link RoundTripCandidateResult#toString}) before removing it.
    */
-  static final double CLEAR_ACCEPT_THRESHOLD = 0.85;
+  public static final double CLEAR_ACCEPT_THRESHOLD = 0.85;
 
   /** Overload for verdicts on a CANDIDATE's track, whose forced-corridor
    *  marker lives on the candidate rather than the engine field. */
