@@ -25,6 +25,12 @@ class LoopQualityResult {
    *  the production gate already named the quality miss, so the band gate
    *  logs instead of failing. Set by runVariant. */
   boolean disclosed;
+  /**
+   * Length-weighted road-character fractions from {@code highway=} tags:
+   * {residential family, track family, residential share of the first 15 % of
+   * the loop, of the last 15 %}; null when unavailable.
+   */
+  double[] character;
 
   LoopQualityResult(String label, LoopTestRegion region, int distanceMeters,
                     String profileName, double direction,

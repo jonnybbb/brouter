@@ -237,6 +237,11 @@ final class LoopQualityReport {
         m.getSelfIntersections(), m.getSmallLoopCrossings()));
       sb.append("},");
     }
+    if (r.character != null) {
+      sb.append(String.format(Locale.US,
+        "\"character\":{\"resid\":%.4f,\"track\":%.4f,\"headResid\":%.4f,\"tailResid\":%.4f},",
+        r.character[0], r.character[1], r.character[2], r.character[3]));
+    }
     if (r.coordinates != null) {
       sb.append("\"coordinates\":[");
       for (int i = 0; i < r.coordinates.length; i++) {
