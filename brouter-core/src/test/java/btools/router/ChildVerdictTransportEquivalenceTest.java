@@ -120,6 +120,12 @@ public class ChildVerdictTransportEquivalenceTest {
     // isochrone starved on fastbike's forest-track costs; the air-band
     // recalibration now lets that request build a loop and reach the gate.
     RoutingEngine child = runChildLike("fastbike", RoundTripAlgorithm.GREEDY, 90, 20000);
+    // Pin WHY there is no track: a planner failure before the gate. If the fixture ever lets
+    // this request build a loop, this fails here, naming the reason, instead of passing on a
+    // different pre-gate error.
+    Assert.assertNotNull("the request must fail", child.getErrorMessage());
+    Assert.assertTrue("expected a planner failure before the gate: " + child.getErrorMessage(),
+      child.getErrorMessage().contains("could not build any loop"));
     Assert.assertNull("no track for fastbike GREEDY on the fixture", child.getFoundTrack());
     Assert.assertNull("a request that never reached the gate publishes no verdict",
       child.getLastRoundTripQuality());

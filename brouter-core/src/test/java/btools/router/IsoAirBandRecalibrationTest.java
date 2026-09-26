@@ -32,9 +32,11 @@ import btools.router.roundtrip.RoundTripAlgorithm;
 public class IsoAirBandRecalibrationTest {
 
   /**
-   * Costfactor 5 (below the default snap-reject ceiling of 10) plus a large per-way initialcost: on the
-   * test tile's short ways that is ~40+ cost per air-metre, the same way the javik gravel profile reaches
-   * its town-street scale (per-way costs amortised over short residential ways).
+   * Uniform costfactor 9 (below the default snap-reject ceiling of 10), ~12 cost per air-metre on
+   * the test tile. At the 500 m radius the test uses, the cost band [0.7, 1.0] x 500 lies ~30-40 m
+   * from the start, inside the 50 m sample floor, and the 4x floor (2000) reaches ~180 m of the
+   * 350 m the band needs: the same starvation the javik gravel profile shows in town at its larger
+   * radii (25-120 cost per air-metre, where per-way costs are amortised over short streets).
    */
   private static final String COSTLY_PROFILE = String.join("\n",
     "---context:global",
@@ -88,34 +90,42 @@ public class IsoAirBandRecalibrationTest {
   }
 
   @Test
-  public void airBandClosesAtTheCostBandsShape() {
-    // first band pop at cost 7000 -> close at 7000 / 0.7 = 10000
-    Assert.assertEquals(10000, RoutingEngine.airBandCloseCost(7000));
-    // overflow-safe
+  public void airBandClosesAtTwiceTheFirstBandCost() {
+    // first band pop at cost 7000 -> close at 7000 / 0.7^2 = 14285, so bearings up to ~2x more
+    // expensive than the cheapest one still reach the band
+    Assert.assertEquals(14285, RoutingEngine.airBandCloseCost(7000));
     Assert.assertEquals(Integer.MAX_VALUE / 2, RoutingEngine.airBandCloseCost(Integer.MAX_VALUE));
   }
 
   @Test
-  public void airBandBudgetUsesTheReachFormulaAndNeverLowers() {
-    double[] samples = new double[40];
-    for (int i = 0; i < samples.length; i++) samples[i] = 20 + i; // 20..59, upper median 40
-    // Basel-like: searchRadius 6366 m, 40 cost per air-metre -> 2.0 x 6366 x 40
-    Assert.assertEquals((int) (2.0 * 6366 * 40), RoutingEngine.airBandBudget(samples, 40, 6366, 25464));
-    // never below the current budget
-    Assert.assertEquals(9_000_000, RoutingEngine.airBandBudget(samples, 40, 6366, 9_000_000));
+  public void airBandCostIsTheMedianAcrossDirectionsNotAcrossPops() {
+    double[] perBucket = new double[36];
+    java.util.Arrays.fill(perBucket, Double.POSITIVE_INFINITY);
+    perBucket[3] = 10;  // one cheap arterial ...
+    perBucket[12] = 40;
+    perBucket[20] = 20;
+    perBucket[30] = 60;
+    // ... counts once: sorted 10, 20, 40, 60 -> upper median 40
+    Assert.assertEquals(40.0, RoutingEngine.airBandCostPerMeter(perBucket), 1e-9);
   }
 
   @Test
-  public void airBandBudgetKeepsTheCurrentBudgetWhenTheBandIsTooSparse() {
-    double[] samples = {100, 100, 100};
-    Assert.assertEquals(25464, RoutingEngine.airBandBudget(samples, 3, 6366, 25464));
+  public void airBandCostNeedsThreeDirections() {
+    double[] perBucket = new double[36];
+    java.util.Arrays.fill(perBucket, Double.POSITIVE_INFINITY);
+    perBucket[0] = 10;
+    perBucket[18] = 20;
+    Assert.assertTrue(Double.isNaN(RoutingEngine.airBandCostPerMeter(perBucket)));
+    perBucket[9] = 30;
+    Assert.assertEquals(20.0, RoutingEngine.airBandCostPerMeter(perBucket), 1e-9);
   }
 
   @Test
-  public void airBandBudgetIsOverflowSafe() {
-    double[] samples = new double[30];
-    java.util.Arrays.fill(samples, 1e9);
-    Assert.assertEquals(Integer.MAX_VALUE / 2, RoutingEngine.airBandBudget(samples, 30, 1e6, 0));
+  public void airBandGivesUpAtThirtyTwoTimesTheStarvedBudget() {
+    Assert.assertFalse(RoutingEngine.airBandGiveUp(25464 * 32, 25464));
+    Assert.assertTrue(RoutingEngine.airBandGiveUp(25464 * 32 + 1, 25464));
+    // overflow-safe comparison for large budgets
+    Assert.assertFalse(RoutingEngine.airBandGiveUp(Integer.MAX_VALUE, Integer.MAX_VALUE / 2));
   }
 
   private File costlyProfile() throws IOException {
