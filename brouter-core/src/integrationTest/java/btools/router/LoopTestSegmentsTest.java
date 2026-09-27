@@ -48,12 +48,13 @@ public class LoopTestSegmentsTest {
     File tmp = Files.createTempDirectory("seg-nodownload-test").toFile();
     tmp.deleteOnExit();
     String tile = "E0_N35.rd5";
+    String previous = System.getProperty("loop.segments.nodownload");
     System.setProperty("loop.segments.nodownload", "true");
     try {
       assertFalse("missing tile must report unavailable", LoopTestSegments.fetch(tmp, tile));
       assertFalse("no tile should be created", new File(tmp, tile).exists());
     } finally {
-      System.clearProperty("loop.segments.nodownload");
+      restoreProperty("loop.segments.nodownload", previous);
     }
   }
 
@@ -68,12 +69,28 @@ public class LoopTestSegmentsTest {
     File existing = new File(tmp, tile);
     Files.write(existing.toPath(), new byte[] {1, 2, 3, 4});
     long lenBefore = existing.length();
+    String previous = System.getProperty("loop.segments.noupdate");
     System.setProperty("loop.segments.noupdate", "true");
     try {
       assertTrue("present tile must be accepted as-is", LoopTestSegments.fetch(tmp, tile));
       assertEquals("file must be untouched", lenBefore, existing.length());
     } finally {
-      System.clearProperty("loop.segments.noupdate");
+      restoreProperty("loop.segments.noupdate", previous);
+    }
+  }
+
+  /**
+   * Restore, never clear: Gradle passes {@code -Dloop.segments.*} to the test
+   * fork, and every suite that runs later in the same JVM relies on those
+   * values to keep the shared segment dir pinned. Clearing the property here
+   * used to re-enable freshness downloads for the rest of the fork, silently
+   * swapping tiles under the golden and evaluation suites mid-run.
+   */
+  private static void restoreProperty(String key, String previous) {
+    if (previous == null) {
+      System.clearProperty(key);
+    } else {
+      System.setProperty(key, previous);
     }
   }
 
