@@ -23,6 +23,7 @@ public class RoutingEngine extends Thread {
   private boolean warmCacheEnabled;
   private boolean warmSearchActive;
   private int warmSearches;
+  private int warmSearchFallbacks;
   private SortedHeap<OsmPath> openSet = new SortedHeap<>();
   private volatile boolean finished = false;
 
@@ -528,9 +529,9 @@ public class RoutingEngine extends Thread {
         }
         nodesCache.close();
         nodesCache = null;
-        coldCache = null;
-        dropWarmCache();
       }
+      coldCache = null;
+      dropWarmCache();
       openSet.clear();
       // Signal termination to outside pollers — but NOT for the round-trip path.
       // In round-trip mode doRouting only produces the raw loop skeleton; the
@@ -730,9 +731,9 @@ public class RoutingEngine extends Thread {
       }
       nodesCache.close();
       nodesCache = null;
-      coldCache = null;
-      dropWarmCache();
     }
+    coldCache = null;
+    dropWarmCache();
     openSet.clear();
     finished = true;
 
@@ -2413,9 +2414,9 @@ public class RoutingEngine extends Thread {
       if (nodesCache != null) {
         nodesCache.close();
         nodesCache = null;
-        coldCache = null;
-        dropWarmCache();
       }
+      coldCache = null;
+      dropWarmCache();
       openSet.clear();
       finished = true; // this signals termination to outside
 
@@ -3901,10 +3902,12 @@ public class RoutingEngine extends Thread {
    * class, so a long plan degrades to cold searches, never to an unbounded heap.
    */
   private boolean beginWarmSearch() {
-    if (!warmCacheEnabled) {
+    // Kinematic models price junction crossings from every link at a node, so
+    // the dead-end links that pruning removed would change their costs.
+    if (!warmCacheEnabled || !(routingContext.pm instanceof StdModel)) {
       return false;
     }
-    if (warmCache != null && warmCache.overBudget()) {
+    if (warmCache != null && warmCache.overBudget(0)) {
       logInfo("warm search cache over budget after " + warmCache.searches() + " searches, rebuilding");
       dropWarmCache();
     }
@@ -3913,9 +3916,13 @@ public class RoutingEngine extends Thread {
         ProfileCache.parseProfile(routingContext); // same re-acquire as resetCache
       }
       long maxmem = routingContext.memoryclass * 1024L * 1024L;
+      long budget = routingContext.roundTripWarmCacheBytes >= 0 ? routingContext.roundTripWarmCacheBytes : maxmem;
       warmCache = new WarmSearchCache(new NodesCache(segmentDir, routingContext.expctxWay,
-        routingContext.forceSecondaryData, maxmem, null, false), maxmem);
+        routingContext.forceSecondaryData, maxmem, null, false), budget);
     }
+    // The shared expression context keeps the last cache's decode mode; a
+    // detailed retrack in between switched it to keep forbidden ways.
+    routingContext.expctxWay.setDecodeForbidden(false);
     warmCache.beginSearch();
     warmSearches++;
     islandNodePairs.clearTempPairs();
@@ -3932,6 +3939,11 @@ public class RoutingEngine extends Thread {
   /** Leg searches this request served from the retained graph (diagnostics, tests). */
   public int getWarmSearchCount() {
     return warmSearches;
+  }
+
+  /** Leg searches that outgrew the retained graph's budget and reran on a cold cache. */
+  public int getWarmSearchFallbackCount() {
+    return warmSearchFallbacks;
   }
 
   OsmPath getStartPath(OsmNode n1, OsmNode n2, MatchedWaypoint mwp, OsmNodeNamed endPos, boolean sameSegmentSearch) {
@@ -4002,10 +4014,20 @@ public class RoutingEngine extends Thread {
       if (!detailed && beginWarmSearch()) {
         warmSearchActive = true;
         nodesCache = warmCache.cache;
-      } else {
-        resetCache(detailed);
-        nodesCache.nodesMap.cleanupMode = detailed ? 0 : (routingContext.considerTurnRestrictions ? 2 : 1);
+        try {
+          return _findTrack(operationName, startWp, endWp, costCuttingTrack, refTrack, fastPartialRecalc);
+        } catch (WarmSearchCache.OverBudget e) {
+          // The leg outgrew the memory class mid-search: release the retained
+          // graph and rerun this leg on the bounded cold cache.
+          logInfo(operationName + ": retained graph over budget after " + warmCache.searches()
+            + " searches, rerunning the leg cold");
+          warmSearchActive = false;
+          warmSearchFallbacks++;
+          dropWarmCache();
+        }
       }
+      resetCache(detailed);
+      nodesCache.nodesMap.cleanupMode = detailed ? 0 : (routingContext.considerTurnRestrictions ? 2 : 1);
       return _findTrack(operationName, startWp, endWp, costCuttingTrack, refTrack, fastPartialRecalc);
     } finally {
       routingContext.restoreNogoList();
@@ -4163,8 +4185,12 @@ public class RoutingEngine extends Thread {
           continue;
         }
 
-        if (!warmSearchActive && directWeaving && nodesCache.hasHollowLinkTargets(path.getTargetNode())) {
-          if (!memoryPanicMode) {
+        if (directWeaving && nodesCache.hasHollowLinkTargets(path.getTargetNode())) {
+          if (warmSearchActive) {
+            if (warmCache.overBudget(openSet.getSize())) {
+              throw new WarmSearchCache.OverBudget();
+            }
+          } else if (!memoryPanicMode) {
             if (!nodesCache.nodesMap.isInMemoryBounds(openSet.getSize(), false)) {
               int nodesBefore = nodesCache.nodesMap.nodesCreated;
               int pathsBefore = openSet.getSize();
@@ -4289,7 +4315,7 @@ public class RoutingEngine extends Thread {
           if (warmSearchActive) {
             // Retained graph: the invalidated holders above mark this direction
             // settled; the counter-link the cold search drops gets a sentinel.
-            warmCache.settle(currentLink, currentNode,
+            warmCache.settle(currentLink, sourceNode, currentNode,
               isBidir && !routingContext.considerTurnRestrictions);
           } else {
             sourceNode.unlinkLink(currentLink);
@@ -4300,7 +4326,7 @@ public class RoutingEngine extends Thread {
             }
           }
         } else if (warmSearchActive) {
-          warmCache.exempt(currentLink); // the cold search leaves the start link attached
+          warmCache.exempt(currentLink, sourceNode); // the cold search leaves the start link attached
         }
 
         // recheck cutoff before doing expensive stuff
