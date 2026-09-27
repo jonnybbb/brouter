@@ -424,7 +424,10 @@ public class FullStageCostModelBenchmarkTest {
       }
     }
 
-    File reportFile = new File(projectDir, "docs/m0_6_cost_model_report.md");
+    // Generated output, next to the other refinement reports — never into a
+    // tracked path, where every run would dirty the working tree.
+    File reportFile = new File(projectDir, "brouter-core/build/reports/refinement/m0_6_cost_model_report.md");
+    reportFile.getParentFile().mkdirs();
     try (FileWriter fw = new FileWriter(reportFile)) {
       fw.write(md.toString());
     }
