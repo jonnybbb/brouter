@@ -4,12 +4,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.Assert;
+import org.junit.Rule;
 import org.junit.Test;
 
 import btools.router.roundtrip.RoundTripAlgorithm;
 
 /** The M1 corpus uses the same paired observations and report writer as M3. */
 public class PilotExperimentBenchmarkTest {
+
+  /** {@link FullABEvaluationMatrixTest#runEvaluation} switches loop.refine.measure on; restored here. */
+  @Rule
+  public final LoopPropertiesRule loopProperties = new LoopPropertiesRule();
   public static final class CellSpec {
     final String label;
     final String terrainCategory;

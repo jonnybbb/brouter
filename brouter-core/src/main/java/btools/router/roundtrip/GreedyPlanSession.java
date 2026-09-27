@@ -1,7 +1,9 @@
 package btools.router.roundtrip;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import btools.mapaccess.MatchedWaypoint;
 import btools.router.OsmNodeNamed;
@@ -40,6 +42,17 @@ final class GreedyPlanSession {
 
   // ---- Outcome under construction -----------------------------------------
   final RoundTripResult result = new RoundTripResult();
+
+  // ---- Candidate reachability memo ----------------------------------------
+  /**
+   * Bounded island verdict per snapped candidate node ({@code getIdFromPos}),
+   * see {@link GreedyRoundTripPlanner#candidateReachable}. A verdict does not
+   * depend on where the leg starts — a small island is unreachable from
+   * anywhere outside it — so one check per node covers every later step that
+   * proposes the same via again.
+   */
+  final Map<Long, Boolean> viaReachability = new HashMap<>();
+  int islandedCandidates;
 
   // ---- Committed-plan state ------------------------------------------------
   /**

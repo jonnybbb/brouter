@@ -1243,6 +1243,11 @@ public class RoutingEngine extends Thread {
       }
 
       @Override
+      public boolean isViaReachableFromStart(MatchedWaypoint via, MatchedWaypoint startMatch) {
+        return RoutingEngine.this.isViaReachableFromStart(via, startMatch);
+      }
+
+      @Override
       public void matchWaypointsToNodes(List<MatchedWaypoint> waypoints, double maxDistance) {
         if (nodesCache == null) {
           resetCache(false);

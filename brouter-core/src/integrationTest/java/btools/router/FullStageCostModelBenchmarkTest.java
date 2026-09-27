@@ -73,6 +73,8 @@ public class FullStageCostModelBenchmarkTest {
     int totalRefineLinksK4;
     double farthestDist;
     double radiusRatio; // farthestDist / targetDistance
+    int legTimeouts; // candidate legs that exhausted the per-leg budget
+    long failedEvalMs; // time spent on evaluations that produced no candidate
   }
 
   @Test
@@ -259,7 +261,19 @@ public class FullStageCostModelBenchmarkTest {
           MatchedWaypoint from = mutWps.get(l);
           MatchedWaypoint to = mutWps.get(l + 1);
           if (l == movedIdx || l == movedIdx + 1) {
-            OsmTrack leg = evaluator.route(from, to, 5000L);
+            OsmTrack leg;
+            try {
+              leg = evaluator.route(from, to, 5000L);
+            } catch (IllegalArgumentException e) {
+              // Same treatment as RefineSearch: a leg that exhausts its budget
+              // is a failed evaluation, not a failed benchmark. It is counted
+              // so the report shows how often the search burns a whole budget.
+              if (e.getMessage() == null || !e.getMessage().contains("timeout")) {
+                throw e;
+              }
+              res.legTimeouts++;
+              leg = null;
+            }
             if (leg == null) {
               legFailed = true;
               break;
@@ -279,7 +293,11 @@ public class FullStageCostModelBenchmarkTest {
         long evalDur = System.currentTimeMillis() - evalStart;
         int evalLinks = ops.getLinksProcessed() - evalLinksStart;
 
-        if (!legFailed) {
+        if (legFailed) {
+          // A discarded evaluation still cost its time: it counts toward the
+          // stage latency the D5 bar is about, not toward the per-proposal mean.
+          res.failedEvalMs += evalDur;
+        } else {
           totalEvalMs += evalDur;
           totalEvalLinks += evalLinks;
           successfulEvals++;
@@ -315,7 +333,8 @@ public class FullStageCostModelBenchmarkTest {
       }
 
       // 6. Total full-stage cost model
-      res.totalRefineMsK4 = res.baselinePricingMs + res.initMs + (4 * res.meanEvalMs) + res.finalizationMs + res.publishMs;
+      res.totalRefineMsK4 = res.baselinePricingMs + res.initMs + (4 * res.meanEvalMs) + res.failedEvalMs
+        + res.finalizationMs + res.publishMs;
       res.totalRefineLinksK4 = res.initLinks + (4 * res.meanEvalLinks) + res.finalizationLinks;
       res.eligible = true;
     }
@@ -382,6 +401,20 @@ public class FullStageCostModelBenchmarkTest {
       md.append(String.format(Locale.US, "| **Total Refinement (k=4)** | %.1f | %d | %d | %d |\n",
         mean(totalTimesK4), p(totalTimesK4, 0.50), p(totalTimesK4, 0.90), totalTimesK4.get(totalTimesK4.size() - 1)));
 
+      int timeoutLegs = 0;
+      int timeoutCells = 0;
+      long failedEvalMs = 0;
+      for (CellResult r : results) {
+        timeoutLegs += r.legTimeouts;
+        if (r.legTimeouts > 0) timeoutCells++;
+        failedEvalMs += r.failedEvalMs;
+      }
+      md.append(String.format(Locale.US,
+        "\nCandidate legs that exhausted the 5 s per-leg budget: **%d** (in %d of %d cells). Each one is a full-graph"
+          + " search that found no path — the evaluation is discarded, as in the search stage. Discarded evaluations"
+          + " cost **%d ms** in total; that time is part of each cell's k=4 total above.\n",
+        timeoutLegs, timeoutCells, results.size(), failedEvalMs));
+
       md.append("\n## Radius Bound Analysis (§4.4, §9)\n\n");
       double maxRatio = radiusRatios.get(radiusRatios.size() - 1);
       double p95Ratio = pD(radiusRatios, 0.95);
@@ -400,7 +433,10 @@ public class FullStageCostModelBenchmarkTest {
       }
     }
 
-    File reportFile = new File(projectDir, "docs/m0_6_cost_model_report.md");
+    // Generated output, next to the other refinement reports — never into a
+    // tracked path, where every run would dirty the working tree.
+    File reportFile = new File(projectDir, "brouter-core/build/reports/refinement/m0_6_cost_model_report.md");
+    reportFile.getParentFile().mkdirs();
     try (FileWriter fw = new FileWriter(reportFile)) {
       fw.write(md.toString());
     }

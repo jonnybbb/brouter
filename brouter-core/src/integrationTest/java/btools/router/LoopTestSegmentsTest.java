@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.util.Set;
 
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Test;
 
 /**
@@ -18,6 +19,14 @@ import org.junit.Test;
  * mode ({@code -Dloop.segments.nodownload=true}), under which downloads are off.
  */
 public class LoopTestSegmentsTest {
+
+  /**
+   * The mode tests below set {@code loop.segments.*} for one assertion; the
+   * rule puts the fork's values back so later suites in this JVM keep their
+   * pinned segment dir (see {@link LoopPropertiesRule}).
+   */
+  @Rule
+  public final LoopPropertiesRule loopProperties = new LoopPropertiesRule();
 
   @Test
   public void tileNameMapsCoordinatesToTile() {
@@ -49,12 +58,8 @@ public class LoopTestSegmentsTest {
     tmp.deleteOnExit();
     String tile = "E0_N35.rd5";
     System.setProperty("loop.segments.nodownload", "true");
-    try {
-      assertFalse("missing tile must report unavailable", LoopTestSegments.fetch(tmp, tile));
-      assertFalse("no tile should be created", new File(tmp, tile).exists());
-    } finally {
-      System.clearProperty("loop.segments.nodownload");
-    }
+    assertFalse("missing tile must report unavailable", LoopTestSegments.fetch(tmp, tile));
+    assertFalse("no tile should be created", new File(tmp, tile).exists());
   }
 
   @Test
@@ -69,12 +74,8 @@ public class LoopTestSegmentsTest {
     Files.write(existing.toPath(), new byte[] {1, 2, 3, 4});
     long lenBefore = existing.length();
     System.setProperty("loop.segments.noupdate", "true");
-    try {
-      assertTrue("present tile must be accepted as-is", LoopTestSegments.fetch(tmp, tile));
-      assertEquals("file must be untouched", lenBefore, existing.length());
-    } finally {
-      System.clearProperty("loop.segments.noupdate");
-    }
+    assertTrue("present tile must be accepted as-is", LoopTestSegments.fetch(tmp, tile));
+    assertEquals("file must be untouched", lenBefore, existing.length());
   }
 
   @Test

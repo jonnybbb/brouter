@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Locale;
 
 import org.junit.Assert;
+import org.junit.Rule;
 import org.junit.Test;
 
 import btools.router.roundtrip.RefineDiagnostics;
@@ -16,6 +17,10 @@ import btools.router.roundtrip.RoundTripAlgorithm;
 
 /** One original/refined pair per real request, captured at the post-tier hook. */
 public class FullABEvaluationMatrixTest {
+
+  /** {@link #runEvaluation} switches loop.refine.measure on; restored here. */
+  @Rule
+  public final LoopPropertiesRule loopProperties = new LoopPropertiesRule();
   public static final class CellSpec {
     final String label;
     final LoopTestRegion region;
@@ -111,10 +116,11 @@ public class FullABEvaluationMatrixTest {
     File segments = new File(projectDir, "segments4");
     Path output = Files.createTempDirectory(new File(projectDir, "brouter-core/build").toPath(), "refine-evaluation-");
     RefineEvaluationReport.writeManifest(output, projectDir.toPath(), segments.toPath(), cells, mode, evals, maxMs);
-    String oldMeasurement = System.getProperty("loop.refine.measure");
+    // Measurement snapshots on for the run; the calling test's
+    // LoopPropertiesRule puts the fork's value back afterwards.
+    System.setProperty("loop.refine.measure", "true");
     List<RefineEvaluationReport.Cell> records = new ArrayList<>();
     try {
-      System.setProperty("loop.refine.measure", "true");
       for (CellSpec cell : cells) {
         RefineEvaluationReport.Cell record = evaluateCell(cell, segments, projectDir, mode, evals, maxMs);
         records.add(record);
@@ -122,8 +128,6 @@ public class FullABEvaluationMatrixTest {
         System.out.println(cell.label + ": " + record.reason + ", added " + record.addedMs + " ms");
       }
     } finally {
-      if (oldMeasurement == null) System.clearProperty("loop.refine.measure");
-      else System.setProperty("loop.refine.measure", oldMeasurement);
       RefineEvaluationReport.writeSummary(output, records, fullMatrix, 3000);
       System.out.println("Paired refinement evidence: " + output);
     }
