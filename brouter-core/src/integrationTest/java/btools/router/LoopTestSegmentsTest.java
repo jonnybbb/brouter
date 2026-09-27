@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.util.Set;
 
 import org.junit.Assume;
+import org.junit.Rule;
 import org.junit.Test;
 
 /**
@@ -18,6 +19,14 @@ import org.junit.Test;
  * mode ({@code -Dloop.segments.nodownload=true}), under which downloads are off.
  */
 public class LoopTestSegmentsTest {
+
+  /**
+   * The mode tests below set {@code loop.segments.*} for one assertion; the
+   * rule puts the fork's values back so later suites in this JVM keep their
+   * pinned segment dir (see {@link LoopPropertiesRule}).
+   */
+  @Rule
+  public final LoopPropertiesRule loopProperties = new LoopPropertiesRule();
 
   @Test
   public void tileNameMapsCoordinatesToTile() {
@@ -48,14 +57,9 @@ public class LoopTestSegmentsTest {
     File tmp = Files.createTempDirectory("seg-nodownload-test").toFile();
     tmp.deleteOnExit();
     String tile = "E0_N35.rd5";
-    String previous = System.getProperty("loop.segments.nodownload");
     System.setProperty("loop.segments.nodownload", "true");
-    try {
-      assertFalse("missing tile must report unavailable", LoopTestSegments.fetch(tmp, tile));
-      assertFalse("no tile should be created", new File(tmp, tile).exists());
-    } finally {
-      restoreProperty("loop.segments.nodownload", previous);
-    }
+    assertFalse("missing tile must report unavailable", LoopTestSegments.fetch(tmp, tile));
+    assertFalse("no tile should be created", new File(tmp, tile).exists());
   }
 
   @Test
@@ -69,29 +73,9 @@ public class LoopTestSegmentsTest {
     File existing = new File(tmp, tile);
     Files.write(existing.toPath(), new byte[] {1, 2, 3, 4});
     long lenBefore = existing.length();
-    String previous = System.getProperty("loop.segments.noupdate");
     System.setProperty("loop.segments.noupdate", "true");
-    try {
-      assertTrue("present tile must be accepted as-is", LoopTestSegments.fetch(tmp, tile));
-      assertEquals("file must be untouched", lenBefore, existing.length());
-    } finally {
-      restoreProperty("loop.segments.noupdate", previous);
-    }
-  }
-
-  /**
-   * Restore, never clear: Gradle passes {@code -Dloop.segments.*} to the test
-   * fork, and every suite that runs later in the same JVM relies on those
-   * values to keep the shared segment dir pinned. Clearing the property here
-   * used to re-enable freshness downloads for the rest of the fork, silently
-   * swapping tiles under the golden and evaluation suites mid-run.
-   */
-  private static void restoreProperty(String key, String previous) {
-    if (previous == null) {
-      System.clearProperty(key);
-    } else {
-      System.setProperty(key, previous);
-    }
+    assertTrue("present tile must be accepted as-is", LoopTestSegments.fetch(tmp, tile));
+    assertEquals("file must be untouched", lenBefore, existing.length());
   }
 
   @Test

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.Assert;
+import org.junit.Rule;
 import org.junit.Test;
 
 import btools.router.roundtrip.RoundTripAlgorithm;
@@ -24,6 +25,10 @@ import btools.router.roundtrip.RoundTripQualityResult;
  * both runs are identical and accepted — the assertion still holds.
  */
 public class RoundTripFastShapeRetryIntegrationTest {
+
+  /** The retry toggle is set for the baseline run; restored for later suites. */
+  @Rule
+  public final LoopPropertiesRule loopProperties = new LoopPropertiesRule();
 
   private RoundTripQualityResult basel180Verdict() throws Exception {
     File projectDir = new File(".").getCanonicalFile().getParentFile();
@@ -55,13 +60,11 @@ public class RoundTripFastShapeRetryIntegrationTest {
 
   @Test
   public void shapeRetryImprovesTheShippedVerdict() throws Exception {
-    RoundTripQualityResult baseline;
-    try {
-      System.setProperty("roundtrip.fast.shape.retry", "false");
-      baseline = basel180Verdict();
-    } finally {
-      System.clearProperty("roundtrip.fast.shape.retry");
-    }
+    System.setProperty("roundtrip.fast.shape.retry", "false");
+    RoundTripQualityResult baseline = basel180Verdict();
+    // Back to the engine default for the second run; the rule restores the
+    // fork's own value once the test is over.
+    System.clearProperty("roundtrip.fast.shape.retry");
     RoundTripQualityResult withRetry = basel180Verdict();
 
     if (baseline.isAccepted()) {
