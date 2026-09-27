@@ -74,6 +74,7 @@ public class FullStageCostModelBenchmarkTest {
     double farthestDist;
     double radiusRatio; // farthestDist / targetDistance
     int legTimeouts; // candidate legs that exhausted the per-leg budget
+    long failedEvalMs; // time spent on evaluations that produced no candidate
   }
 
   @Test
@@ -292,7 +293,11 @@ public class FullStageCostModelBenchmarkTest {
         long evalDur = System.currentTimeMillis() - evalStart;
         int evalLinks = ops.getLinksProcessed() - evalLinksStart;
 
-        if (!legFailed) {
+        if (legFailed) {
+          // A discarded evaluation still cost its time: it counts toward the
+          // stage latency the D5 bar is about, not toward the per-proposal mean.
+          res.failedEvalMs += evalDur;
+        } else {
           totalEvalMs += evalDur;
           totalEvalLinks += evalLinks;
           successfulEvals++;
@@ -328,7 +333,8 @@ public class FullStageCostModelBenchmarkTest {
       }
 
       // 6. Total full-stage cost model
-      res.totalRefineMsK4 = res.baselinePricingMs + res.initMs + (4 * res.meanEvalMs) + res.finalizationMs + res.publishMs;
+      res.totalRefineMsK4 = res.baselinePricingMs + res.initMs + (4 * res.meanEvalMs) + res.failedEvalMs
+        + res.finalizationMs + res.publishMs;
       res.totalRefineLinksK4 = res.initLinks + (4 * res.meanEvalLinks) + res.finalizationLinks;
       res.eligible = true;
     }
@@ -397,14 +403,17 @@ public class FullStageCostModelBenchmarkTest {
 
       int timeoutLegs = 0;
       int timeoutCells = 0;
+      long failedEvalMs = 0;
       for (CellResult r : results) {
         timeoutLegs += r.legTimeouts;
         if (r.legTimeouts > 0) timeoutCells++;
+        failedEvalMs += r.failedEvalMs;
       }
       md.append(String.format(Locale.US,
         "\nCandidate legs that exhausted the 5 s per-leg budget: **%d** (in %d of %d cells). Each one is a full-graph"
-          + " search that found no path — the evaluation is discarded, as in the search stage.\n",
-        timeoutLegs, timeoutCells, results.size()));
+          + " search that found no path — the evaluation is discarded, as in the search stage. Discarded evaluations"
+          + " cost **%d ms** in total; that time is part of each cell's k=4 total above.\n",
+        timeoutLegs, timeoutCells, results.size(), failedEvalMs));
 
       md.append("\n## Radius Bound Analysis (§4.4, §9)\n\n");
       double maxRatio = radiusRatios.get(radiusRatios.size() - 1);
