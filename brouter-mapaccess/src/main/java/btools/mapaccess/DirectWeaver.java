@@ -43,6 +43,9 @@ public final class DirectWeaver extends ByteDataWriter {
       OsmNode node = hollowNodes.get(ilon, ilat);
       if (node == null) {
         node = new OsmNode(ilon, ilat);
+        if (hollowNodes.keepWoven) {
+          hollowNodes.put(node); // stays resolvable by position for later searches
+        }
       } else {
         node.visitID = 1;
         hollowNodes.remove(node);
