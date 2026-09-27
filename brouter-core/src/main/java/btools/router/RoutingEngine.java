@@ -16,6 +16,14 @@ public class RoutingEngine extends Thread {
   public final static int BROUTER_ENGINEMODE_ROUNDTRIP = 4;
 
   NodesCache nodesCache;
+  /** The last cache built by {@link #resetCache}; never the warm one, which keeps its own segment rows. */
+  private NodesCache coldCache;
+  /** Retained leg-search graph, round-trip mode only; see {@link WarmSearchCache}. */
+  private WarmSearchCache warmCache;
+  private boolean warmCacheEnabled;
+  private boolean warmSearchActive;
+  private int warmSearches;
+  private int warmSearchFallbacks;
   private SortedHeap<OsmPath> openSet = new SortedHeap<>();
   private volatile boolean finished = false;
 
@@ -244,6 +252,7 @@ public class RoutingEngine extends Thread {
       // while general routing keeps the historic node-membership test unchanged.
       rc.roundTrip = true;
       applyRoundTripProfileDefaults(rc);
+      warmCacheEnabled = rc.roundTripWarmCache;
     }
 
     File baseFolder = new File(routingContext.localFunction).getParentFile();
@@ -521,6 +530,8 @@ public class RoutingEngine extends Thread {
         nodesCache.close();
         nodesCache = null;
       }
+      coldCache = null;
+      dropWarmCache();
       openSet.clear();
       // Signal termination to outside pollers — but NOT for the round-trip path.
       // In round-trip mode doRouting only produces the raw loop skeleton; the
@@ -721,6 +732,8 @@ public class RoutingEngine extends Thread {
       nodesCache.close();
       nodesCache = null;
     }
+    coldCache = null;
+    dropWarmCache();
     openSet.clear();
     finished = true;
 
@@ -2402,6 +2415,8 @@ public class RoutingEngine extends Thread {
         nodesCache.close();
         nodesCache = null;
       }
+      coldCache = null;
+      dropWarmCache();
       openSet.clear();
       finished = true; // this signals termination to outside
 
@@ -3874,8 +3889,61 @@ public class RoutingEngine extends Thread {
     }
     long maxmem = routingContext.memoryclass * 1024L * 1024L; // in MB
 
-    nodesCache = new NodesCache(segmentDir, routingContext.expctxWay, routingContext.forceSecondaryData, maxmem, nodesCache, detailed);
+    // Chain from the previous cold cache only: the warm cache keeps its own
+    // segment rows, and ghosting them here would drop its woven graph.
+    coldCache = new NodesCache(segmentDir, routingContext.expctxWay, routingContext.forceSecondaryData, maxmem, coldCache, detailed);
+    nodesCache = coldCache;
     islandNodePairs.clearTempPairs();
+  }
+
+  /**
+   * Serve the next leg search from the retained graph when round-trip mode
+   * allows it. The graph is dropped and rebuilt once it outgrows the memory
+   * class, so a long plan degrades to cold searches, never to an unbounded heap.
+   */
+  private boolean beginWarmSearch() {
+    // Kinematic models price junction crossings from every link at a node, so
+    // the dead-end links that pruning removed would change their costs.
+    if (!warmCacheEnabled || !(routingContext.pm instanceof StdModel)) {
+      return false;
+    }
+    if (warmCache != null && warmCache.overBudget(0)) {
+      logInfo("warm search cache over budget after " + warmCache.searches() + " searches, rebuilding");
+      dropWarmCache();
+    }
+    if (warmCache == null) {
+      if (routingContext.expctxWay == null) {
+        ProfileCache.parseProfile(routingContext); // same re-acquire as resetCache
+      }
+      long maxmem = routingContext.memoryclass * 1024L * 1024L;
+      long budget = routingContext.roundTripWarmCacheBytes >= 0 ? routingContext.roundTripWarmCacheBytes : maxmem;
+      warmCache = new WarmSearchCache(new NodesCache(segmentDir, routingContext.expctxWay,
+        routingContext.forceSecondaryData, maxmem, null, false), budget);
+    }
+    // The shared expression context keeps the last cache's decode mode; a
+    // detailed retrack in between switched it to keep forbidden ways.
+    routingContext.expctxWay.setDecodeForbidden(false);
+    warmCache.beginSearch();
+    warmSearches++;
+    islandNodePairs.clearTempPairs();
+    return true;
+  }
+
+  private void dropWarmCache() {
+    if (warmCache != null) {
+      warmCache.close();
+      warmCache = null;
+    }
+  }
+
+  /** Leg searches this request served from the retained graph (diagnostics, tests). */
+  public int getWarmSearchCount() {
+    return warmSearches;
+  }
+
+  /** Leg searches that outgrew the retained graph's budget and reran on a cold cache. */
+  public int getWarmSearchFallbackCount() {
+    return warmSearchFallbacks;
   }
 
   OsmPath getStartPath(OsmNode n1, OsmNode n2, MatchedWaypoint mwp, OsmNodeNamed endPos, boolean sameSegmentSearch) {
@@ -3922,6 +3990,9 @@ public class RoutingEngine extends Thread {
         }
       }
       if (bestLink != null) {
+        if (warmSearchActive) {
+          warmCache.recordHolder(bestLink, n1);
+        }
         bestLink.addLinkHolder(bestPath, n1);
       }
       if (bestPath != null) bestPath.treedepth = 1;
@@ -3940,12 +4011,34 @@ public class RoutingEngine extends Thread {
       routingContext.cleanNogoList(wpts2);
 
       boolean detailed = guideTrack != null;
+      if (!detailed && beginWarmSearch()) {
+        warmSearchActive = true;
+        nodesCache = warmCache.cache;
+        try {
+          return _findTrack(operationName, startWp, endWp, costCuttingTrack, refTrack, fastPartialRecalc);
+        } catch (WarmSearchCache.OverBudget e) {
+          // The leg outgrew the memory class mid-search: release the retained
+          // graph and rerun this leg on the bounded cold cache.
+          logInfo(operationName + ": retained graph over budget after " + warmCache.searches()
+            + " searches, rerunning the leg cold");
+          warmSearchActive = false;
+          warmSearchFallbacks++;
+          dropWarmCache();
+        }
+      }
       resetCache(detailed);
       nodesCache.nodesMap.cleanupMode = detailed ? 0 : (routingContext.considerTurnRestrictions ? 2 : 1);
       return _findTrack(operationName, startWp, endWp, costCuttingTrack, refTrack, fastPartialRecalc);
     } finally {
       routingContext.restoreNogoList();
-      nodesCache.clean(false); // clean only non-virgin caches
+      if (warmSearchActive) {
+        // Hand the field back to the cold chain: every other engine path resets
+        // before use, and none may weave into the retained graph.
+        warmSearchActive = false;
+        nodesCache = coldCache;
+      } else {
+        nodesCache.clean(false); // clean only non-virgin caches
+      }
     }
   }
 
@@ -4093,7 +4186,11 @@ public class RoutingEngine extends Thread {
         }
 
         if (directWeaving && nodesCache.hasHollowLinkTargets(path.getTargetNode())) {
-          if (!memoryPanicMode) {
+          if (warmSearchActive) {
+            if (warmCache.overBudget(openSet.getSize())) {
+              throw new WarmSearchCache.OverBudget();
+            }
+          } else if (!memoryPanicMode) {
             if (!nodesCache.nodesMap.isInMemoryBounds(openSet.getSize(), false)) {
               int nodesBefore = nodesCache.nodesMap.nodesCreated;
               int pathsBefore = openSet.getSize();
@@ -4215,12 +4312,21 @@ public class RoutingEngine extends Thread {
 
         if (path.treedepth > 1) {
           boolean isBidir = currentLink.isBidirectional();
-          sourceNode.unlinkLink(currentLink);
+          if (warmSearchActive) {
+            // Retained graph: the invalidated holders above mark this direction
+            // settled; the counter-link the cold search drops gets a sentinel.
+            warmCache.settle(currentLink, sourceNode, currentNode,
+              isBidir && !routingContext.considerTurnRestrictions);
+          } else {
+            sourceNode.unlinkLink(currentLink);
 
-          // if the counterlink is alive and does not yet have a path, remove it
-          if (isBidir && currentLink.getFirstLinkHolder(currentNode) == null && !routingContext.considerTurnRestrictions) {
-            currentNode.unlinkLink(currentLink);
+            // if the counterlink is alive and does not yet have a path, remove it
+            if (isBidir && currentLink.getFirstLinkHolder(currentNode) == null && !routingContext.considerTurnRestrictions) {
+              currentNode.unlinkLink(currentLink);
+            }
           }
+        } else if (warmSearchActive) {
+          warmCache.exempt(currentLink, sourceNode); // the cold search leaves the start link attached
         }
 
         // recheck cutoff before doing expensive stuff
@@ -4236,6 +4342,9 @@ public class RoutingEngine extends Thread {
         routingContext.firstPrePath = null;
 
         for (OsmLink link = currentNode.firstlink; link != null; link = link.getNext(currentNode)) {
+          if (warmSearchActive && warmCache.isSettled(link, currentNode)) {
+            continue; // the cold search would have unlinked it
+          }
           OsmNode nextNode = link.getTarget(currentNode);
 
           if (!nodesCache.obtainNonHollowNode(nextNode)) {
@@ -4256,6 +4365,9 @@ public class RoutingEngine extends Thread {
         }
 
         for (OsmLink link = currentNode.firstlink; link != null; link = link.getNext(currentNode)) {
+          if (warmSearchActive && warmCache.isSettled(link, currentNode)) {
+            continue; // the cold search would have unlinked it
+          }
           OsmNode nextNode = link.getTarget(currentNode);
 
           if (!nodesCache.obtainNonHollowNode(nextNode)) {
@@ -4333,6 +4445,9 @@ public class RoutingEngine extends Thread {
 
               if (dominator == null) {
                 bestPath.treedepth = path.treedepth + 1;
+                if (warmSearchActive) {
+                  warmCache.recordHolder(link, currentNode);
+                }
                 link.addLinkHolder(bestPath, currentNode);
                 addToOpenset(bestPath);
               }

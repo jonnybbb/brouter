@@ -34,6 +34,14 @@ public final class OsmNodesMap {
 
   public int cleanupMode = 0;
 
+  /**
+   * Keep woven nodes in the map instead of dropping them once decoded. Set by
+   * a search that retains its graph across a request's legs: the next search
+   * must resolve a start or end position to the node object that already
+   * carries the links, which the hollow-only map cannot do.
+   */
+  public boolean keepWoven;
+
   public void cleanupAndCount(OsmNode[] nodes) {
     if (cleanupMode == 0) {
       justCount(nodes);
@@ -225,9 +233,17 @@ public final class OsmNodesMap {
 
 
   public void remove(OsmNode node) {
+    if (keepWoven) {
+      return;
+    }
     if (node != endNode1 && node != endNode2) { // keep endnodes in hollow-map even when loaded
       hmap.remove(node);                        // (needed for escape analysis)
     }
+  }
+
+  /** Number of nodes held (hollow proxies, plus woven nodes when {@link #keepWoven}). */
+  public int size() {
+    return hmap.size();
   }
 
   /**
