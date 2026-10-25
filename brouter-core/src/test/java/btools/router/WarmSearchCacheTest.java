@@ -84,7 +84,7 @@ public class WarmSearchCacheTest {
   /** Kinematic models price junction crossings from every link at a node; they keep the cold search. */
   @Test
   public void kinematicProfileKeepsTheColdSearch() {
-    RoutingEngine car = RoundTripFixture.engine("car-eco", 90, 1500,
+    RoutingEngine car = RoundTripFixture.engine("car-vario", 90, 1500,
       rc -> rc.roundTripAlgorithm = RoundTripAlgorithm.GREEDY);
     RoundTripFixture.assertNoEngineErrorOrSkip(car, "car_greedy");
     assertEquals("no leg search on the retained graph for a kinematic model", 0, car.getWarmSearchCount());
