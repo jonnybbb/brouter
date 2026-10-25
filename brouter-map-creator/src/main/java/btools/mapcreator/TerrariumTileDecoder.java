@@ -66,10 +66,15 @@ public final class TerrariumTileDecoder {
   public static final class Tile {
     private final int size;
     private final float[] elevations;
+    private String sourceSha256;
 
     Tile(int size, float[] elevations) {
       this.size = size;
       this.elevations = elevations;
+    }
+
+    String sourceSha256() {
+      return sourceSha256;
     }
 
     public int size() {
@@ -158,7 +163,9 @@ public final class TerrariumTileDecoder {
             + width + "x" + height + ", image " + image.getWidth() + "x"
             + image.getHeight());
         }
-        return decodePixels(image, pixelCount);
+        Tile tile = decodePixels(image, pixelCount);
+        tile.sourceSha256 = MapterhornFiles.sha256Hex(imageBytes);
+        return tile;
       } finally {
         reader.dispose();
       }

@@ -25,7 +25,7 @@ import java.util.Properties;
 final class MapterhornOutputMetadata {
 
   static final int SCHEMA_VERSION = 1;
-  static final int CONVERTER_VERSION = 1;
+  static final int CONVERTER_VERSION = 2;
   static final String SUFFIX = ".mapterhorn.properties";
 
   private static final long MAX_METADATA_BYTES = 64L * 1024L;
@@ -196,6 +196,26 @@ final class MapterhornOutputMetadata {
       Files.delete(outputPath);
     }
     Files.delete(metadataPath);
+  }
+
+  static final class CompletedMetadata {
+    final Config config;
+    final CompletedFile file;
+
+    CompletedMetadata(Config config, CompletedFile file) {
+      this.config = config;
+      this.file = file;
+    }
+  }
+
+  /** The coverage validator and resume path share one strict provenance parser. */
+  static CompletedMetadata readCompleted(Path output) throws IOException {
+    Metadata metadata = readMetadata(metadataPath(output));
+    if (metadata == null || metadata.state != State.COMPLETE) {
+      throw new IOException("COVERAGE_PROVENANCE: missing or invalid completed conversion " + output);
+    }
+    return new CompletedMetadata(metadata.config,
+      new CompletedFile(metadata.length, metadata.modified, metadata.sha256));
   }
 
   static String hex(byte[] bytes) {

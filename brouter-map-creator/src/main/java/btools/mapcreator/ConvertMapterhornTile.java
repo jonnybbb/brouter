@@ -6,6 +6,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.math.BigInteger;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
@@ -24,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -135,12 +137,14 @@ public class ConvertMapterhornTile implements AutoCloseable {
   private int[] colOffset;
   private long[] colSrcX;
   private double[] colWeight;
-  private double[] colFootprint;
   // per-weight index into the stripe, or -1 when outside it (constant per cell)
   private int[] colStripeIdx;
 
   // one decoded row of source tiles, held as tileSize rows of stripeWidth pixels
   private float[] stripe;
+  private boolean[] stripePresent;
+  private byte[] coverageFlags;
+  private final Map<String, String> sourceEvidence = new TreeMap<>();
   private long stripeX0;
   private int stripeWidth;
   private int stripeTileY = Integer.MIN_VALUE;
@@ -151,6 +155,8 @@ public class ConvertMapterhornTile implements AutoCloseable {
   private long reducedJ = Long.MIN_VALUE;
   private double[] reducedSumRow;
   private double[] reducedWeightRow;
+  private double[] reducedTotalWeightRow;
+  private byte[] reducedSourceFlags;
 
   private final AtomicInteger tilesFound = new AtomicInteger();
   private final AtomicInteger tilesMissing = new AtomicInteger();
@@ -446,6 +452,7 @@ public class ConvertMapterhornTile implements AutoCloseable {
       MapterhornOutputMetadata.Decision decision = MapterhornOutputMetadata.prepare(
         out, config, explicitFullOverwrite);
       if (decision == MapterhornOutputMetadata.Decision.SKIP) {
+        ElevationCoverage.verify(out.toPath());
         System.out.println("  " + name + " exists with matching provenance, skipped");
         return;
       }
@@ -461,6 +468,8 @@ public class ConvertMapterhornTile implements AutoCloseable {
         return;
       }
       MapterhornOutputMetadata.CompletedFile completed = writeVerified(raster, out);
+      ElevationCoverage.write(out.toPath(), config, completed.sha256, raster,
+        converter.coverageFlags, converter.sourceEvidence);
       MapterhornOutputMetadata.complete(out, config, completed);
       System.out.println("  wrote " + out + " (" + converter.tilesFound.get() + " tiles read, "
         + converter.tilesMissing.get() + " missing)");
@@ -897,6 +906,7 @@ public class ConvertMapterhornTile implements AutoCloseable {
     reducedJ = Long.MIN_VALUE;
     tilesFound.set(0);
     tilesMissing.set(0);
+    sourceEvidence.clear();
 
     SamplingWindow window = samplingWindow(lonStart, latStart, rowLength, bbox);
     if (window.empty) {
@@ -915,9 +925,13 @@ public class ConvertMapterhornTile implements AutoCloseable {
 
     short[] pixels = new short[rasterElements];
     Arrays.fill(pixels, NODATA);
+    coverageFlags = new byte[rasterElements];
+    Arrays.fill(coverageFlags, (byte) ElevationCoverage.OUTSIDE);
 
     double[] acc = new double[n];
     double[] accWeight = new double[n];
+    double[] accTotalWeight = new double[n];
+    byte[] accSourceFlags = new byte[n];
 
     long t0 = System.currentTimeMillis();
     for (int imageRow = window.rowFrom; imageRow <= window.rowTo; imageRow++) {
@@ -932,6 +946,8 @@ public class ConvertMapterhornTile implements AutoCloseable {
 
       Arrays.fill(acc, window.colFrom, window.colTo + 1, 0.0);
       Arrays.fill(accWeight, window.colFrom, window.colTo + 1, 0.0);
+      Arrays.fill(accTotalWeight, window.colFrom, window.colTo + 1, 0.0);
+      Arrays.fill(accSourceFlags, window.colFrom, window.colTo + 1, (byte) 0);
 
       long j0 = floorToLong(yTop, "source row start");
       long j1 = ceilToLong(yBottom, "source row end");
@@ -949,13 +965,19 @@ public class ConvertMapterhornTile implements AutoCloseable {
         for (int c = window.colFrom; c <= window.colTo; c++) {
           acc[c] += wy * sum[c];
           accWeight[c] += wy * weight[c];
+          accTotalWeight[c] += wy * reducedTotalWeightRow[c];
+          accSourceFlags[c] |= reducedSourceFlags[c];
         }
       }
 
       int base = imageRow * n;
       for (int c = window.colFrom; c <= window.colTo; c++) {
-        double fullWeight = (yBottom - yTop) * colFootprint[c];
+        // Use the same additions for the covered and total area. An analytic
+        // rectangle product can round one ULP above an exactly half-covered sum.
+        double fullWeight = accTotalWeight[c];
+        coverageFlags[base + c] = fullWeight > 0 ? accSourceFlags[c] : (byte) ElevationCoverage.OUTSIDE;
         if (accWeight[c] >= MIN_COVERAGE * fullWeight && accWeight[c] > 0.0) {
+          coverageFlags[base + c] |= ElevationCoverage.VALID;
           long v = Math.round(acc[c] / accWeight[c]);
           pixels[base + c] = (short) Math.max(MIN_ELEVATION, Math.min(MAX_ELEVATION, v));
         }
@@ -980,7 +1002,7 @@ public class ConvertMapterhornTile implements AutoCloseable {
 
   private double mercatorY(double lat) {
     double phi = Math.toRadians(lat);
-    return (1.0 - Math.log(Math.tan(phi) + 1.0 / Math.cos(phi)) / Math.PI) / 2.0 * worldPx;
+    return (1.0 - StrictMath.log(StrictMath.tan(phi) + 1.0 / StrictMath.cos(phi)) / Math.PI) / 2.0 * worldPx;
   }
 
   private double mercatorX(double lon) {
@@ -1115,7 +1137,6 @@ public class ConvertMapterhornTile implements AutoCloseable {
       "column offset count")];
     colSrcX = new long[weightCapacity];
     colWeight = new double[colSrcX.length];
-    colFootprint = new double[n];
 
     int k = 0;
     for (int c = 0; c < n; c++) {
@@ -1129,11 +1150,14 @@ public class ConvertMapterhornTile implements AutoCloseable {
       if (xb <= xa) {
         continue;
       }
-      colFootprint[c] = xb - xa;
-      long i0 = floorToLong(xa, "source column start");
-      long i1 = ceilToLong(xb, "source column end");
+      // Both the regular output grid and PMTiles header bounds are rational.
+      // Keep their intersection exact until each overlap becomes a weight.
+      LongitudeInterval interval = longitudeInterval(lonStart, c, (n - 1L) / 5,
+        cellsize, window);
+      long i0 = interval.floorLeft();
+      long i1 = interval.ceilRight();
       for (long i = i0; i < i1; i++) {
-        double w = Math.min(i + 1, xb) - Math.max(i, xa);
+        double w = interval.overlap(i);
         if (w > 0.0) {
           if (k >= colSrcX.length) {
             throw new IOException("Mapterhorn column weight count is too large");
@@ -1147,6 +1171,60 @@ public class ConvertMapterhornTile implements AutoCloseable {
     colOffset[n] = k;
   }
 
+  private LongitudeInterval longitudeInterval(int lonStart, int column, long rowLength,
+                                               double cellsize, SamplingWindow window) {
+    // A PMTiles bound is an integer number of 1e-7 degrees. Use a common
+    // denominator with the half-sample output grid; BigInteger also handles
+    // supported high zooms without overflowing intermediate products.
+    BigInteger scale = BigInteger.valueOf(10_000_000L);
+    BigInteger world = BigInteger.valueOf(worldPx);
+    BigInteger denominator = BigInteger.valueOf(720L * rowLength).multiply(scale);
+    long centre = 2L * ((lonStart + 180L) * rowLength + column);
+    BigInteger left = BigInteger.valueOf(centre - 1L).multiply(world).multiply(scale);
+    BigInteger right = BigInteger.valueOf(centre + 1L).multiply(world).multiply(scale);
+    double gridMin = lonStart + window.colFrom * cellsize - 0.5 * cellsize;
+    double gridMax = lonStart + window.colTo * cellsize + 0.5 * cellsize;
+    if (window.minLon > gridMin) {
+      long bound = Math.round(window.minLon * 10_000_000L) + 1_800_000_000L;
+      left = left.max(BigInteger.valueOf(bound).multiply(world)
+        .multiply(BigInteger.valueOf(2L * rowLength)));
+    }
+    if (window.maxLon < gridMax) {
+      long bound = Math.round(window.maxLon * 10_000_000L) + 1_800_000_000L;
+      right = right.min(BigInteger.valueOf(bound).multiply(world)
+        .multiply(BigInteger.valueOf(2L * rowLength)));
+    }
+    return new LongitudeInterval(left, right, denominator);
+  }
+
+  private static final class LongitudeInterval {
+    private final BigInteger left;
+    private final BigInteger right;
+    private final BigInteger denominator;
+
+    LongitudeInterval(BigInteger left, BigInteger right, BigInteger denominator) {
+      this.left = left;
+      this.right = right;
+      this.denominator = denominator;
+    }
+
+    long floorLeft() {
+      BigInteger[] parts = left.divideAndRemainder(denominator);
+      return (parts[1].signum() < 0 ? parts[0].subtract(BigInteger.ONE) : parts[0]).longValueExact();
+    }
+
+    long ceilRight() {
+      BigInteger[] parts = right.divideAndRemainder(denominator);
+      return (parts[1].signum() > 0 ? parts[0].add(BigInteger.ONE) : parts[0]).longValueExact();
+    }
+
+    double overlap(long column) {
+      BigInteger start = left.max(BigInteger.valueOf(column).multiply(denominator));
+      BigInteger end = right.min(BigInteger.valueOf(column + 1L).multiply(denominator));
+      return end.subtract(start).doubleValue() / denominator.doubleValue();
+    }
+  }
+
   private void prepareStripe(SamplingWindow window) throws IOException {
     long txMin = tileXMin(window);
     long tileColumns = checkedAdd(checkedSubtract(tileXMax(window), txMin,
@@ -1157,6 +1235,7 @@ public class ConvertMapterhornTile implements AutoCloseable {
     int stripeElements = checkedInt(checkedMultiply(stripeWidth, tileSize,
       "stripe float count"), "stripe float count");
     stripe = new float[stripeElements];
+    stripePresent = new boolean[(int) tileColumns];
 
     // colSrcX and stripeX0 are fixed for the whole cell, so hoist the per-weight
     // stripe index (with -1 for out-of-stripe entries) out of the box filter's inner
@@ -1184,6 +1263,8 @@ public class ConvertMapterhornTile implements AutoCloseable {
     if (reducedSumRow == null || reducedSumRow.length < colOffset.length - 1) {
       reducedSumRow = new double[colOffset.length - 1];
       reducedWeightRow = new double[colOffset.length - 1];
+      reducedTotalWeightRow = new double[colOffset.length - 1];
+      reducedSourceFlags = new byte[colOffset.length - 1];
     }
     double[] sum = reducedSumRow;
     double[] weight = reducedWeightRow;
@@ -1195,19 +1276,28 @@ public class ConvertMapterhornTile implements AutoCloseable {
     for (int c = colFrom; c <= colTo; c++) {
       double s = 0.0;
       double w = 0.0;
+      double total = 0.0;
+      byte flags = 0;
       for (int k = colOffset[c]; k < colOffset[c + 1]; k++) {
+        total += colWeight[k];
         int i = stripeIdx[k];
         if (i < 0) {
+          flags |= ElevationCoverage.ABSENT_SOURCE;
           continue;
         }
         float v = stripe[rowBase + i];
         if (!Float.isNaN(v)) {
           s += colWeight[k] * v;
           w += colWeight[k];
+        } else {
+          flags |= stripePresent[i / tileSize]
+            ? ElevationCoverage.INVALID_SOURCE : ElevationCoverage.ABSENT_SOURCE;
         }
       }
       sum[c] = s;
       weight[c] = w;
+      reducedTotalWeightRow[c] = total;
+      reducedSourceFlags[c] = flags;
     }
     reducedJ = j;
   }
@@ -1308,7 +1398,10 @@ public class ConvertMapterhornTile implements AutoCloseable {
     for (int k = 0; k < count; k++) {
       TerrariumTileDecoder.Tile tile = decoded.getAndSet(k, null);
       int x = k * tileSize;
+      stripePresent[k] = tile != null;
+      String sourceKey = zoom + "/" + Math.floorMod(txMin + k, tiles) + "/" + tileY;
       if (tile == null) {
+        sourceEvidence.put(sourceKey, "absent");
         // absent tile: mark its column band as no-data (present bands are fully
         // overwritten below, so a whole-stripe prefill would be wasted work)
         for (int row = 0; row < tileSize; row++) {
@@ -1322,6 +1415,13 @@ public class ConvertMapterhornTile implements AutoCloseable {
           + ", got " + tile.size());
       }
       float[] src = tile.elevations();
+      int invalid = 0;
+      for (float value : src) {
+        if (Float.isNaN(value)) {
+          invalid++;
+        }
+      }
+      sourceEvidence.put(sourceKey, tile.sourceSha256() + " invalid=" + invalid);
       for (int row = 0; row < tileSize; row++) {
         System.arraycopy(src, row * tileSize, stripe, row * stripeWidth + x, tileSize);
       }
