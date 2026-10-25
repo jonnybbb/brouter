@@ -188,6 +188,9 @@ public class OsmCutter extends MapCreatorBase {
     int[] lookupData = _expctxWay.createNewLookupData();
     for (String key : w.getTagsOrNull().keySet()) {
       String value = w.getTag(key);
+      // Preserve explicit absence before unrecognized values become "unknown".
+      // Other railway values and negative access restrictions remain unchanged.
+      if ("railway".equals(key) && "no".equals(value)) continue;
       _expctxWay.addLookupValue(key, value.replace(' ', '_'), lookupData);
     }
     w.description = _expctxWay.encode(lookupData);
