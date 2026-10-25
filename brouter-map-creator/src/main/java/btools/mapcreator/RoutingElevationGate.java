@@ -75,6 +75,12 @@ public final class RoutingElevationGate {
     // Never reuse a successful report from an earlier invocation after a new failure.
     Files.createDirectory(report);
     Set<String> required = new TreeSet<>();
+    // Emit the actual cutter footprint before opening elevation evidence. This
+    // remains usable for conversion when a missing/stale cell aborts the gate.
+    for (Path nodeFile : files) {
+      required.add(cellForTile(nodeFile));
+    }
+    Files.write(report.resolve("required-cells.txt"), required);
     Set<String> missing = new TreeSet<>();
     List<String> cutterDigests = new ArrayList<>();
     long totalNodes = 0;
@@ -86,14 +92,10 @@ public final class RoutingElevationGate {
       failures.write(header);
       exemptions.write(header);
       for (Path nodeFile : files) {
-        Matcher match = NODE_TILE.matcher(nodeFile.getFileName().toString());
-        if (!match.matches()) {
-          throw new IOException("NODE_FORMAT: invalid node tile " + nodeFile);
-        }
-        int longitude = Integer.parseInt(match.group(2)) * (match.group(1).equals("W") ? -1 : 1);
-        int latitude = Integer.parseInt(match.group(4)) * (match.group(3).equals("S") ? -1 : 1);
-        ElevationCells.requireCellCorner(longitude, latitude, nodeFile.toString());
-        String cell = ElevationCells.legacyCellName(longitude, latitude).replace(".bef", "");
+        String cell = cellForTile(nodeFile);
+        int[] corner = ElevationCells.cornerFromCellName(cell);
+        int longitude = corner[0];
+        int latitude = corner[1];
         Path bef = elevation.resolve(cell + ".bef");
         CellData data = Files.exists(bef, LinkOption.NOFOLLOW_LINKS) ? readCell(bef, longitude, latitude) : null;
         if (data != null) {
@@ -167,6 +169,17 @@ public final class RoutingElevationGate {
     System.out.println("elevation-gate: nodes=" + totalNodes + " failed=" + failedNodes
       + " waterOnly=" + waterNodes);
     return failedNodes == 0 ? 0 : 1;
+  }
+
+  private static String cellForTile(Path nodeFile) throws IOException {
+    Matcher match = NODE_TILE.matcher(nodeFile.getFileName().toString());
+    if (!match.matches()) {
+      throw new IOException("NODE_FORMAT: invalid node tile " + nodeFile);
+    }
+    int longitude = Integer.parseInt(match.group(2)) * (match.group(1).equals("W") ? -1 : 1);
+    int latitude = Integer.parseInt(match.group(4)) * (match.group(3).equals("S") ? -1 : 1);
+    ElevationCells.requireCellCorner(longitude, latitude, nodeFile.toString());
+    return ElevationCells.legacyCellName(longitude, latitude).replace(".bef", "");
   }
 
   private static CellData readCell(Path bef, int longitude, int latitude) throws IOException {

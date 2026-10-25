@@ -163,6 +163,21 @@ public class RoutingElevationGateTest {
   }
 
   @Test
+  public void requiredCellManifestSurvivesMissingCoverageEvidence() throws Exception {
+    Fixture fixture = new Fixture();
+    fixture.terrain(100);
+    Files.delete(fixture.elevation.resolve("srtm_37_03.bef.coverage.gz"));
+    try {
+      fixture.audit();
+      fail("missing coverage must fail");
+    } catch (IOException expected) {
+      assertTrue(expected.getMessage().contains("COVERAGE_MISSING"));
+      assertTrue(Files.readString(fixture.report.resolve("required-cells.txt")).contains("srtm_37_03"));
+      assertFalse(Files.exists(fixture.report.resolve("gate.properties")));
+    }
+  }
+
+  @Test
   public void malformedWayDescriptionFailsEvenWhenElevationIsValid() throws Exception {
     Fixture fixture = new Fixture();
     fixture.terrain(100);
