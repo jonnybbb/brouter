@@ -3,15 +3,20 @@ package btools.mapcreator;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import btools.expressions.BExpressionContextWay;
 import btools.expressions.BExpressionMetaData;
 import com.google.protobuf.ByteString;
 import java.io.DataOutputStream;
+import java.io.DataInputStream;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +38,90 @@ public class OsmCutterRailwayTagTest {
     assertTrue(fixture.description.contains("route=ferry"));
     assertEquals(0, fixture.audit());
     assertTrue(Files.readString(fixture.root.resolve("gate/gate.properties")).contains("waterOnly=2"));
+  }
+
+  @Test
+  public void railcarFerryRemainsWaterOnlyWithoutLosingItsRoutingTags() throws Exception {
+    Fixture fixture = new Fixture(Map.of("route", "ferry", "railway", "ferry", "access", "private"), false);
+    // The current reader dictionary encodes this railway value as unknown.
+    // Gate classification must not discard mode or access information to pass.
+    assertTrue(fixture.description.contains("railway=unknown"));
+    assertTrue(fixture.description.contains("route=ferry"));
+    assertTrue(fixture.description.contains("access=private"));
+    assertEquals(0, fixture.audit());
+    assertTrue(Files.readString(fixture.root.resolve("gate/gate.properties")).contains("waterOnly=2"));
+  }
+
+  @Test
+  public void railcarFerryCannotExemptSharedRoadNodesInEitherWayOrder() throws Exception {
+    for (boolean reverse : new boolean[]{false, true}) {
+      Fixture fixture = new Fixture(Map.of("route", "ferry", "railway", "ferry"), true, reverse);
+      assertEquals(1, fixture.audit());
+      assertTrue(Files.readString(fixture.root.resolve("gate/failures.csv")).contains(",2,200,"));
+    }
+  }
+
+  @Test
+  public void mixedOrUnrecognizedRawTagsCannotProduceWaterSupport() throws Exception {
+    for (Map<String, String> tags : List.of(
+      Map.of("route", "ferry", "railway", "ferry", "highway", "path"),
+      Map.of("route", "ferry", "railway", "ferry", "waterway", "dam"),
+      Map.of("route", "proposed_ferry", "railway", "ferry"),
+      Map.of("railway", "ferry"))) {
+      assertEquals(tags.toString(), 1, new Fixture(tags, false).audit());
+    }
+  }
+
+  @Test
+  public void sourceChangeAfterCuttingInvalidatesWaterSupport() throws Exception {
+    Fixture fixture = new Fixture(Map.of("route", "ferry", "railway", "ferry"), false);
+    Files.write(fixture.root.resolve("source.osm.pbf"), new byte[]{1}, java.nio.file.StandardOpenOption.APPEND);
+    rejects(fixture, "FERRY_SUPPORT_STALE");
+  }
+
+  @Test
+  public void duplicateUnknownWayCannotBorrowRailcarFerrySupportInEitherOrder() throws Exception {
+    for (boolean reverse : new boolean[]{false, true}) {
+      Fixture fixture = new Fixture(Map.of("route", "ferry", "railway", "ferry"), false, reverse, true);
+      rejects(fixture, "FERRY_SUPPORT_DUPLICATE");
+    }
+  }
+
+  @Test
+  public void missingTruncatedOrExtendedSupportCannotPass() throws Exception {
+    for (String damage : List.of("missing", "truncated", "extended")) {
+      Fixture fixture = new Fixture(Map.of("route", "ferry", "railway", "ferry"), false);
+      Path support = fixture.root.resolve("ways55/rail-ferry-support.bin");
+      byte[] original = Files.readAllBytes(support);
+      if (damage.equals("missing")) Files.delete(support);
+      else Files.write(support, Arrays.copyOf(original, original.length + (damage.equals("extended") ? 1 : -1)));
+      rejects(fixture, null);
+    }
+  }
+
+  @Test
+  public void supportCannotBeReusedForChangedAcceptedWayNodes() throws Exception {
+    Fixture fixture = new Fixture(Map.of("route", "ferry", "railway", "ferry"), false);
+    Path file = fixture.root.resolve("ways55/E0_N45.wt5");
+    WayData way;
+    try (DataInputStream input = new DataInputStream(Files.newInputStream(file))) {
+      way = new WayData(input);
+    }
+    way.nodes.add(4);
+    try (DataOutputStream output = new DataOutputStream(Files.newOutputStream(file))) {
+      way.writeTo(output);
+    }
+    rejects(fixture, "FERRY_SUPPORT_STALE");
+  }
+
+  private static void rejects(Fixture fixture, String message) throws Exception {
+    try {
+      fixture.audit();
+      fail("invalid source evidence must not produce a gate result");
+    } catch (IOException expected) {
+      if (message != null) assertTrue(expected.toString(), expected.getMessage().contains(message));
+    }
+    assertFalse(Files.exists(fixture.root.resolve("gate/gate.properties")));
   }
 
   @Test
@@ -69,10 +158,18 @@ public class OsmCutterRailwayTagTest {
     String description;
 
     Fixture(Map<String, String> tags, boolean sharedRoad) throws Exception {
+      this(tags, sharedRoad, false);
+    }
+
+    Fixture(Map<String, String> tags, boolean sharedRoad, boolean reverseWays) throws Exception {
+      this(tags, sharedRoad, reverseWays, false);
+    }
+
+    Fixture(Map<String, String> tags, boolean sharedRoad, boolean reverseWays, boolean duplicateUnknown) throws Exception {
       for (String directory : List.of("nodes", "ways", "nodes55", "ways55", "elevation")) {
         Files.createDirectory(root.resolve(directory));
       }
-      writePbf(root.resolve("source.osm.pbf"), tags, sharedRoad);
+      writePbf(root.resolve("source.osm.pbf"), tags, sharedRoad, reverseWays, duplicateUnknown);
       String previous = System.getProperty("avoidMapPolling");
       System.setProperty("avoidMapPolling", "true");
       try {
@@ -81,7 +178,7 @@ public class OsmCutterRailwayTagTest {
           root.resolve("ways55").toFile(), root.resolve("border.dat").toFile(),
           root.resolve("relations.dat").toFile(), root.resolve("restrictions.dat").toFile(),
           profiles.resolve("all.brf").toFile(), profiles.resolve("trekking.brf").toFile(),
-          profiles.resolve("softaccess.brf").toFile(), root.resolve("source.osm.pbf").toFile(), null);
+          profiles.resolve("softaccess.brf").toFile(), root.resolve("source.osm.pbf").toFile(), null, true);
       } finally {
         if (previous == null) System.clearProperty("avoidMapPolling");
         else System.setProperty("avoidMapPolling", previous);
@@ -96,7 +193,7 @@ public class OsmCutterRailwayTagTest {
       Path quarantine = root.resolve("quarantine.csv");
       Files.writeString(quarantine, "id,west,south,east,north\n");
       return RoutingElevationGate.audit(root.resolve("nodes55"), root.resolve("ways55"),
-        root.resolve("elevation"), lookups, quarantine, root.resolve("gate"), 1000);
+        root.resolve("elevation"), lookups, quarantine, root.resolve("gate"), root.resolve("source.osm.pbf"), 1000);
     }
 
     public boolean wayFileStart(File file) { return true; }
@@ -106,12 +203,13 @@ public class OsmCutterRailwayTagTest {
     }
   }
 
-  private static void writePbf(Path path, Map<String, String> tags, boolean sharedRoad) throws Exception {
+  private static void writePbf(Path path, Map<String, String> tags, boolean sharedRoad, boolean reverseWays, boolean duplicateUnknown) throws Exception {
     Map<String, Integer> indexes = new LinkedHashMap<>();
     indexes.put("", 0);
     List<Map<String, String>> ways = new ArrayList<>();
     ways.add(tags);
     if (sharedRoad) ways.add(Map.of("highway", "path"));
+    if (duplicateUnknown) ways.add(Map.of("route", "ferry", "railway", "unrecognized_railway_fixture"));
     for (Map<String, String> way : ways) {
       for (Map.Entry<String, String> entry : way.entrySet()) {
         indexes.computeIfAbsent(entry.getKey(), key -> indexes.size());
@@ -125,14 +223,18 @@ public class OsmCutterRailwayTagTest {
       group.addNodes(Osmformat.Node.newBuilder().setId(id)
         .setLon(10000000L + id * 10000).setLat(460000000L));
     }
+    List<Osmformat.Way> records = new ArrayList<>();
     for (int i = 0; i < ways.size(); i++) {
-      Osmformat.Way.Builder way = Osmformat.Way.newBuilder().setId(100L + i * 100L);
+      int index = duplicateUnknown ? 0 : i;
+      Osmformat.Way.Builder way = Osmformat.Way.newBuilder().setId(100L + index * 100L);
       for (Map.Entry<String, String> entry : ways.get(i).entrySet()) {
         way.addKeys(indexes.get(entry.getKey())).addVals(indexes.get(entry.getValue()));
       }
-      way.addRefs(1L + i).addRefs(1L);
-      group.addWays(way);
+      way.addRefs(1L + index).addRefs(1L);
+      records.add(way.build());
     }
+    if (reverseWays) Collections.reverse(records);
+    group.addAllWays(records);
     try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(path))) {
       writeBlob(out, "OSMHeader", Osmformat.HeaderBlock.newBuilder()
         .addRequiredFeatures("OsmSchema-V0.6").build().toByteArray());

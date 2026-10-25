@@ -17,6 +17,7 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -29,9 +30,9 @@ import java.util.stream.Stream;
 
 /** Actual cutter-node elevation gate. Run on a private, hash-verified release snapshot. */
 public final class RoutingElevationGate {
-  public static final String VERSION = "1";
+  public static final String VERSION = "2";
   private static final Pattern NODE_TILE = Pattern.compile("([EW])([0-9]+)_([NS])([0-9]+)\\.n5d");
-  private static final Set<String> WATERWAYS = Set.of("river", "stream", "canal", "drain",
+  static final Set<String> WATERWAYS = Set.of("river", "stream", "canal", "drain",
     "ditch", "tidal_channel", "fairway");
   private static final int MAX_WAY_NODES = 1_000_000;
 
@@ -39,12 +40,12 @@ public final class RoutingElevationGate {
   }
 
   public static void main(String[] args) throws Exception {
-    if (args.length != 6) {
+    if (args.length != 7) {
       throw new IllegalArgumentException("usage: RoutingElevationGate nodes55 waytiles55 elevation"
-        + " lookups.dat quarantine.csv new-report-directory");
+        + " lookups.dat quarantine.csv new-report-directory source.osm.pbf");
     }
     int status = audit(Path.of(args[0]), Path.of(args[1]), Path.of(args[2]), Path.of(args[3]),
-      Path.of(args[4]), Path.of(args[5]), Integer.getInteger("elevation.maxProblems", 1_000_000));
+      Path.of(args[4]), Path.of(args[5]), Path.of(args[6]), Integer.getInteger("elevation.maxProblems", 1_000_000));
     if (status != 0) {
       throw new IOException("ELEVATION_GATE_FAILED: inspect " + args[5]
         + "/failures.csv and convert missing-cells.txt into a new elevation release");
@@ -53,9 +54,18 @@ public final class RoutingElevationGate {
 
   public static int audit(Path nodes, Path ways, Path elevation, Path lookups,
                           Path quarantine, Path report, int maxProblems) throws Exception {
+    return audit(nodes, ways, elevation, lookups, quarantine, report, null, maxProblems);
+  }
+
+  public static int audit(Path nodes, Path ways, Path elevation, Path lookups,
+                          Path quarantine, Path report, Path source, int maxProblems) throws Exception {
     if (maxProblems < 1 || maxProblems > 1_000_000) {
       throw new IOException("RESOURCE_LIMIT: maxProblems must be 1..1000000");
     }
+    // Direct synthetic-node audits have no PBF and retain conservative classification.
+    // The CLI always requires the private PBF and its cutter-generated support.
+    RailFerrySupport support = source == null ? null
+      : RailFerrySupport.read(ways.resolve(RailFerrySupport.FILENAME), source);
     List<Zone> zones = readZones(quarantine);
     BExpressionMetaData metadata = new BExpressionMetaData();
     BExpressionContextWay context = new BExpressionContextWay(metadata);
@@ -83,6 +93,7 @@ public final class RoutingElevationGate {
     Files.write(report.resolve("required-cells.txt"), required);
     Set<String> missing = new TreeSet<>();
     List<String> cutterDigests = new ArrayList<>();
+    if (support != null) cutterDigests.add(support.sha256 + "  ways/" + RailFerrySupport.FILENAME);
     long totalNodes = 0;
     long failedNodes = 0;
     long waterNodes = 0;
@@ -131,7 +142,7 @@ public final class RoutingElevationGate {
         String basename = nodeFile.getFileName().toString().replace(".n5d", ".wt5");
         cutterDigests.add(MapterhornFiles.hex(nodeDigest.digest()) + "  nodes/" + nodeFile.getFileName());
         MessageDigest wayDigest = MapterhornFiles.sha256Digest();
-        classify(ways.resolve(basename), context, problems, wayDigest);
+        classify(ways.resolve(basename), context, problems, wayDigest, support);
         cutterDigests.add(MapterhornFiles.hex(wayDigest.digest()) + "  ways/" + basename);
         long tileFailed = 0;
         long tileWater = 0;
@@ -166,6 +177,8 @@ public final class RoutingElevationGate {
     Files.writeString(report.resolve("gate.properties"), "schema=1\nvalidator=" + VERSION
       + "\nstatus=" + (failedNodes == 0 ? "pass" : "fail") + "\nnodes=" + totalNodes
       + "\nfailed=" + failedNodes + "\nwaterOnly=" + waterNodes + "\n");
+    if (support != null) Files.writeString(report.resolve("gate.properties"),
+      "sourcePbfSha256=" + support.sourceSha256 + "\n", StandardOpenOption.APPEND);
     System.out.println("elevation-gate: nodes=" + totalNodes + " failed=" + failedNodes
       + " waterOnly=" + waterNodes);
     return failedNodes == 0 ? 0 : 1;
@@ -233,7 +246,8 @@ public final class RoutingElevationGate {
   }
 
   private static void classify(Path file, BExpressionContextWay context,
-                               Map<Long, Problem> problems, MessageDigest digest) throws Exception {
+                               Map<Long, Problem> problems, MessageDigest digest, RailFerrySupport support) throws Exception {
+    Set<Long> seenFerries = new HashSet<>();
     try (PushbackInputStream input = digestInput(file, digest);
          DataInputStream decoded = new DataInputStream(input)) {
       while (hasNext(input)) {
@@ -249,16 +263,26 @@ public final class RoutingElevationGate {
         } catch (RuntimeException error) {
           throw new IOException("WAY_FORMAT: cannot decode description of way " + wayId, error);
         }
+        RailFerrySupport.Entry rawFerry = support == null ? null : support.ways.get(wayId);
+        if (rawFerry != null && !seenFerries.add(wayId)) {
+          throw new IOException("FERRY_SUPPORT_DUPLICATE: repeated supported way in one cutter tile " + wayId);
+        }
+        MessageDigest nodeDigest = rawFerry == null ? null : MapterhornFiles.sha256Digest();
         Boolean water = null;
+        if (rawFerry != null) {
+          water = isWaterOnly(context.getKeyValueList(false, description), true);
+          if (!water) throw new IOException("FERRY_SUPPORT_CONTRADICTION: encoded way differs from source " + wayId);
+        }
         int count = 0;
         for (long id; (id = MapCreatorBase.readId(decoded)) != -1;) {
           if (++count > MAX_WAY_NODES || id < 0) {
             throw new IOException("RESOURCE_LIMIT: invalid or oversized way " + wayId);
           }
+          if (nodeDigest != null) RailFerrySupport.addNode(nodeDigest, id);
           Problem problem = problems.get(id);
           if (problem != null) {
             if (water == null) {
-              water = isWaterOnly(context.getKeyValueList(false, description));
+              water = isWaterOnly(context.getKeyValueList(false, description), false);
             }
             if (water) {
               problem.water = true;
@@ -274,11 +298,12 @@ public final class RoutingElevationGate {
         if (count == 0) {
           throw new IOException("WAY_FORMAT: empty way " + wayId);
         }
+        if (rawFerry != null) rawFerry.verify(count, nodeDigest);
       }
     }
   }
 
-  private static boolean isWaterOnly(List<String> tags) {
+  private static boolean isWaterOnly(List<String> tags, boolean rawRailFerry) {
     String highway = null;
     String railway = null;
     String waterway = null;
@@ -291,7 +316,11 @@ public final class RoutingElevationGate {
       if (key.equals("waterway")) waterway = value;
       if (key.equals("route")) route = value;
     }
-    if (highway != null || railway != null) {
+    if (rawRailFerry && (!"ferry".equals(route)
+      || !("unknown".equals(railway) || "ferry".equals(railway)))) {
+      return false;
+    }
+    if (highway != null || (railway != null && !rawRailFerry)) {
       return false;
     }
     if (route != null) {

@@ -32,6 +32,7 @@ public class OsmCutter extends MapCreatorBase {
   public WayCutter wayCutter;
   public RestrictionCutter restrictionCutter;
   public NodeFilter nodeFilter;
+  RailFerrySupport.Writer railFerrySupport;
 
   private DatabasePseudoTagProvider dbPseudoTagProvider;
 
@@ -203,6 +204,8 @@ public class OsmCutter extends MapCreatorBase {
     _expctxWay.evaluate(true, w.description);
     ok |= _expctxWay.getCostfactor() < 10000.;
     if (!ok) return;
+
+    if (railFerrySupport != null) railFerrySupport.accepted(w);
 
     if (wayDos != null) {
       w.writeTo(wayDos);

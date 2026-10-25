@@ -34,10 +34,16 @@ public class OsmFastCutter extends MapCreatorBase {
       , new File(args[10])
       , args.length > 11 ? new File(args[11]) : null
       , args.length > 12 ? args[12] : null
+      , Boolean.getBoolean("elevation.sourceEvidence")
     );
   }
 
   public static void doCut(File lookupFile, File nodeDir, File wayDir, File node55Dir, File way55Dir, File borderFile, File relFile, File resFile, File profileAll, File profileReport, File profileCheck, File mapFile, String dbTagInfo) throws Exception {
+    doCut(lookupFile, nodeDir, wayDir, node55Dir, way55Dir, borderFile, relFile, resFile,
+      profileAll, profileReport, profileCheck, mapFile, dbTagInfo, false);
+  }
+
+  public static void doCut(File lookupFile, File nodeDir, File wayDir, File node55Dir, File way55Dir, File borderFile, File relFile, File resFile, File profileAll, File profileReport, File profileCheck, File mapFile, String dbTagInfo, boolean sourceEvidence) throws Exception {
     // **** run OsmCutter ****
     OsmCutter cutter = new OsmCutter();
     if (dbTagInfo != null) {
@@ -61,7 +67,12 @@ public class OsmFastCutter extends MapCreatorBase {
     nodeFilter.init();
     cutter.nodeFilter = nodeFilter;
 
-    cutter.process(lookupFile, nodeDir, null, relFile, null, profileAll, mapFile);
+    try (RailFerrySupport.Writer support = sourceEvidence ? new RailFerrySupport.Writer(
+      way55Dir.toPath().resolve(RailFerrySupport.FILENAME), mapFile.toPath()) : null) {
+      cutter.railFerrySupport = support;
+      cutter.process(lookupFile, nodeDir, null, relFile, null, profileAll, mapFile);
+      if (support != null) support.finish();
+    }
     cutter.wayCutter.finish();
     cutter.restrictionCutter.finish();
     cutter = null;
