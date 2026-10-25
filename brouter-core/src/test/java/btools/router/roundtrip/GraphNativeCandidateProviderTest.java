@@ -113,6 +113,11 @@ public class GraphNativeCandidateProviderTest {
     }
 
     @Override
+    public boolean isViaReachableFromStart(MatchedWaypoint via, MatchedWaypoint startMatch) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public OsmTrack findTrackTimed(String operationName, MatchedWaypoint startWp,
                                    MatchedWaypoint endWp, OsmTrack refTrack, long budgetMs) {
       throw new UnsupportedOperationException();

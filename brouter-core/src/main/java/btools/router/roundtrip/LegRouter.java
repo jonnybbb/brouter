@@ -34,6 +34,16 @@ public interface LegRouter {
   OsmTrack findTrackUnguided(String operationName, MatchedWaypoint startWp, MatchedWaypoint endWp);
 
   /**
+   * Bounded reachability guard for a snapped point: {@code false} only when
+   * {@code via}'s road component is a small island that cannot reach
+   * {@code startMatch}. A large (reachable) component gives up at the node
+   * budget and reports {@code true}, so the check costs at most a few hundred
+   * node expansions — against the whole-graph search an unreachable target
+   * would otherwise burn until its timeout.
+   */
+  boolean isViaReachableFromStart(MatchedWaypoint via, MatchedWaypoint startMatch);
+
+  /**
    * Leg search under its own time budget: the engine saves/restores its clock
    * and runs goal-directed at the profile's pass-1 coefficient.
    */

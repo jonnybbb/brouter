@@ -175,6 +175,14 @@ public final class MoveProposalOperator {
       return MoveProposal.invalid("post_snap_radius_bound_exceeded");
     }
 
+    // A via snapped onto a road island is unroutable: the leg into it would
+    // search the whole loaded graph until the budget expires (measured at
+    // 5-6M link expansions per attempt). The bounded check costs a few
+    // hundred expansions and rejects the proposal before any leg is routed.
+    if (!ops.isViaReachableFromStart(snapped, startWp)) {
+      return MoveProposal.invalid("islanded_via");
+    }
+
     // Post-snap adjacent via spacing: >= 300m
     MatchedWaypoint prevWp = (viaIdx == 0) ? startWp : currentVias.get(viaIdx - 1);
     MatchedWaypoint nextWp = currentVias.get(viaIdx + 1); // viaIdx < m - 1, so viaIdx + 1 is valid

@@ -432,6 +432,11 @@ public class RefineFinalizerTest {
     }
 
     @Override
+    public boolean isViaReachableFromStart(MatchedWaypoint via, MatchedWaypoint startMatch) {
+      return delegate.isViaReachableFromStart(via, startMatch);
+    }
+
+    @Override
     public OsmTrack retrackForDetail(OsmTrack rawTrack, MatchedWaypoint startWp, MatchedWaypoint endWp,
                                      OsmTrack refTrack) {
       return delegate.retrackForDetail(rawTrack, startWp, endWp, refTrack);

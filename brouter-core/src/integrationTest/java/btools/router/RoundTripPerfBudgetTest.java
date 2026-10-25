@@ -89,7 +89,13 @@ public class RoundTripPerfBudgetTest {
       // (circle) pass when the first loop is flawed — bounded x2 work by
       // design, observed 228k on this cell; 450k keeps the ~2x margin over
       // the observed retry-inclusive cost.
-      {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.WAYPOINT, 64, 450_000, -1, "basel_15km_fastbike_FAST"},
+      // 450k -> 850k (2026-09-27): the retained search graph (WarmSearchCache)
+      // cannot prune peninsulas or vanish far nodes between legs, so exact
+      // searches pop the dead-end and out-of-bound nodes the cold search used
+      // to prune — work, not output (routes are identical), traded for not
+      // re-decoding the same segments per leg. Observed 375k cold / 417k
+      // retained on this cell; 850k keeps the ~2x margin.
+      {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.WAYPOINT, 64, 850_000, -1, "basel_15km_fastbike_FAST"},
       {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.BALANCED, 64, 8_000_000, 60, "basel_15km_fastbike_BALANCED"},
       {LoopTestRegion.BASEL, 15_000, "fastbike", RoundTripAlgorithm.AUTO, 64, 9_000_000, -1, "basel_15km_fastbike_AUTO"},
       // Standard class
@@ -107,7 +113,10 @@ public class RoundTripPerfBudgetTest {
       {LoopTestRegion.MALLORCA, 30_000, "gravel", RoundTripAlgorithm.BALANCED, 64, 1_000_000, 90, "mallorca_30km_gravel_BALANCED"},
       // Alpine worst case (the 20.7s AUTO cell of the 2026-07 sweep)
       {LoopTestRegion.GARMISCH, 50_000, "gravel", RoundTripAlgorithm.AUTO, 64, 1_500_000, -1, "garmisch_50km_gravel_AUTO"},
-      {LoopTestRegion.GARMISCH, 50_000, "gravel", RoundTripAlgorithm.WAYPOINT, 64, 300_000, -1, "garmisch_50km_gravel_FAST"},
+      // 300k -> 800k (2026-09-27): same retained-graph cost as the Basel FAST
+      // cell, largest here because the gravel profile opens the alpine track
+      // network's many dead ends. Observed 284k cold / 389k retained.
+      {LoopTestRegion.GARMISCH, 50_000, "gravel", RoundTripAlgorithm.WAYPOINT, 64, 800_000, -1, "garmisch_50km_gravel_FAST"},
       // Android-constraint axis: memoryclass=32, budget must still hold
       {LoopTestRegion.BASEL, 100_000, "fastbike", RoundTripAlgorithm.BALANCED, 32, 1_000_000, 120, "basel_100km_fastbike_BALANCED_mem32"},
       {LoopTestRegion.MALLORCA, 30_000, "gravel", RoundTripAlgorithm.BALANCED, 32, 1_000_000, 90, "mallorca_30km_gravel_BALANCED_mem32"},

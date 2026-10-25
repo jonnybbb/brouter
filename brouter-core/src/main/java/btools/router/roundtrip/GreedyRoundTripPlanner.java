@@ -1403,7 +1403,9 @@ public class GreedyRoundTripPlanner {
         subTrack = null;
       }
       if (subTrack == null) {
-        subTrack = timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, stepDeadline);
+        subTrack = candidateReachable(s, toMwp, fromMwp)
+          ? timedFindTrack("greedy-sub", fromMwp, toMwp, cachedRefTrack, stepDeadline)
+          : null;
       }
       if (subTrack == null && lastLegIslanded) {
         // Fast-motor pocket escape: the leg died on a road island and the
@@ -2211,6 +2213,40 @@ public class GreedyRoundTripPlanner {
       return detailed;
     }
     return router.retrackForDetail(rerouted, fromMwp, toMwp, refTrack);
+  }
+
+  /**
+   * Bounded island pre-check for a candidate via before its leg is routed.
+   * A via snapped onto a small road island is unroutable, and the leg search
+   * has no way to know: it expands the whole loaded graph until the step
+   * deadline (measured at 4-4.5M links per attempt; two such legs were 65% of
+   * a coastal 30 km loop's wall time, the loop itself unchanged without them).
+   * The engine's guard exhausts a small island within a few hundred
+   * expansions and gives up early on a large component, so a healthy
+   * candidate costs about as much as matching it. Verdicts are memoized per
+   * snapped node for the plan (see {@link GreedyPlanSession#viaReachability}).
+   *
+   * <p>Off for fast-motor profiles: their islanded legs are meant to fail
+   * inside the search so the engine learns the pocket pairs and the
+   * pocket-escape retry below can re-match the endpoints.
+   */
+  private boolean candidateReachable(GreedyPlanSession s, MatchedWaypoint toMwp, MatchedWaypoint fromMwp) {
+    if (ctx.routingContext().carMode || toMwp == null || toMwp.crosspoint == null) {
+      return true;
+    }
+    long key = toMwp.crosspoint.getIdFromPos();
+    Boolean known = s.viaReachability.get(key);
+    if (known != null) {
+      return known;
+    }
+    boolean reachable = router.isViaReachableFromStart(toMwp, fromMwp);
+    s.viaReachability.put(key, reachable);
+    if (!reachable) {
+      s.islandedCandidates++;
+      io.logInfo("greedy: candidate via sits on a road island, leg skipped ("
+        + s.islandedCandidates + " this plan)");
+    }
+    return reachable;
   }
 
   /**

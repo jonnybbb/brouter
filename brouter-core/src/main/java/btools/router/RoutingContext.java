@@ -294,6 +294,19 @@ public final class RoutingContext {
   public Integer roundTripPoints;
   public boolean allowSamewayback;
   public RoundTripAlgorithm roundTripAlgorithm = RoundTripAlgorithm.defaultAlgorithm();
+  /**
+   * Retain the woven search graph across a round trip's leg searches instead of
+   * rebuilding it per leg (see {@code WarmSearchCache}). Routes are identical;
+   * off only for A/B measurement via {@code -Droundtrip.warmcache=false}.
+   */
+  public boolean roundTripWarmCache = Boolean.parseBoolean(System.getProperty("roundtrip.warmcache", "true"));
+  /**
+   * Memory the retained search graph may occupy, in bytes; {@code -1} means the
+   * memory class. A search that outgrows it reruns on the bounded cold cache,
+   * so a server can allow the retained graph more room than the cold search's
+   * memory class without changing that search.
+   */
+  public long roundTripWarmCacheBytes = -1;
   public String roundTripRefine;
   public Integer roundTripRefineEvals;
   public Long roundTripRefineMaxMs;
@@ -727,6 +740,8 @@ public final class RoutingContext {
     c.roundTripPoints = this.roundTripPoints;
     c.allowSamewayback = this.allowSamewayback;
     c.roundTripAlgorithm = this.roundTripAlgorithm;
+    c.roundTripWarmCache = this.roundTripWarmCache;
+    c.roundTripWarmCacheBytes = this.roundTripWarmCacheBytes;
     // AUTO children are round-trip engines too, so the edge-membership refTrack
     // gate must follow the parent (the child constructor sets it again from engineMode).
     c.roundTrip = this.roundTrip;
