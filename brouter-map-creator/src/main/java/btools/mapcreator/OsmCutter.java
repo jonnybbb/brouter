@@ -24,6 +24,8 @@ public class OsmCutter extends MapCreatorBase {
   private long waysParsed;
   private long relsParsed;
   private long changesetsParsed;
+  private long privatePlatformPathsExcluded;
+  private final PrivateOffshorePlatformPaths privatePlatformPaths = new PrivateOffshorePlatformPaths();
 
   private DataOutputStream wayDos;
   private DataOutputStream cyclewayDos;
@@ -110,7 +112,8 @@ public class OsmCutter extends MapCreatorBase {
   }
 
   private String statsLine() {
-    return "records read: " + recordCnt + " nodes=" + nodesParsed + " ways=" + waysParsed + " rels=" + relsParsed + " changesets=" + changesetsParsed;
+    return "records read: " + recordCnt + " nodes=" + nodesParsed + " ways=" + waysParsed + " rels=" + relsParsed + " changesets=" + changesetsParsed
+      + " privatePlatformPathsExcluded=" + privatePlatformPathsExcluded;
   }
 
   public void setDbTagFilename(String filename) {
@@ -125,6 +128,7 @@ public class OsmCutter extends MapCreatorBase {
   public void nextNode(NodeData n) throws Exception {
     nodesParsed++;
     checkStats();
+    privatePlatformPaths.observe(n);
 
     if (dbPseudoTagProvider != null) {
       dbPseudoTagProvider.addNodeTags(n);
@@ -176,6 +180,12 @@ public class OsmCutter extends MapCreatorBase {
   public void nextWay(WayData w) throws Exception {
     waysParsed++;
     checkStats();
+
+    if (privatePlatformPaths.excludes(w)) {
+      privatePlatformPathsExcluded++;
+      System.out.println("private-offshore-platform-path excluded way=" + w.wid + " nodes=" + w.nodes.size());
+      return;
+    }
 
     // encode tags
     if (w.getTagsOrNull() == null) return;
