@@ -7,8 +7,12 @@ missing terrain is expected. It does not repair defective source heights.
 ## Conversion contract (version 2)
 
 - Output sample footprints use exact rational longitude intersections, including
-  PMTiles header bounds. Latitude projection uses StrictMath. Covered and total
-  area use the same additions; no epsilon or hole budget is applied.
+  PMTiles header bounds. Latitude projection uses StrictMath and is measured from
+  the equator as an odd function, so mirror-image footprints in both hemispheres
+  get identical row overlaps. Covered and missing area are rounded to multiples of
+  2^-32 source pixels and summed exactly (an output sample covering 2^21 or more
+  source pixels fails), so a sample is valid when covered >= missing regardless of
+  summation order. No epsilon or hole budget is applied.
 - Version 1 converter provenance cannot be resumed as version 2.
 - A completed cell has a BEF, `.mapterhorn.properties`, and `.coverage.gz`.
   Coverage evidence binds the archive identity, converter version, sampling mode,
@@ -25,8 +29,11 @@ missing terrain is expected. It does not repair defective source heights.
 
 ## Build-specific gate
 
-`RoutingElevationGate nodes55 waytiles55 elevation lookups.dat quarantine.csv report`
-reads actual cutter records before PosUnifier. It uses ElevationRaster's real
+`RoutingElevationGate nodes55 waytiles55 elevation lookups.dat quarantine.csv report source.osm.pbf`
+reads actual cutter records before PosUnifier. The gate requires
+`waytiles55/rail-ferry-support.bin`, which `OsmFastCutter` writes only when run
+with `-Delevation.sourceEvidence=true` against the same `source.osm.pbf`; the
+gate verifies that binding and fails without it. It uses ElevationRaster's real
 four-sample interpolation, including corners whose interpolation weight is zero.
 The caller must provide a private hash-verified elevation snapshot; a read-only
 mount of a mutable shared producer directory is insufficient.

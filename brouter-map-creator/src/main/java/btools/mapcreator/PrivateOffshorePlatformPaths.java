@@ -11,7 +11,7 @@ final class PrivateOffshorePlatformPaths {
   private static final int MAX_PLATFORM_NODES = 100_000;
   private static final Set<String> PATHS = Set.of("path", "footway", "steps", "cycleway", "pedestrian");
   private static final Set<String> ACCESS_KEYS = Set.of("access", "foot", "bicycle", "horse",
-    "vehicle", "motor_vehicle", "motorcar", "motorcycle", "moped", "mofa", "hgv", "bus", "ski");
+    "vehicle", "motor_vehicle", "motorcar", "motorcycle", "moped", "mofa", "hgv", "psv", "bus", "ski");
   private final Map<Long, Boolean> platformNodes = new HashMap<>();
   private long previousNodeId = Long.MIN_VALUE;
   private boolean sourceOrderCertain = true;

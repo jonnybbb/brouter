@@ -11,7 +11,7 @@ An excluded way must satisfy all of these conditions:
 - Its raw `highway` is `path`, `footway`, `steps`, `cycleway` or `pedestrian`, with at least two distinct nodes.
 - Every referenced node is explicitly tagged `man_made=offshore_platform`, or has both `location=platform` and `seamark:type=platform`.
 - At least one of those nodes has both `man_made=offshore_platform` and `access=private`.
-- Neither the way nor its platform nodes has a public/unknown access override or a conditional tag. Explicit `no` and `private` values remain restrictions. Access checks include the common foot, bicycle, horse, vehicle, motor-vehicle and ski modes; directional or other mode-prefixed keys conservatively preserve the way.
+- Neither the way nor its platform nodes has a public/unknown access override or a conditional tag. Explicit `no` and `private` values remain restrictions. Access checks include the common foot, bicycle, horse, vehicle, motor-vehicle, public-service-vehicle (`psv`) and ski modes; directional or other mode-prefixed keys conservatively preserve the way.
 - The way has no meaningful `route`, `railway` or `waterway` tag. Explicit `no` values are absent; all other values preserve the way for normal admission and validation.
 
 Missing platform evidence is not inferred from proximity, elevation gaps, sea coordinates, a private tag alone, or untagged intermediate nodes. Relation membership and area containment are not inferred. Such paths remain in the normal pipeline and must pass its existing checks.

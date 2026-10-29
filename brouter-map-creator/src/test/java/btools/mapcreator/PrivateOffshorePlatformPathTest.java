@@ -46,7 +46,8 @@ public class PrivateOffshorePlatformPathTest {
   @Test
   public void explicitPublicOrConditionalAccessKeepsThePlatformLink() throws Exception {
     for (Map<String, String> access : List.of(Map.of("access", "yes"), Map.of("foot", "yes"),
-      Map.of("bicycle", "designated"), Map.of("access:conditional", "yes @ (Mo-Fr)"))) {
+      Map.of("bicycle", "designated"), Map.of("psv", "yes"),
+      Map.of("access:conditional", "yes @ (Mo-Fr)"))) {
       Map<String, String> tags = new LinkedHashMap<>(access);
       tags.put("highway", "path");
       Fixture fixture = new Fixture(PRIVATE_PLATFORM, HELIDECK, tags, false);
@@ -121,6 +122,10 @@ public class PrivateOffshorePlatformPathTest {
       Map.of("highway", "path", "bicycle:forward", "yes"), false);
     assertEquals(Set.of(100L, 200L), way.ways);
     assertEquals(1, way.audit());
+    Fixture psv = new Fixture(PRIVATE_PLATFORM, HELIDECK,
+      Map.of("highway", "path", "psv:forward", "yes"), false);
+    assertEquals(Set.of(100L, 200L), psv.ways);
+    assertEquals(1, psv.audit());
     Map<String, String> tags = new LinkedHashMap<>(PRIVATE_PLATFORM);
     tags.put("foot:backward", "yes");
     Fixture node = new Fixture(tags, HELIDECK, Map.of("highway", "path"), false);

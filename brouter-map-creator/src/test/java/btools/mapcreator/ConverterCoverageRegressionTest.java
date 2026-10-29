@@ -151,4 +151,37 @@ public class ConverterCoverageRegressionTest {
     }
   }
 
+  @Test
+  public void equatorialSampleWithOneHemisphereOfSupportKeepsElevation() throws IOException {
+    int resolution = 1200;
+    int tileX = 2176;
+    byte[] valid = TerrainTiles.constantPng(512, 100);
+    for (boolean northOnly : new boolean[]{true, false}) {
+      PmTilesTestArchive builder = new PmTilesTestArchive().zoomRange(12, 12);
+      for (int x = tileX - 2; x <= tileX + 1; x++) {
+        for (int y = 2046; y <= 2049; y++) {
+          if ((y < 2048) == northOnly) {
+            builder.put(12, x, y, valid);
+          }
+        }
+      }
+      double[] bbox = {longitude(tileX - 2), latitude(2050), longitude(tileX + 2), latitude(2046)};
+      int west = cellStart(longitude(tileX));
+      int column = (int) Math.round((longitude(tileX) - west) * resolution);
+      try (PmTilesArchive archive = PmTilesArchive.open(builder.asByteSource());
+           ConvertMapterhornTile converter = new ConvertMapterhornTile(archive, 12, null, 512)) {
+        // The equator is the bottom row of the northern cell and the top row of the
+        // southern one; both footprints are split exactly in half by the tile seam.
+        ElevationRaster north = converter.buildRaster(west, 0, resolution, bbox);
+        assertNotNull(north);
+        assertEquals("north cell, northOnly=" + northOnly,
+          100, north.eval_array[(north.nrows - 1) * north.ncols + column]);
+        ElevationRaster south = converter.buildRaster(west, -5, resolution, bbox);
+        assertNotNull(south);
+        assertEquals("south cell, northOnly=" + northOnly,
+          100, south.eval_array[column]);
+      }
+    }
+  }
+
 }
