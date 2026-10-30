@@ -24,6 +24,8 @@ public class OsmCutter extends MapCreatorBase {
   private long waysParsed;
   private long relsParsed;
   private long changesetsParsed;
+  private long privatePlatformPathsExcluded;
+  private final PrivateOffshorePlatformPaths privatePlatformPaths = new PrivateOffshorePlatformPaths();
 
   private DataOutputStream wayDos;
   private DataOutputStream cyclewayDos;
@@ -32,6 +34,7 @@ public class OsmCutter extends MapCreatorBase {
   public WayCutter wayCutter;
   public RestrictionCutter restrictionCutter;
   public NodeFilter nodeFilter;
+  RailFerrySupport.Writer railFerrySupport;
 
   private DatabasePseudoTagProvider dbPseudoTagProvider;
 
@@ -109,7 +112,8 @@ public class OsmCutter extends MapCreatorBase {
   }
 
   private String statsLine() {
-    return "records read: " + recordCnt + " nodes=" + nodesParsed + " ways=" + waysParsed + " rels=" + relsParsed + " changesets=" + changesetsParsed;
+    return "records read: " + recordCnt + " nodes=" + nodesParsed + " ways=" + waysParsed + " rels=" + relsParsed + " changesets=" + changesetsParsed
+      + " privatePlatformPathsExcluded=" + privatePlatformPathsExcluded;
   }
 
   public void setDbTagFilename(String filename) {
@@ -124,6 +128,7 @@ public class OsmCutter extends MapCreatorBase {
   public void nextNode(NodeData n) throws Exception {
     nodesParsed++;
     checkStats();
+    privatePlatformPaths.observe(n);
 
     if (dbPseudoTagProvider != null) {
       dbPseudoTagProvider.addNodeTags(n);
@@ -176,6 +181,12 @@ public class OsmCutter extends MapCreatorBase {
     waysParsed++;
     checkStats();
 
+    if (privatePlatformPaths.excludes(w)) {
+      privatePlatformPathsExcluded++;
+      System.out.println("private-offshore-platform-path excluded way=" + w.wid + " nodes=" + w.nodes.size());
+      return;
+    }
+
     // encode tags
     if (w.getTagsOrNull() == null) return;
 
@@ -188,6 +199,9 @@ public class OsmCutter extends MapCreatorBase {
     int[] lookupData = _expctxWay.createNewLookupData();
     for (String key : w.getTagsOrNull().keySet()) {
       String value = w.getTag(key);
+      // Preserve explicit absence before unrecognized values become "unknown".
+      // Other railway values and negative access restrictions remain unchanged.
+      if ("railway".equals(key) && "no".equals(value)) continue;
       _expctxWay.addLookupValue(key, value.replace(' ', '_'), lookupData);
     }
     w.description = _expctxWay.encode(lookupData);
@@ -200,6 +214,8 @@ public class OsmCutter extends MapCreatorBase {
     _expctxWay.evaluate(true, w.description);
     ok |= _expctxWay.getCostfactor() < 10000.;
     if (!ok) return;
+
+    if (railFerrySupport != null) railFerrySupport.accepted(w);
 
     if (wayDos != null) {
       w.writeTo(wayDos);

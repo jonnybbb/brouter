@@ -69,6 +69,18 @@ public class ConvertMapterhornTileTest {
   }
 
   @Test
+  public void conversionPublishesExpectedCoverageEvidence() throws IOException {
+    File directory = tmp.newFolder("coverage-evidence");
+    try (PmTilesArchive archive = PmTilesArchive.open(archiveOf((x, y) -> 100).asByteSource())) {
+      ConvertMapterhornTile.convertOne(archive, ZOOM, null, directory,
+        LON_START, LAT_START, ROW_LENGTH, null, 1, false, TILE);
+    }
+    File output = new File(directory, ElevationCells.cellFileName(LON_START, LAT_START));
+    assertTrue("conversion must publish source coverage with its BEF",
+      new File(output + ".coverage.gz").isFile());
+  }
+
+  @Test
   public void rasterGeometryMatchesTheHgtConvention() throws IOException {
     ElevationRaster raster = convert(archiveOf((x, y) -> 300.0), null);
     assertNotNull(raster);
@@ -629,7 +641,8 @@ public class ConvertMapterhornTileTest {
       File metadataFile = new File(out.getPath() + MapterhornOutputMetadata.SUFFIX);
       assertTrue("output file must exist", out.isFile());
       assertTrue("output provenance must exist", metadataFile.isFile());
-      assertEquals("no temp files may remain", 2, outDir.list().length);
+      assertTrue("source coverage must exist", new File(out + ElevationCoverage.SUFFIX).isFile());
+      assertEquals("only BEF, provenance and coverage may remain", 3, outDir.list().length);
 
       Properties metadata = new Properties();
       try (java.io.InputStream in = Files.newInputStream(metadataFile.toPath())) {

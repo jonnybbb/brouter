@@ -94,12 +94,26 @@ public class MapterhornOutputMetadataTest {
     assertTrue(files.metadata.isFile());
     Properties metadata = load(files.metadata);
     assertEquals("1", metadata.getProperty("schema"));
-    assertEquals("1", metadata.getProperty("converter"));
+    assertEquals("2", metadata.getProperty("converter"));
     assertEquals("pending", metadata.getProperty("state"));
     assertEquals("-1", metadata.getProperty("length"));
     assertEquals("-1", metadata.getProperty("modified"));
     assertEquals("", metadata.getProperty("sha256"));
     assertNoTemporaryFiles();
+  }
+
+  @Test
+  public void oldArithmeticVersionCannotBeResumed() throws IOException {
+    FilePair files = complete("old-arithmetic.bef", CONFIG_A, (byte) 7);
+    String current = Files.readString(files.metadata.toPath(), StandardCharsets.ISO_8859_1);
+    Files.writeString(files.metadata.toPath(), replaceProperty(current, "converter", "1"),
+      StandardCharsets.ISO_8859_1);
+    try {
+      MapterhornOutputMetadata.prepare(files.output, CONFIG_A, false);
+      fail("must not resume output made by the old arithmetic");
+    } catch (IOException expected) {
+      assertTrue(expected.getMessage().contains("provenance"));
+    }
   }
 
   @Test
@@ -349,7 +363,7 @@ public class MapterhornOutputMetadataTest {
       // escaped duplicate key decodes to a conflicting last-wins 'zoom'
       valid + "\\u007aoom=13\n",
       replaceProperty(valid, "schema", "2"),
-      replaceProperty(valid, "converter", "2"),
+      replaceProperty(valid, "converter", "999"),
       replaceProperty(valid, "state", "unknown"),
       replaceProperty(valid, "sha256",
         "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg")
