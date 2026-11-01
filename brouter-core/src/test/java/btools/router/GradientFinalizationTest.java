@@ -114,6 +114,11 @@ public class GradientFinalizationTest {
       OsmPathElement end = path.originElement;
       assertEquals(to.ilon, end.getILon());
       assertEquals(from.ilon, end.origin.getILon());
+      // Both clipped ends carry the elevation interpolated at their position on the
+      // 100 m -> 140 m edge, not the full edge endpoints' heights.
+      assertEquals(440, end.origin.getSElev()); // 110 m
+      assertEquals(520, end.getSElev()); // 130 m, not the edge end's 140 m
+      assertEquals(520, end.message.ele);
       OsmTrack clipped = new OsmTrack();
       clipped.nodes.add(end.origin);
       clipped.nodes.add(end);

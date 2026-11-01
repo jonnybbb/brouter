@@ -90,30 +90,6 @@ public final class MessageData implements Cloneable {
   float turnangle;
   float gradient = Float.NaN; // slope in percent; NaN when elevation is unavailable
   double deltaH = Double.NaN; // elevation change in meters for this section
-  // A clipped endpoint retains its historic exported height. Keep the interpolated
-  // reporting height tied to that exact point, and defer to later elevation repairs.
-  private boolean clippedGradientEndpoint;
-  private long clippedGradientPosition;
-  private short clippedExportElevation;
-  private short clippedGradientElevation;
-
-  void recordClippedGradientEndpoint(OsmPathElement point, short elevation) {
-    clippedGradientEndpoint = true;
-    clippedGradientPosition = point.getIdFromPos();
-    clippedExportElevation = point.getSElev();
-    clippedGradientElevation = elevation;
-  }
-
-  static short gradientElevation(OsmPathElement point) {
-    MessageData data = point.message;
-    if (data != null && data.clippedGradientEndpoint
-        && data.clippedGradientPosition == point.getIdFromPos()
-        && data.clippedExportElevation == point.getSElev()) {
-      return data.clippedGradientElevation;
-    }
-    return point.getSElev();
-  }
-
   void updateGradient(short from, short to) {
     deltaH = from == Short.MIN_VALUE || to == Short.MIN_VALUE ? Double.NaN : (to - from) / 4.;
     gradient = linkdist > 0 ? (float) (deltaH / linkdist * 100.) : Float.NaN;

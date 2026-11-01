@@ -3217,8 +3217,8 @@ public class RoutingEngine extends Thread {
       OsmPathElement messageFrom = routingContext.inverseRouting ? n : nLast;
       OsmPathElement messageTo = routingContext.inverseRouting ? (i + 1 < ourSize ? t.nodes.get(i + 1) : null) : n;
       n.message.linkdist = messageFrom == null || messageTo == null ? 0 : messageFrom.calcDistance(messageTo);
-      n.message.updateGradient(messageFrom == null ? Short.MIN_VALUE : MessageData.gradientElevation(messageFrom),
-        messageTo == null ? Short.MIN_VALUE : MessageData.gradientElevation(messageTo));
+      n.message.updateGradient(messageFrom == null ? Short.MIN_VALUE : messageFrom.getSElev(),
+        messageTo == null ? Short.MIN_VALUE : messageTo.getSElev());
       n.message.turnangle = (float) angle;
       totaldist += dist;
       totaltime += n.getTime();
