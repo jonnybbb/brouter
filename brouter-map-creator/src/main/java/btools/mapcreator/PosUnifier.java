@@ -6,6 +6,7 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -39,6 +40,20 @@ public class PosUnifier extends MapCreatorBase {
   private String srtmfallbackdir;
 
   private CompactLongSet borderNids;
+
+  /**
+   * Directory of {@link NodeElevationSidecar}s from {@link MapterhornNodeElevation}, from
+   * the {@code nodeElevationDir} system property; null to use the raster alone.
+   */
+  private File nodeElevationDir;
+  private NodeElevationSidecar.Reader nodeElevation;
+  /** Per node file: nodes from the sidecar, from the raster, and with neither. */
+  private long fromSidecar;
+  private long fromRaster;
+  private long withoutElevation;
+  /** Sidecar minus raster, for nodes that have both: counts under 1, 3, 10 m and above. */
+  private final long[] disagreement = new long[4];
+  private double maxDisagreement;
 
   public static void main(String[] args) throws Exception {
     System.out.println("*** PosUnifier: Unify position values and enhance elevation");
@@ -84,6 +99,13 @@ public class PosUnifier extends MapCreatorBase {
     this.nodeTilesOut = nodeTilesOut;
     this.srtmdir = srtmdir;
     this.srtmfallbackdir = srtmfallbackdir;
+    String sidecars = System.getProperty("nodeElevationDir");
+    if (sidecars != null && !sidecars.isEmpty()) {
+      nodeElevationDir = new File(sidecars);
+      if (!nodeElevationDir.isDirectory()) {
+        throw new IllegalArgumentException("nodeElevationDir is not a directory: " + sidecars);
+      }
+    }
 
     // read border nids set
     DataInputStream dis = createInStream(bordernidsinfile);
@@ -112,6 +134,19 @@ public class PosUnifier extends MapCreatorBase {
     nodesOutStream = createOutStream(outNodeFile);
 
     positionSets = new CompactLongSet[2500];
+
+    fromSidecar = fromRaster = withoutElevation = 0;
+    Arrays.fill(disagreement, 0);
+    maxDisagreement = 0;
+    if (nodeElevationDir != null) {
+      File sidecar = NodeElevationSidecar.forNodeFile(nodeElevationDir, nodefile);
+      if (sidecar.exists()) {
+        nodeElevation = new NodeElevationSidecar.Reader(sidecar);
+        System.out.println("*** node elevations: " + sidecar + " (zoom " + nodeElevation.zoom() + ")");
+      } else {
+        System.out.println("*** no node elevation sidecar for " + nodefile.getName() + ", raster only");
+      }
+    }
   }
 
   @Override
@@ -128,6 +163,12 @@ public class PosUnifier extends MapCreatorBase {
     ElevationRaster srtm = srtmForNode(n.ilon, n.ilat);
 
     if (srtm != null) n.selev = srtm.getElevation(n.ilon, n.ilat);
+    if (nodeElevation != null) {
+      preferSidecar(n, nodeElevation.next(n.nid));
+    }
+    if (n.selev == Short.MIN_VALUE) {
+      withoutElevation++;
+    }
     findUniquePos(n);
 
     n.writeTo(nodesOutStream);
@@ -136,9 +177,39 @@ public class PosUnifier extends MapCreatorBase {
     }
   }
 
+  /** Sampled before {@link #findUniquePos}, at the node's real position, as the raster is. */
+  private void preferSidecar(NodeData n, short sampled) {
+    if (sampled == Short.MIN_VALUE) {
+      if (n.selev != Short.MIN_VALUE) {
+        fromRaster++;
+      }
+      return;
+    }
+    if (n.selev != Short.MIN_VALUE) {
+      double d = Math.abs(sampled - n.selev) / 4.0;
+      disagreement[d < 1 ? 0 : d < 3 ? 1 : d < 10 ? 2 : 3]++;
+      maxDisagreement = Math.max(maxDisagreement, d);
+    }
+    n.selev = sampled;
+    fromSidecar++;
+  }
+
   @Override
   public void nodeFileEnd(File nodeFile) throws Exception {
     nodesOutStream.close();
+    if (nodeElevation != null) {
+      try {
+        nodeElevation.finish();
+      } finally {
+        nodeElevation.close();
+        nodeElevation = null;
+      }
+      System.out.println("*** node elevations " + nodeFile.getName() + ": " + fromSidecar
+        + " from the sidecar, " + fromRaster + " from the raster, " + withoutElevation
+        + " without; sidecar vs raster <1 m " + disagreement[0] + ", 1-3 m " + disagreement[1]
+        + ", 3-10 m " + disagreement[2] + ", >=10 m " + disagreement[3]
+        + ", max " + maxDisagreement + " m");
+    }
     if (outNodeFile != null) {
       if (lastSrtmRaster != null) {
         String newName = outNodeFile.getAbsolutePath() + (lastSrtmRaster.nrows > 6001 ? "_1": "_3");
