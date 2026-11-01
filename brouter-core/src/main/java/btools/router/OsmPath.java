@@ -305,8 +305,9 @@ abstract class OsmPath implements OsmLinkHolder {
       double angle = rc.anglemeter.calcAngle(lon0, lat0, lon1, lat1, lon2, lat2);
       double cosangle = rc.anglemeter.getCosAngle();
 
-      // Capture reporting elevations before the cost model fills missing data.
-      short gradientEndElevation = ele2;
+      // Capture the section's end elevation before the cost model fills missing data:
+      // the gradient reports it, and a clipped endpoint exports it.
+      short endElevation = ele2;
       if (message != null) message.updateGradient(ele1, ele2);
 
       // *** elevation stuff
@@ -362,15 +363,18 @@ abstract class OsmPath implements OsmLinkHolder {
 
       if (stopAtEndpoint) {
         if (recordTransferNodes) {
-          originElement = OsmPathElement.create(rc.ilonshortest, rc.ilatshortest, originEle2, originElement);
+          // The clipped endpoint lies inside the edge, so it carries the elevation
+          // interpolated there, as the clipped start point does. The full edge
+          // endpoint's elevation put a step into the profile at every waypoint.
+          originElement = OsmPathElement.create(rc.ilonshortest, rc.ilatshortest, endElevation, originElement);
           originElement.cost = cost;
           if (message != null) {
             // This message already contains the clipped distance and the
             // traversed way's tags; its endpoint must match the clipped node.
             message.lon = rc.ilonshortest;
             message.lat = rc.ilatshortest;
+            message.ele = endElevation;
             originElement.message = message;
-            message.recordClippedGradientEndpoint(originElement, gradientEndElevation);
           }
         }
         if (rc.nogoCost < 0) {
